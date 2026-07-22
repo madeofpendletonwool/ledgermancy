@@ -34,7 +34,11 @@ services:
       # Override the .env value so it points at the compose service, not localhost.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
     ports:
-      - "8080:8080"
+      # Loopback only, and only for local development: the vite dev server
+      # proxies /api to 127.0.0.1:8080. In production the api has NO host port
+      # (see the prod overlay) — the frontend container reaches it over the
+      # compose network at api:8080.
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +56,19 @@ services:
         condition: service_healthy
       # The api owns schema migrations; wait for it so the worker never queries
       # tables that do not exist yet.
+      api:
+        condition: service_started
+
+  # nginx: serves the built SPA and reverse-proxies /api, /webhooks, and
+  # /healthz to the api over the compose network. This is the one service you
+  # publish; put a TLS-terminating reverse proxy in front of it in production.
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_HOST_PORT:-8081}:80"
+    depends_on:
       api:
         condition: service_started
 

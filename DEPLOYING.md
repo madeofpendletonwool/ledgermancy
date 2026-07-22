@@ -118,33 +118,28 @@ Migrations run automatically on API startup.
 
 ### Serving the frontend
 
-The compose stack runs the API and worker. The frontend is a static build:
+The compose stack runs everything: Postgres, the API, the worker, and the
+**frontend**. The frontend is an nginx container (`frontend/Dockerfile`) that
+builds the SPA and reverse-proxies `/api`, `/webhooks`, and `/healthz` to the
+API over the internal compose network. It handles the SPA deep-link fallback
+itself, so `/net-worth` and friends return the app shell rather than a 404.
+
+In production the API has **no host port** — the frontend is the only published
+service. It binds the host port you set in `.env`:
 
 ```bash
-cd frontend && npm ci && npm run build   # outputs to frontend/dist
+FRONTEND_HOST_PORT=8081   # whatever port your TLS proxy will forward to
 ```
 
-Serve `frontend/dist` from a reverse proxy that also terminates TLS and forwards
-`/api` and `/webhooks` to the API on `127.0.0.1:8080`. A minimal Caddyfile:
+Put a TLS-terminating reverse proxy in front of that port. Because the frontend
+already handles the `/api` + `/webhooks` split internally, the outer proxy only
+has to terminate TLS and forward everything through. A minimal Caddyfile:
 
 ```
 ledgermancy.yourdomain.com {
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8080
-    }
-    handle /webhooks/* {
-        reverse_proxy 127.0.0.1:8080
-    }
-    handle {
-        root * /srv/ledgermancy/dist
-        try_files {path} /index.html
-        file_server
-    }
+    reverse_proxy 127.0.0.1:8081
 }
 ```
-
-`try_files {path} /index.html` is required — the app uses client-side routing, so
-a deep link like `/net-worth` must return the app shell rather than a 404.
 
 **TLS is not optional in production.** Session cookies are marked `Secure` when
 `APP_ENV=production`, so the browser will refuse to send them over plain HTTP and

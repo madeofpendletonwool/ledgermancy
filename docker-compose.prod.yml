@@ -5,8 +5,9 @@
 # Differences from local development:
 #   - Postgres publishes no host ports at all. It is reachable only from the
 #     api and worker over the internal compose network.
-#   - The api listens on loopback, expecting a reverse proxy (Caddy/nginx) in
-#     front of it to terminate TLS.
+#   - The api publishes no host port at all. The frontend container reaches it
+#     over the compose network (api:8080); an outer TLS-terminating reverse
+#     proxy forwards to the published frontend port instead.
 
 # The !override tags below are required, not stylistic. Compose MERGES list
 # fields such as `ports` across files, so a plain `ports: []` is a no-op and a
@@ -23,10 +24,10 @@ services:
   api:
     environment:
       APP_ENV: production
-    # Only the reverse proxy should be publicly bound. Publishing to loopback
-    # keeps the api unreachable from the network directly.
-    ports: !override
-      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
+    # No host port at all. The frontend container is the only thing that talks
+    # to the api, and it does so over the compose network at api:8080. Nothing
+    # needs to reach the api from the host, so it is fully unpublished.
+    ports: !override []
 
   worker:
     environment:
