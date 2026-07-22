@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Bound to loopback ONLY. Postgres is an internal service: the api and
+      # worker reach it over the compose network at postgres:5432 and never
+      # need this mapping. It exists purely so you can run psql from this
+      # machine. The explicit 127.0.0.1 matters — "5433:5432" would bind
+      # 0.0.0.0 and expose the database to the whole LAN.
+      #
+      # For a real deployment use the prod overlay, which removes it entirely:
+      #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      target: api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override the .env value so it points at the compose service, not localhost.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      target: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # The api owns schema migrations; wait for it so the worker never queries
+      # tables that do not exist yet.
+      api:
+        condition: service_started
+
+volumes:
+  postgres-data:

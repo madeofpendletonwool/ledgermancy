@@ -1,0 +1,235 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+   Ledgermancy's visual language: deep ink, arcane violet, and a warm gold that
+   is reserved for money and emphasis. Everything else stays muted so numbers
+   are the loudest thing on the page.
+   --------------------------------------------------------------------------- */
+@theme {
+  --color-ink-950: #07060d;
+  --color-ink-900: #0d0b16;
+  --color-ink-850: #12101f;
+  --color-ink-800: #191630;
+  --color-ink-700: #241f45;
+  --color-ink-600: #322b5e;
+
+  --color-arcane-400: #a78bfa;
+  --color-arcane-500: #8b5cf6;
+  --color-arcane-600: #7c3aed;
+
+  --color-rune-300: #f2d492;
+  --color-rune-400: #e8b962;
+  --color-rune-500: #d99e3a;
+
+  --color-mist-100: #e8e6f5;
+  --color-mist-300: #b3aed0;
+  --color-mist-500: #7b749c;
+
+  --color-verdant-400: #4ade80;
+  --color-ember-400: #fb7185;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-ink-950 text-mist-100 antialiased;
+    background-image:
+      radial-gradient(
+        ellipse 80% 55% at 50% -10%,
+        color-mix(in oklab, var(--color-arcane-600) 20%, transparent),
+        transparent
+      ),
+      radial-gradient(
+        ellipse 60% 45% at 90% 100%,
+        color-mix(in oklab, var(--color-rune-500) 8%, transparent),
+        transparent
+      );
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+
+  /* Numbers should line up in columns wherever they appear. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Frosted "spell page" surface used for cards and panels. */
+  .glass {
+    @apply rounded-2xl border border-white/10 bg-ink-850/60 backdrop-blur-xl;
+    box-shadow:
+      0 1px 0 0 rgb(255 255 255 / 0.05) inset,
+      0 20px 60px -20px rgb(0 0 0 / 0.7);
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-white/10 bg-ink-900/70 px-4 py-2.5
+           text-mist-100 outline-none transition
+           placeholder:text-mist-500
+           focus:border-arcane-500/60 focus:ring-2 focus:ring-arcane-500/25;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl
+           bg-gradient-to-b from-arcane-500 to-arcane-600 px-4 py-2.5
+           font-medium text-white shadow-lg shadow-arcane-600/25 transition
+           hover:brightness-110 active:brightness-95
+           disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border
+           border-white/10 px-4 py-2.5 text-mist-300 transition
+           hover:border-white/20 hover:text-mist-100
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-mist-300;
+  }
+}
+
+/* A slow drift for ambient background glyphs. Disabled for anyone who has
+   asked their system to reduce motion. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translateY(-14px) rotate(4deg);
+    opacity: 0.6;
+  }
+}
+
+.animate-drift {
+  animation: drift 9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-drift {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Financial summary report.
+   The report is a normal page on screen and a clean document when printed.
+   Printing is the export path — there is no server-side PDF renderer.
+   --------------------------------------------------------------------------- */
+@layer components {
+  .report-h2 {
+    @apply mb-3 text-lg font-medium;
+  }
+
+  .report-figure {
+    @apply rounded-xl border border-white/10 bg-ink-850/60 p-4;
+  }
+
+  .report-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .report-table th {
+    @apply border-b border-white/10 px-3 py-2 text-left text-xs font-medium text-mist-500;
+  }
+  .report-table td {
+    @apply border-b border-white/5 px-3 py-2;
+  }
+  .report-table .num {
+    @apply text-right;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media print {
+  /* Print on white. The dark UI is unreadable on paper and would drain a
+     cartridge doing it. */
+  @page {
+    margin: 16mm;
+    size: letter;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    background-image: none !important;
+    color: #111 !important;
+  }
+
+  /* Everything outside the report is chrome. */
+  .no-print,
+  header.sticky,
+  nav {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+
+  .report,
+  .report-sheet {
+    max-width: none !important;
+  }
+
+  .report * {
+    color: #111 !important;
+    border-color: #d4d4d8 !important;
+  }
+
+  .report .text-mist-300,
+  .report .text-mist-500 {
+    color: #52525b !important;
+  }
+
+  .report-figure {
+    background: #fafafa !important;
+    border: 1px solid #d4d4d8 !important;
+    padding: 0.6rem 0.75rem !important;
+  }
+
+  /* A letter page minus margins is about 178mm wide. Four tiles at the
+     on-screen font size overflowed it — the last one was clipped off the page
+     edge and a long value ran outside its border. Two rows of two fit
+     comfortably, and the figures step down a size. */
+  .report .grid-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .report-figure p:last-child {
+    font-size: 1.125rem !important;
+    line-height: 1.4 !important;
+  }
+
+  /* Nothing in the report may push past the page box. */
+  .report,
+  .report-sheet,
+  .report * {
+    max-width: 100% !important;
+    overflow-wrap: break-word;
+  }
+
+  .report-table {
+    table-layout: fixed;
+    width: 100% !important;
+  }
+
+  /* Keep a table from splitting across a page mid-row. */
+  .break-inside-avoid {
+    break-inside: avoid;
+  }
+
+  .report-table thead {
+    display: table-header-group; /* repeat headers on each page */
+  }
+
+  .report-table tr {
+    break-inside: avoid;
+  }
+}

@@ -1,0 +1,33 @@
+# Production overlay. Use alongside the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from local development:
+#   - Postgres publishes no host ports at all. It is reachable only from the
+#     api and worker over the internal compose network.
+#   - The api listens on loopback, expecting a reverse proxy (Caddy/nginx) in
+#     front of it to terminate TLS.
+
+# The !override tags below are required, not stylistic. Compose MERGES list
+# fields such as `ports` across files, so a plain `ports: []` is a no-op and a
+# plain replacement would leave the base file's 0.0.0.0 binding in place
+# alongside the new one. !override discards the base value instead.
+
+services:
+  postgres:
+    # No host mapping at all: the database is reachable only from the api and
+    # worker over the compose network. For a shell, use:
+    #   docker compose exec postgres psql -U ledgermancy -d ledgermancy
+    ports: !override []
+
+  api:
+    environment:
+      APP_ENV: production
+    # Only the reverse proxy should be publicly bound. Publishing to loopback
+    # keeps the api unreachable from the network directly.
+    ports: !override
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
+
+  worker:
+    environment:
+      APP_ENV: production

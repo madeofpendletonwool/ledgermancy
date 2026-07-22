@@ -1,0 +1,29 @@
+# Environment / secrets — NEVER commit these
+.env
+.env.local
+*.pem
+*.key
+
+# Go
+backend/bin/
+*.test
+*.out
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local data
+postgres-data/
+tmp/
+
+# Local scratch
+*.local
+scratchpad/

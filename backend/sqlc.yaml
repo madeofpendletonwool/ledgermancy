@@ -1,0 +1,79 @@
+version: "2"
+sql:
+  - engine: postgresql
+    queries: internal/db/queries
+    schema: internal/db/migrations
+    gen:
+      go:
+        package: dbgen
+        out: internal/db/dbgen
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        # Note: every override below uses the structured form. Mixing the
+        # shorthand ("pkg/path.Type") and structured forms for the same package
+        # makes sqlc emit the import twice, which will not compile.
+        overrides:
+          # Money. NUMERIC must never become a float type — shopspring/decimal
+          # is exact, and pgx is taught to scan it in internal/db/db.go.
+          - db_type: "pg_catalog.numeric"
+            go_type:
+              import: "github.com/shopspring/decimal"
+              package: "decimal"
+              type: "Decimal"
+          - db_type: "pg_catalog.numeric"
+            nullable: true
+            go_type:
+              import: "github.com/shopspring/decimal"
+              package: "decimal"
+              type: "NullDecimal"
+
+          # UUIDs as google/uuid rather than pgtype.UUID, so handlers and
+          # domain code deal in a plain comparable value.
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              package: "uuid"
+              type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/google/uuid"
+              package: "uuid"
+              type: "UUID"
+              pointer: true
+
+          # Timestamps as time.Time / *time.Time instead of pgtype wrappers.
+          #
+          # The "stdtime" alias is deliberate and load-bearing. sqlc emits its
+          # own stdlib `"time"` import whenever a column maps to time.Time; if
+          # the override also declares package "time", the file ends up with
+          # `"time"` and `time "time"` and will not compile ("time redeclared").
+          # Aliasing sidesteps that: only `stdtime "time"` is emitted, and
+          # stdtime.Time is the identical type, so callers still see time.Time.
+          # Do not "simplify" this back to package: "time".
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              package: "stdtime"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              package: "stdtime"
+              type: "Time"
+              pointer: true
+          - db_type: "date"
+            go_type:
+              import: "time"
+              package: "stdtime"
+              type: "Time"
+          - db_type: "date"
+            nullable: true
+            go_type:
+              import: "time"
+              package: "stdtime"
+              type: "Time"
+              pointer: true
