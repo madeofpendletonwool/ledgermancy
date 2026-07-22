@@ -5,7 +5,9 @@ import { Wordmark } from './Brand'
 import { api } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
-const NAV = [
+type NavItem = { to: string; label: string; end: boolean }
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/spending', label: 'Spending', end: false },
   { to: '/net-worth', label: 'Net worth', end: false },
@@ -15,6 +17,21 @@ const NAV = [
   { to: '/alerts', label: 'Alerts', end: false },
   { to: '/household', label: 'Household', end: false },
 ]
+
+// The assistant tab only appears when an AI provider is configured; slotted in
+// after Report so it sits with the other insight-y views.
+function useNavItems(): NavItem[] {
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
+  if (!capabilities.data?.ai_enabled) return NAV
+  const items = [...NAV]
+  const at = items.findIndex((i) => i.to === '/alerts')
+  items.splice(at, 0, { to: '/assistant', label: 'Assistant', end: false })
+  return items
+}
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3 py-1.5 text-sm transition ${
@@ -28,6 +45,7 @@ export function AppLayout() {
   const logout = useLogout()
   const navigate = useNavigate()
   const location = useLocation()
+  const navItems = useNavItems()
   const [menuOpen, setMenuOpen] = useState(false)
 
   // Close the mobile drawer whenever the route changes so it never lingers
@@ -43,7 +61,7 @@ export function AppLayout() {
           <Wordmark />
 
           <nav className="hidden items-center gap-1 lg:flex">
-            {NAV.map((item) => (
+            {navItems.map((item) => (
               <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
                 {item.label}
               </NavLink>
@@ -106,7 +124,7 @@ export function AppLayout() {
             className="border-t border-white/10 bg-ink-950/70 px-4 py-3 backdrop-blur-xl lg:hidden"
           >
             <div className="mx-auto flex max-w-6xl flex-col gap-1">
-              {NAV.map((item) => (
+              {navItems.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}

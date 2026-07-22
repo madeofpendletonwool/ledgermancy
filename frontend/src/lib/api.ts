@@ -330,6 +330,12 @@ export interface Capabilities {
   ai_enabled: boolean
 }
 
+/** One turn in a chatbot conversation. */
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
 export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter
@@ -575,6 +581,9 @@ export const api = {
       'POST',
       withQuery('/api/reports/monthly-summary', { month }),
     ),
+
+  chat: (messages: ChatTurn[]) =>
+    request<{ reply: string }>('POST', '/api/chat', { messages }),
 }
 
 // Generic rather than Record<string, unknown>: an interface without an index

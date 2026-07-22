@@ -4,6 +4,7 @@ import { AppLayout } from './components/AppLayout'
 import { Sigil } from './components/Brand'
 import { Accounts } from './routes/Accounts'
 import { Alerts } from './routes/Alerts'
+import { Assistant } from './routes/Assistant'
 import { Dashboard } from './routes/Dashboard'
 import { Household } from './routes/Household'
 import { Transactions } from './routes/Transactions'
@@ -48,6 +49,7 @@ export default function App() {
         <Route path="/report" element={<Report />} />
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/alerts" element={<Alerts />} />
+        <Route path="/assistant" element={<Assistant />} />
         <Route path="/household" element={<Household />} />
       </Route>
 

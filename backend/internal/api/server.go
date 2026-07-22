@@ -193,6 +193,7 @@ func (s *Server) Routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/capabilities", s.handleCapabilities)
+			r.Post("/chat", s.handleChat)
 		})
 
 		r.Route("/alerts", func(r chi.Router) {
