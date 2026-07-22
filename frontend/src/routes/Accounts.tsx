@@ -80,15 +80,18 @@ function InstitutionCard({
             {item.history_days !== null && ` · ${item.history_days} days of history`}
           </p>
           {/* Plaid fixes an Item's history window at link time and it cannot be
-              widened later, so a short span is flagged while relinking is still
-              the remedy. */}
+              widened later, so a short span is worth flagging. Relinking is only
+              a remedy when the institution itself offers more, though: some hard-
+              cap what they share regardless (Capital One, for example, allows only
+              90 days), so the note stops short of promising relinking will help. */}
           {item.backfill_complete &&
             item.history_days !== null &&
             item.history_days < 330 && (
               <p className="mt-1 text-xs text-rune-300">
-                Only {item.history_days} days of history — under a year. Plaid fixes
-                this window when an account is linked, so unlink and relink to try
-                for more.
+                Only {item.history_days} days of history — under a year. Some
+                institutions limit how far back they share (Capital One, for
+                example, caps at 90 days), and there this is expected. Otherwise,
+                unlinking and relinking may pull more.
               </p>
             )}
         </div>
