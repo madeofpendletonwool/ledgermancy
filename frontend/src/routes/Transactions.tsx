@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { api, type Transaction } from '../lib/api'
+import { api, type Account, type Transaction } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
 
 const PAGE_SIZE = 50
@@ -21,12 +21,21 @@ export function Transactions() {
 
   const [from, setFrom] = useState(yearAgo)
   const [to, setTo] = useState(today)
+  const [accountID, setAccountID] = useState('') // '' = all accounts
   const [page, setPage] = useState(0)
 
+  const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
+
   const transactions = useQuery({
-    queryKey: ['transactions', from, to, page],
+    queryKey: ['transactions', from, to, accountID, page],
     queryFn: () =>
-      api.transactions({ from, to, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+      api.transactions({
+        from,
+        to,
+        account_id: accountID,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      }),
     // Keeps the previous page on screen while the next loads, so paging does
     // not flash an empty table.
     placeholderData: keepPreviousData,
@@ -75,6 +84,33 @@ export function Transactions() {
             }}
           />
         </div>
+        <div>
+          <label className="label" htmlFor="account">
+            Account
+          </label>
+          <select
+            id="account"
+            className="field"
+            value={accountID}
+            onChange={(e) => {
+              setAccountID(e.target.value)
+              setPage(0)
+            }}
+          >
+            <option value="">All accounts</option>
+            {groupByInstitution(accounts.data ?? []).map(([institution, accts]) => (
+              <optgroup key={institution} label={institution}>
+                {accts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.mask ? ` ••${a.mask}` : ''}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+
         <p className="ml-auto text-sm text-mist-500">
           {transactions.isFetching ? 'Loading…' : `${rows.length} shown`}
         </p>
@@ -113,6 +149,18 @@ export function Transactions() {
       </div>
     </div>
   )
+}
+
+/** Groups accounts by institution for the filter dropdown's optgroups. */
+function groupByInstitution(accounts: Account[]): [string, Account[]][] {
+  const groups = new Map<string, Account[]>()
+  for (const a of accounts) {
+    const key = a.institution_name ?? 'Other'
+    const list = groups.get(key)
+    if (list) list.push(a)
+    else groups.set(key, [a])
+  }
+  return [...groups.entries()]
 }
 
 function TransactionRow({ transaction: t }: { transaction: Transaction }) {

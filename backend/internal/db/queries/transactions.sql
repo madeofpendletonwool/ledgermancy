@@ -61,5 +61,6 @@ WHERE u.household_id = $1
   AND NOT t.excluded_from_reports
   AND t.date >= $3
   AND t.date <= $4
+  AND (sqlc.narg('account_id')::uuid IS NULL OR t.account_id = sqlc.narg('account_id')::uuid)
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6;

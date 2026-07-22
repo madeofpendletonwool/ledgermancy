@@ -432,6 +432,68 @@ func (q *Queries) GetSpendingByCategory(ctx context.Context, arg GetSpendingByCa
 	return items, nil
 }
 
+const getSpendingByDay = `-- name: GetSpendingByDay :many
+SELECT
+    t.date::date AS day,
+    COALESCE(SUM(t.amount) FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
+                                     AND NOT COALESCE(c.is_transfer, FALSE)
+                                     AND t.amount > 0), 0)::numeric AS spending
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+GROUP BY t.date
+ORDER BY t.date
+`
+
+type GetSpendingByDayParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+}
+
+type GetSpendingByDayRow struct {
+	Day      stdtime.Time    `json:"day"`
+	Spending decimal.Decimal `json:"spending"`
+}
+
+// Spending per calendar day across a range. Drives the dashboard's
+// "this month, by day" chart. Same spend definition as everywhere else:
+// money out (amount > 0), excluding income and transfers. Only days with
+// spending appear; the frontend fills the empty days across the month.
+func (q *Queries) GetSpendingByDay(ctx context.Context, arg GetSpendingByDayParams) ([]GetSpendingByDayRow, error) {
+	rows, err := q.db.Query(ctx, getSpendingByDay,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetSpendingByDayRow{}
+	for rows.Next() {
+		var i GetSpendingByDayRow
+		if err := rows.Scan(&i.Day, &i.Spending); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSpendingSummary = `-- name: GetSpendingSummary :one
 
 WITH visible AS (

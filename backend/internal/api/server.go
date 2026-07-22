@@ -169,6 +169,7 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/summary", s.handleSummary)
 			r.Get("/by-category", s.handleSpendingByCategory)
+			r.Get("/by-day", s.handleSpendingByDay)
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)

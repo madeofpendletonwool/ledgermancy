@@ -106,6 +106,8 @@ export interface TransactionQuery {
   to?: string
   limit?: number
   offset?: number
+  /** Restrict to one account. Empty/omitted means all visible accounts. */
+  account_id?: string
 }
 
 export interface Category {
@@ -153,6 +155,18 @@ export interface TrendPoint {
 
 export interface CategoryAverage extends CategorySpend {
   monthly_average: string
+}
+
+/** One calendar day's spend. `day` is "YYYY-MM-DD". */
+export interface DaySpend {
+  day: string
+  spending: string
+}
+
+export interface MerchantSpend {
+  merchant: string
+  total: string
+  transaction_count: number
 }
 
 export interface BudgetProgress {
@@ -411,6 +425,12 @@ export const api = {
 
   byCategory: (params: PeriodQuery = {}) =>
     request<CategorySpend[]>('GET', withQuery('/api/reports/by-category', params)),
+
+  byDay: (params: PeriodQuery = {}) =>
+    request<DaySpend[]>('GET', withQuery('/api/reports/by-day', params)),
+
+  merchants: (params: PeriodQuery & { limit?: number } = {}) =>
+    request<MerchantSpend[]>('GET', withQuery('/api/reports/merchants', params)),
 
   trend: (params: PeriodQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),

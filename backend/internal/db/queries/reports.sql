@@ -94,6 +94,30 @@ WHERE u.household_id = $1
 GROUP BY 1
 ORDER BY 1;
 
+-- name: GetSpendingByDay :many
+-- Spending per calendar day across a range. Drives the dashboard's
+-- "this month, by day" chart. Same spend definition as everywhere else:
+-- money out (amount > 0), excluding income and transfers. Only days with
+-- spending appear; the frontend fills the empty days across the month.
+SELECT
+    t.date::date AS day,
+    COALESCE(SUM(t.amount) FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
+                                     AND NOT COALESCE(c.is_transfer, FALSE)
+                                     AND t.amount > 0), 0)::numeric AS spending
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+GROUP BY t.date
+ORDER BY t.date;
+
 -- name: GetCategoryAverages :many
 -- Per-category monthly average and annual total — the figures planning needs
 -- ("what do you spend on groceries in a typical month?").

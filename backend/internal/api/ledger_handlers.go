@@ -83,6 +83,16 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	limit := parseInt(q.Get("limit"), 100, 1, 500)
 	offset := parseInt(q.Get("offset"), 0, 0, 1_000_000)
 
+	// Optional account filter. A malformed id is ignored, which reads as "all
+	// accounts"; household/shared scoping in the query means a foreign id
+	// simply matches nothing rather than leaking another household's rows.
+	var accountID *uuid.UUID
+	if v := q.Get("account_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			accountID = &id
+		}
+	}
+
 	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
 		HouseholdID: identity.HouseholdID,
 		UserID:      identity.UserID,
@@ -90,6 +100,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		Date_2:      to,
 		Limit:       int32(limit),
 		Offset:      int32(offset),
+		AccountID:   accountID,
 	})
 	if err != nil {
 		s.internalError(w, "list transactions", err)

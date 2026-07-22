@@ -66,6 +66,7 @@ WHERE u.household_id = $1
   AND NOT t.excluded_from_reports
   AND t.date >= $3
   AND t.date <= $4
+  AND ($7::uuid IS NULL OR t.account_id = $7::uuid)
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6
 `
@@ -77,6 +78,7 @@ type ListVisibleTransactionsParams struct {
 	Date_2      stdtime.Time `json:"date_2"`
 	Limit       int32        `json:"limit"`
 	Offset      int32        `json:"offset"`
+	AccountID   *uuid.UUID   `json:"account_id"`
 }
 
 type ListVisibleTransactionsRow struct {
@@ -115,6 +117,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.Date_2,
 		arg.Limit,
 		arg.Offset,
+		arg.AccountID,
 	)
 	if err != nil {
 		return nil, err

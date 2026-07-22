@@ -122,6 +122,40 @@ func (s *Server) handleSpendingByCategory(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
+type daySpendResponse struct {
+	// Day is a calendar date, "YYYY-MM-DD".
+	Day      string          `json:"day"`
+	Spending decimal.Decimal `json:"spending"`
+}
+
+// handleSpendingByDay returns spend per calendar day for a period, defaulting
+// to the current month. Drives the dashboard's by-day chart. Only days with
+// spending are returned; the frontend fills the empty days across the month.
+func (s *Server) handleSpendingByDay(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+	from, to := period(r)
+
+	rows, err := s.Queries.GetSpendingByDay(r.Context(), dbgen.GetSpendingByDayParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	})
+	if err != nil {
+		s.internalError(w, "spending by day", err)
+		return
+	}
+
+	out := make([]daySpendResponse, 0, len(rows))
+	for _, d := range rows {
+		out = append(out, daySpendResponse{
+			Day:      d.Day.Format(time.DateOnly),
+			Spending: d.Spending,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 type trendPoint struct {
 	Month    string          `json:"month"`
 	Income   decimal.Decimal `json:"income"`
