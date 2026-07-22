@@ -184,6 +184,15 @@ type MerchantCategoryMap struct {
 	UpdatedAt   stdtime.Time        `json:"updated_at"`
 }
 
+type MonthlySummary struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Month       stdtime.Time `json:"month"`
+	Summary     string       `json:"summary"`
+	Model       string       `json:"model"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+}
+
 type NetWorthSnapshot struct {
 	ID               uuid.UUID       `json:"id"`
 	HouseholdID      uuid.UUID       `json:"household_id"`

@@ -354,6 +354,114 @@ func (q *Queries) GetMonthlyTrend(ctx context.Context, arg GetMonthlyTrendParams
 	return items, nil
 }
 
+const getRecurringMerchants = `-- name: GetRecurringMerchants :many
+WITH tx AS (
+    SELECT
+        t.merchant_key,
+        COALESCE(t.merchant_name, t.name) AS merchant,
+        t.date,
+        t.amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.merchant_key IS NOT NULL
+      AND t.amount > 0
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.date >= $3
+),
+gaps AS (
+    SELECT
+        merchant_key,
+        merchant,
+        amount,
+        date - LAG(date) OVER (PARTITION BY merchant_key ORDER BY date) AS gap
+    FROM tx
+),
+agg AS (
+    SELECT
+        merchant_key,
+        COALESCE(MAX(merchant), '')::text                          AS merchant,
+        COUNT(*)                                                   AS n,
+        AVG(amount)                                                AS avg_amount,
+        MAX(date)                                                  AS last_seen,
+        AVG(gap) FILTER (WHERE gap IS NOT NULL)                    AS avg_gap,
+        COALESCE(STDDEV_POP(gap) FILTER (WHERE gap IS NOT NULL), 0) AS gap_stddev
+    FROM gaps
+    GROUP BY merchant_key
+)
+SELECT
+    merchant_key,
+    merchant,
+    n::bigint                       AS occurrences,
+    COALESCE(avg_amount, 0)::numeric AS average_amount,
+    last_seen::date                 AS last_seen,
+    COALESCE(avg_gap, 0)::numeric    AS avg_gap_days
+FROM agg
+WHERE n >= 3
+  AND avg_gap IS NOT NULL
+  AND avg_gap BETWEEN 6 AND 40
+  AND gap_stddev <= avg_gap * 0.5
+ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
+`
+
+type GetRecurringMerchantsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+}
+
+type GetRecurringMerchantsRow struct {
+	MerchantKey   *string         `json:"merchant_key"`
+	Merchant      string          `json:"merchant"`
+	Occurrences   int64           `json:"occurrences"`
+	AverageAmount decimal.Decimal `json:"average_amount"`
+	LastSeen      stdtime.Time    `json:"last_seen"`
+	AvgGapDays    decimal.Decimal `json:"avg_gap_days"`
+}
+
+// Heuristic subscription/recurring detection: a merchant that recurs on a
+// roughly regular weekly-to-monthly cadence. No AI — just the shape of the
+// history. Same spend definition and visibility scoping as every other report.
+//
+// A merchant qualifies when it has at least three charges over the window, the
+// average gap between them is weekly-to-monthly, and those gaps are fairly
+// regular (low spread relative to the mean). COALESCE wraps the averaged
+// columns so they are non-null Go types — the WHERE already guarantees a value.
+func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMerchantsParams) ([]GetRecurringMerchantsRow, error) {
+	rows, err := q.db.Query(ctx, getRecurringMerchants, arg.HouseholdID, arg.UserID, arg.Date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetRecurringMerchantsRow{}
+	for rows.Next() {
+		var i GetRecurringMerchantsRow
+		if err := rows.Scan(
+			&i.MerchantKey,
+			&i.Merchant,
+			&i.Occurrences,
+			&i.AverageAmount,
+			&i.LastSeen,
+			&i.AvgGapDays,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSpendingByCategory = `-- name: GetSpendingByCategory :many
 SELECT
     c.id      AS category_id,

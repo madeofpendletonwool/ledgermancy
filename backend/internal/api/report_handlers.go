@@ -282,3 +282,69 @@ func (s *Server) handleTopMerchants(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// recurringLookback is how far back subscription detection reads. A year is
+// enough to see an annual charge twice and a monthly one many times.
+const recurringLookbackMonths = 12
+
+// daysPerMonth is the average calendar month, used only to normalise a
+// merchant's cadence into an estimated monthly cost for display.
+var daysPerMonth = decimal.NewFromFloat(30.4368)
+
+type recurringResponse struct {
+	Merchant        string          `json:"merchant"`
+	Occurrences     int64           `json:"occurrences"`
+	AverageAmount   decimal.Decimal `json:"average_amount"`
+	AvgGapDays      decimal.Decimal `json:"avg_gap_days"`
+	Cadence         string          `json:"cadence"`
+	MonthlyEstimate decimal.Decimal `json:"monthly_estimate"`
+	LastSeen        string          `json:"last_seen"`
+}
+
+func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+	since := time.Now().AddDate(0, -recurringLookbackMonths, 0)
+
+	rows, err := s.Queries.GetRecurringMerchants(r.Context(), dbgen.GetRecurringMerchantsParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        since,
+	})
+	if err != nil {
+		s.internalError(w, "recurring merchants", err)
+		return
+	}
+
+	out := make([]recurringResponse, 0, len(rows))
+	for _, m := range rows {
+		// Normalise the charge to a monthly figure: amount * (month / gap).
+		var monthly decimal.Decimal
+		if m.AvgGapDays.IsPositive() {
+			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+		}
+		out = append(out, recurringResponse{
+			Merchant:        m.Merchant,
+			Occurrences:     m.Occurrences,
+			AverageAmount:   m.AverageAmount.Round(2),
+			AvgGapDays:      m.AvgGapDays.Round(1),
+			Cadence:         cadenceLabel(m.AvgGapDays),
+			MonthlyEstimate: monthly,
+			LastSeen:        m.LastSeen.Format(time.DateOnly),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// cadenceLabel turns an average day-gap into a human word. The detection query
+// only returns gaps in the 6–40 day band, so three buckets cover it.
+func cadenceLabel(avgGap decimal.Decimal) string {
+	days := avgGap.InexactFloat64()
+	switch {
+	case days < 10:
+		return "weekly"
+	case days < 20:
+		return "every 2 weeks"
+	default:
+		return "monthly"
+	}
+}

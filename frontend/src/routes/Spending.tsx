@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { formatMoney } from '../lib/money'
+import { formatDate, formatMoney } from '../lib/money'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { TrendChart } from '../components/charts/TrendChart'
 import { CHART, STATUS } from '../components/charts/tokens'
@@ -37,6 +37,11 @@ export function Spending() {
   })
   const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
 
   const s = summary.data
 
@@ -107,6 +112,12 @@ export function Spending() {
           />
         </div>
       )}
+
+      {capabilities.data?.ai_enabled && (
+        <MonthlySummaryCard month={month.value} label={month.label} />
+      )}
+
+      <RecurringSection />
 
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">By category</h2>
@@ -248,4 +259,123 @@ function SplitTile({
 
 function Loading() {
   return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
+}
+
+// MonthlySummaryCard shows the AI-written recap for the selected month, cached
+// server-side. It only mounts when AI is enabled (the parent gates on it).
+function MonthlySummaryCard({ month, label }: { month: string; label: string }) {
+  const qc = useQueryClient()
+  const summary = useQuery({
+    queryKey: ['monthly-summary', month],
+    queryFn: () => api.monthlySummary(month),
+  })
+
+  const generate = useMutation({
+    mutationFn: () => api.generateMonthlySummary(month),
+    onSuccess: (data) => qc.setQueryData(['monthly-summary', month], data),
+  })
+
+  const text = summary.data?.summary
+  const busy = generate.isPending
+
+  return (
+    <section className="glass p-6">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-medium">Monthly recap</h2>
+          <p className="text-sm text-mist-300">{label}, in plain English</p>
+        </div>
+        <button
+          className="btn-ghost shrink-0 px-3 py-1.5 text-sm"
+          disabled={busy}
+          onClick={() => generate.mutate()}
+        >
+          {busy ? 'Writing…' : text ? 'Regenerate' : 'Generate'}
+        </button>
+      </div>
+
+      {generate.isError && (
+        <p role="alert" className="mt-4 text-sm text-ember-400">
+          {generate.error.message}
+        </p>
+      )}
+
+      <div className="mt-4">
+        {summary.isPending ? (
+          <Loading />
+        ) : text ? (
+          <p className="leading-relaxed text-mist-100">{text}</p>
+        ) : (
+          <p className="text-sm text-mist-500">
+            No recap yet. Generate one to see the month at a glance.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// RecurringSection lists detected subscriptions and regular bills, with each
+// charge normalised to a monthly figure (computed server-side — never summed
+// here).
+function RecurringSection() {
+  const recurring = useQuery({ queryKey: ['recurring'], queryFn: api.recurring })
+  const rows = recurring.data ?? []
+
+  return (
+    <section className="glass overflow-hidden">
+      <div className="px-6 pt-6">
+        <h2 className="text-lg font-medium">Recurring &amp; subscriptions</h2>
+        <p className="mt-1 mb-5 text-sm text-mist-300">
+          Merchants that charge you on a regular cadence, detected from the last
+          year of activity.
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-y border-white/5 text-left text-xs text-mist-500">
+              <th className="px-6 py-2.5 font-medium">Merchant</th>
+              <th className="px-6 py-2.5 font-medium">Cadence</th>
+              <th className="px-6 py-2.5 text-right font-medium">Typical</th>
+              <th className="px-6 py-2.5 text-right font-medium">~ / month</th>
+              <th className="px-6 py-2.5 text-right font-medium">Last seen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {rows.map((m) => (
+              <tr key={m.merchant}>
+                <td className="px-6 py-2.5">{m.merchant}</td>
+                <td className="px-6 py-2.5 text-mist-300">{m.cadence}</td>
+                <td className="tabular px-6 py-2.5 text-right">
+                  {formatMoney(m.average_amount)}
+                </td>
+                <td className="tabular px-6 py-2.5 text-right text-mist-300">
+                  {formatMoney(m.monthly_estimate)}
+                </td>
+                <td className="tabular px-6 py-2.5 text-right text-mist-500">
+                  {formatDate(m.last_seen)}
+                </td>
+              </tr>
+            ))}
+            {!recurring.isPending && rows.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-mist-500">
+                  No recurring charges detected yet.
+                </td>
+              </tr>
+            )}
+            {recurring.isPending && (
+              <tr>
+                <td colSpan={5} className="px-6 py-8 text-center text-mist-500">
+                  Loading…
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
 }

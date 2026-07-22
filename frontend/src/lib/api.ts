@@ -303,6 +303,33 @@ export interface AlertEvent {
   read: boolean
 }
 
+/** A detected recurring charge (subscription/bill). Amounts are decimal strings. */
+export interface RecurringMerchant {
+  merchant: string
+  occurrences: number
+  average_amount: string
+  avg_gap_days: string
+  /** weekly | every 2 weeks | monthly */
+  cadence: string
+  /** Charge normalised to a per-month figure, computed server-side. */
+  monthly_estimate: string
+  last_seen: string
+}
+
+/** The AI monthly recap. summary is null when none has been generated yet. */
+export interface MonthlySummary {
+  month: string
+  label: string
+  summary: string | null
+  model?: string
+  generated_at?: string
+}
+
+/** Optional-feature flags so the UI hides AI surfaces when no key is set. */
+export interface Capabilities {
+  ai_enabled: boolean
+}
+
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
 export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter
@@ -530,6 +557,24 @@ export const api = {
     request<void>('POST', `/api/alerts/events/${id}/read`),
 
   markAllAlertsRead: () => request<void>('POST', '/api/alerts/events/read-all'),
+
+  // --- Insights -----------------------------------------------------------
+  capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
+
+  recurring: () =>
+    request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
+
+  monthlySummary: (month: string) =>
+    request<MonthlySummary>(
+      'GET',
+      withQuery('/api/reports/monthly-summary', { month }),
+    ),
+
+  generateMonthlySummary: (month: string) =>
+    request<MonthlySummary>(
+      'POST',
+      withQuery('/api/reports/monthly-summary', { month }),
+    ),
 }
 
 // Generic rather than Record<string, unknown>: an interface without an index

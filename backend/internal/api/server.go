@@ -185,6 +185,14 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)
+			r.Get("/recurring", s.handleRecurring)
+			r.Get("/monthly-summary", s.handleGetMonthlySummary)
+			r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/capabilities", s.handleCapabilities)
 		})
 
 		r.Route("/alerts", func(r chi.Router) {
