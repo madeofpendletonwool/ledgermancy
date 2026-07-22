@@ -22,6 +22,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/jobs"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
+	"github.com/apex42group/ledgermancy/backend/internal/ratelimit"
 )
 
 // Server holds the dependencies every handler needs.
@@ -38,18 +39,54 @@ type Server struct {
 	Syncer  *plaid.Syncer
 	Jobs    *river.Client[pgx.Tx]
 	AI      *ai.Client
+
+	// Rate limiters, held on the Server so successful logins can reset the
+	// caller's counter rather than punishing someone who mistyped once.
+	loginLimiter    *ratelimit.Limiter
+	registerLimiter *ratelimit.Limiter
+	accountLimiter  *ratelimit.Limiter
+	generalLimiter  *ratelimit.Limiter
 }
+
+// Rate limits. Login and registration are the endpoints worth guessing at, so
+// they get tight budgets; the general limit is a blunt backstop that a normal
+// session never approaches.
+const (
+	// Everyone in a household shares one public address, so this budget is
+	// shared between them. It is set above what two people fumbling passwords
+	// would hit, because the precise per-account defence is the durable
+	// exponential backoff in handleLogin — this limit only needs to stop
+	// automated volume, and 20 tries per 15 minutes is nowhere near enough to
+	// threaten a 12-character password.
+	loginAttemptsPerWindow = 20
+	loginWindow            = 15 * time.Minute
+
+	registerAttemptsPerWindow = 5
+	registerWindow            = time.Hour
+
+	// Covers password changes and MFA enrolment: authenticated, but each one
+	// is a step towards taking an account over if guessed.
+	accountAttemptsPerWindow = 20
+	accountWindow            = time.Hour
+
+	generalRequestsPerWindow = 300
+	generalWindow            = time.Minute
+)
 
 // NewServer builds a Server from an open connection pool. The AI client is
 // always constructed; when no API key is configured it is simply disabled, so
 // handlers gate on s.AI.Enabled() rather than a nil check.
 func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Server {
 	return &Server{
-		Config:  cfg,
-		Pool:    pool,
-		Queries: dbgen.New(pool),
-		Cipher:  cipher,
-		AI:      ai.New(cfg.AI),
+		Config:          cfg,
+		Pool:            pool,
+		Queries:         dbgen.New(pool),
+		Cipher:          cipher,
+		AI:              ai.New(cfg.AI),
+		loginLimiter:    ratelimit.New(loginAttemptsPerWindow, loginWindow),
+		registerLimiter: ratelimit.New(registerAttemptsPerWindow, registerWindow),
+		accountLimiter:  ratelimit.New(accountAttemptsPerWindow, accountWindow),
+		generalLimiter:  ratelimit.New(generalRequestsPerWindow, generalWindow),
 	}
 }
 
@@ -70,10 +107,20 @@ func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+
+	// RealIP rewrites RemoteAddr from True-Client-IP / X-Real-IP /
+	// X-Forwarded-For — headers any client can send. Mounting it
+	// unconditionally would mean an attacker picks their own apparent address
+	// and every IP-based rate limit below becomes decorative. It goes on only
+	// when the operator has declared a sanitising proxy really is in front.
+	if s.Config.TrustProxyHeaders {
+		r.Use(middleware.RealIP)
+	}
+
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger)
 	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(s.securityHeaders)
 	r.Use(s.cors)
 
 	// Liveness/readiness. Deliberately outside /api and unauthenticated so
@@ -88,18 +135,50 @@ func (s *Server) Routes() http.Handler {
 	authMW := auth.Middleware{Queries: s.Queries, Secret: s.Config.SessionSecret}
 
 	r.Route("/api", func(r chi.Router) {
+		r.Use(s.generalLimiter.Middleware)
 		r.Use(auth.RequireCSRF)
 
 		r.Route("/auth", func(r chi.Router) {
 			// Bootstraps the CSRF cookie for clients that do not have one yet.
 			r.Get("/csrf", s.handleCSRFToken)
-			r.Post("/register", s.handleRegister)
-			r.Post("/login", s.handleLogin)
 			r.Post("/logout", s.handleLogout)
+
+			// Unauthenticated and guessable: the two places where knowing a
+			// secret gets you in. Both are throttled per IP, and login is
+			// additionally backed by durable per-account lockout.
+			r.Group(func(r chi.Router) {
+				r.Use(s.loginLimiter.Middleware)
+				r.Post("/login", s.handleLogin)
+				r.Post("/mfa/verify", s.handleMFAVerify)
+			})
+
+			r.Group(func(r chi.Router) {
+				r.Use(s.registerLimiter.Middleware)
+				r.Post("/register", s.handleRegister)
+			})
 
 			r.Group(func(r chi.Router) {
 				r.Use(authMW.Authenticate)
 				r.Get("/me", s.handleMe)
+
+				r.Get("/sessions", s.handleListSessions)
+				r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
+				r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
+				r.Get("/events", s.handleListAuthEvents)
+
+				r.Get("/mfa", s.handleMFAStatus)
+
+				// Changing a password or a second factor is account takeover
+				// if guessed, so these carry their own budget on top of the
+				// password/code each one already demands.
+				r.Group(func(r chi.Router) {
+					r.Use(s.accountLimiter.Middleware)
+					r.Post("/password", s.handleChangePassword)
+					r.Post("/mfa/setup", s.handleMFASetup)
+					r.Post("/mfa/activate", s.handleMFAActivate)
+					r.Post("/mfa/disable", s.handleMFADisable)
+					r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+				})
 			})
 		})
 

@@ -19,6 +19,61 @@ export interface User {
   display_name: string
 }
 
+/**
+ * Login stopped at the second factor. Deliberately carries no user detail —
+ * nothing about the account is readable until both factors are satisfied.
+ */
+export interface MFARequired {
+  mfa_required: true
+}
+
+export type LoginResult = User | MFARequired
+
+/** Narrows a login result; `mfa_required` is only ever present on the challenge. */
+export function isMFARequired(result: LoginResult): result is MFARequired {
+  return 'mfa_required' in result
+}
+
+export interface MFAStatus {
+  enabled: boolean
+  confirmed_at: string | null
+  recovery_codes_remaining: number
+  /** A secret exists but was never confirmed, so setup can be resumed. */
+  setup_pending: boolean
+}
+
+export interface MFASetup {
+  /** Inline PNG data URI. Rendered server-side so no QR library ships here. */
+  qr_png: string
+  /** Base32, for typing in by hand when a camera is not an option. */
+  secret: string
+  account: string
+}
+
+export interface RecoveryCodes {
+  /** Returned exactly once. Only hashes are stored, so these cannot be re-read. */
+  recovery_codes: string[]
+}
+
+export interface ActiveSession {
+  id: string
+  user_agent: string | null
+  client_ip: string | null
+  last_used_at: string
+  expires_at: string
+  created_at: string
+  /** The browser making this request. */
+  is_current: boolean
+}
+
+export interface AuthEvent {
+  event_type: string
+  client_ip: string | null
+  user_agent: string | null
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
 export interface Household {
   id: string
   name: string
@@ -420,11 +475,50 @@ export const api = {
   }) => request<User>('POST', '/api/auth/register', input),
 
   login: (input: { email: string; password: string }) =>
-    request<User>('POST', '/api/auth/login', input),
+    request<LoginResult>('POST', '/api/auth/login', input),
 
   logout: () => request<void>('POST', '/api/auth/logout'),
 
   me: () => request<User>('GET', '/api/auth/me'),
+
+  // --- Security ------------------------------------------------------------
+  // The second step of a login. It needs no token from us: the challenge rides
+  // in an httpOnly cookie the browser sends automatically, so a script on this
+  // page cannot read or forward a half-completed sign-in.
+  verifyMFA: (input: { code?: string; recovery_code?: string }) =>
+    request<LoginResult>('POST', '/api/auth/mfa/verify', input),
+
+  mfaStatus: () => request<MFAStatus>('GET', '/api/auth/mfa'),
+
+  // The password is required again on every one of these. Holding a session is
+  // not authority to change the factors that guard the account.
+  mfaSetup: (password: string) =>
+    request<MFASetup>('POST', '/api/auth/mfa/setup', { password }),
+
+  mfaActivate: (code: string) =>
+    request<RecoveryCodes>('POST', '/api/auth/mfa/activate', { code }),
+
+  mfaDisable: (password: string, code: string) =>
+    request<void>('POST', '/api/auth/mfa/disable', { password, code }),
+
+  regenerateRecoveryCodes: (password: string) =>
+    request<RecoveryCodes>('POST', '/api/auth/mfa/recovery-codes', { password }),
+
+  changePassword: (input: {
+    current_password: string
+    new_password: string
+    code?: string
+  }) => request<void>('POST', '/api/auth/password', input),
+
+  sessions: () => request<ActiveSession[]>('GET', '/api/auth/sessions'),
+
+  revokeSession: (id: string) =>
+    request<void>('DELETE', `/api/auth/sessions/${id}`),
+
+  revokeOtherSessions: () =>
+    request<void>('POST', '/api/auth/sessions/revoke-others'),
+
+  authEvents: () => request<AuthEvent[]>('GET', '/api/auth/events'),
 
   household: () => request<Household>('GET', '/api/household/'),
 

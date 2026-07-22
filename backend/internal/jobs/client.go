@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/apex42group/ledgermancy/backend/internal/ai"
+	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
@@ -41,6 +42,16 @@ const llmSweepInterval = 15 * time.Minute
 // independently of syncs, so a budget crossing the calendar rolls into or a
 // quiet household still surfaces. Evaluation is cheap deterministic SQL.
 const alertSweepInterval = 30 * time.Minute
+
+// securitySweepInterval is how often expired auth state is collected. Nothing
+// depends on it being prompt — every read path already filters on expiry — so
+// this is tuned to keep tables tidy, not to enforce anything.
+const securitySweepInterval = 6 * time.Hour
+
+// authEventRetention is how long the auth audit log is kept. Long enough to
+// investigate something noticed weeks later; short enough that a household
+// deployment never accumulates a table worth worrying about.
+const authEventRetention = 180 * 24 * time.Hour
 
 // NewInsertOnlyClient builds a client that can enqueue jobs but never executes
 // them. The api uses this: it should hand work to the worker, not do it.
@@ -72,9 +83,21 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register alerts worker: %w", err)
 	}
 
+	// Housekeeping for expired sessions, abandoned MFA challenges and old audit
+	// rows. Like the snapshot, it has nothing to do with Plaid, so it runs
+	// whether or not credentials are configured.
+	if err := river.AddWorkerSafely(workers, &SecuritySweepWorker{
+		Queries:      queries,
+		IdleTTL:      auth.SessionIdleTTL,
+		AuthEventTTL: authEventRetention,
+	}); err != nil {
+		return nil, fmt.Errorf("register security sweep worker: %w", err)
+	}
+
 	// The per-household categorise worker only needs the AI client and queries,
 	// so it is registered before construction. The sweep that enqueues it needs
-	// the client and is registered afterwards.
+	// the client and is registered afterwards. SyncItemWorker is registered
+	// after the client exists too, so it can enqueue follow-up work.
 	if aiEnabled {
 		if err := river.AddWorkerSafely(workers, &LLMCategoriseWorker{Queries: queries, AI: aiClient}); err != nil {
 			return nil, fmt.Errorf("register llm categorise worker: %w", err)
@@ -105,6 +128,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(alertSweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return EvaluateAlertsAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(securitySweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SecuritySweepArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),

@@ -13,6 +13,7 @@ import { NetWorth } from './routes/NetWorth'
 import { Spending } from './routes/Spending'
 import { Register } from './routes/Register'
 import { Report } from './routes/Report'
+import { Security } from './routes/Security'
 import { useSession } from './lib/session'
 
 export default function App() {
@@ -51,6 +52,7 @@ export default function App() {
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/assistant" element={<Assistant />} />
         <Route path="/household" element={<Household />} />
+        <Route path="/security" element={<Security />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

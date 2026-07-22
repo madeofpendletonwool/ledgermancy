@@ -5,10 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 )
@@ -20,16 +23,34 @@ type Identity struct {
 	Email       string
 	DisplayName string
 	SessionID   uuid.UUID
+	// TokenHash identifies the caller's own session row. Handlers that revoke
+	// "every session except this one" need it, and it is already computed
+	// during authentication — recomputing it later would mean re-reading a
+	// cookie the handler should not have to know about.
+	TokenHash string
 }
 
 type contextKey struct{}
 
 var identityKey contextKey
 
+// SessionIdleTTL is how long a session survives without being used.
+//
+// It sits underneath config.SessionTTL, which is the absolute cap: a session
+// dies after 30 days no matter what, or after 7 days of silence. The idle cap
+// is what limits a session forgotten on a borrowed or stolen machine.
+const SessionIdleTTL = 7 * 24 * time.Hour
+
+// sessionTouchInterval is how stale last_used_at must be before the middleware
+// writes to it. Recording activity on literally every request would turn every
+// read into a database write for no extra safety.
+const sessionTouchInterval = 5 * time.Minute
+
 // SessionLookup is the slice of the data layer the middleware needs. Keeping
 // it narrow lets tests supply a stub instead of a live database.
 type SessionLookup interface {
-	GetSessionUser(ctx context.Context, tokenHash string) (dbgen.GetSessionUserRow, error)
+	GetSessionUser(ctx context.Context, arg dbgen.GetSessionUserParams) (dbgen.GetSessionUserRow, error)
+	TouchSession(ctx context.Context, arg dbgen.TouchSessionParams) error
 }
 
 // Middleware resolves the session cookie into an Identity.
@@ -59,12 +80,29 @@ func (m Middleware) identify(r *http.Request) (Identity, error) {
 		return Identity{}, errors.New("no session cookie")
 	}
 
-	row, err := m.Queries.GetSessionUser(r.Context(), HashToken(m.Secret, cookie.Value))
+	tokenHash := HashToken(m.Secret, cookie.Value)
+
+	row, err := m.Queries.GetSessionUser(r.Context(), dbgen.GetSessionUserParams{
+		TokenHash: tokenHash,
+		IdleTtl:   Interval(SessionIdleTTL),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Identity{}, errors.New("session not found or expired")
 		}
 		return Identity{}, err
+	}
+
+	// Keep the idle clock alive. This is best effort: a failure here means the
+	// session ages a little faster than it should, which is the safe direction,
+	// and is not worth failing an otherwise valid request over.
+	if time.Since(row.SessionLastUsedAt) >= sessionTouchInterval {
+		if err := m.Queries.TouchSession(r.Context(), dbgen.TouchSessionParams{
+			ID:     row.SessionID,
+			MinAge: Interval(sessionTouchInterval),
+		}); err != nil {
+			slog.Warn("touch session", "error", err, "session_id", row.SessionID)
+		}
 	}
 
 	return Identity{
@@ -73,7 +111,16 @@ func (m Middleware) identify(r *http.Request) (Identity, error) {
 		Email:       row.Email,
 		DisplayName: row.DisplayName,
 		SessionID:   row.SessionID,
+		TokenHash:   tokenHash,
 	}, nil
+}
+
+// Interval converts a Go duration into the pgtype.Interval that sqlc emits for
+// an `::interval` parameter. Postgres intervals carry months and days as
+// separate fields, but microseconds alone expresses any fixed duration exactly,
+// which is all the callers here need.
+func Interval(d time.Duration) pgtype.Interval {
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }
 
 // RequireCSRF enforces the double-submit cookie pattern on unsafe methods: the

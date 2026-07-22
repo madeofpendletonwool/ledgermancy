@@ -9,7 +9,18 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	stdtime "time"
 )
+
+const clearFailedLogins = `-- name: ClearFailedLogins :exec
+UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1
+`
+
+// Called after any successful authentication.
+func (q *Queries) ClearFailedLogins(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearFailedLogins, id)
+	return err
+}
 
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
@@ -27,7 +38,7 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (household_id, email, password_hash, display_name)
 VALUES ($1, lower($2), $3, $4)
-RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at
+RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until
 `
 
 type CreateUserParams struct {
@@ -53,12 +64,18 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabled,
+		&i.TotpConfirmedAt,
+		&i.TotpLastStep,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, household_id, email, password_hash, display_name, created_at, updated_at FROM users WHERE lower(email) = lower($1)
+SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until FROM users WHERE lower(email) = lower($1)
 `
 
 // Matches the lower(email) unique index, so lookups are case-insensitive.
@@ -73,12 +90,18 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabled,
+		&i.TotpConfirmedAt,
+		&i.TotpLastStep,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, household_id, email, password_hash, display_name, created_at, updated_at FROM users WHERE id = $1
+SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -92,8 +115,45 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabled,
+		&i.TotpConfirmedAt,
+		&i.TotpLastStep,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
 	)
 	return i, err
+}
+
+const lockUser = `-- name: LockUser :exec
+UPDATE users SET locked_until = $2 WHERE id = $1
+`
+
+type LockUserParams struct {
+	ID          uuid.UUID     `json:"id"`
+	LockedUntil *stdtime.Time `json:"locked_until"`
+}
+
+func (q *Queries) LockUser(ctx context.Context, arg LockUserParams) error {
+	_, err := q.db.Exec(ctx, lockUser, arg.ID, arg.LockedUntil)
+	return err
+}
+
+const recordFailedLogin = `-- name: RecordFailedLogin :one
+UPDATE users
+SET failed_login_count = failed_login_count + 1
+WHERE id = $1
+RETURNING failed_login_count
+`
+
+// Bumps the durable failure counter and returns it so the caller can decide
+// how long to lock for. Counting in the database rather than in process memory
+// means a restart does not hand an attacker a fresh budget.
+func (q *Queries) RecordFailedLogin(ctx context.Context, id uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, recordFailedLogin, id)
+	var failed_login_count int32
+	err := row.Scan(&failed_login_count)
+	return failed_login_count, err
 }
 
 const updateUserPassword = `-- name: UpdateUserPassword :exec
@@ -111,7 +171,7 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 }
 
 const updateUserProfile = `-- name: UpdateUserProfile :one
-UPDATE users SET display_name = $2 WHERE id = $1 RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at
+UPDATE users SET display_name = $2 WHERE id = $1 RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until
 `
 
 type UpdateUserProfileParams struct {
@@ -130,6 +190,12 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabled,
+		&i.TotpConfirmedAt,
+		&i.TotpLastStep,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
 	)
 	return i, err
 }

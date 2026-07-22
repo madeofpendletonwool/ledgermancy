@@ -16,6 +16,7 @@ const NAV: NavItem[] = [
   { to: '/report', label: 'Report', end: false },
   { to: '/alerts', label: 'Alerts', end: false },
   { to: '/household', label: 'Household', end: false },
+  { to: '/security', label: 'Security', end: false },
 ]
 
 // The assistant tab only appears when an AI provider is configured; slotted in

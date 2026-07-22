@@ -9,19 +9,21 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	stdtime "time"
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (user_id, token_hash, user_agent, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, user_id, token_hash, user_agent, expires_at, created_at
+INSERT INTO sessions (user_id, token_hash, user_agent, client_ip, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, user_id, token_hash, user_agent, expires_at, created_at, last_used_at, client_ip
 `
 
 type CreateSessionParams struct {
 	UserID    uuid.UUID    `json:"user_id"`
 	TokenHash string       `json:"token_hash"`
 	UserAgent *string      `json:"user_agent"`
+	ClientIp  *string      `json:"client_ip"`
 	ExpiresAt stdtime.Time `json:"expires_at"`
 }
 
@@ -30,6 +32,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.UserID,
 		arg.TokenHash,
 		arg.UserAgent,
+		arg.ClientIp,
 		arg.ExpiresAt,
 	)
 	var i Session
@@ -40,16 +43,41 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.UserAgent,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.ClientIp,
 	)
 	return i, err
 }
 
 const deleteExpiredSessions = `-- name: DeleteExpiredSessions :execrows
-DELETE FROM sessions WHERE expires_at <= now()
+DELETE FROM sessions
+WHERE expires_at <= now()
+   OR last_used_at < now() - $1::interval
 `
 
-func (q *Queries) DeleteExpiredSessions(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExpiredSessions)
+// Covers both caps, so idle-expired rows are collected too.
+func (q *Queries) DeleteExpiredSessions(ctx context.Context, idleTtl pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredSessions, idleTtl)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteOtherUserSessions = `-- name: DeleteOtherUserSessions :execrows
+DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2
+`
+
+type DeleteOtherUserSessionsParams struct {
+	UserID    uuid.UUID `json:"user_id"`
+	TokenHash string    `json:"token_hash"`
+}
+
+// Logs a user out everywhere except the browser they are currently using.
+// Used after enabling MFA and after a password change, where the point is to
+// evict anyone else without making the user sign in again themselves.
+func (q *Queries) DeleteOtherUserSessions(ctx context.Context, arg DeleteOtherUserSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOtherUserSessions, arg.UserID, arg.TokenHash)
 	if err != nil {
 		return 0, err
 	}
@@ -63,6 +91,26 @@ DELETE FROM sessions WHERE token_hash = $1
 func (q *Queries) DeleteSession(ctx context.Context, tokenHash string) error {
 	_, err := q.db.Exec(ctx, deleteSession, tokenHash)
 	return err
+}
+
+const deleteSessionByID = `-- name: DeleteSessionByID :execrows
+DELETE FROM sessions WHERE id = $1 AND user_id = $2
+`
+
+type DeleteSessionByIDParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// user_id is part of the predicate, so a caller cannot revoke someone else's
+// session even with a valid id. execrows lets the handler tell "not yours"
+// from "deleted" without a second query.
+func (q *Queries) DeleteSessionByID(ctx context.Context, arg DeleteSessionByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSessionByID, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteUserSessions = `-- name: DeleteUserSessions :exec
@@ -79,37 +127,115 @@ const getSessionUser = `-- name: GetSessionUser :one
 SELECT
     s.id           AS session_id,
     s.expires_at   AS session_expires_at,
+    s.last_used_at AS session_last_used_at,
     u.id           AS user_id,
     u.household_id,
     u.email,
     u.display_name
 FROM sessions s
 JOIN users u ON u.id = s.user_id
-WHERE s.token_hash = $1 AND s.expires_at > now()
+WHERE s.token_hash = $1
+  AND s.expires_at > now()
+  AND s.last_used_at > now() - $2::interval
 `
 
+type GetSessionUserParams struct {
+	TokenHash string          `json:"token_hash"`
+	IdleTtl   pgtype.Interval `json:"idle_ttl"`
+}
+
 type GetSessionUserRow struct {
-	SessionID        uuid.UUID    `json:"session_id"`
-	SessionExpiresAt stdtime.Time `json:"session_expires_at"`
-	UserID           uuid.UUID    `json:"user_id"`
-	HouseholdID      uuid.UUID    `json:"household_id"`
-	Email            string       `json:"email"`
-	DisplayName      string       `json:"display_name"`
+	SessionID         uuid.UUID    `json:"session_id"`
+	SessionExpiresAt  stdtime.Time `json:"session_expires_at"`
+	SessionLastUsedAt stdtime.Time `json:"session_last_used_at"`
+	UserID            uuid.UUID    `json:"user_id"`
+	HouseholdID       uuid.UUID    `json:"household_id"`
+	Email             string       `json:"email"`
+	DisplayName       string       `json:"display_name"`
 }
 
 // Resolves a cookie token straight to the authenticated user in one round
-// trip. Expired sessions are filtered out here rather than in Go so there is
-// no window where a stale session authenticates a request.
-func (q *Queries) GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error) {
-	row := q.db.QueryRow(ctx, getSessionUser, tokenHash)
+// trip. Both expiry checks live in the SQL rather than in Go so there is no
+// window where a stale session authenticates a request:
+//
+//	expires_at   — the absolute cap, set at login (30 days)
+//	last_used_at — the idle cap, so an abandoned session dies sooner
+func (q *Queries) GetSessionUser(ctx context.Context, arg GetSessionUserParams) (GetSessionUserRow, error) {
+	row := q.db.QueryRow(ctx, getSessionUser, arg.TokenHash, arg.IdleTtl)
 	var i GetSessionUserRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.SessionExpiresAt,
+		&i.SessionLastUsedAt,
 		&i.UserID,
 		&i.HouseholdID,
 		&i.Email,
 		&i.DisplayName,
 	)
 	return i, err
+}
+
+const listUserSessions = `-- name: ListUserSessions :many
+SELECT id, user_agent, client_ip, last_used_at, expires_at, created_at
+FROM sessions
+WHERE user_id = $1 AND expires_at > now()
+ORDER BY last_used_at DESC
+`
+
+type ListUserSessionsRow struct {
+	ID         uuid.UUID    `json:"id"`
+	UserAgent  *string      `json:"user_agent"`
+	ClientIp   *string      `json:"client_ip"`
+	LastUsedAt stdtime.Time `json:"last_used_at"`
+	ExpiresAt  stdtime.Time `json:"expires_at"`
+	CreatedAt  stdtime.Time `json:"created_at"`
+}
+
+// Powers the "active sessions" list. Ordered most-recently-used first, which
+// is the order someone scanning for an unfamiliar device wants.
+func (q *Queries) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]ListUserSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listUserSessions, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserSessionsRow{}
+	for rows.Next() {
+		var i ListUserSessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserAgent,
+			&i.ClientIp,
+			&i.LastUsedAt,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const touchSession = `-- name: TouchSession :exec
+UPDATE sessions
+SET last_used_at = now()
+WHERE id = $1
+  AND last_used_at < now() - $2::interval
+`
+
+type TouchSessionParams struct {
+	ID     uuid.UUID       `json:"id"`
+	MinAge pgtype.Interval `json:"min_age"`
+}
+
+// Records activity on a session. The predicate makes this a no-op unless the
+// stored value is already stale, so an active browser does not turn every read
+// request into a database write.
+func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {
+	_, err := q.db.Exec(ctx, touchSession, arg.ID, arg.MinAge)
+	return err
 }

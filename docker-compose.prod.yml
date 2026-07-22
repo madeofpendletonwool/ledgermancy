@@ -24,6 +24,32 @@ services:
   api:
     environment:
       APP_ENV: production
+      # Honour X-Forwarded-For / X-Forwarded-Proto from the frontend container.
+      #
+      # This is safe here and ONLY here. Two things have to be true before
+      # forwarded headers can be trusted, and both hold under this overlay:
+      #
+      #   1. nginx overwrites them. See frontend/nginx.conf — it clears
+      #      True-Client-IP and sets X-Forwarded-For to $remote_addr rather
+      #      than appending, so a client-supplied value never survives.
+      #   2. Nothing can bypass nginx. The `ports: !override []` below removes
+      #      the api's host port entirely, so the frontend container is the
+      #      only thing that can reach it.
+      #
+      # It is deliberately absent from the base compose file, where the api
+      # still publishes a loopback port for the vite dev server and requests
+      # can therefore arrive without passing through nginx at all.
+      #
+      # Without this the api sees nginx's container address as every caller's
+      # IP, which collapses per-client rate limiting into one shared bucket
+      # and makes the audit log's client_ip useless.
+      #
+      # NOTE: this only makes the api trust *nginx*. It says nothing about
+      # whether nginx itself knows the real client. If a TLS-terminating proxy
+      # forwards to this stack — the usual production setup — you must also set
+      # TRUSTED_PROXIES to that proxy's address, or the single-bucket collapse
+      # described above happens one hop earlier and this setting cannot see it.
+      TRUST_PROXY_HEADERS: "true"
     # No host port at all. The frontend container is the only thing that talks
     # to the api, and it does so over the compose network at api:8080. Nothing
     # needs to reach the api from the host, so it is fully unpublished.
