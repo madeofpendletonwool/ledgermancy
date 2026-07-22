@@ -21,6 +21,25 @@ const CSRFCookieName = "ledgermancy_csrf"
 // CSRFHeaderName is the header the frontend must send on unsafe requests.
 const CSRFHeaderName = "X-CSRF-Token"
 
+// MFACookieName carries a pending multi-factor challenge: the password was
+// correct, but the second factor has not been presented yet.
+//
+// It is httpOnly for the same reason the session cookie is — a half-completed
+// login is still worth stealing — and short-lived, because a challenge left
+// open is an attacker's second chance at the code.
+const MFACookieName = "ledgermancy_mfa"
+
+// MFAChallengeTTL is how long a user has to enter their code after the
+// password step. Long enough to find a phone, short enough that an abandoned
+// challenge is not left lying around.
+const MFAChallengeTTL = 5 * time.Minute
+
+// MaxMFAAttempts is how many codes may be tried against one challenge before
+// it is destroyed and the user must re-enter their password. This is the cap
+// that matters most: it bounds guesses against a single login to well under
+// the 1-in-a-million a six-digit code is worth.
+const MaxMFAAttempts = 5
+
 // NewToken returns a cryptographically random, URL-safe session token.
 func NewToken() (string, error) {
 	buf := make([]byte, 32)
@@ -80,15 +99,42 @@ func SetCSRFCookie(w http.ResponseWriter, opts CookieOptions, token string, expi
 	})
 }
 
-// ClearAuthCookies expires both auth cookies on logout.
+// SetMFACookie writes the pending-challenge cookie.
+func SetMFACookie(w http.ResponseWriter, opts CookieOptions, token string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     MFACookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   opts.Secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// ClearMFACookie expires the challenge cookie, on success or on abandonment.
+func ClearMFACookie(w http.ResponseWriter, opts CookieOptions) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     MFACookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   opts.Secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// ClearAuthCookies expires every auth cookie on logout. The MFA cookie is
+// included so an abandoned challenge cannot outlive the logout that followed it.
 func ClearAuthCookies(w http.ResponseWriter, opts CookieOptions) {
-	for _, name := range []string{SessionCookieName, CSRFCookieName} {
+	for _, name := range []string{SessionCookieName, CSRFCookieName, MFACookieName} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: name == SessionCookieName,
+			HttpOnly: name != CSRFCookieName,
 			Secure:   opts.Secure,
 			SameSite: http.SameSiteStrictMode,
 		})

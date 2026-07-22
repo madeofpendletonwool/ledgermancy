@@ -99,6 +99,17 @@ Every state-changing request needs the CSRF token echoed in an `X-CSRF-Token` he
 | POST   | `/api/auth/login`             | –    | Rotates the CSRF token on success             |
 | POST   | `/api/auth/logout`            | –    | Deletes the session server-side               |
 | GET    | `/api/auth/me`                | ✓    | Current user                                  |
+| POST   | `/api/auth/mfa/verify`        | –    | Second login step; consumes the challenge cookie |
+| GET    | `/api/auth/mfa`               | ✓    | Two-factor status and recovery codes left     |
+| POST   | `/api/auth/mfa/setup`         | ✓    | Password required. Returns QR + base32 secret |
+| POST   | `/api/auth/mfa/activate`      | ✓    | Confirms a code; returns recovery codes **once** |
+| POST   | `/api/auth/mfa/disable`       | ✓    | Requires password **and** a current code      |
+| POST   | `/api/auth/mfa/recovery-codes`| ✓    | Regenerates the set, invalidating the old one |
+| POST   | `/api/auth/password`          | ✓    | Change password; signs out every other device |
+| GET    | `/api/auth/sessions`          | ✓    | Active sessions with device and address       |
+| DELETE | `/api/auth/sessions/{id}`     | ✓    | Revoke one device                             |
+| POST   | `/api/auth/sessions/revoke-others` | ✓ | Sign out everywhere but here                |
+| GET    | `/api/auth/events`            | ✓    | Last 50 security events on the account        |
 | GET    | `/api/household/`             | ✓    | Current household                             |
 | GET    | `/api/household/members`      | ✓    | Household members                             |
 | POST   | `/api/household/invites`      | ✓    | Returns the invite token **once**             |
@@ -268,11 +279,39 @@ Verify at any time with `docker compose ps` — the `Ports` column shows the rea
 
 ## Security notes
 
+- **Optional TOTP two-factor auth.** Standard authenticator apps (scan a QR, enter
+  6 digits). The half-authenticated state between the password and the code lives in
+  its own `mfa_challenges` table rather than as a flag on `sessions` — so a row in
+  `sessions` continues to mean exactly one thing, *fully authenticated*, and a pending
+  challenge cannot satisfy the auth middleware however it changes.
+- TOTP secrets are encrypted at rest with the same AES-GCM key as Plaid tokens.
+  Recovery codes are HMAC-hashed like session tokens (they are high-entropy randoms,
+  so argon2 would buy nothing and cost ten 64 MiB verifications per attempt).
+- Each accepted TOTP code's time-step is recorded, so a code cannot be replayed
+  inside the 90-second window it stays valid for.
+- Enabling two-factor, changing a password, or disabling two-factor all require the
+  password again — holding a session is not authority to change the factors guarding
+  the account. Disabling additionally requires a current code.
+- **Rate limiting** on sign-in, registration, and account changes, keyed on the real
+  client address, plus durable per-account exponential backoff that survives a
+  restart. A locked account still returns the generic error, so lockout is not an
+  oracle for which addresses exist.
+- The API only believes `X-Forwarded-For`/`X-Forwarded-Proto` when
+  `TRUST_PROXY_HEADERS` is set — the production overlay sets it, because there the
+  bundled nginx strips client-supplied address headers and is the only route in.
+- **Security headers** on every response: CSP (tuned for Plaid Link), HSTS behind
+  TLS, `nosniff`, `DENY` framing, `no-referrer`, and `Cache-Control: no-store` so
+  financial JSON and CSV exports never land in a cache.
+- **Auth audit log** and an active-session list with per-device revoke, both on the
+  Security page.
 - Plaid access tokens are encrypted at rest (AES-GCM) and never returned to the browser.
 - Sessions are server-side, in `httpOnly` + `SameSite=Strict` cookies — not localStorage.
+  They expire after 30 days, or 7 days idle.
 - Passwords are argon2id; login failures are indistinguishable between an unknown
-  address and a wrong password, in both message and timing.
-- Registration is invite-only after the first account.
+  address and a wrong password, in both message and timing. Hashes made under weaker
+  parameters are transparently upgraded on next sign-in.
+- Registration is invite-only after the first account, and an invite is bound to the
+  address it was issued for.
 - `.env` is gitignored. Do not commit real Plaid credentials or secrets.
 - `DATABASE_URL` uses `sslmode=disable`. That is fine while Postgres is a container on
   the same host — the traffic never leaves the local bridge network. If the database

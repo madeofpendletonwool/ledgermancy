@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/networth"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
@@ -171,5 +172,53 @@ func (w *SnapshotNetWorthWorker) Work(ctx context.Context, job *river.Job[Snapsh
 		return fmt.Errorf("snapshot net worth: %w", err)
 	}
 	slog.Info("net worth snapshots written", "households", n)
+	return nil
+}
+
+// --------------------------------------------------------------------------
+// Security housekeeping
+// --------------------------------------------------------------------------
+
+// SecuritySweepArgs prunes expired auth state.
+type SecuritySweepArgs struct{}
+
+func (SecuritySweepArgs) Kind() string { return "security_sweep" }
+
+// SecuritySweepWorker collects rows that are dead but still on disk.
+//
+// None of this is load-bearing for correctness — every query that reads these
+// tables already filters on expiry, so a stale row is never honoured. It is
+// housekeeping: without it, sessions, abandoned MFA challenges and audit
+// events accumulate forever in a database nobody is watching.
+type SecuritySweepWorker struct {
+	river.WorkerDefaults[SecuritySweepArgs]
+	Queries *dbgen.Queries
+	// IdleTTL must match auth.SessionIdleTTL, so the sweep collects exactly
+	// the sessions the middleware has already stopped honouring.
+	IdleTTL time.Duration
+	// AuthEventTTL is how long the audit log is kept. Long enough to
+	// investigate something noticed late, short enough that the table stays
+	// small on a household-sized deployment.
+	AuthEventTTL time.Duration
+}
+
+func (w *SecuritySweepWorker) Work(ctx context.Context, job *river.Job[SecuritySweepArgs]) error {
+	sessions, err := w.Queries.DeleteExpiredSessions(ctx, auth.Interval(w.IdleTTL))
+	if err != nil {
+		return fmt.Errorf("delete expired sessions: %w", err)
+	}
+
+	challenges, err := w.Queries.DeleteExpiredMFAChallenges(ctx)
+	if err != nil {
+		return fmt.Errorf("delete expired mfa challenges: %w", err)
+	}
+
+	events, err := w.Queries.DeleteOldAuthEvents(ctx, auth.Interval(w.AuthEventTTL))
+	if err != nil {
+		return fmt.Errorf("delete old auth events: %w", err)
+	}
+
+	slog.Info("security sweep",
+		"sessions", sessions, "mfa_challenges", challenges, "auth_events", events)
 	return nil
 }
