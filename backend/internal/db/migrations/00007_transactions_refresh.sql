@@ -1,0 +1,11 @@
+-- +goose Up
+-- Tracks when we last asked Plaid to pull fresh data from the institution.
+--
+-- Distinct from last_synced_at, which records when *we* last read Plaid's
+-- cache. The two move on very different cadences: reading the cache is cheap
+-- and happens hourly, while /transactions/refresh is rate limited per item and
+-- must be spaced out over hours.
+--
+-- NULL means never refreshed, which makes an item immediately due — correct
+-- for both existing rows and newly linked ones.
+ALTER TABLE plaid_items ADD COLUMN last_refresh_at TIMESTAMPTZ;

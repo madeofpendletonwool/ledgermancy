@@ -240,6 +240,7 @@ type PlaidItem struct {
 	IsShared             bool          `json:"is_shared"`
 	CreatedAt            stdtime.Time  `json:"created_at"`
 	UpdatedAt            stdtime.Time  `json:"updated_at"`
+	LastRefreshAt        *stdtime.Time `json:"last_refresh_at"`
 }
 
 type Security struct {

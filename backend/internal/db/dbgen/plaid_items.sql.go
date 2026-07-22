@@ -17,7 +17,7 @@ INSERT INTO plaid_items (
     user_id, plaid_item_id, access_token_encrypted,
     institution_id, institution_name, products
 ) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at
+RETURNING id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at
 `
 
 type CreatePlaidItemParams struct {
@@ -55,6 +55,7 @@ func (q *Queries) CreatePlaidItem(ctx context.Context, arg CreatePlaidItemParams
 		&i.IsShared,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastRefreshAt,
 	)
 	return i, err
 }
@@ -88,7 +89,7 @@ func (q *Queries) GetHouseholdForItem(ctx context.Context, id uuid.UUID) (uuid.U
 }
 
 const getPlaidItem = `-- name: GetPlaidItem :one
-SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at FROM plaid_items WHERE id = $1
+SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at FROM plaid_items WHERE id = $1
 `
 
 func (q *Queries) GetPlaidItem(ctx context.Context, id uuid.UUID) (PlaidItem, error) {
@@ -110,12 +111,13 @@ func (q *Queries) GetPlaidItem(ctx context.Context, id uuid.UUID) (PlaidItem, er
 		&i.IsShared,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastRefreshAt,
 	)
 	return i, err
 }
 
 const getPlaidItemByPlaidID = `-- name: GetPlaidItemByPlaidID :one
-SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at FROM plaid_items WHERE plaid_item_id = $1
+SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at FROM plaid_items WHERE plaid_item_id = $1
 `
 
 func (q *Queries) GetPlaidItemByPlaidID(ctx context.Context, plaidItemID string) (PlaidItem, error) {
@@ -137,12 +139,13 @@ func (q *Queries) GetPlaidItemByPlaidID(ctx context.Context, plaidItemID string)
 		&i.IsShared,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastRefreshAt,
 	)
 	return i, err
 }
 
 const listItemsDueForSync = `-- name: ListItemsDueForSync :many
-SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at FROM plaid_items
+SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at FROM plaid_items
 WHERE status = 'active'
   AND (last_synced_at IS NULL OR last_synced_at < $1)
 ORDER BY last_synced_at NULLS FIRST
@@ -175,6 +178,7 @@ func (q *Queries) ListItemsDueForSync(ctx context.Context, lastSyncedAt *stdtime
 			&i.IsShared,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LastRefreshAt,
 		); err != nil {
 			return nil, err
 		}
@@ -187,7 +191,7 @@ func (q *Queries) ListItemsDueForSync(ctx context.Context, lastSyncedAt *stdtime
 }
 
 const listPlaidItemsForUser = `-- name: ListPlaidItemsForUser :many
-SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at FROM plaid_items WHERE user_id = $1 ORDER BY created_at
+SELECT id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at FROM plaid_items WHERE user_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListPlaidItemsForUser(ctx context.Context, userID uuid.UUID) ([]PlaidItem, error) {
@@ -215,6 +219,7 @@ func (q *Queries) ListPlaidItemsForUser(ctx context.Context, userID uuid.UUID) (
 			&i.IsShared,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LastRefreshAt,
 		); err != nil {
 			return nil, err
 		}
@@ -227,7 +232,7 @@ func (q *Queries) ListPlaidItemsForUser(ctx context.Context, userID uuid.UUID) (
 }
 
 const listVisiblePlaidItems = `-- name: ListVisiblePlaidItems :many
-SELECT i.id, i.user_id, i.plaid_item_id, i.access_token_encrypted, i.institution_id, i.institution_name, i.products, i.status, i.sync_cursor, i.last_synced_at, i.backfill_complete, i.error_code, i.is_shared, i.created_at, i.updated_at
+SELECT i.id, i.user_id, i.plaid_item_id, i.access_token_encrypted, i.institution_id, i.institution_name, i.products, i.status, i.sync_cursor, i.last_synced_at, i.backfill_complete, i.error_code, i.is_shared, i.created_at, i.updated_at, i.last_refresh_at
 FROM plaid_items i
 JOIN users u ON u.id = i.user_id
 WHERE u.household_id = $1
@@ -272,6 +277,7 @@ func (q *Queries) ListVisiblePlaidItems(ctx context.Context, arg ListVisiblePlai
 			&i.IsShared,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.LastRefreshAt,
 		); err != nil {
 			return nil, err
 		}
@@ -292,10 +298,22 @@ func (q *Queries) MarkBackfillComplete(ctx context.Context, id uuid.UUID) error 
 	return err
 }
 
+const markItemRefreshed = `-- name: MarkItemRefreshed :exec
+UPDATE plaid_items SET last_refresh_at = now() WHERE id = $1
+`
+
+// Records that /transactions/refresh was requested, so the per-item rate limit
+// is respected. Written on request rather than on completion: Plaid's pull is
+// asynchronous, and it is the *request* that consumes the quota.
+func (q *Queries) MarkItemRefreshed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markItemRefreshed, id)
+	return err
+}
+
 const setItemShared = `-- name: SetItemShared :one
 UPDATE plaid_items SET is_shared = $3
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at
+RETURNING id, user_id, plaid_item_id, access_token_encrypted, institution_id, institution_name, products, status, sync_cursor, last_synced_at, backfill_complete, error_code, is_shared, created_at, updated_at, last_refresh_at
 `
 
 type SetItemSharedParams struct {
@@ -323,6 +341,7 @@ func (q *Queries) SetItemShared(ctx context.Context, arg SetItemSharedParams) (P
 		&i.IsShared,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastRefreshAt,
 	)
 	return i, err
 }

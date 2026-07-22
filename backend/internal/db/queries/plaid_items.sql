@@ -51,6 +51,12 @@ SET sync_cursor    = $2,
     error_code     = NULL
 WHERE id = $1;
 
+-- name: MarkItemRefreshed :exec
+-- Records that /transactions/refresh was requested, so the per-item rate limit
+-- is respected. Written on request rather than on completion: Plaid's pull is
+-- asynchronous, and it is the *request* that consumes the quota.
+UPDATE plaid_items SET last_refresh_at = now() WHERE id = $1;
+
 -- name: MarkBackfillComplete :exec
 UPDATE plaid_items SET backfill_complete = TRUE WHERE id = $1;
 
