@@ -28,6 +28,17 @@ const syncInterval = time.Hour
 // because the sweep ran a moment early.
 const staleAfter = 55 * time.Minute
 
+// refreshInterval is how often each item is pushed to pull fresh data from the
+// institution, as opposed to re-reading what Plaid already cached.
+//
+// These are different operations with very different costs. /transactions/sync
+// is cheap and returns Plaid's cache; without a refresh it can return the same
+// rows indefinitely, because Plaid only goes to the bank on its own schedule —
+// which has been observed stalling for many hours on some institutions.
+// /transactions/refresh forces that pull but is rate limited per item, so four
+// hours (six calls a day) keeps data fresh while staying well inside the quota.
+const refreshInterval = 4 * time.Hour
+
 // snapshotInterval is how often net worth is recorded. Daily granularity is
 // what the trend chart shows; running more often simply overwrites the day's
 // row, which is harmless but pointless.
@@ -179,7 +190,8 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		}
 
 		if err := river.AddWorkerSafely(workers, &SyncAllWorker{
-			Pool: pool, Client: client, StaleAfter: staleAfter,
+			Pool: pool, Client: client, Syncer: syncer,
+			StaleAfter: staleAfter, RefreshAfter: refreshInterval,
 		}); err != nil {
 			return nil, fmt.Errorf("register sync-all worker: %w", err)
 		}

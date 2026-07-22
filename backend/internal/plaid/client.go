@@ -266,6 +266,26 @@ type Transaction struct {
 	Raw                  []byte
 }
 
+// RefreshTransactions asks Plaid to pull fresh data from the institution now.
+//
+// This is necessary because /transactions/sync only ever returns what Plaid
+// has already cached. Plaid refreshes a background item on its own schedule —
+// typically a few times a day, but observed to stall for far longer on some
+// institutions — and until it does, syncing on any cadence just re-reads the
+// same rows. This is the only call that makes Plaid go to the bank.
+//
+// It returns as soon as Plaid accepts the request; the pull itself is
+// asynchronous and lands via a SYNC_UPDATES_AVAILABLE webhook. Plaid rate
+// limits this per item, so callers must space it out rather than calling it on
+// every sync.
+func (c *Client) RefreshTransactions(ctx context.Context, accessToken string) error {
+	req := plaidapi.NewTransactionsRefreshRequest(accessToken)
+	if _, _, err := c.api.TransactionsRefresh(ctx).TransactionsRefreshRequest(*req).Execute(); err != nil {
+		return wrapErr("refresh transactions", err)
+	}
+	return nil
+}
+
 // SyncTransactions fetches one page of updates. Pass an empty cursor to start
 // from the beginning of the item's history.
 func (c *Client) SyncTransactions(ctx context.Context, accessToken, cursor string) (SyncPage, error) {

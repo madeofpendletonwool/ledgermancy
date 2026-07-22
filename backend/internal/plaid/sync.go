@@ -177,6 +177,51 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 	return result, nil
 }
 
+// RefreshItem asks Plaid to pull fresh data from the institution for one item.
+//
+// This is separate from SyncItem on purpose. SyncItem reads Plaid's cache and
+// is safe to run hourly; this makes Plaid go to the bank and is rate limited
+// per item, so only the periodic sweep calls it, and only when the item is due.
+//
+// The pull is asynchronous: Plaid answers immediately and delivers the result
+// later via a SYNC_UPDATES_AVAILABLE webhook, which enqueues the sync that
+// actually stores it.
+func (s *Syncer) RefreshItem(ctx context.Context, itemID uuid.UUID) error {
+	item, err := s.Queries.GetPlaidItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+	if !HasProduct(item.Products, ProductTransactions) {
+		return nil
+	}
+
+	accessToken, err := s.Cipher.OpenString(item.AccessTokenEncrypted)
+	if err != nil {
+		return fmt.Errorf("decrypt access token: %w", err)
+	}
+
+	// Marked before the call, not after: a request that Plaid accepted but that
+	// failed on our side has still consumed the item's quota, and retrying it
+	// immediately would only earn a rate-limit error.
+	if err := s.Queries.MarkItemRefreshed(ctx, item.ID); err != nil {
+		return fmt.Errorf("mark item refreshed: %w", err)
+	}
+
+	if err := s.Client.RefreshTransactions(ctx, accessToken); err != nil {
+		// Deliberately not recorded as a generic item error. recordItemError
+		// sets status to 'error', and the sweep only considers active items —
+		// so treating an expected, benign rejection like a rate limit as an
+		// item fault would stop the item syncing altogether. Re-authentication
+		// is the one case that genuinely needs recording, and the sync running
+		// straight after this would surface any real fault anyway.
+		if strings.Contains(err.Error(), "ITEM_LOGIN_REQUIRED") {
+			s.recordItemError(ctx, item.ID, err)
+		}
+		return err
+	}
+	return nil
+}
+
 // historyRange returns the oldest and newest transaction dates for an item,
 // or (nil, nil) when it has none yet.
 //

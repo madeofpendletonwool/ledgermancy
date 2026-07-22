@@ -122,46 +122,99 @@ type SyncAllArgs struct{}
 
 func (SyncAllArgs) Kind() string { return "plaid_sync_all" }
 
-// SyncAllWorker enqueues a per-item sync for everything due.
+// SyncAllWorker asks Plaid to refresh what is due, then enqueues a per-item
+// sync for everything due.
 type SyncAllWorker struct {
 	river.WorkerDefaults[SyncAllArgs]
 	Pool   *pgxpool.Pool
 	Client *river.Client[pgx.Tx]
+	// Syncer performs the refresh. Nil when Plaid is not configured, in which
+	// case there is nothing to sweep at all.
+	Syncer *plaid.Syncer
 	// StaleAfter is how old an item's last sync must be before it is refreshed.
 	StaleAfter time.Duration
+	// RefreshAfter is how long to wait between asking Plaid to pull fresh data
+	// for the same item. Much longer than StaleAfter: reading Plaid's cache is
+	// cheap, but making Plaid go to the bank is rate limited per item.
+	RefreshAfter time.Duration
 }
 
-func (w *SyncAllWorker) Work(ctx context.Context, job *river.Job[SyncAllArgs]) error {
-	cutoff := time.Now().Add(-w.StaleAfter)
+// dueItemsQuery selects the items a sweep should act on, and reports which of
+// them additionally need a bank pull.
+//
+// $1 is the sync cutoff, $2 the refresh cutoff. The two schedules are
+// independent, so an item qualifies on *either*. Gating the refresh behind sync
+// staleness instead would starve it: a webhook-driven sync bumps
+// last_synced_at, so a busy item can stay perpetually sync-fresh and never
+// become eligible for the bank pull it is long overdue for — which is precisely
+// the stall this job exists to break.
+//
+// Every row returned is synced, so only the refresh needs its own flag.
+// TestDueItemsQuery pins both halves.
+const dueItemsQuery = `
+	SELECT id, (last_refresh_at IS NULL OR last_refresh_at < $2) AS refresh_due
+	FROM plaid_items
+	WHERE status = 'active'
+	  AND ((last_synced_at  IS NULL OR last_synced_at  < $1)
+	    OR (last_refresh_at IS NULL OR last_refresh_at < $2))`
 
-	rows, err := w.Pool.Query(ctx, `
-		SELECT id FROM plaid_items
-		WHERE status = 'active'
-		  AND (last_synced_at IS NULL OR last_synced_at < $1)`, cutoff)
+func (w *SyncAllWorker) Work(ctx context.Context, job *river.Job[SyncAllArgs]) error {
+	now := time.Now()
+
+	rows, err := w.Pool.Query(ctx, dueItemsQuery,
+		now.Add(-w.StaleAfter), now.Add(-w.RefreshAfter))
 	if err != nil {
 		return fmt.Errorf("list due items: %w", err)
 	}
 	defer rows.Close()
 
-	var itemIDs []uuid.UUID
+	type dueItem struct {
+		id             uuid.UUID
+		refreshOverdue bool
+	}
+	var items []dueItem
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var it dueItem
+		if err := rows.Scan(&it.id, &it.refreshOverdue); err != nil {
 			return fmt.Errorf("scan item id: %w", err)
 		}
-		itemIDs = append(itemIDs, id)
+		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 
-	for _, id := range itemIDs {
-		if _, err := w.Client.Insert(ctx, SyncItemArgs{ItemID: id}, nil); err != nil {
-			slog.Error("enqueue sync", "error", err, "item_id", id)
+	refreshed, synced := 0, 0
+	for _, it := range items {
+		// Ask Plaid to go to the bank first. It answers immediately and pulls
+		// asynchronously, so the sync enqueued below will usually still read
+		// the old cache — that is fine and deliberate. The pull lands moments
+		// later as a SYNC_UPDATES_AVAILABLE webhook, which enqueues the sync
+		// that actually stores the new rows.
+		if it.refreshOverdue && w.Syncer != nil {
+			if err := w.Syncer.RefreshItem(ctx, it.id); err != nil {
+				// A refresh failing must not stop the sync: the cached data is
+				// still worth reading, and the item may simply be rate limited.
+				slog.Warn("refresh item", "error", err, "item_id", it.id)
+			} else {
+				refreshed++
+			}
+		}
+
+		// Synced whenever the item was touched at all, including when only the
+		// refresh was due. The webhook is the expected path for picking up what
+		// the refresh produces, so this is the fallback for when it never
+		// arrives — without it a broken webhook would leave freshly pulled data
+		// sitting at Plaid unread. River's per-item uniqueness collapses the
+		// duplicate when the webhook does arrive.
+		if _, err := w.Client.Insert(ctx, SyncItemArgs{ItemID: it.id}, nil); err != nil {
+			slog.Error("enqueue sync", "error", err, "item_id", it.id)
+		} else {
+			synced++
 		}
 	}
 
-	slog.Info("scheduled syncs", "items", len(itemIDs))
+	slog.Info("scheduled syncs", "items", len(items), "synced", synced, "refreshed", refreshed)
 	return nil
 }
 
