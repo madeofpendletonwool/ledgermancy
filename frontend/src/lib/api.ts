@@ -277,6 +277,32 @@ export interface ProjectionQuery {
   annual_debt_paydown?: string
 }
 
+export type AlertType =
+  | 'big_spend'
+  | 'budget_threshold'
+  | 'unusual_merchant'
+  | 'low_leftover'
+
+/** A configured alert rule. config is the type-specific threshold object. */
+export interface Alert {
+  id: string
+  type: AlertType
+  config: Record<string, string | number>
+  enabled: boolean
+}
+
+/**
+ * A raised alert. payload is a flat map of display strings the backend already
+ * formatted (money as fixed-2 decimal strings — never summed here).
+ */
+export interface AlertEvent {
+  id: string
+  alert_type: AlertType
+  payload: Record<string, string>
+  triggered_at: string
+  read: boolean
+}
+
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
 export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter
@@ -476,6 +502,34 @@ export const api = {
 
   deleteManualAsset: (id: string) =>
     request<void>('DELETE', `/api/manual-assets/${id}`),
+
+  // --- Alerts -------------------------------------------------------------
+  alerts: () => request<Alert[]>('GET', '/api/alerts/'),
+
+  createAlert: (
+    type: AlertType,
+    config: Record<string, string | number>,
+    enabled: boolean,
+  ) => request<Alert>('POST', '/api/alerts/', { type, config, enabled }),
+
+  // The backend keeps an existing alert's type; only config and enabled change.
+  updateAlert: (
+    id: string,
+    config: Record<string, string | number>,
+    enabled: boolean,
+  ) => request<Alert>('PUT', `/api/alerts/${id}`, { config, enabled }),
+
+  deleteAlert: (id: string) => request<void>('DELETE', `/api/alerts/${id}`),
+
+  alertEvents: () => request<AlertEvent[]>('GET', '/api/alerts/events'),
+
+  unreadAlertCount: () =>
+    request<{ count: number }>('GET', '/api/alerts/events/unread-count'),
+
+  markAlertRead: (id: string) =>
+    request<void>('POST', `/api/alerts/events/${id}/read`),
+
+  markAllAlertsRead: () => request<void>('POST', '/api/alerts/events/read-all'),
 }
 
 // Generic rather than Record<string, unknown>: an interface without an index

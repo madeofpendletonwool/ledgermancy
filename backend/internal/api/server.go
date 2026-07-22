@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/config"
 	"github.com/apex42group/ledgermancy/backend/internal/crypto"
@@ -36,21 +37,32 @@ type Server struct {
 	Plaid   *plaid.Client
 	Syncer  *plaid.Syncer
 	Jobs    *river.Client[pgx.Tx]
+	AI      *ai.Client
 }
 
-// NewServer builds a Server from an open connection pool.
+// NewServer builds a Server from an open connection pool. The AI client is
+// always constructed; when no API key is configured it is simply disabled, so
+// handlers gate on s.AI.Enabled() rather than a nil check.
 func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Server {
 	return &Server{
 		Config:  cfg,
 		Pool:    pool,
 		Queries: dbgen.New(pool),
 		Cipher:  cipher,
+		AI:      ai.New(cfg.AI),
 	}
 }
 
 // enqueueSync schedules a background sync for an item.
 func (s *Server) enqueueSync(itemID uuid.UUID) {
 	jobs.EnqueueSync(context.Background(), s.Jobs, itemID)
+}
+
+// enqueueAlertEval schedules an immediate alert evaluation for a household, so
+// a just-changed alert surfaces without waiting for the periodic sweep. Nil
+// client (no queue configured) is tolerated.
+func (s *Server) enqueueAlertEval(householdID uuid.UUID) {
+	jobs.EnqueueAlertEval(context.Background(), s.Jobs, householdID)
 }
 
 // Routes returns the fully-wired HTTP handler.
@@ -173,6 +185,18 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)
+		})
+
+		r.Route("/alerts", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListAlerts)
+			r.Post("/", s.handleCreateAlert)
+			r.Put("/{alertID}", s.handleUpdateAlert)
+			r.Delete("/{alertID}", s.handleDeleteAlert)
+			r.Get("/events", s.handleListAlertEvents)
+			r.Get("/events/unread-count", s.handleUnreadAlertCount)
+			r.Post("/events/read-all", s.handleMarkAllAlertEventsRead)
+			r.Post("/events/{eventID}/read", s.handleMarkAlertEventRead)
 		})
 	})
 

@@ -17,6 +17,9 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
+	"github.com/apex42group/ledgermancy/backend/internal/alerts"
+	"github.com/apex42group/ledgermancy/backend/internal/categorize"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/networth"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
@@ -57,6 +60,12 @@ func (a SyncItemArgs) InsertOpts() river.InsertOpts {
 type SyncItemWorker struct {
 	river.WorkerDefaults[SyncItemArgs]
 	Syncer *plaid.Syncer
+	// Client and Queries let a finished sync kick off follow-up work for the
+	// item's household — alert evaluation always, and AI categorisation when
+	// EnqueueLLM is set. The periodic sweeps are the backstop if these are nil.
+	Client     *river.Client[pgx.Tx]
+	Queries    *dbgen.Queries
+	EnqueueLLM bool
 }
 
 func (w *SyncItemWorker) Work(ctx context.Context, job *river.Job[SyncItemArgs]) error {
@@ -80,6 +89,24 @@ func (w *SyncItemWorker) Work(ctx context.Context, job *river.Job[SyncItemArgs])
 		"accounts", result.AccountsUpserted,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
+
+	// Kick off follow-up work for this household. Failures here never fail the
+	// sync — the periodic sweeps are a backstop.
+	if w.Client != nil && w.Queries != nil {
+		householdID, err := w.Queries.GetHouseholdForItem(ctx, job.Args.ItemID)
+		if err != nil {
+			slog.Warn("resolve household for post-sync jobs", "error", err, "item_id", job.Args.ItemID)
+			return nil
+		}
+		if _, err := w.Client.Insert(ctx, EvaluateAlertsArgs{HouseholdID: householdID}, nil); err != nil {
+			slog.Error("enqueue alert evaluation", "error", err, "household_id", householdID)
+		}
+		if w.EnqueueLLM {
+			if _, err := w.Client.Insert(ctx, LLMCategoriseArgs{HouseholdID: householdID}, nil); err != nil {
+				slog.Error("enqueue llm categorise", "error", err, "household_id", householdID)
+			}
+		}
+	}
 	return nil
 }
 
@@ -171,5 +198,145 @@ func (w *SnapshotNetWorthWorker) Work(ctx context.Context, job *river.Job[Snapsh
 		return fmt.Errorf("snapshot net worth: %w", err)
 	}
 	slog.Info("net worth snapshots written", "households", n)
+	return nil
+}
+
+// LLMCategoriseArgs runs the AI categorisation fallback for one household: the
+// step-5 pass over transactions the deterministic resolver left uncategorised.
+type LLMCategoriseArgs struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (LLMCategoriseArgs) Kind() string { return "llm_categorise" }
+
+// InsertOpts collapses a burst of enqueues for one household — several items
+// finishing a sync at once, plus the sweep — into a single pass per minute.
+// Starts from River's required state set (see SyncItemArgs) so the insert is
+// not silently rejected.
+func (a LLMCategoriseArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Minute,
+		},
+	}
+}
+
+// LLMCategoriseWorker asks the model to place uncategorised merchants.
+type LLMCategoriseWorker struct {
+	river.WorkerDefaults[LLMCategoriseArgs]
+	Queries *dbgen.Queries
+	AI      *ai.Client
+}
+
+func (w *LLMCategoriseWorker) Work(ctx context.Context, job *river.Job[LLMCategoriseArgs]) error {
+	n, err := categorize.LLMCategoriseHousehold(ctx, w.Queries, w.AI, job.Args.HouseholdID)
+	if err != nil {
+		return fmt.Errorf("llm categorise household %s: %w", job.Args.HouseholdID, err)
+	}
+	if n > 0 {
+		slog.Info("llm categorisation complete",
+			"household_id", job.Args.HouseholdID, "merchants_decided", n)
+	}
+	return nil
+}
+
+// Timeout bounds a pass that may fan out to several batched model calls.
+func (w *LLMCategoriseWorker) Timeout(*river.Job[LLMCategoriseArgs]) time.Duration {
+	return 5 * time.Minute
+}
+
+// LLMCategoriseAllArgs sweeps every household so a quiet household still gets
+// its backlog categorised even when no sync is enqueuing per-household passes.
+type LLMCategoriseAllArgs struct{}
+
+func (LLMCategoriseAllArgs) Kind() string { return "llm_categorise_all" }
+
+// LLMCategoriseAllWorker enqueues a per-household categorise pass.
+type LLMCategoriseAllWorker struct {
+	river.WorkerDefaults[LLMCategoriseAllArgs]
+	Queries *dbgen.Queries
+	Client  *river.Client[pgx.Tx]
+}
+
+func (w *LLMCategoriseAllWorker) Work(ctx context.Context, job *river.Job[LLMCategoriseAllArgs]) error {
+	ids, err := w.Queries.ListHouseholdIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := w.Client.Insert(ctx, LLMCategoriseArgs{HouseholdID: id}, nil); err != nil {
+			slog.Error("enqueue llm categorise", "error", err, "household_id", id)
+		}
+	}
+	return nil
+}
+
+// EvaluateAlertsArgs runs the alert engine for one household. Unlike the AI
+// jobs this needs no API key — it is deterministic SQL — so it is always
+// registered.
+type EvaluateAlertsArgs struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (EvaluateAlertsArgs) Kind() string { return "evaluate_alerts" }
+
+// InsertOpts collapses a burst of enqueues (several items syncing, plus the
+// sweep) into one evaluation per household per minute. Starts from River's
+// required state set so the insert is not silently rejected.
+func (a EvaluateAlertsArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Minute,
+		},
+	}
+}
+
+// EvaluateAlertsWorker evaluates a household's alert rules and records events.
+type EvaluateAlertsWorker struct {
+	river.WorkerDefaults[EvaluateAlertsArgs]
+	Queries *dbgen.Queries
+}
+
+func (w *EvaluateAlertsWorker) Work(ctx context.Context, job *river.Job[EvaluateAlertsArgs]) error {
+	n, err := alerts.Evaluate(ctx, w.Queries, job.Args.HouseholdID, time.Now())
+	if err != nil {
+		return fmt.Errorf("evaluate alerts for household %s: %w", job.Args.HouseholdID, err)
+	}
+	if n > 0 {
+		slog.Info("alerts raised", "household_id", job.Args.HouseholdID, "events", n)
+	}
+	return nil
+}
+
+// EvaluateAlertsAllArgs sweeps every household so alerts still fire for a
+// household whose institutions are all quiet (e.g. a budget crossing driven by
+// the calendar rolling over, not by a sync).
+type EvaluateAlertsAllArgs struct{}
+
+func (EvaluateAlertsAllArgs) Kind() string { return "evaluate_alerts_all" }
+
+// EvaluateAlertsAllWorker enqueues a per-household evaluation.
+type EvaluateAlertsAllWorker struct {
+	river.WorkerDefaults[EvaluateAlertsAllArgs]
+	Queries *dbgen.Queries
+	Client  *river.Client[pgx.Tx]
+}
+
+func (w *EvaluateAlertsAllWorker) Work(ctx context.Context, job *river.Job[EvaluateAlertsAllArgs]) error {
+	ids, err := w.Queries.ListHouseholdIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := w.Client.Insert(ctx, EvaluateAlertsArgs{HouseholdID: id}, nil); err != nil {
+			slog.Error("enqueue alert evaluation", "error", err, "household_id", id)
+		}
+	}
 	return nil
 }

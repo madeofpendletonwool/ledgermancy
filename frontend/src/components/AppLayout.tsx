@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
+import { api } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
 const NAV = [
@@ -10,6 +12,7 @@ const NAV = [
   { to: '/accounts', label: 'Accounts', end: false },
   { to: '/transactions', label: 'Transactions', end: false },
   { to: '/report', label: 'Report', end: false },
+  { to: '/alerts', label: 'Alerts', end: false },
   { to: '/household', label: 'Household', end: false },
 ]
 
@@ -48,6 +51,7 @@ export function AppLayout() {
           </nav>
 
           <div className="ml-auto flex items-center gap-4">
+            <NotificationBell />
             <span className="hidden text-sm text-mist-300 sm:inline">
               {user?.display_name}
             </span>
@@ -128,5 +132,45 @@ export function AppLayout() {
         <Outlet />
       </main>
     </div>
+  )
+}
+
+// NotificationBell links to the Alerts page and shows the unread event count.
+// The count is polled on a slow interval — alerts are not time-critical, and a
+// minute-scale refresh keeps it fresh without hammering the API.
+function NotificationBell() {
+  const unread = useQuery({
+    queryKey: ['alerts', 'unread'],
+    queryFn: api.unreadAlertCount,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  })
+  const count = unread.data?.count ?? 0
+
+  return (
+    <NavLink
+      to="/alerts"
+      aria-label={count > 0 ? `Alerts, ${count} unread` : 'Alerts'}
+      className="relative rounded-lg p-1.5 text-mist-300 transition hover:bg-white/5 hover:text-mist-100"
+    >
+      <svg
+        className="h-5 w-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      </svg>
+      {count > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-arcane-500 px-1 text-[10px] font-semibold text-white">
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
+    </NavLink>
   )
 }

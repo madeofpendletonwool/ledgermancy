@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/config"
 	"github.com/apex42group/ledgermancy/backend/internal/crypto"
 	"github.com/apex42group/ledgermancy/backend/internal/db"
@@ -69,7 +70,11 @@ func run() error {
 		slog.Warn("plaid not configured; sync jobs are disabled")
 	}
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer)
+	// Always constructed; a blank API key yields a disabled client and the
+	// categorisation jobs are simply not registered.
+	aiClient := ai.New(cfg.AI)
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient)
 	if err != nil {
 		return err
 	}

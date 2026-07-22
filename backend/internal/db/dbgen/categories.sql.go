@@ -29,6 +29,33 @@ func (q *Queries) ApplyCategory(ctx context.Context, arg ApplyCategoryParams) er
 	return err
 }
 
+const applyMerchantCategory = `-- name: ApplyMerchantCategory :exec
+UPDATE transactions t
+SET category_id = $3, category_source = 'llm'
+FROM accounts a, plaid_items i, users u
+WHERE t.account_id = a.id
+  AND a.plaid_item_id = i.id
+  AND i.user_id = u.id
+  AND u.household_id = $1
+  AND t.merchant_key = $2
+  AND t.category_source IS DISTINCT FROM 'manual'
+`
+
+type ApplyMerchantCategoryParams struct {
+	HouseholdID uuid.UUID  `json:"household_id"`
+	MerchantKey *string    `json:"merchant_key"`
+	CategoryID  *uuid.UUID `json:"category_id"`
+}
+
+// Applies an LLM-resolved category to every one of a merchant's transactions in
+// the household, not just the sampled row — so transactions already sitting in
+// the fallback category are lifted out in one statement. Never touches a manual
+// choice.
+func (q *Queries) ApplyMerchantCategory(ctx context.Context, arg ApplyMerchantCategoryParams) error {
+	_, err := q.db.Exec(ctx, applyMerchantCategory, arg.HouseholdID, arg.MerchantKey, arg.CategoryID)
+	return err
+}
+
 const createCategory = `-- name: CreateCategory :one
 INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fixed, sort_order)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -261,8 +288,75 @@ func (q *Queries) ListHouseholdIDs(ctx context.Context) ([]uuid.UUID, error) {
 	return items, nil
 }
 
+const listLLMCandidates = `-- name: ListLLMCandidates :many
+SELECT t.id, t.merchant_key, t.merchant_name, t.name,
+       t.plaid_pfc_primary, t.plaid_pfc_detailed
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE u.household_id = $1
+  AND t.category_id = $2
+  AND t.category_source IS DISTINCT FROM 'manual'
+  AND t.merchant_key IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM merchant_category_map m
+      WHERE m.household_id = $1 AND m.merchant_key = t.merchant_key
+  )
+ORDER BY t.merchant_key
+LIMIT $3
+`
+
+type ListLLMCandidatesParams struct {
+	HouseholdID uuid.UUID  `json:"household_id"`
+	CategoryID  *uuid.UUID `json:"category_id"`
+	Limit       int32      `json:"limit"`
+}
+
+type ListLLMCandidatesRow struct {
+	ID               uuid.UUID `json:"id"`
+	MerchantKey      *string   `json:"merchant_key"`
+	MerchantName     *string   `json:"merchant_name"`
+	Name             string    `json:"name"`
+	PlaidPfcPrimary  *string   `json:"plaid_pfc_primary"`
+	PlaidPfcDetailed *string   `json:"plaid_pfc_detailed"`
+}
+
+// Transactions the deterministic pass left in the fallback category ($2, the
+// household's "uncategorised" category) and that the LLM has not been asked
+// about yet. A merchant already in merchant_category_map is excluded: caching
+// every answer is what makes a merchant cost at most one model call, ever.
+// Rows without a merchant_key are skipped — there is nothing to cache them by.
+func (q *Queries) ListLLMCandidates(ctx context.Context, arg ListLLMCandidatesParams) ([]ListLLMCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listLLMCandidates, arg.HouseholdID, arg.CategoryID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLLMCandidatesRow{}
+	for rows.Next() {
+		var i ListLLMCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MerchantKey,
+			&i.MerchantName,
+			&i.Name,
+			&i.PlaidPfcPrimary,
+			&i.PlaidPfcDetailed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUncategorisedTransactions = `-- name: ListUncategorisedTransactions :many
-SELECT t.id, t.merchant_key, t.plaid_pfc_primary, t.plaid_pfc_detailed
+SELECT t.id, t.merchant_key, t.merchant_name, t.name,
+       t.plaid_pfc_primary, t.plaid_pfc_detailed
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -280,11 +374,15 @@ type ListUncategorisedTransactionsParams struct {
 type ListUncategorisedTransactionsRow struct {
 	ID               uuid.UUID `json:"id"`
 	MerchantKey      *string   `json:"merchant_key"`
+	MerchantName     *string   `json:"merchant_name"`
+	Name             string    `json:"name"`
 	PlaidPfcPrimary  *string   `json:"plaid_pfc_primary"`
 	PlaidPfcDetailed *string   `json:"plaid_pfc_detailed"`
 }
 
-// Transactions still needing a category, scoped to one household.
+// Transactions still needing a category, scoped to one household. merchant_name
+// and name are selected because household rules (match step 2) match against
+// them — without them the deterministic pass could never fire a rule.
 func (q *Queries) ListUncategorisedTransactions(ctx context.Context, arg ListUncategorisedTransactionsParams) ([]ListUncategorisedTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listUncategorisedTransactions, arg.HouseholdID, arg.Limit)
 	if err != nil {
@@ -297,6 +395,8 @@ func (q *Queries) ListUncategorisedTransactions(ctx context.Context, arg ListUnc
 		if err := rows.Scan(
 			&i.ID,
 			&i.MerchantKey,
+			&i.MerchantName,
+			&i.Name,
 			&i.PlaidPfcPrimary,
 			&i.PlaidPfcDetailed,
 		); err != nil {
