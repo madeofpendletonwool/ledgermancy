@@ -18,4 +18,14 @@ RUN npm run build   # tsc -b && vite build -> /app/dist
 FROM nginx:1.27-alpine AS serve
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+
+# Generates /etc/nginx/trusted-proxies.conf from $TRUSTED_PROXIES on every
+# start. The placeholder below is what nginx.conf includes when the entrypoint
+# has not run -- an `include` of a missing file is a fatal config error, and
+# someone overriding the entrypoint should get a working server, not a crash.
+COPY docker-entrypoint.d/25-trusted-proxies.sh /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/25-trusted-proxies.sh \
+    && echo '# Replaced at container start; see 25-trusted-proxies.sh.' \
+        > /etc/nginx/trusted-proxies.conf
+
 EXPOSE 80

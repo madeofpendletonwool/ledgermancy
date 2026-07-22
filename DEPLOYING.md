@@ -156,10 +156,36 @@ because the bundled nginx **overwrites** the address headers — it clears
 because the overlay removes the API's host port entirely, so nothing can reach
 the API without passing through nginx first.
 
-Your outer TLS proxy must set `X-Forwarded-For` and `X-Forwarded-Proto`. Caddy
-and Traefik do this by default; nginx and HAProxy need it configured. If you
-skip it, every sign-in appears to come from the proxy and the per-client rate
-limit becomes a single shared bucket.
+This takes **two** settings, and getting only the first one right is the common
+mistake:
+
+1. Your outer TLS proxy must *send* `X-Forwarded-For` and `X-Forwarded-Proto`.
+   Caddy and Traefik do this by default; nginx and HAProxy need it configured.
+2. The bundled nginx must be told to *believe* it, by naming that proxy in
+   `TRUSTED_PROXIES`.
+
+```bash
+# In .env — the address the outer proxy connects FROM, not the address it
+# listens on. Comma- or space-separated; IPs and CIDR ranges both work.
+TRUSTED_PROXIES=10.0.0.4
+```
+
+Skip step 2 and every request in the world resolves to your proxy's address.
+That is not just cosmetic: the per-client rate limits all collapse into one
+shared bucket, so a single bot probing `/api/auth/login` can exhaust the sign-in
+limit for **everyone**, and every row in the audit log names the proxy instead
+of a user. If you are not sure what address to use, start the stack and look:
+
+```bash
+docker compose logs frontend | tail   # the address at the start of each line
+```
+
+Leave `TRUSTED_PROXIES` **empty** if nothing sits in front of the frontend
+container. It is then the edge and already sees real client addresses; naming
+something there would let that something forge them. Only connections coming
+*from* a listed address get their `X-Forwarded-For` believed — anything reaching
+the container directly is still pinned to its true address, so publishing the
+port stays safe either way.
 
 Do **not** set `TRUST_PROXY_HEADERS=true` on a deployment where the API is
 reachable directly. Any caller could then choose its own apparent IP, walk past

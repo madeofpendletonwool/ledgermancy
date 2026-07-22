@@ -43,6 +43,12 @@ services:
       # Without this the api sees nginx's container address as every caller's
       # IP, which collapses per-client rate limiting into one shared bucket
       # and makes the audit log's client_ip useless.
+      #
+      # NOTE: this only makes the api trust *nginx*. It says nothing about
+      # whether nginx itself knows the real client. If a TLS-terminating proxy
+      # forwards to this stack — the usual production setup — you must also set
+      # TRUSTED_PROXIES to that proxy's address, or the single-bucket collapse
+      # described above happens one hop earlier and this setting cannot see it.
       TRUST_PROXY_HEADERS: "true"
     # No host port at all. The frontend container is the only thing that talks
     # to the api, and it does so over the compose network at api:8080. Nothing

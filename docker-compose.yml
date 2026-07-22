@@ -66,6 +66,12 @@ services:
     build:
       context: ./frontend
     restart: unless-stopped
+    environment:
+      # Addresses of the reverse proxies allowed to tell us who the client is.
+      # Empty by default, which is correct whenever this container is the edge.
+      # Set it when something forwards to us, or every request will look like
+      # it came from that forwarder. See .env.example for the full story.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
     ports:
       - "${FRONTEND_HOST_PORT:-8081}:80"
     depends_on:
