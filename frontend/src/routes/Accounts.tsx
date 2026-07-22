@@ -101,7 +101,7 @@ function InstitutionCard({
           </span>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {/* Sharing is per institution, so one spouse can keep an account
               private while everything else rolls up to the household. */}
           <label className="flex cursor-pointer items-center gap-2 text-xs text-mist-300">
