@@ -11,6 +11,7 @@ const NAV = [
   { to: '/transactions', label: 'Transactions', end: false },
   { to: '/report', label: 'Report', end: false },
   { to: '/household', label: 'Household', end: false },
+  { to: '/security', label: 'Security', end: false },
 ]
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>

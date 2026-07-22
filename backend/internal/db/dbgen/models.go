@@ -47,6 +47,17 @@ type AlertEvent struct {
 	ReadAt        *stdtime.Time `json:"read_at"`
 }
 
+type AuthEvent struct {
+	ID             uuid.UUID    `json:"id"`
+	UserID         *uuid.UUID   `json:"user_id"`
+	EmailAttempted *string      `json:"email_attempted"`
+	EventType      string       `json:"event_type"`
+	ClientIp       *string      `json:"client_ip"`
+	UserAgent      *string      `json:"user_agent"`
+	Metadata       []byte       `json:"metadata"`
+	CreatedAt      stdtime.Time `json:"created_at"`
+}
+
 type Budget struct {
 	ID            uuid.UUID       `json:"id"`
 	HouseholdID   uuid.UUID       `json:"household_id"`
@@ -184,6 +195,17 @@ type MerchantCategoryMap struct {
 	UpdatedAt   stdtime.Time        `json:"updated_at"`
 }
 
+type MfaChallenge struct {
+	ID        uuid.UUID    `json:"id"`
+	UserID    uuid.UUID    `json:"user_id"`
+	TokenHash string       `json:"token_hash"`
+	Attempts  int32        `json:"attempts"`
+	UserAgent *string      `json:"user_agent"`
+	ClientIp  *string      `json:"client_ip"`
+	ExpiresAt stdtime.Time `json:"expires_at"`
+	CreatedAt stdtime.Time `json:"created_at"`
+}
+
 type NetWorthSnapshot struct {
 	ID               uuid.UUID       `json:"id"`
 	HouseholdID      uuid.UUID       `json:"household_id"`
@@ -237,12 +259,14 @@ type Security struct {
 }
 
 type Session struct {
-	ID        uuid.UUID    `json:"id"`
-	UserID    uuid.UUID    `json:"user_id"`
-	TokenHash string       `json:"token_hash"`
-	UserAgent *string      `json:"user_agent"`
-	ExpiresAt stdtime.Time `json:"expires_at"`
-	CreatedAt stdtime.Time `json:"created_at"`
+	ID         uuid.UUID    `json:"id"`
+	UserID     uuid.UUID    `json:"user_id"`
+	TokenHash  string       `json:"token_hash"`
+	UserAgent  *string      `json:"user_agent"`
+	ExpiresAt  stdtime.Time `json:"expires_at"`
+	CreatedAt  stdtime.Time `json:"created_at"`
+	LastUsedAt stdtime.Time `json:"last_used_at"`
+	ClientIp   *string      `json:"client_ip"`
 }
 
 type Transaction struct {
@@ -272,11 +296,25 @@ type Transaction struct {
 }
 
 type User struct {
-	ID           uuid.UUID    `json:"id"`
-	HouseholdID  uuid.UUID    `json:"household_id"`
-	Email        string       `json:"email"`
-	PasswordHash string       `json:"password_hash"`
-	DisplayName  string       `json:"display_name"`
-	CreatedAt    stdtime.Time `json:"created_at"`
-	UpdatedAt    stdtime.Time `json:"updated_at"`
+	ID                  uuid.UUID     `json:"id"`
+	HouseholdID         uuid.UUID     `json:"household_id"`
+	Email               string        `json:"email"`
+	PasswordHash        string        `json:"password_hash"`
+	DisplayName         string        `json:"display_name"`
+	CreatedAt           stdtime.Time  `json:"created_at"`
+	UpdatedAt           stdtime.Time  `json:"updated_at"`
+	TotpSecretEncrypted []byte        `json:"totp_secret_encrypted"`
+	TotpEnabled         bool          `json:"totp_enabled"`
+	TotpConfirmedAt     *stdtime.Time `json:"totp_confirmed_at"`
+	TotpLastStep        *int64        `json:"totp_last_step"`
+	FailedLoginCount    int32         `json:"failed_login_count"`
+	LockedUntil         *stdtime.Time `json:"locked_until"`
+}
+
+type UserRecoveryCode struct {
+	ID        uuid.UUID     `json:"id"`
+	UserID    uuid.UUID     `json:"user_id"`
+	CodeHash  string        `json:"code_hash"`
+	UsedAt    *stdtime.Time `json:"used_at"`
+	CreatedAt stdtime.Time  `json:"created_at"`
 }

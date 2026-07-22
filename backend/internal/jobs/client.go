@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
@@ -30,6 +31,16 @@ const staleAfter = 55 * time.Minute
 // what the trend chart shows; running more often simply overwrites the day's
 // row, which is harmless but pointless.
 const snapshotInterval = 12 * time.Hour
+
+// securitySweepInterval is how often expired auth state is collected. Nothing
+// depends on it being prompt — every read path already filters on expiry — so
+// this is tuned to keep tables tidy, not to enforce anything.
+const securitySweepInterval = 6 * time.Hour
+
+// authEventRetention is how long the auth audit log is kept. Long enough to
+// investigate something noticed weeks later; short enough that a household
+// deployment never accumulates a table worth worrying about.
+const authEventRetention = 180 * 24 * time.Hour
 
 // NewInsertOnlyClient builds a client that can enqueue jobs but never executes
 // them. The api uses this: it should hand work to the worker, not do it.
@@ -51,6 +62,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer) (*river.Client[pg
 	// enough to make a net-worth figure worth recording.
 	if err := river.AddWorkerSafely(workers, &SnapshotNetWorthWorker{Queries: queries}); err != nil {
 		return nil, fmt.Errorf("register net worth worker: %w", err)
+	}
+
+	// Housekeeping for expired sessions, abandoned MFA challenges and old
+	// audit rows. Like the snapshot, it has nothing to do with Plaid, so it
+	// runs whether or not credentials are configured.
+	if err := river.AddWorkerSafely(workers, &SecuritySweepWorker{
+		Queries:      queries,
+		IdleTTL:      auth.SessionIdleTTL,
+		AuthEventTTL: authEventRetention,
+	}); err != nil {
+		return nil, fmt.Errorf("register security sweep worker: %w", err)
 	}
 
 	// A sync client is only registered when Plaid is configured. Without
@@ -78,6 +100,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer) (*river.Client[pg
 			river.PeriodicInterval(snapshotInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SnapshotNetWorthArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(securitySweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SecuritySweepArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),

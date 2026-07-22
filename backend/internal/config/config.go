@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,17 @@ type Config struct {
 	HTTPAddr       string
 	FrontendOrigin string
 	DatabaseURL    string
+
+	// TrustProxyHeaders declares that a reverse proxy sits in front of this
+	// process and overwrites X-Forwarded-For / X-Forwarded-Proto on the way in.
+	//
+	// It defaults to false, and that default is load-bearing. When it is set,
+	// the api derives the client's IP and scheme from request headers — so if
+	// nothing in front is actually sanitising them, any client can choose its
+	// own apparent IP address and defeat every IP-based rate limit, and can
+	// claim a plain-HTTP request arrived over TLS. Only enable it when
+	// something trustworthy really is in front.
+	TrustProxyHeaders bool
 
 	// EncryptionKey is a 32-byte AES-GCM key used to encrypt Plaid access
 	// tokens at rest. Decoded from the base64 ENCRYPTION_KEY value.
@@ -57,10 +69,11 @@ const SessionTTL = 30 * 24 * time.Hour
 // validating anything the app cannot safely start without.
 func Load() (Config, error) {
 	cfg := Config{
-		AppEnv:         env("APP_ENV", "development"),
-		HTTPAddr:       env("HTTP_ADDR", ":8080"),
-		FrontendOrigin: env("FRONTEND_ORIGIN", "http://localhost:5173"),
-		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		AppEnv:            env("APP_ENV", "development"),
+		HTTPAddr:          env("HTTP_ADDR", ":8080"),
+		FrontendOrigin:    env("FRONTEND_ORIGIN", "http://localhost:5173"),
+		DatabaseURL:       os.Getenv("DATABASE_URL"),
+		TrustProxyHeaders: envBool("TRUST_PROXY_HEADERS", false),
 		Plaid: PlaidConfig{
 			Env:        env("PLAID_ENV", "sandbox"),
 			ClientID:   os.Getenv("PLAID_CLIENT_ID"),
@@ -113,6 +126,18 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool parses a boolean setting. Anything unparseable falls back rather
+// than failing startup — but note every caller's fallback is the *safe*
+// value, so a typo degrades to the restrictive behaviour, never the permissive
+// one.
+func envBool(key string, fallback bool) bool {
+	v, err := strconv.ParseBool(os.Getenv(key))
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 func splitList(s string) []string {

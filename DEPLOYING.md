@@ -145,6 +145,33 @@ ledgermancy.yourdomain.com {
 `APP_ENV=production`, so the browser will refuse to send them over plain HTTP and
 nobody will be able to stay logged in.
 
+### Client IP addresses and your outer proxy
+
+The API rate-limits sign-ins per client address and records that address in the
+security audit log, so it has to know who actually connected.
+
+The production overlay sets `TRUST_PROXY_HEADERS=true` for you. That is safe
+because the bundled nginx **overwrites** the address headers — it clears
+`True-Client-IP` and replaces `X-Forwarded-For` rather than appending to it — and
+because the overlay removes the API's host port entirely, so nothing can reach
+the API without passing through nginx first.
+
+Your outer TLS proxy must set `X-Forwarded-For` and `X-Forwarded-Proto`. Caddy
+and Traefik do this by default; nginx and HAProxy need it configured. If you
+skip it, every sign-in appears to come from the proxy and the per-client rate
+limit becomes a single shared bucket.
+
+Do **not** set `TRUST_PROXY_HEADERS=true` on a deployment where the API is
+reachable directly. Any caller could then choose its own apparent IP, walk past
+every rate limit, and write whatever it liked into the audit log.
+
+Also make sure `.env` is not world-readable — it holds your database password
+and both encryption keys:
+
+```bash
+chmod 600 .env
+```
+
 ---
 
 ## 4. Webhooks
@@ -170,7 +197,59 @@ our own stored access token. A forged webhook wastes a sync; it cannot alter dat
 5. Once the backfill finishes, Spending and Net worth populate automatically.
 
 Registration is invite-only after the first account, so the app is not an open
-signup form on the public internet.
+signup form on the public internet. An invite is also bound to the address it
+was issued for, so an intercepted link cannot be redeemed under a different one.
+
+---
+
+## 5a. Turn on two-factor authentication
+
+Do this immediately after step 1. This account can read every balance and
+transaction in the household, and a password is one phishing email away from
+being someone else's.
+
+1. **Security → Set up two-factor.** Your password is required again here — that
+   is what stops someone with a stolen browser session attaching their own
+   authenticator.
+2. Scan the QR with any TOTP app (Google Authenticator, 1Password, Aegis,
+   Bitwarden). If you cannot scan, the base32 key below it can be typed in.
+3. Enter the 6-digit code to confirm. Enrolment is not complete until you do —
+   an unconfirmed secret never gates a login, so a mis-scan cannot lock you out.
+4. **Save the ten recovery codes.** They are shown exactly once; only hashes are
+   stored, so nobody can recover them for you afterwards.
+
+Enabling two-factor signs out every other device on the account.
+
+### If you lose your phone
+
+Sign in and enter one of your recovery codes instead of the 6-digit code. Each
+works once. Generate a fresh set from the Security page afterwards.
+
+**If you have lost the phone *and* the recovery codes**, there is no email
+recovery — this app sends no mail at all. Clear the second factor directly:
+
+```bash
+docker compose exec postgres psql -U ledgermancy -d ledgermancy -c \
+  "UPDATE users SET totp_enabled = false, totp_secret_encrypted = NULL, \
+                    totp_confirmed_at = NULL, totp_last_step = NULL \
+   WHERE email = 'you@example.com';"
+```
+
+That returns the account to password-only. Sign in and enrol again straight
+away. Anyone who can run that command already has your whole database, so it
+grants nothing they did not have — but it does mean shell access to the server
+is equivalent to account access. Guard it accordingly.
+
+### Other things the Security page does
+
+- **Signed-in devices** — every active session with its browser, address and
+  last-used time. Revoke any you do not recognise, or sign out everywhere.
+- **Recent activity** — the last 50 sign-ins, failures, and security changes.
+  Worth a glance now and then; a failed sign-in you did not make is worth
+  acting on.
+- **Change password** — signs out every other device, by design.
+
+Sessions expire after 30 days, or after 7 days of not being used.
 
 ---
 

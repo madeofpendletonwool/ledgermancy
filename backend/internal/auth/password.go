@@ -74,6 +74,27 @@ func VerifyPassword(password, encodedHash string) error {
 	return nil
 }
 
+// NeedsRehash reports whether encodedHash was produced with weaker parameters
+// than defaultParams, and should therefore be replaced.
+//
+// This is the other half of the promise made above: raising the cost constants
+// only protects existing accounts if something actually re-hashes them. Call it
+// after a successful VerifyPassword, when the plaintext is in hand — that is
+// the only moment a new hash can be computed.
+//
+// A hash that cannot be decoded returns false: it is corrupt rather than
+// merely outdated, and re-hashing is not the fix.
+func NeedsRehash(encodedHash string) bool {
+	p, _, _, err := decodeHash(encodedHash)
+	if err != nil {
+		return false
+	}
+	return p.memoryKiB < defaultParams.memoryKiB ||
+		p.iterations < defaultParams.iterations ||
+		p.parallelism < defaultParams.parallelism ||
+		p.keyLength < defaultParams.keyLength
+}
+
 func decodeHash(encoded string) (argon2Params, []byte, []byte, error) {
 	var p argon2Params
 
