@@ -383,6 +383,43 @@ export interface MonthlySummary {
 /** Optional-feature flags so the UI hides AI surfaces when no key is set. */
 export interface Capabilities {
   ai_enabled: boolean
+  /** Whether an ntfy server is configured, so Settings can gate push controls. */
+  notify_enabled: boolean
+}
+
+/**
+ * One proactive-feed insight. `data` is the deterministic facts the narrative
+ * was built from — money as decimal strings, never summed here. Higher
+ * `priority` sorts first. `read_at`/`dismissed_at` are null until acted on.
+ */
+export interface Insight {
+  id: string
+  kind: string
+  priority: number
+  title: string
+  body: string
+  data: Record<string, string | number>
+  period: string | null
+  created_at: string
+  read_at: string | null
+  dismissed_at: string | null
+}
+
+/**
+ * The caller's resolved preferences: user-scoped values (with reserved-key
+ * defaults filled in by the server) and household-scoped values. Values are
+ * whatever JSON was stored — a string, boolean, or array depending on the key.
+ */
+export interface Preferences {
+  user: Record<string, unknown>
+  household: Record<string, unknown>
+}
+
+/** One preference to upsert. The owning ID is taken from the session, never here. */
+export interface PreferenceWrite {
+  scope: 'user' | 'household'
+  key: string
+  value: unknown
 }
 
 /** One turn in a chatbot conversation. */
@@ -658,8 +695,25 @@ export const api = {
 
   markAllAlertsRead: () => request<void>('POST', '/api/alerts/events/read-all'),
 
+  // --- Preferences --------------------------------------------------------
+  preferences: () => request<Preferences>('GET', '/api/preferences'),
+
+  setPreferences: (items: PreferenceWrite[]) =>
+    request<void>('PUT', '/api/preferences', { items }),
+
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
+
+  // The proactive feed. state 'all' includes dismissed insights; the default
+  // 'unread' hides them.
+  insights: (params: { state?: 'unread' | 'all' } = {}) =>
+    request<Insight[]>('GET', withQuery('/api/insights/', params)),
+
+  markInsightRead: (id: string) =>
+    request<void>('POST', `/api/insights/${id}/read`),
+
+  dismissInsight: (id: string) =>
+    request<void>('POST', `/api/insights/${id}/dismiss`),
 
   recurring: () =>
     request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
@@ -676,8 +730,77 @@ export const api = {
       withQuery('/api/reports/monthly-summary', { month }),
     ),
 
-  chat: (messages: ChatTurn[]) =>
-    request<{ reply: string }>('POST', '/api/chat', { messages }),
+  // The chat endpoint streams its answer as Server-Sent Events: one
+  // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
+  // onDelta is called as text arrives so the UI can render it live.
+  chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
+    streamChat(messages, onDelta),
+}
+
+// streamChat POSTs the transcript and reads the SSE body, invoking onDelta for
+// each token. It resolves when the stream reports done and rejects on an error
+// frame or a transport failure, so callers can await completion.
+async function streamChat(
+  messages: ChatTurn[],
+  onDelta: (text: string) => void,
+): Promise<void> {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': await ensureCsrfToken(),
+      Accept: 'text/event-stream',
+    },
+    credentials: 'include',
+    body: JSON.stringify({ messages }),
+  })
+
+  if (!res.ok || !res.body) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  // SSE frames are separated by a blank line; each frame's payload is the
+  // concatenation of its `data:` lines. We only ever emit single-line frames,
+  // but parse defensively.
+  const handleFrame = (frame: string) => {
+    const data = frame
+      .split('\n')
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.slice(5).trim())
+      .join('')
+    if (!data) return
+    const evt = JSON.parse(data) as {
+      delta?: string
+      done?: boolean
+      error?: string
+    }
+    if (evt.error) throw new ApiError(500, evt.error)
+    if (evt.delta) onDelta(evt.delta)
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      handleFrame(frame)
+    }
+  }
+  if (buffer.trim()) handleFrame(buffer)
 }
 
 // Generic rather than Record<string, unknown>: an interface without an index

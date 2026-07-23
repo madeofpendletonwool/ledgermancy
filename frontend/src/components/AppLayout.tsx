@@ -9,14 +9,16 @@ type NavItem = { to: string; label: string; end: boolean }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', end: true },
+  { to: '/insights', label: 'Insights', end: false },
   { to: '/spending', label: 'Spending', end: false },
+  { to: '/budgets', label: 'Budgets', end: false },
   { to: '/net-worth', label: 'Net worth', end: false },
   { to: '/accounts', label: 'Accounts', end: false },
   { to: '/transactions', label: 'Transactions', end: false },
   { to: '/report', label: 'Report', end: false },
   { to: '/alerts', label: 'Alerts', end: false },
   { to: '/household', label: 'Household', end: false },
-  { to: '/security', label: 'Security', end: false },
+  { to: '/settings', label: 'Settings', end: false },
 ]
 
 // The assistant tab only appears when an AI provider is configured; slotted in

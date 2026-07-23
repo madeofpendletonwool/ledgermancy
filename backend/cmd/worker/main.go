@@ -16,6 +16,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/db"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/jobs"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
 
@@ -74,7 +75,11 @@ func run() error {
 	// categorisation jobs are simply not registered.
 	aiClient := ai.New(cfg.AI)
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient)
+	// Always constructed too; delivery is gated per-user inside the notifier, so
+	// there is nothing to branch on here.
+	notifier := notify.New(cfg.NTFY, dbgen.New(pool))
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, cfg.FrontendOrigin)
 	if err != nil {
 		return err
 	}

@@ -280,7 +280,7 @@ const insertAlertEvent = `-- name: InsertAlertEvent :one
 
 INSERT INTO alert_events (alert_id, transaction_id, payload)
 VALUES ($1, $2, $3)
-RETURNING id, alert_id, transaction_id, triggered_at, payload, read_at
+RETURNING id, alert_id, transaction_id, triggered_at, payload, read_at, notified_at
 `
 
 type InsertAlertEventParams struct {
@@ -302,6 +302,7 @@ func (q *Queries) InsertAlertEvent(ctx context.Context, arg InsertAlertEventPara
 		&i.TriggeredAt,
 		&i.Payload,
 		&i.ReadAt,
+		&i.NotifiedAt,
 	)
 	return i, err
 }
@@ -447,6 +448,57 @@ func (q *Queries) ListEnabledAlerts(ctx context.Context, householdID uuid.UUID) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const listUnnotifiedAlertEvents = `-- name: ListUnnotifiedAlertEvents :many
+SELECT e.id, e.payload, al.type AS alert_type
+FROM alert_events e
+JOIN alerts al ON al.id = e.alert_id
+WHERE al.household_id = $1
+  AND e.notified_at IS NULL
+ORDER BY e.triggered_at
+`
+
+type ListUnnotifiedAlertEventsRow struct {
+	ID        uuid.UUID `json:"id"`
+	Payload   []byte    `json:"payload"`
+	AlertType string    `json:"alert_type"`
+}
+
+// New alert events for a household that have not yet been dispatched for push.
+// Joined to the rule for its type so the dispatcher can match against each
+// member's notify.push_kinds. Oldest first, so pushes arrive in the order the
+// events were raised.
+func (q *Queries) ListUnnotifiedAlertEvents(ctx context.Context, householdID uuid.UUID) ([]ListUnnotifiedAlertEventsRow, error) {
+	rows, err := q.db.Query(ctx, listUnnotifiedAlertEvents, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnnotifiedAlertEventsRow{}
+	for rows.Next() {
+		var i ListUnnotifiedAlertEventsRow
+		if err := rows.Scan(&i.ID, &i.Payload, &i.AlertType); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markAlertEventNotified = `-- name: MarkAlertEventNotified :exec
+UPDATE alert_events SET notified_at = now()
+WHERE id = $1 AND notified_at IS NULL
+`
+
+// Stamp an event as dispatched. Called once per event after its member
+// notifications are enqueued, so a re-run or overlapping sweep skips it.
+func (q *Queries) MarkAlertEventNotified(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markAlertEventNotified, id)
+	return err
 }
 
 const markAlertEventRead = `-- name: MarkAlertEventRead :exec

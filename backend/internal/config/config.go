@@ -35,6 +35,7 @@ type Config struct {
 
 	Plaid PlaidConfig
 	AI    AIConfig
+	NTFY  NTFYConfig
 }
 
 // PlaidConfig holds Plaid API credentials and the set of enabled products.
@@ -57,6 +58,19 @@ type AIConfig struct {
 
 // Enabled reports whether AI-backed features should be offered.
 func (a AIConfig) Enabled() bool { return a.APIKey != "" }
+
+// NTFYConfig points at an ntfy server (the public https://ntfy.sh by default,
+// or a self-hosted instance) used for external push. The base URL is always
+// defaulted, so Enabled() is effectively "a server is reachable"; the real
+// per-user switch is the notify.channel/notify.ntfy_topic preference, checked
+// inside the notifier's Send.
+type NTFYConfig struct {
+	BaseURL string
+	Token   string // optional Bearer for protected/self-hosted topics
+}
+
+// Enabled reports whether push delivery will be attempted at all.
+func (n NTFYConfig) Enabled() bool { return n.BaseURL != "" }
 
 // IsProduction reports whether the app is running in a production environment,
 // which tightens cookie and TLS behaviour.
@@ -85,6 +99,10 @@ func Load() (Config, error) {
 			BaseURL: env("AI_BASE_URL", "https://api.anthropic.com"),
 			APIKey:  os.Getenv("AI_API_KEY"),
 			Model:   env("AI_MODEL", "glm-4.6"),
+		},
+		NTFY: NTFYConfig{
+			BaseURL: env("NTFY_BASE_URL", "https://ntfy.sh"),
+			Token:   os.Getenv("NTFY_TOKEN"),
 		},
 	}
 

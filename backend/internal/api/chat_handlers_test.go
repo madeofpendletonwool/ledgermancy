@@ -17,6 +17,10 @@ func TestChatToolDefs(t *testing.T) {
 		"budget_status":     true,
 		"net_worth":         true,
 		"recurring_charges": true,
+		"list_transactions": true,
+		"monthly_trend":     true,
+		"category_averages": true,
+		"spending_by_day":   true,
 	}
 	if len(defs) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(defs), len(want))
@@ -63,5 +67,42 @@ func TestToolMonthFromInput(t *testing.T) {
 	}
 	if _, _, err := toolMonth(json.RawMessage(`{"month":"2025-01"}`)); err != nil {
 		t.Errorf("explicit month: %v", err)
+	}
+}
+
+// toolMonths clamps to 1-24 and defaults to 12, so a missing or silly value
+// never produces an empty or absurd trailing window.
+func TestToolMonths(t *testing.T) {
+	cases := map[string]int{
+		`{}`:              12,
+		`{"months":0}`:    12,
+		`{"months":25}`:   12,
+		`{"months":-3}`:   12,
+		`{"months":1}`:    1,
+		`{"months":6}`:    6,
+		`{"months":24}`:   24,
+		`{"months":"x"}`:  12, // malformed value ignored
+	}
+	for in, want := range cases {
+		if got := toolMonths(json.RawMessage(in)); got != want {
+			t.Errorf("toolMonths(%s) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// trailingMonthsRange spans the current month plus the n-1 before it, always
+// landing on the first and last calendar days.
+func TestTrailingMonthsRange(t *testing.T) {
+	from, to := trailingMonthsRange(12)
+	if from.Day() != 1 {
+		t.Errorf("from should be the 1st, got %s", from.Format(time.DateOnly))
+	}
+	// 12 months inclusive means the start is 11 months before the end's month.
+	months := int(to.Year()-from.Year())*12 + int(to.Month()-from.Month())
+	if months != 11 {
+		t.Errorf("expected 11 months between start and end month, got %d", months)
+	}
+	if to.Before(from) {
+		t.Errorf("to %s is before from %s", to.Format(time.DateOnly), from.Format(time.DateOnly))
 	}
 }

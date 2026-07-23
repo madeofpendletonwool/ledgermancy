@@ -45,6 +45,7 @@ type AlertEvent struct {
 	TriggeredAt   stdtime.Time  `json:"triggered_at"`
 	Payload       []byte        `json:"payload"`
 	ReadAt        *stdtime.Time `json:"read_at"`
+	NotifiedAt    *stdtime.Time `json:"notified_at"`
 }
 
 type AuthEvent struct {
@@ -129,6 +130,21 @@ type HouseholdInvite struct {
 	ExpiresAt   stdtime.Time  `json:"expires_at"`
 	AcceptedAt  *stdtime.Time `json:"accepted_at"`
 	CreatedAt   stdtime.Time  `json:"created_at"`
+}
+
+type Insight struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	Kind        string        `json:"kind"`
+	Priority    int16         `json:"priority"`
+	Title       string        `json:"title"`
+	Body        string        `json:"body"`
+	Data        []byte        `json:"data"`
+	Period      *stdtime.Time `json:"period"`
+	DedupeKey   string        `json:"dedupe_key"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+	ReadAt      *stdtime.Time `json:"read_at"`
+	DismissedAt *stdtime.Time `json:"dismissed_at"`
 }
 
 type InvestmentTransaction struct {
@@ -250,6 +266,16 @@ type PlaidItem struct {
 	CreatedAt            stdtime.Time  `json:"created_at"`
 	UpdatedAt            stdtime.Time  `json:"updated_at"`
 	LastRefreshAt        *stdtime.Time `json:"last_refresh_at"`
+}
+
+type Preference struct {
+	ID          uuid.UUID    `json:"id"`
+	Scope       string       `json:"scope"`
+	UserID      *uuid.UUID   `json:"user_id"`
+	HouseholdID *uuid.UUID   `json:"household_id"`
+	Key         string       `json:"key"`
+	Value       []byte       `json:"value"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
 type Security struct {

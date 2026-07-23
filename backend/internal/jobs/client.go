@@ -15,6 +15,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
 
@@ -54,6 +55,12 @@ const llmSweepInterval = 15 * time.Minute
 // quiet household still surfaces. Evaluation is cheap deterministic SQL.
 const alertSweepInterval = 30 * time.Minute
 
+// insightInterval is how often every household's proactive feed is regenerated
+// independently of syncs, so a quiet household still surfaces a budget crossing
+// the calendar rolls into. Detection is cheap deterministic SQL; phrasing (when
+// AI is configured) only runs on the candidates a household actually has.
+const insightInterval = time.Hour
+
 // securitySweepInterval is how often expired auth state is collected. Nothing
 // depends on it being prompt — every read path already filters on expiry — so
 // this is tuned to keep tables tidy, not to enforce anything.
@@ -76,8 +83,11 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 
 // NewWorkerClient builds the client that actually runs jobs. The AI client is
 // always passed; when it is disabled the categorisation jobs are simply not
-// registered, so the queue behaves exactly as it did before phase 6.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client) (*river.Client[pgx.Tx], error) {
+// registered, so the queue behaves exactly as it did before phase 6. The
+// notifier is likewise always passed and always registered — it is not
+// AI-gated; delivery is gated per-user inside the notifier. appURL is the
+// frontend origin used to build notification deep links.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
@@ -90,8 +100,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	}
 
 	// Alert evaluation is deterministic and AI-independent, so it always runs.
-	if err := river.AddWorkerSafely(workers, &EvaluateAlertsWorker{Queries: queries}); err != nil {
-		return nil, fmt.Errorf("register alerts worker: %w", err)
+	// Its worker enqueues notify jobs, so it needs the client and is registered
+	// after construction (below), not here.
+
+	// Push delivery is not AI-gated: the notifier is always constructed and the
+	// worker always registered, with per-user gating inside Send.
+	if err := river.AddWorkerSafely(workers, &NotifyWorker{Notifier: notifier}); err != nil {
+		return nil, fmt.Errorf("register notify worker: %w", err)
 	}
 
 	// Housekeeping for expired sessions, abandoned MFA challenges and old audit
@@ -103,6 +118,18 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		AuthEventTTL: authEventRetention,
 	}); err != nil {
 		return nil, fmt.Errorf("register security sweep worker: %w", err)
+	}
+
+	// Insight generation is deterministic and useful without a key — only the
+	// phrasing inside insights.Generate is AI-gated — so the per-household
+	// worker is registered unconditionally (unlike the LLM workers below). This
+	// is a deliberate deviation from the shared-contract's "AI-gated periodic
+	// jobs" list: literal AI-gating would leave the feed empty without a key,
+	// defeating the point of a deterministic feed. The AI client is still passed
+	// through; the engine no-ops the phrasing when it is disabled. The sweep
+	// that enqueues this worker needs the client and is registered afterwards.
+	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{Queries: queries, AI: aiClient}); err != nil {
+		return nil, fmt.Errorf("register insights worker: %w", err)
 	}
 
 	// The per-household categorise worker only needs the AI client and queries,
@@ -146,6 +173,15 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(securitySweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SecuritySweepArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// The insight sweep is deterministic (phrasing is separately AI-gated),
+		// so it runs whether or not a key is configured.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(insightInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return GenerateInsightsAllArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
@@ -197,10 +233,26 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		}
 	}
 
+	// The per-household evaluation worker enqueues notify jobs on the client, so
+	// it is registered after construction like the sweeps.
+	if err := river.AddWorkerSafely(workers, &EvaluateAlertsWorker{
+		Queries: queries, Client: client, AppURL: appURL,
+	}); err != nil {
+		return nil, fmt.Errorf("register alerts worker: %w", err)
+	}
+
 	if err := river.AddWorkerSafely(workers, &EvaluateAlertsAllWorker{
 		Queries: queries, Client: client,
 	}); err != nil {
 		return nil, fmt.Errorf("register alerts sweep worker: %w", err)
+	}
+
+	// The insight sweep enqueues per-household jobs, so it needs the client and
+	// is registered after construction. Always on, like the alert sweep.
+	if err := river.AddWorkerSafely(workers, &GenerateInsightsAllWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register insights sweep worker: %w", err)
 	}
 
 	if aiEnabled {

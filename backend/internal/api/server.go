@@ -191,6 +191,12 @@ func (s *Server) Routes() http.Handler {
 			r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
 		})
 
+		r.Route("/preferences", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleGetPreferences)
+			r.Put("/", s.handleUpsertPreferences)
+		})
+
 		r.Route("/plaid", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Post("/link-token", s.handleCreateLinkToken)
@@ -273,6 +279,13 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/capabilities", s.handleCapabilities)
 			r.Post("/chat", s.handleChat)
+		})
+
+		r.Route("/insights", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListInsights)
+			r.Post("/{insightID}/read", s.handleMarkInsightRead)
+			r.Post("/{insightID}/dismiss", s.handleDismissInsight)
 		})
 
 		r.Route("/alerts", func(r chi.Router) {

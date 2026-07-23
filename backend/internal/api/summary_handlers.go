@@ -20,7 +20,10 @@ const summaryTopCategories = 5
 // so it can hide AI-only surfaces (summaries, chat) when no key is configured
 // rather than offering a button that only ever returns 503.
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"ai_enabled": s.AI.Enabled()})
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"ai_enabled":     s.AI.Enabled(),
+		"notify_enabled": s.Config.NTFY.Enabled(),
+	})
 }
 
 type monthlySummaryResponse struct {

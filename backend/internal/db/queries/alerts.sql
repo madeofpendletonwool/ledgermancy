@@ -169,6 +169,24 @@ INSERT INTO alert_events (alert_id, transaction_id, payload)
 VALUES ($1, $2, $3)
 RETURNING *;
 
+-- name: ListUnnotifiedAlertEvents :many
+-- New alert events for a household that have not yet been dispatched for push.
+-- Joined to the rule for its type so the dispatcher can match against each
+-- member's notify.push_kinds. Oldest first, so pushes arrive in the order the
+-- events were raised.
+SELECT e.id, e.payload, al.type AS alert_type
+FROM alert_events e
+JOIN alerts al ON al.id = e.alert_id
+WHERE al.household_id = $1
+  AND e.notified_at IS NULL
+ORDER BY e.triggered_at;
+
+-- name: MarkAlertEventNotified :exec
+-- Stamp an event as dispatched. Called once per event after its member
+-- notifications are enqueued, so a re-run or overlapping sweep skips it.
+UPDATE alert_events SET notified_at = now()
+WHERE id = $1 AND notified_at IS NULL;
+
 -- name: AlertEventExistsForPeriod :one
 -- Dedup for aggregate alerts: has this alert already fired for this period
 -- (and, for budgets, this category)? category_key is '' for whole-period

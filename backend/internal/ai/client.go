@@ -11,6 +11,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -203,6 +204,40 @@ type wireRequest struct {
 	Messages   []Message `json:"messages"`
 	Tools      []Tool    `json:"tools,omitempty"`
 	ToolChoice any       `json:"tool_choice,omitempty"`
+	Stream     bool      `json:"stream,omitempty"`
+}
+
+// marshalWire builds the exact JSON body for one call. stream toggles SSE.
+func (c *Client) marshalWire(req Request, stream bool) ([]byte, error) {
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+	body, err := json.Marshal(wireRequest{
+		Model:      c.model,
+		MaxTokens:  maxTokens,
+		System:     req.System,
+		Messages:   req.Messages,
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
+		Stream:     stream,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ai: marshal request: %w", err)
+	}
+	return body, nil
+}
+
+// newMessagesRequest builds the HTTP request with the shared auth headers.
+func (c *Client) newMessagesRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("ai: build request: %w", err)
+	}
+	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("x-api-key", c.apiKey)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	return httpReq, nil
 }
 
 // Complete performs one Messages API call. It returns ErrDisabled when no key
@@ -212,30 +247,14 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 		return nil, ErrDisabled
 	}
 
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = defaultMaxTokens
-	}
-
-	body, err := json.Marshal(wireRequest{
-		Model:      c.model,
-		MaxTokens:  maxTokens,
-		System:     req.System,
-		Messages:   req.Messages,
-		Tools:      req.Tools,
-		ToolChoice: req.ToolChoice,
-	})
+	body, err := c.marshalWire(req, false)
 	if err != nil {
-		return nil, fmt.Errorf("ai: marshal request: %w", err)
+		return nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
+	httpReq, err := c.newMessagesRequest(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("ai: build request: %w", err)
+		return nil, err
 	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
 
 	start := time.Now()
 	resp, err := c.http.Do(httpReq)
@@ -259,6 +278,173 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	slog.Info("ai completion",
+		"model", c.model,
+		"stop_reason", out.StopReason,
+		"input_tokens", out.Usage.InputTokens,
+		"output_tokens", out.Usage.OutputTokens,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return &out, nil
+}
+
+// streamEvent is one Messages API SSE event. The `data:` payload carries its
+// own `type`, so the `event:` line is ignored and this is switched on Type.
+type streamEvent struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock *struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"content_block"`
+	Delta *struct {
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
+	} `json:"delta"`
+	Usage   *Usage `json:"usage"`
+	Message *struct {
+		Usage Usage `json:"usage"`
+	} `json:"message"`
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// CompleteStream performs a streaming Messages API call. Assistant text is
+// forwarded to onText as it arrives; the fully assembled Response is returned
+// once the stream ends. That Response is identical in shape to Complete's — the
+// same text and tool_use blocks — so the tool-calling loop can treat streaming
+// and non-streaming calls the same. onText sees only user-visible text; tool_use
+// blocks are reassembled silently and surface in the returned Content.
+func (c *Client) CompleteStream(ctx context.Context, req Request, onText func(string)) (*Response, error) {
+	if !c.Enabled() {
+		return nil, ErrDisabled
+	}
+
+	body, err := c.marshalWire(req, true)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := c.newMessagesRequest(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("accept", "text/event-stream")
+
+	start := time.Now()
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("ai: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
+
+	// One accumulator per content block, keyed by the stream's block index.
+	// Text builds up as text_delta arrives; tool_use input builds up from
+	// input_json_delta fragments.
+	type blockAcc struct {
+		typ   string
+		id    string
+		name  string
+		text  strings.Builder
+		input strings.Builder
+	}
+	var blocks []*blockAcc
+	ensure := func(i int) *blockAcc {
+		for len(blocks) <= i {
+			blocks = append(blocks, &blockAcc{})
+		}
+		return blocks[i]
+	}
+
+	out := Response{Role: RoleAssistant}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// SSE lines can be large (a whole content block's JSON); raise the cap well
+	// above the default 64KB so a big tool input is never truncated.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+
+		var ev streamEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			// A frame we cannot parse is skipped rather than failing the turn.
+			continue
+		}
+
+		switch ev.Type {
+		case "message_start":
+			if ev.Message != nil {
+				out.Usage.InputTokens = ev.Message.Usage.InputTokens
+			}
+		case "content_block_start":
+			b := ensure(ev.Index)
+			if ev.ContentBlock != nil {
+				b.typ = ev.ContentBlock.Type
+				b.id = ev.ContentBlock.ID
+				b.name = ev.ContentBlock.Name
+			}
+		case "content_block_delta":
+			b := ensure(ev.Index)
+			if ev.Delta != nil {
+				switch ev.Delta.Type {
+				case "text_delta":
+					b.text.WriteString(ev.Delta.Text)
+					if onText != nil && ev.Delta.Text != "" {
+						onText(ev.Delta.Text)
+					}
+				case "input_json_delta":
+					b.input.WriteString(ev.Delta.PartialJSON)
+				}
+			}
+		case "message_delta":
+			if ev.Delta != nil && ev.Delta.StopReason != "" {
+				out.StopReason = ev.Delta.StopReason
+			}
+			if ev.Usage != nil {
+				out.Usage.OutputTokens = ev.Usage.OutputTokens
+			}
+		case "error":
+			if ev.Error != nil {
+				return nil, &APIError{StatusCode: resp.StatusCode, Body: ev.Error.Message}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("ai: read stream: %w", err)
+	}
+
+	for _, b := range blocks {
+		switch b.typ {
+		case "text":
+			out.Content = append(out.Content, Block{Type: "text", Text: b.text.String()})
+		case "tool_use":
+			raw := b.input.String()
+			if strings.TrimSpace(raw) == "" {
+				// A tool call with no arguments still needs valid JSON input.
+				raw = "{}"
+			}
+			out.Content = append(out.Content, Block{
+				Type: "tool_use", ID: b.id, Name: b.name, Input: json.RawMessage(raw),
+			})
+		}
+	}
+
+	slog.Info("ai stream",
 		"model", c.model,
 		"stop_reason", out.StopReason,
 		"input_tokens", out.Usage.InputTokens,

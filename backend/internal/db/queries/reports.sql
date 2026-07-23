@@ -223,6 +223,7 @@ gaps AS (
         merchant_key,
         merchant,
         amount,
+        date,
         date - LAG(date) OVER (PARTITION BY merchant_key ORDER BY date) AS gap
     FROM tx
 ),

@@ -64,3 +64,66 @@ WHERE u.household_id = $1
   AND (sqlc.narg('account_id')::uuid IS NULL OR t.account_id = sqlc.narg('account_id')::uuid)
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6;
+
+-- name: SumFilteredTransactions :one
+-- Exact count and total of spending transactions in a period, optionally
+-- narrowed to a category and/or merchant. Backs the assistant's breakdown tool
+-- so the model quotes SQL-computed figures rather than summing rows itself.
+--
+-- Filters mirror GetSpendingByCategory exactly (money out, non-income,
+-- non-transfer, categorised) so a category count here reconciles with that
+-- report. Category matches on exact slug or a name substring; merchant matches
+-- on a name substring — both case-insensitive, both optional.
+SELECT
+    COUNT(*)::bigint                    AS transaction_count,
+    COALESCE(SUM(t.amount), 0)::numeric AS total
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND (sqlc.narg('category')::text IS NULL
+       OR c.slug = lower(sqlc.narg('category')::text)
+       OR c.name ILIKE '%' || sqlc.narg('category')::text || '%')
+  AND (sqlc.narg('merchant')::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('merchant')::text || '%');
+
+-- name: ListFilteredTransactions :many
+-- The per-transaction breakdown behind the same tool. Same filters as
+-- SumFilteredTransactions; the list may be capped by the limit while the sum
+-- above stays exact over every match.
+SELECT
+    t.date,
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount,
+    c.name AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND (sqlc.narg('category')::text IS NULL
+       OR c.slug = lower(sqlc.narg('category')::text)
+       OR c.name ILIKE '%' || sqlc.narg('category')::text || '%')
+  AND (sqlc.narg('merchant')::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('merchant')::text || '%')
+ORDER BY t.date DESC, t.amount DESC
+LIMIT sqlc.arg('lim');

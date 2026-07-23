@@ -54,6 +54,88 @@ func (q *Queries) DeleteTransactionByPlaidID(ctx context.Context, plaidTransacti
 	return result.RowsAffected(), nil
 }
 
+const listFilteredTransactions = `-- name: ListFilteredTransactions :many
+SELECT
+    t.date,
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount,
+    c.name AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND ($5::text IS NULL
+       OR c.slug = lower($5::text)
+       OR c.name ILIKE '%' || $5::text || '%')
+  AND ($6::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $6::text || '%')
+ORDER BY t.date DESC, t.amount DESC
+LIMIT $7
+`
+
+type ListFilteredTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Category    *string      `json:"category"`
+	Merchant    *string      `json:"merchant"`
+	Lim         int32        `json:"lim"`
+}
+
+type ListFilteredTransactionsRow struct {
+	Date         stdtime.Time    `json:"date"`
+	Merchant     string          `json:"merchant"`
+	Amount       decimal.Decimal `json:"amount"`
+	CategoryName string          `json:"category_name"`
+}
+
+// The per-transaction breakdown behind the same tool. Same filters as
+// SumFilteredTransactions; the list may be capped by the limit while the sum
+// above stays exact over every match.
+func (q *Queries) ListFilteredTransactions(ctx context.Context, arg ListFilteredTransactionsParams) ([]ListFilteredTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listFilteredTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Category,
+		arg.Merchant,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFilteredTransactionsRow{}
+	for rows.Next() {
+		var i ListFilteredTransactionsRow
+		if err := rows.Scan(
+			&i.Date,
+			&i.Merchant,
+			&i.Amount,
+			&i.CategoryName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
 SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name
 FROM transactions t
@@ -161,6 +243,67 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		return nil, err
 	}
 	return items, nil
+}
+
+const sumFilteredTransactions = `-- name: SumFilteredTransactions :one
+SELECT
+    COUNT(*)::bigint                    AS transaction_count,
+    COALESCE(SUM(t.amount), 0)::numeric AS total
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND ($5::text IS NULL
+       OR c.slug = lower($5::text)
+       OR c.name ILIKE '%' || $5::text || '%')
+  AND ($6::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $6::text || '%')
+`
+
+type SumFilteredTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Category    *string      `json:"category"`
+	Merchant    *string      `json:"merchant"`
+}
+
+type SumFilteredTransactionsRow struct {
+	TransactionCount int64           `json:"transaction_count"`
+	Total            decimal.Decimal `json:"total"`
+}
+
+// Exact count and total of spending transactions in a period, optionally
+// narrowed to a category and/or merchant. Backs the assistant's breakdown tool
+// so the model quotes SQL-computed figures rather than summing rows itself.
+//
+// Filters mirror GetSpendingByCategory exactly (money out, non-income,
+// non-transfer, categorised) so a category count here reconciles with that
+// report. Category matches on exact slug or a name substring; merchant matches
+// on a name substring — both case-insensitive, both optional.
+func (q *Queries) SumFilteredTransactions(ctx context.Context, arg SumFilteredTransactionsParams) (SumFilteredTransactionsRow, error) {
+	row := q.db.QueryRow(ctx, sumFilteredTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Category,
+		arg.Merchant,
+	)
+	var i SumFilteredTransactionsRow
+	err := row.Scan(&i.TransactionCount, &i.Total)
+	return i, err
 }
 
 const upsertTransaction = `-- name: UpsertTransaction :one

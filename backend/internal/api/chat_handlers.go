@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -28,12 +30,24 @@ const maxChatMessages = 40
 // stance the design calls for.
 const chatSystemPrompt = `You are the assistant for Ledgermancy, a household finance app.
 Answer questions about the household's own money using the provided tools.
-Rules:
-- For any figure, category, budget, or balance, CALL A TOOL. Never invent or estimate numbers.
+
+Numbers:
+- For any figure, category, budget, balance, count, or total, CALL A TOOL. Never invent or estimate numbers.
+- NEVER do arithmetic yourself — do not add up a list of transactions, average them, or compute a difference. Every number you state must come verbatim from a tool result. Tools return exact counts and totals; quote those.
+- For "how many times" or "how much did I spend on X", use spend_by_category (it returns a count and total per category) or list_transactions (an exact count and total for a category/merchant).
+- For a breakdown or "list every…", call list_transactions and present its transactions. Its count and total are computed over ALL matches; the list may be truncated (see the "truncated" flag) — say so if it is, and still quote the full count/total.
+- To filter by category, first learn the exact category names from spend_by_category, then pass one to list_transactions.
+- For "vs last month", "trend", or "on average", use monthly_trend or category_averages.
+
+Conventions:
 - Amounts are US dollars; months are "YYYY-MM". If no month is given, assume the current month.
 - Spending is money out; income and transfers are excluded from spending totals.
-- Be concise and concrete. Quote the amounts the tools return. If a tool returns nothing, say so plainly.
-- You can only see this household's data. Do not claim to access anything else.`
+- You can only see this household's data. Do not claim to access anything else.
+
+Style:
+- Be concise and concrete. If a tool returns nothing, say so plainly.
+- Format lists and comparisons as GitHub-flavored Markdown tables, and bold the key figure in a sentence. Your replies are rendered as Markdown.
+- When you call a tool, do not narrate that you are doing so — only produce prose in your final answer.`
 
 type chatRequestBody struct {
 	Messages []chatMessage `json:"messages"`
@@ -42,10 +56,6 @@ type chatRequestBody struct {
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-}
-
-type chatResponseBody struct {
-	Reply string `json:"reply"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -79,33 +89,74 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, ai.Message{Role: role, Content: []ai.Block{ai.TextBlock(m.Content)}})
 	}
 
-	reply, err := s.runChat(r.Context(), identity, messages)
-	if err != nil {
-		s.internalError(w, "chat", err)
+	// Everything below streams over Server-Sent Events: one `{"delta":...}`
+	// frame per chunk of answer, a terminal `{"done":true}`, or `{"error":...}`
+	// if the turn fails. Validation above still returns a normal JSON error,
+	// because nothing has been written yet.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Tell any nginx in front of us not to buffer this response, so tokens reach
+	// the browser as they are written rather than in one batch at the end.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	sendSSE := func(v any) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	onDelta := func(delta string) { sendSSE(map[string]string{"delta": delta}) }
+
+	if _, err := s.runChat(r.Context(), identity, messages, onDelta); err != nil {
+		slog.Error("chat", "error", err)
+		sendSSE(map[string]string{"error": "Something went wrong answering that."})
 		return
 	}
-	writeJSON(w, http.StatusOK, chatResponseBody{Reply: reply})
+	sendSSE(map[string]bool{"done": true})
 }
 
 // runChat drives the tool-calling loop: the model may ask to run scoped queries,
-// whose results are fed back until it produces a final text answer.
-func (s *Server) runChat(ctx context.Context, identity auth.Identity, messages []ai.Message) (string, error) {
+// whose results are fed back until it produces a final text answer. The final
+// answer's text is streamed to onText as it is generated; the full text is also
+// returned. Tool-calling turns produce no user-visible text (the system prompt
+// forbids it), so nothing leaks between lookups.
+func (s *Server) runChat(ctx context.Context, identity auth.Identity, messages []ai.Message, onText func(string)) (string, error) {
 	tools := chatToolDefs()
 
+	// The model has no clock of its own, so it cannot resolve "July" or "last
+	// month" without being told today's date. Inject it into the system prompt.
+	system := chatSystemPrompt + "\n\nToday's date is " +
+		time.Now().Format("Monday, 2 January 2006") +
+		". Use it to resolve months like \"July\" (the most recent one) and phrases like \"last month\"."
+
 	for i := 0; i < maxToolIterations; i++ {
-		resp, err := s.AI.Complete(ctx, ai.Request{
-			System:    chatSystemPrompt,
+		resp, streamed, err := s.chatComplete(ctx, ai.Request{
+			System:    system,
 			Messages:  messages,
 			Tools:     tools,
 			MaxTokens: 1024,
-		})
+		}, onText)
 		if err != nil {
 			return "", err
 		}
 
 		uses := resp.ToolUses()
 		if len(uses) == 0 {
-			return resp.Text(), nil
+			text := resp.Text()
+			// The streaming path already forwarded this text token by token;
+			// the fallback path did not, so emit it once here.
+			if !streamed && onText != nil {
+				onText(text)
+			}
+			return text, nil
 		}
 
 		// Echo the assistant's tool_use turn back, then answer each call.
@@ -125,7 +176,38 @@ func (s *Server) runChat(ctx context.Context, identity auth.Identity, messages [
 	}
 
 	// Ran out of iterations without a final answer.
-	return "I wasn't able to work that out — try asking in a simpler way.", nil
+	msg := "I wasn't able to work that out — try asking in a simpler way."
+	if onText != nil {
+		onText(msg)
+	}
+	return msg, nil
+}
+
+// chatComplete runs one model turn, streaming assistant text to onText. It
+// prefers the streaming endpoint but falls back to a single non-streaming call
+// if streaming fails before any text was emitted (e.g. an endpoint that does
+// not support SSE) — so the assistant keeps working regardless. The returned
+// bool reports whether the text was streamed, so the caller knows whether it
+// still needs to emit the final answer itself.
+func (s *Server) chatComplete(ctx context.Context, req ai.Request, onText func(string)) (*ai.Response, bool, error) {
+	emitted := false
+	resp, err := s.AI.CompleteStream(ctx, req, func(delta string) {
+		emitted = true
+		if onText != nil {
+			onText(delta)
+		}
+	})
+	if err == nil {
+		return resp, true, nil
+	}
+	// If text was already streamed, falling back would duplicate it — surface
+	// the error instead.
+	if emitted {
+		return nil, false, err
+	}
+	slog.Warn("ai stream failed; falling back to non-streaming", "error", err)
+	resp, err = s.AI.Complete(ctx, req)
+	return resp, false, err
 }
 
 // chatToolDefs are the read-only tools the assistant may call. Each maps to an
@@ -140,13 +222,33 @@ func chatToolDefs() []ai.Tool {
 		},
 		{
 			Name:        "spend_by_category",
-			Description: "Spending broken down by category for a month, largest first.",
+			Description: "Spending by category for a month, largest first. Each category includes the number of transactions (count) — use it to answer \"how many times\" questions.",
 			InputSchema: monthSchema,
 		},
 		{
 			Name:        "top_merchants",
-			Description: "The merchants you spent the most at in a month.",
+			Description: "The merchants you spent the most at in a month, with the number of transactions at each.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"month":{"type":"string"},"limit":{"type":"integer","description":"How many, 1-20"}}}`),
+		},
+		{
+			Name:        "list_transactions",
+			Description: "Individual transactions for a month, optionally filtered to a category and/or merchant. Returns an exact count and total plus the matching transactions — use this for breakdowns and \"list every…\" questions. The count and total are computed over ALL matches; the transactions list may be capped by limit.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"month":{"type":"string","description":"Month as YYYY-MM; omit for the current month"},"category":{"type":"string","description":"Category name or slug to filter by, e.g. \"Food & Drink\". Learn exact names from spend_by_category first."},"merchant":{"type":"string","description":"Merchant name substring to filter by"},"limit":{"type":"integer","description":"Max transactions to list, 1-100 (default 50)"}}}`),
+		},
+		{
+			Name:        "monthly_trend",
+			Description: "Income and spending per calendar month over the last N months (default 12), oldest first. Use for month-over-month comparisons and trends.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12)"}}}`),
+		},
+		{
+			Name:        "category_averages",
+			Description: "Average monthly spend per category over the last N months (default 12). Use for \"typical\" or \"on average\" questions.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12)"}}}`),
+		},
+		{
+			Name:        "spending_by_day",
+			Description: "Total spending for each day of a month (days with spending only).",
+			InputSchema: monthSchema,
 		},
 		{
 			Name:        "budget_status",
@@ -201,9 +303,13 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		if err != nil {
 			return "", err
 		}
-		out := make([]map[string]string, 0, len(rows))
+		out := make([]map[string]any, 0, len(rows))
 		for _, c := range rows {
-			out = append(out, map[string]string{"category": c.CategoryName, "spent": c.Total.StringFixed(2)})
+			out = append(out, map[string]any{
+				"category": c.CategoryName,
+				"spent":    c.Total.StringFixed(2),
+				"count":    c.TransactionCount,
+			})
 		}
 		return marshalTool(out)
 
@@ -228,9 +334,13 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		if err != nil {
 			return "", err
 		}
-		out := make([]map[string]string, 0, len(rows))
+		out := make([]map[string]any, 0, len(rows))
 		for _, m := range rows {
-			out = append(out, map[string]string{"merchant": m.Merchant, "spent": m.Total.StringFixed(2)})
+			out = append(out, map[string]any{
+				"merchant": m.Merchant,
+				"spent":    m.Total.StringFixed(2),
+				"count":    m.TransactionCount,
+			})
 		}
 		return marshalTool(out)
 
@@ -294,6 +404,132 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		}
 		return marshalTool(out)
 
+	case "list_transactions":
+		var in struct {
+			Month    string `json:"month"`
+			Category string `json:"category"`
+			Merchant string `json:"merchant"`
+			Limit    int    `json:"limit"`
+		}
+		_ = json.Unmarshal(input, &in)
+		from, to, err := monthRange(in.Month)
+		if err != nil {
+			return "", err
+		}
+		limit := in.Limit
+		if limit < 1 || limit > 100 {
+			limit = 50
+		}
+		var category, merchant *string
+		if v := strings.TrimSpace(in.Category); v != "" {
+			category = &v
+		}
+		if v := strings.TrimSpace(in.Merchant); v != "" {
+			merchant = &v
+		}
+
+		// The sum is exact over every match; the list is capped by limit. Both
+		// share the same filters, so the count here reconciles with the count
+		// spend_by_category reports for the same category and month.
+		sum, err := s.Queries.SumFilteredTransactions(ctx, dbgen.SumFilteredTransactionsParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: from, Date_2: to, Category: category, Merchant: merchant,
+		})
+		if err != nil {
+			return "", err
+		}
+		rows, err := s.Queries.ListFilteredTransactions(ctx, dbgen.ListFilteredTransactionsParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: from, Date_2: to, Category: category, Merchant: merchant, Lim: int32(limit),
+		})
+		if err != nil {
+			return "", err
+		}
+		txns := make([]map[string]string, 0, len(rows))
+		matched := map[string]struct{}{}
+		for _, r := range rows {
+			txns = append(txns, map[string]string{
+				"date":     r.Date.Format("2006-01-02"),
+				"merchant": r.Merchant,
+				"amount":   r.Amount.StringFixed(2),
+				"category": r.CategoryName,
+			})
+			matched[r.CategoryName] = struct{}{}
+		}
+		result := map[string]any{
+			"count":        sum.TransactionCount,
+			"total":        sum.Total.StringFixed(2),
+			"listed":       len(txns),
+			"truncated":    int64(len(txns)) < sum.TransactionCount,
+			"transactions": txns,
+		}
+		if category != nil {
+			names := make([]string, 0, len(matched))
+			for n := range matched {
+				names = append(names, n)
+			}
+			result["matched_categories"] = names
+		}
+		return marshalTool(result)
+
+	case "monthly_trend":
+		from, to := trailingMonthsRange(toolMonths(input))
+		rows, err := s.Queries.GetMonthlyTrend(ctx, dbgen.GetMonthlyTrendParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
+		})
+		if err != nil {
+			return "", err
+		}
+		out := make([]map[string]string, 0, len(rows))
+		for _, m := range rows {
+			out = append(out, map[string]string{
+				"month":    m.Month.Format("2006-01"),
+				"income":   m.Income.StringFixed(2),
+				"spending": m.Spending.StringFixed(2),
+				"leftover": m.Income.Sub(m.Spending).StringFixed(2),
+			})
+		}
+		return marshalTool(out)
+
+	case "category_averages":
+		from, to := trailingMonthsRange(toolMonths(input))
+		rows, err := s.Queries.GetCategoryAverages(ctx, dbgen.GetCategoryAveragesParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
+		})
+		if err != nil {
+			return "", err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, c := range rows {
+			out = append(out, map[string]any{
+				"category":        c.CategoryName,
+				"total":           c.Total.StringFixed(2),
+				"monthly_average": c.MonthlyAverage.StringFixed(2),
+				"count":           c.TransactionCount,
+			})
+		}
+		return marshalTool(out)
+
+	case "spending_by_day":
+		from, to, err := toolMonth(input)
+		if err != nil {
+			return "", err
+		}
+		rows, err := s.Queries.GetSpendingByDay(ctx, dbgen.GetSpendingByDayParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
+		})
+		if err != nil {
+			return "", err
+		}
+		out := make([]map[string]string, 0, len(rows))
+		for _, d := range rows {
+			out = append(out, map[string]string{
+				"day":      d.Day.Format("2006-01-02"),
+				"spending": d.Spending.StringFixed(2),
+			})
+		}
+		return marshalTool(out)
+
 	default:
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
@@ -312,6 +548,30 @@ func toolMonth(input json.RawMessage) (from, to time.Time, err error) {
 func monthRange(month string) (from, to time.Time, err error) {
 	_, from, to, _, err = monthPeriod(month)
 	return from, to, err
+}
+
+// toolMonths reads an optional {"months":N} input, clamped to 1-24 and
+// defaulting to 12 — the window the trend and averages tools look back over.
+func toolMonths(input json.RawMessage) int {
+	var in struct {
+		Months int `json:"months"`
+	}
+	_ = json.Unmarshal(input, &in)
+	if in.Months >= 1 && in.Months <= 24 {
+		return in.Months
+	}
+	return 12
+}
+
+// trailingMonthsRange returns the first day of the month n-1 months ago through
+// the last day of the current month, so a request for 12 months spans the
+// current month plus the eleven before it.
+func trailingMonthsRange(months int) (from, to time.Time) {
+	now := time.Now()
+	firstOfThis := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	from = firstOfThis.AddDate(0, -(months - 1), 0)
+	to = firstOfThis.AddDate(0, 1, -1)
+	return from, to
 }
 
 func marshalTool(v any) (string, error) {
