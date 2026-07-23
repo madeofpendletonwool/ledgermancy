@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -130,10 +131,18 @@ function NLAlertParser({
   const qc = useQueryClient()
   const [text, setText] = useState('')
   const [result, setResult] = useState<ParseRuleResult | null>(null)
+  // After a confirm, name where the thing landed — a rule below, or the Budgets
+  // page — so a saved item never silently disappears.
+  const [saved, setSaved] = useState<
+    { kind: 'alert'; label: string } | { kind: 'budget' } | null
+  >(null)
 
   const parse = useMutation({
     mutationFn: (t: string) => api.parseAlert(t),
-    onSuccess: setResult,
+    onSuccess: (r) => {
+      setSaved(null)
+      setResult(r)
+    },
   })
 
   const invalidate = () => {
@@ -158,8 +167,13 @@ function NLAlertParser({
         return api.setBudget(r.budget.category_id, r.budget.amount)
       }
     },
-    onSuccess: () => {
+    onSuccess: (_data, r) => {
       invalidate()
+      if (r.kind === 'alert' && r.alert) {
+        setSaved({ kind: 'alert', label: TYPE_META[r.alert.type].label })
+      } else if (r.kind === 'budget') {
+        setSaved({ kind: 'budget' })
+      }
       setResult(null)
       setText('')
     },
@@ -167,6 +181,7 @@ function NLAlertParser({
 
   const clear = () => {
     setResult(null)
+    setSaved(null)
     parse.reset()
     confirm.reset()
   }
@@ -202,6 +217,34 @@ function NLAlertParser({
         <p role="alert" className="mt-3 text-sm text-ember-400">
           {parse.error.message}
         </p>
+      )}
+
+      {saved && (
+        <div className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-rune-500/30 bg-rune-500/10 p-3">
+          <p className="text-sm text-rune-200">
+            {saved.kind === 'alert' ? (
+              <>
+                Saved. Your <span className="font-medium">{saved.label}</span>{' '}
+                rule is now on, in the list below — toggle it off, adjust it, or
+                turn on push there.
+              </>
+            ) : (
+              <>
+                Saved as a budget — this one lives on the{' '}
+                <Link to="/budgets" className="font-medium underline">
+                  Budgets
+                </Link>{' '}
+                page, not here.
+              </>
+            )}
+          </p>
+          <button
+            className="btn-ghost shrink-0 px-2 py-1 text-xs text-mist-300"
+            onClick={() => setSaved(null)}
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {result && (
