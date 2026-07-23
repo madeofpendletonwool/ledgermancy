@@ -215,12 +215,18 @@ func (s *Server) Routes() http.Handler {
 		r.Route("/transactions", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListTransactions)
+			r.Post("/", s.handleCreateManualTransaction)
 			r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
+			r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
+			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 		})
 
 		r.Route("/categories", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListCategories)
+			r.Post("/", s.handleCreateCategory)
+			r.Put("/{categoryID}", s.handleUpdateCategory)
+			r.Delete("/{categoryID}", s.handleDeleteCategory)
 		})
 
 		r.Route("/budgets", func(r chi.Router) {

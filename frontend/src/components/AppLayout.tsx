@@ -34,6 +34,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/accounts', label: 'Accounts' },
       { to: '/transactions', label: 'Transactions' },
+      { to: '/categories', label: 'Categories' },
       { to: '/net-worth', label: 'Net worth' },
     ],
   },

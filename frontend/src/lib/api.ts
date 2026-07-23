@@ -146,14 +146,43 @@ export interface Transaction {
   date: string
   name: string
   merchant_name: string | null
+  /** Normalized key the app caches categories by; present even when
+   * merchant_name is null, empty when there was too little signal to key on. */
+  merchant_key: string | null
   /** Positive = money out, negative = money in (Plaid's convention). */
   amount: string
   currency: string
   pending: boolean
+  account_id: string
   account_name: string
   institution_name: string | null
   plaid_category_primary: string | null
   plaid_category_detailed: string | null
+  category_id: string | null
+  notes: string | null
+  /** 'plaid' | 'csv' | 'manual'. Only 'manual' rows can be edited or deleted. */
+  source: string
+  /**
+   * A hand-entered row that a later Plaid charge now appears to match (same
+   * account, same amount, within four days) — likely the issuer finally
+   * delivering the charge the user reconciled by hand.
+   */
+  possible_duplicate: boolean
+}
+
+/**
+ * Body for creating or editing a manual transaction. Amount is a decimal string
+ * already signed by the caller (positive = money out, negative = a refund), so
+ * it never passes through a JS float.
+ */
+export interface ManualTransactionInput {
+  account_id: string
+  date: string
+  amount: string
+  name: string
+  merchant_name?: string | null
+  category_id?: string | null
+  notes?: string | null
 }
 
 export interface TransactionQuery {
@@ -163,6 +192,8 @@ export interface TransactionQuery {
   offset?: number
   /** Restrict to one account. Empty/omitted means all visible accounts. */
   account_id?: string
+  /** Only rows still needing a category (null or the fallback bucket). */
+  uncategorised?: boolean
 }
 
 export interface Category {
@@ -708,7 +739,27 @@ export const api = {
       { category_id: categoryID, apply_to_merchant: applyToMerchant },
     ),
 
+  createTransaction: (input: ManualTransactionInput) =>
+    request<{ id: string; source: string }>('POST', '/api/transactions', input),
+
+  updateTransaction: (id: string, input: ManualTransactionInput) =>
+    request<{ id: string; source: string }>('PUT', `/api/transactions/${id}`, input),
+
+  deleteTransaction: (id: string) =>
+    request<void>('DELETE', `/api/transactions/${id}`),
+
   categories: () => request<Category[]>('GET', '/api/categories'),
+
+  createCategory: (input: { name: string; color: string | null; is_fixed: boolean }) =>
+    request<Category>('POST', '/api/categories', input),
+
+  updateCategory: (
+    id: string,
+    input: { name: string; color: string | null; is_fixed: boolean },
+  ) => request<Category>('PUT', `/api/categories/${id}`, input),
+
+  deleteCategory: (id: string) =>
+    request<void>('DELETE', `/api/categories/${id}`),
 
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>

@@ -56,6 +56,34 @@ func (q *Queries) ApplyMerchantCategory(ctx context.Context, arg ApplyMerchantCa
 	return err
 }
 
+const applyMerchantCategoryRewritable = `-- name: ApplyMerchantCategoryRewritable :exec
+UPDATE transactions t
+SET category_id = $3, category_source = 'cache'
+FROM accounts a, plaid_items i, users u
+WHERE t.account_id = a.id
+  AND a.plaid_item_id = i.id
+  AND i.user_id = u.id
+  AND u.household_id = $1
+  AND t.merchant_key = $2
+  AND t.category_source IS DISTINCT FROM 'manual'
+`
+
+type ApplyMerchantCategoryRewritableParams struct {
+	HouseholdID uuid.UUID  `json:"household_id"`
+	MerchantKey *string    `json:"merchant_key"`
+	CategoryID  *uuid.UUID `json:"category_id"`
+}
+
+// Like ApplyMerchantCategory, but marks rows with the rewritable 'cache' source
+// instead of 'llm', so a later manual re-edit of the same merchant re-applies
+// cleanly across all its rows. Used by the manual "apply to all from this
+// merchant" path; never touches a manually-pinned row. The durable rule lives
+// in merchant_category_map (source 'manual'), which also catches future syncs.
+func (q *Queries) ApplyMerchantCategoryRewritable(ctx context.Context, arg ApplyMerchantCategoryRewritableParams) error {
+	_, err := q.db.Exec(ctx, applyMerchantCategoryRewritable, arg.HouseholdID, arg.MerchantKey, arg.CategoryID)
+	return err
+}
+
 const createCategory = `-- name: CreateCategory :one
 INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fixed, sort_order)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -138,6 +166,22 @@ func (q *Queries) CreateCategoryRule(ctx context.Context, arg CreateCategoryRule
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const deleteCategory = `-- name: DeleteCategory :exec
+DELETE FROM categories WHERE id = $1 AND household_id = $2
+`
+
+type DeleteCategoryParams struct {
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+}
+
+// Custom only (household_id guard). transactions.category_id is ON DELETE SET
+// NULL, so a deleted category's charges simply fall back to uncategorised.
+func (q *Queries) DeleteCategory(ctx context.Context, arg DeleteCategoryParams) error {
+	_, err := q.db.Exec(ctx, deleteCategory, arg.ID, arg.HouseholdID)
+	return err
 }
 
 const deleteCategoryRule = `-- name: DeleteCategoryRule :exec
@@ -510,6 +554,50 @@ func (q *Queries) SetTransactionCategory(ctx context.Context, arg SetTransaction
 		&i.Notes,
 		&i.Source,
 		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateCategory = `-- name: UpdateCategory :one
+UPDATE categories
+SET name = $3, color = $4, is_fixed = $5, updated_at = now()
+WHERE id = $1 AND household_id = $2
+RETURNING id, household_id, parent_id, name, slug, icon, color, is_fixed, is_income, is_transfer, sort_order, created_at, updated_at
+`
+
+type UpdateCategoryParams struct {
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+	Name        string     `json:"name"`
+	Color       *string    `json:"color"`
+	IsFixed     bool       `json:"is_fixed"`
+}
+
+// Custom categories only: the household_id guard means a system default
+// (household_id NULL) never matches, so a shared default can't be edited.
+func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error) {
+	row := q.db.QueryRow(ctx, updateCategory,
+		arg.ID,
+		arg.HouseholdID,
+		arg.Name,
+		arg.Color,
+		arg.IsFixed,
+	)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.ParentID,
+		&i.Name,
+		&i.Slug,
+		&i.Icon,
+		&i.Color,
+		&i.IsFixed,
+		&i.IsIncome,
+		&i.IsTransfer,
+		&i.SortOrder,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

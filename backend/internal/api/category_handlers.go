@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -96,14 +98,27 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 	}
 
 	if req.ApplyToMerchant && updated.MerchantKey != nil && *updated.MerchantKey != "" {
-		source := "manual"
+		// The durable rule: future synced charges from this merchant resolve to
+		// this category (source 'manual' so the LLM never overrides it).
 		if err := s.Queries.UpsertMerchantCategory(r.Context(), dbgen.UpsertMerchantCategoryParams{
 			HouseholdID: identity.HouseholdID,
 			MerchantKey: *updated.MerchantKey,
 			CategoryID:  req.CategoryID,
-			Source:      source,
+			Source:      "manual",
 		}); err != nil {
 			s.internalError(w, "cache merchant category", err)
+			return
+		}
+		// Retroactively fix every existing (non-manually-pinned) charge from this
+		// merchant in one statement — this is what drains the Uncategorised
+		// backlog. The row the user just edited stays 'manual' (their explicit
+		// pick); the rest are marked 'cache' so a later re-edit re-applies.
+		if err := s.Queries.ApplyMerchantCategoryRewritable(r.Context(), dbgen.ApplyMerchantCategoryRewritableParams{
+			HouseholdID: identity.HouseholdID,
+			MerchantKey: updated.MerchantKey,
+			CategoryID:  &req.CategoryID,
+		}); err != nil {
+			s.internalError(w, "apply merchant category", err)
 			return
 		}
 	}
@@ -113,6 +128,181 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 		"category_id":     updated.CategoryID,
 		"category_source": updated.CategorySource,
 	})
+}
+
+// categoryWriteRequest is the shared body for creating and editing a custom
+// category. Only the simple, user-meaningful fields are exposed; parent/icon are
+// out of scope.
+type categoryWriteRequest struct {
+	Name    string  `json:"name"`
+	Color   *string `json:"color"`
+	IsFixed bool    `json:"is_fixed"`
+}
+
+func (r categoryWriteRequest) validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return errors.New("name is required")
+	}
+	if len(r.Name) > 60 {
+		return errors.New("name must be 60 characters or fewer")
+	}
+	return nil
+}
+
+// handleCreateCategory creates a household-scoped custom category. System
+// defaults (household_id NULL) are never touched — this only ever inserts a row
+// owned by the caller's household.
+func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	var req categoryWriteRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := req.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	slug, err := s.uniqueCategorySlug(r.Context(), identity.HouseholdID, req.Name)
+	if err != nil {
+		s.internalError(w, "derive category slug", err)
+		return
+	}
+
+	created, err := s.Queries.CreateCategory(r.Context(), dbgen.CreateCategoryParams{
+		HouseholdID: &identity.HouseholdID,
+		Name:        strings.TrimSpace(req.Name),
+		Slug:        slug,
+		Color:       req.Color,
+		IsFixed:     req.IsFixed,
+	})
+	if err != nil {
+		s.internalError(w, "create category", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, categoryResponse{
+		ID:         created.ID,
+		Name:       created.Name,
+		Slug:       created.Slug,
+		Color:      created.Color,
+		IsIncome:   created.IsIncome,
+		IsTransfer: created.IsTransfer,
+		IsFixed:    created.IsFixed,
+		IsSystem:   created.HouseholdID == nil,
+	})
+}
+
+// handleUpdateCategory renames/recolors a custom category. The household_id
+// guard in UpdateCategory makes a system default un-editable: it returns no row,
+// which surfaces as a 404.
+func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	categoryID, err := uuid.Parse(chi.URLParam(r, "categoryID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid category id")
+		return
+	}
+
+	var req categoryWriteRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := req.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	updated, err := s.Queries.UpdateCategory(r.Context(), dbgen.UpdateCategoryParams{
+		ID:          categoryID,
+		HouseholdID: &identity.HouseholdID,
+		Name:        strings.TrimSpace(req.Name),
+		Color:       req.Color,
+		IsFixed:     req.IsFixed,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "category not found or not editable")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "update category", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, categoryResponse{
+		ID:         updated.ID,
+		Name:       updated.Name,
+		Slug:       updated.Slug,
+		Color:      updated.Color,
+		IsIncome:   updated.IsIncome,
+		IsTransfer: updated.IsTransfer,
+		IsFixed:    updated.IsFixed,
+		IsSystem:   updated.HouseholdID == nil,
+	})
+}
+
+// handleDeleteCategory removes a custom category. Its transactions fall back to
+// uncategorised (ON DELETE SET NULL). System defaults never match the guard.
+func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	categoryID, err := uuid.Parse(chi.URLParam(r, "categoryID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid category id")
+		return
+	}
+	if err := s.Queries.DeleteCategory(r.Context(), dbgen.DeleteCategoryParams{
+		ID: categoryID, HouseholdID: &identity.HouseholdID,
+	}); err != nil {
+		s.internalError(w, "delete category", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// uniqueCategorySlug derives a URL-safe slug from a name and appends -2, -3, …
+// until it is free for the household (a slug already used by a system default or
+// another of the household's categories counts as taken).
+func (s *Server) uniqueCategorySlug(ctx context.Context, householdID uuid.UUID, name string) (string, error) {
+	base := slugify(name)
+	if base == "" {
+		base = "category"
+	}
+	candidate := base
+	for i := 2; ; i++ {
+		_, err := s.Queries.GetCategoryBySlug(ctx, dbgen.GetCategoryBySlugParams{
+			Slug: candidate, HouseholdID: &householdID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		candidate = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
+// slugify lowercases a name and collapses any run of non-alphanumeric characters
+// into a single hyphen, trimming leading/trailing hyphens.
+func slugify(name string) string {
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 type budgetResponse struct {

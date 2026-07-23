@@ -15,6 +15,19 @@ INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fix
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
+-- name: UpdateCategory :one
+-- Custom categories only: the household_id guard means a system default
+-- (household_id NULL) never matches, so a shared default can't be edited.
+UPDATE categories
+SET name = $3, color = $4, is_fixed = $5, updated_at = now()
+WHERE id = $1 AND household_id = $2
+RETURNING *;
+
+-- name: DeleteCategory :exec
+-- Custom only (household_id guard). transactions.category_id is ON DELETE SET
+-- NULL, so a deleted category's charges simply fall back to uncategorised.
+DELETE FROM categories WHERE id = $1 AND household_id = $2;
+
 -- name: ResolvePFCCategory :one
 -- Maps a Plaid category onto ours, preferring a detailed-level match so
 -- specific overrides (credit-card payments) beat the broad primary mapping.
@@ -116,6 +129,22 @@ LIMIT $3;
 -- choice.
 UPDATE transactions t
 SET category_id = $3, category_source = 'llm'
+FROM accounts a, plaid_items i, users u
+WHERE t.account_id = a.id
+  AND a.plaid_item_id = i.id
+  AND i.user_id = u.id
+  AND u.household_id = $1
+  AND t.merchant_key = $2
+  AND t.category_source IS DISTINCT FROM 'manual';
+
+-- name: ApplyMerchantCategoryRewritable :exec
+-- Like ApplyMerchantCategory, but marks rows with the rewritable 'cache' source
+-- instead of 'llm', so a later manual re-edit of the same merchant re-applies
+-- cleanly across all its rows. Used by the manual "apply to all from this
+-- merchant" path; never touches a manually-pinned row. The durable rule lives
+-- in merchant_category_map (source 'manual'), which also catches future syncs.
+UPDATE transactions t
+SET category_id = $3, category_source = 'cache'
 FROM accounts a, plaid_items i, users u
 WHERE t.account_id = a.id
   AND a.plaid_item_id = i.id

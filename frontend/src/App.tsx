@@ -6,6 +6,7 @@ import { Accounts } from './routes/Accounts'
 import { Alerts } from './routes/Alerts'
 import { Assistant } from './routes/Assistant'
 import { Budgets } from './routes/Budgets'
+import { Categories } from './routes/Categories'
 import { Dashboard } from './routes/Dashboard'
 import { Goals } from './routes/Goals'
 import { Insights } from './routes/Insights'
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="/net-worth" element={<NetWorth />} />
         <Route path="/report" element={<Report />} />
         <Route path="/transactions" element={<Transactions />} />
+        <Route path="/categories" element={<Categories />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/assistant" element={<Assistant />} />
         <Route path="/settings" element={<Settings />} />
