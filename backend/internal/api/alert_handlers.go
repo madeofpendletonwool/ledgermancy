@@ -3,12 +3,17 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/alerts"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
@@ -172,6 +177,217 @@ func (s *Server) handleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --------------------------------------------------------------------------
+// Natural-language rule parsing
+//
+// The model does ONE thing: NL → a structured proposal drawn from the four
+// existing alert types or a budget. It is never trusted to have produced a valid
+// config: every parsed alert is run through alerts.ValidateConfig, every budget
+// category is resolved against the real household list, and every amount is
+// re-parsed as a positive decimal — here, deterministically. A parse that fails
+// any of these becomes an honest "unsupported" proposal, never a saved rule. No
+// writing happens on parse; confirmation calls the existing CRUD endpoints. A
+// bad parse is an expected outcome, so it returns 200 with kind=unsupported,
+// never a 500.
+// --------------------------------------------------------------------------
+
+type parseAlertRequest struct {
+	Text string `json:"text"`
+}
+
+type parsedAlertProposal struct {
+	Type   string          `json:"type"`
+	Config json.RawMessage `json:"config"`
+}
+
+type parsedBudgetProposal struct {
+	CategoryID   uuid.UUID `json:"category_id"`
+	CategorySlug string    `json:"category_slug"`
+	CategoryName string    `json:"category_name"`
+	Amount       string    `json:"amount"`
+}
+
+type parseRuleResponse struct {
+	Kind    string                `json:"kind"` // "alert" | "budget" | "unsupported"
+	Alert   *parsedAlertProposal  `json:"alert,omitempty"`
+	Budget  *parsedBudgetProposal `json:"budget,omitempty"`
+	Summary string                `json:"summary,omitempty"`
+	Caveats []string              `json:"caveats,omitempty"`
+	Reason  string                `json:"reason,omitempty"`
+}
+
+func (s *Server) handleParseAlert(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	if !s.AI.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "AI features are not configured")
+		return
+	}
+
+	var req parseAlertRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+
+	cats, err := s.Queries.ListCategories(r.Context(), &identity.HouseholdID)
+	if err != nil {
+		s.internalError(w, "list categories for parse", err)
+		return
+	}
+	refs := make([]ai.CategoryRef, 0, len(cats))
+	for _, c := range cats {
+		if c.IsIncome || c.IsTransfer {
+			continue // budgets are for spending categories only
+		}
+		refs = append(refs, ai.CategoryRef{Name: c.Name, Slug: c.Slug})
+	}
+
+	today := time.Now().Format("Monday, 2 January 2006")
+	parsed, err := s.AI.ParseRule(r.Context(), req.Text, refs, today)
+	if err != nil {
+		s.internalError(w, "parse rule", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resolveRuleProposal(parsed, cats))
+}
+
+// ruleConfigView reads any alert config's fields with money as decimal, so it
+// tolerates the model emitting an amount as a JSON string or number.
+type ruleConfigView struct {
+	Threshold  decimal.Decimal `json:"threshold"`
+	Percent    int             `json:"percent"`
+	RecentDays int             `json:"recent_days"`
+	MinAmount  decimal.Decimal `json:"min_amount"`
+	Floor      decimal.Decimal `json:"floor"`
+}
+
+// resolveRuleProposal turns a model parse into a confirmable proposal, applying
+// every deterministic gate. It never returns an error: an unenforceable or
+// unresolvable parse becomes kind=unsupported. Money in the returned config is
+// re-emitted canonically (fixed-2 strings) so the confirm/edit UI and the write
+// path see clean values. The summary describes engine reality, not the user's
+// phrasing.
+func resolveRuleProposal(parsed ai.ParsedRule, cats []dbgen.Category) parseRuleResponse {
+	switch parsed.Kind {
+	case "alert":
+		if !alerts.IsValidType(parsed.AlertType) {
+			return unsupported("That doesn't map to an alert this app can enforce yet.")
+		}
+		if err := alerts.ValidateConfig(parsed.AlertType, parsed.Config); err != nil {
+			return unsupported("Couldn't turn that into a valid alert rule.")
+		}
+		var view ruleConfigView
+		_ = json.Unmarshal(parsed.Config, &view)
+		config, summary := canonicalAlert(parsed.AlertType, view)
+
+		resp := parseRuleResponse{
+			Kind:    "alert",
+			Alert:   &parsedAlertProposal{Type: parsed.AlertType, Config: config},
+			Summary: summary,
+		}
+		if c := strings.TrimSpace(parsed.Reason); c != "" {
+			resp.Caveats = []string{c}
+		}
+		return resp
+
+	case "budget":
+		cat, ok := resolveCategory(parsed.Category, cats)
+		if !ok {
+			return unsupported("Couldn't match that to one of your spending categories.")
+		}
+		amount, err := decimal.NewFromString(strings.TrimSpace(parsed.Amount))
+		if err != nil || !amount.IsPositive() {
+			return unsupported("Couldn't read a budget amount from that.")
+		}
+		return parseRuleResponse{
+			Kind: "budget",
+			Budget: &parsedBudgetProposal{
+				CategoryID:   cat.ID,
+				CategorySlug: cat.Slug,
+				CategoryName: cat.Name,
+				Amount:       amount.StringFixed(2),
+			},
+			Summary: fmt.Sprintf("Budget $%s per month for %s.", amount.StringFixed(2), cat.Name),
+		}
+
+	default:
+		reason := strings.TrimSpace(parsed.Reason)
+		if reason == "" {
+			reason = "That isn't something this app can set up yet."
+		}
+		return unsupported(reason)
+	}
+}
+
+func unsupported(reason string) parseRuleResponse {
+	return parseRuleResponse{Kind: "unsupported", Reason: reason}
+}
+
+// canonicalAlert re-emits a validated config with fixed-2 money and applied
+// defaults, and returns the deterministic human summary of what will actually be
+// enforced. The look-back windows quoted match the engine constants.
+func canonicalAlert(alertType string, v ruleConfigView) (json.RawMessage, string) {
+	switch alertType {
+	case alerts.TypeBigSpend:
+		cfg, _ := json.Marshal(map[string]string{"threshold": v.Threshold.StringFixed(2)})
+		return cfg, fmt.Sprintf(
+			"Flag any single purchase over $%s (checked over the last 30 days).",
+			v.Threshold.StringFixed(2))
+
+	case alerts.TypeBudgetThreshold:
+		cfg, _ := json.Marshal(map[string]int{"percent": v.Percent})
+		return cfg, fmt.Sprintf(
+			"Warn when a category's spending reaches %d%% of its monthly budget.", v.Percent)
+
+	case alerts.TypeUnusualMerchant:
+		days := v.RecentDays
+		if days <= 0 {
+			days = 7 // engine default
+		}
+		cfg, _ := json.Marshal(map[string]any{
+			"recent_days": days,
+			"min_amount":  v.MinAmount.StringFixed(2),
+		})
+		return cfg, fmt.Sprintf(
+			"Flag a merchant that first appears within the last %d days, on a charge of at least $%s.",
+			days, v.MinAmount.StringFixed(2))
+
+	case alerts.TypeLowLeftover:
+		cfg, _ := json.Marshal(map[string]string{"floor": v.Floor.StringFixed(2)})
+		return cfg, fmt.Sprintf(
+			"Warn when money left this month (income minus spending) drops below $%s.",
+			v.Floor.StringFixed(2))
+
+	default:
+		return json.RawMessage("{}"), ""
+	}
+}
+
+// resolveCategory matches a parsed name-or-slug against the household's spending
+// categories, case-insensitively. Income/transfer categories are never budget
+// targets.
+func resolveCategory(nameOrSlug string, cats []dbgen.Category) (dbgen.Category, bool) {
+	want := strings.ToLower(strings.TrimSpace(nameOrSlug))
+	if want == "" {
+		return dbgen.Category{}, false
+	}
+	for _, c := range cats {
+		if c.IsIncome || c.IsTransfer {
+			continue
+		}
+		if strings.ToLower(c.Slug) == want || strings.ToLower(c.Name) == want {
+			return c, true
+		}
+	}
+	return dbgen.Category{}, false
 }
 
 type alertEventResponse struct {

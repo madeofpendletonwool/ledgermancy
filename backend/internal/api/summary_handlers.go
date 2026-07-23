@@ -7,14 +7,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/apex42group/ledgermancy/backend/internal/reporting"
 )
-
-// summaryTopCategories is how many categories the narrative is given to work
-// with — enough to name the biggest one or two without drowning the prompt.
-const summaryTopCategories = 5
 
 // handleCapabilities tells the frontend which optional features are available,
 // so it can hide AI-only surfaces (summaries, chat) when no key is configured
@@ -102,7 +98,8 @@ func (s *Server) handleGenerateMonthlySummary(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	input, err := s.buildSummaryInput(r, identity, from, to, label)
+	input, err := reporting.BuildMonthlySummaryInput(
+		r.Context(), s.Queries, identity.HouseholdID, identity.UserID, from, to, label)
 	if err != nil {
 		s.internalError(w, "gather summary data", err)
 		return
@@ -133,57 +130,4 @@ func (s *Server) handleGenerateMonthlySummary(w http.ResponseWriter, r *http.Req
 		Model:       row.Model,
 		GeneratedAt: &generatedAt,
 	})
-}
-
-// buildSummaryInput assembles the month's figures from the reporting layer. All
-// arithmetic stays in SQL / decimal; the model is handed finished strings.
-func (s *Server) buildSummaryInput(
-	r *http.Request, identity auth.Identity, from, to time.Time, label string,
-) (ai.MonthlySummaryInput, error) {
-	ctx := r.Context()
-
-	summary, err := s.Queries.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
-		HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
-	})
-	if err != nil {
-		return ai.MonthlySummaryInput{}, err
-	}
-
-	cats, err := s.Queries.GetSpendingByCategory(ctx, dbgen.GetSpendingByCategoryParams{
-		HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
-	})
-	if err != nil {
-		return ai.MonthlySummaryInput{}, err
-	}
-
-	// Previous month's spend, for a one-line comparison. A failure here is not
-	// fatal — the summary just omits the comparison.
-	prevFrom := from.AddDate(0, -1, 0)
-	prevTo := from.AddDate(0, 0, -1)
-	var priorSpending string
-	if prev, err := s.Queries.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
-		HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: prevFrom, Date_2: prevTo,
-	}); err == nil {
-		priorSpending = prev.Spending.StringFixed(2)
-	}
-
-	top := make([]ai.CategoryLine, 0, summaryTopCategories)
-	for i, c := range cats {
-		if i >= summaryTopCategories {
-			break
-		}
-		top = append(top, ai.CategoryLine{Name: c.CategoryName, Total: c.Total.StringFixed(2)})
-	}
-
-	leftover := summary.Income.Sub(summary.Spending)
-	return ai.MonthlySummaryInput{
-		Month:                 label,
-		Income:                summary.Income.StringFixed(2),
-		Spending:              summary.Spending.StringFixed(2),
-		Leftover:              leftover.StringFixed(2),
-		FixedSpending:         summary.FixedSpending.StringFixed(2),
-		DiscretionarySpending: summary.DiscretionarySpending.StringFixed(2),
-		TopCategories:         top,
-		PriorSpending:         priorSpending,
-	}, nil
 }

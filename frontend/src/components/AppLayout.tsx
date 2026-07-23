@@ -2,42 +2,76 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
+import { DropdownMenu } from './DropdownMenu'
 import { api } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
-type NavItem = { to: string; label: string; end: boolean }
+type NavLeaf = { to: string; label: string; end?: boolean }
+type NavGroup = { label: string; items: NavLeaf[] }
 
-const NAV: NavItem[] = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/insights', label: 'Insights', end: false },
-  { to: '/spending', label: 'Spending', end: false },
-  { to: '/budgets', label: 'Budgets', end: false },
-  { to: '/net-worth', label: 'Net worth', end: false },
-  { to: '/accounts', label: 'Accounts', end: false },
-  { to: '/transactions', label: 'Transactions', end: false },
-  { to: '/report', label: 'Report', end: false },
-  { to: '/alerts', label: 'Alerts', end: false },
-  { to: '/household', label: 'Household', end: false },
-  { to: '/settings', label: 'Settings', end: false },
+// Dashboard is a bare link; everything else is grouped behind a dropdown so the
+// top bar stays to a handful of triggers rather than a dozen flat tabs.
+const DASHBOARD: NavLeaf = { to: '/', label: 'Dashboard', end: true }
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: 'Analyze',
+    items: [
+      { to: '/spending', label: 'Spending' },
+      { to: '/insights', label: 'Insights' },
+      { to: '/report', label: 'Report' },
+    ],
+  },
+  {
+    label: 'Plan',
+    items: [
+      { to: '/budgets', label: 'Budgets' },
+      { to: '/goals', label: 'Goals' },
+    ],
+  },
+  {
+    label: 'Accounts',
+    items: [
+      { to: '/accounts', label: 'Accounts' },
+      { to: '/transactions', label: 'Transactions' },
+      { to: '/net-worth', label: 'Net worth' },
+    ],
+  },
 ]
 
-// The assistant tab only appears when an AI provider is configured; slotted in
-// after Report so it sits with the other insight-y views.
-function useNavItems(): NavItem[] {
+// The assistant only exists when an AI provider is configured; it lives with the
+// other insight-y views under Analyze.
+function useNavGroups(): NavGroup[] {
   const capabilities = useQuery({
     queryKey: ['capabilities'],
     queryFn: api.capabilities,
     staleTime: Infinity,
   })
-  if (!capabilities.data?.ai_enabled) return NAV
-  const items = [...NAV]
-  const at = items.findIndex((i) => i.to === '/alerts')
-  items.splice(at, 0, { to: '/assistant', label: 'Assistant', end: false })
-  return items
+  if (!capabilities.data?.ai_enabled) return NAV_GROUPS
+  return NAV_GROUPS.map((group) =>
+    group.label === 'Analyze'
+      ? { ...group, items: [...group.items, { to: '/assistant', label: 'Assistant' }] }
+      : group,
+  )
+}
+
+// A group is "active" when the current route is one of its leaves.
+function groupIsActive(group: NavGroup, pathname: string): boolean {
+  return group.items.some(
+    (item) => pathname === item.to || pathname.startsWith(item.to + '/'),
+  )
 }
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3 py-1.5 text-sm transition ${
+    isActive
+      ? 'bg-white/10 text-mist-100'
+      : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
+  }`
+
+// Block link used inside a dropdown panel and the mobile drawer.
+const menuItemClass = ({ isActive }: { isActive: boolean }) =>
+  `block rounded-lg px-3 py-2 text-sm transition ${
     isActive
       ? 'bg-white/10 text-mist-100'
       : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
@@ -48,8 +82,11 @@ export function AppLayout() {
   const logout = useLogout()
   const navigate = useNavigate()
   const location = useLocation()
-  const navItems = useNavItems()
+  const navGroups = useNavGroups()
   const [menuOpen, setMenuOpen] = useState(false)
+
+  const signOut = () =>
+    logout.mutate(undefined, { onSuccess: () => navigate('/login') })
 
   // Close the mobile drawer whenever the route changes so it never lingers
   // open on top of a freshly navigated page.
@@ -61,30 +98,74 @@ export function AppLayout() {
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-ink-950/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-4 sm:px-6">
-          <Wordmark />
+          <NavLink to="/" aria-label="Ledgermancy home" className="rounded-lg">
+            <Wordmark />
+          </NavLink>
 
           <nav className="hidden items-center gap-1 lg:flex">
-            {navItems.map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
-                {item.label}
-              </NavLink>
+            <NavLink to={DASHBOARD.to} end={DASHBOARD.end} className={navLinkClass}>
+              {DASHBOARD.label}
+            </NavLink>
+            {navGroups.map((group) => (
+              <DropdownMenu
+                key={group.label}
+                label={group.label}
+                menuLabel={group.label}
+                active={groupIsActive(group, location.pathname)}
+              >
+                {(close) =>
+                  group.items.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      role="menuitem"
+                      onClick={close}
+                      className={menuItemClass}
+                    >
+                      {item.label}
+                    </NavLink>
+                  ))
+                }
+              </DropdownMenu>
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-4">
+          <div className="ml-auto flex items-center gap-2">
             <NotificationBell />
-            <span className="hidden text-sm text-mist-300 sm:inline">
-              {user?.display_name}
-            </span>
-            <button
-              className="btn-ghost px-3 py-1.5 text-sm"
-              disabled={logout.isPending}
-              onClick={() =>
-                logout.mutate(undefined, { onSuccess: () => navigate('/login') })
-              }
-            >
-              Sign out
-            </button>
+
+            <div className="hidden lg:block">
+              <DropdownMenu
+                label={user?.display_name ?? 'Account'}
+                menuLabel="Account"
+                align="right"
+              >
+                {(close) => (
+                  <>
+                    <NavLink
+                      to="/settings"
+                      role="menuitem"
+                      onClick={close}
+                      className={menuItemClass}
+                    >
+                      Settings
+                    </NavLink>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={logout.isPending}
+                      onClick={() => {
+                        close()
+                        signOut()
+                      }}
+                      className="block w-full rounded-lg px-3 py-2 text-left text-sm text-mist-300 transition hover:bg-white/5 hover:text-mist-100 disabled:opacity-50"
+                    >
+                      Sign out
+                    </button>
+                  </>
+                )}
+              </DropdownMenu>
+            </div>
+
             <button
               className="btn-ghost px-2.5 py-1.5 lg:hidden"
               aria-label="Toggle navigation"
@@ -126,24 +207,54 @@ export function AppLayout() {
             id="mobile-nav"
             className="border-t border-white/10 bg-ink-950/70 px-4 py-3 backdrop-blur-xl lg:hidden"
           >
-            <div className="mx-auto flex max-w-6xl flex-col gap-1">
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  onClick={() => setMenuOpen(false)}
-                  className={({ isActive }) =>
-                    `block rounded-lg px-4 py-2.5 text-sm transition ${
-                      isActive
-                        ? 'bg-white/10 text-mist-100'
-                        : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
-                    }`
-                  }
-                >
-                  {item.label}
-                </NavLink>
+            <div className="mx-auto flex max-w-6xl flex-col gap-3">
+              <NavLink
+                to={DASHBOARD.to}
+                end={DASHBOARD.end}
+                onClick={() => setMenuOpen(false)}
+                className={mobileLinkClass}
+              >
+                {DASHBOARD.label}
+              </NavLink>
+
+              {navGroups.map((group) => (
+                <div key={group.label} className="flex flex-col gap-1">
+                  <span className="px-4 text-xs font-medium uppercase tracking-wide text-mist-500">
+                    {group.label}
+                  </span>
+                  {group.items.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      onClick={() => setMenuOpen(false)}
+                      className={mobileLinkClass}
+                    >
+                      {item.label}
+                    </NavLink>
+                  ))}
+                </div>
               ))}
+
+              <div className="mt-2 flex flex-col gap-1 border-t border-white/10 pt-3">
+                <NavLink
+                  to="/settings"
+                  onClick={() => setMenuOpen(false)}
+                  className={mobileLinkClass}
+                >
+                  Settings
+                </NavLink>
+                <button
+                  type="button"
+                  disabled={logout.isPending}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    signOut()
+                  }}
+                  className="block rounded-lg px-4 py-2.5 text-left text-sm text-mist-300 transition hover:bg-white/5 hover:text-mist-100 disabled:opacity-50"
+                >
+                  Sign out
+                </button>
+              </div>
             </div>
           </nav>
         )}
@@ -155,6 +266,13 @@ export function AppLayout() {
     </div>
   )
 }
+
+const mobileLinkClass = ({ isActive }: { isActive: boolean }) =>
+  `block rounded-lg px-4 py-2.5 text-sm transition ${
+    isActive
+      ? 'bg-white/10 text-mist-100'
+      : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
+  }`
 
 // NotificationBell links to the Alerts page and shows the unread event count.
 // The count is polled on a slow interval — alerts are not time-critical, and a

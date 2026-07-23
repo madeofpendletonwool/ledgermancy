@@ -62,5 +62,6 @@ func DefaultProducers() []Producer {
 		subscriptionProducer{},
 		forecastProducer{},
 		alertExplanationProducer{},
+		goalProducer{},
 	}
 }

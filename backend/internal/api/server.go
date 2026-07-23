@@ -227,7 +227,17 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleBudgetProgress)
 			r.Post("/", s.handleCreateBudget)
+			r.Post("/suggest", s.handleSuggestBudgets)
 			r.Delete("/{budgetID}", s.handleDeleteBudget)
+		})
+
+		r.Route("/goals", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListGoals)
+			r.Post("/", s.handleCreateGoal)
+			r.Post("/parse", s.handleParseGoal)
+			r.Put("/{goalID}", s.handleUpdateGoal)
+			r.Delete("/{goalID}", s.handleArchiveGoal)
 		})
 
 		r.Route("/networth", func(r chi.Router) {
@@ -292,6 +302,7 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListAlerts)
 			r.Post("/", s.handleCreateAlert)
+			r.Post("/parse", s.handleParseAlert)
 			r.Put("/{alertID}", s.handleUpdateAlert)
 			r.Delete("/{alertID}", s.handleDeleteAlert)
 			r.Get("/events", s.handleListAlertEvents)

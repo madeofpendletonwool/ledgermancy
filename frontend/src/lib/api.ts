@@ -240,6 +240,30 @@ export interface PeriodQuery {
   to?: string
 }
 
+/**
+ * One proposed budget from POST /api/budgets/suggest. `computed_average` is the
+ * exact SQL figure (never the model's); `suggested_amount` is a round target at
+ * or above it. All money fields are decimal strings — never summed here.
+ */
+export interface BudgetProposal {
+  category_id: string
+  category_name: string
+  slug: string
+  is_fixed: boolean
+  computed_average: string
+  suggested_amount: string
+  rationale: string
+  already_budgeted: boolean
+  current_budget?: string
+}
+
+export interface BudgetSuggestions {
+  period_months: number
+  /** True when an AI tailored the targets/rationale; false for rule-based rounding. */
+  ai_tailored: boolean
+  proposals: BudgetProposal[]
+}
+
 
 export interface NetWorthBreakdown {
   cash: string
@@ -361,6 +385,78 @@ export interface AlertEvent {
   payload: Record<string, string>
   triggered_at: string
   read: boolean
+}
+
+/**
+ * A savings goal plus its DERIVED standing. `current_amount`, `required_monthly`
+ * and the on-track/shortfall figures are computed server-side (never stored, so
+ * they can't drift). All money fields are decimal strings — never summed here.
+ */
+export interface Goal {
+  id: string
+  scope: 'household' | 'user'
+  kind: string
+  name: string
+  target_amount: string
+  target_date: string | null
+  account_id: string | null
+  category_id: string | null
+  current_amount: string
+  required_monthly: string
+  shortfall: string
+  months_left: number
+  on_track: boolean
+  /** True when the goal has no target date, so there's nothing to be "behind" on. */
+  open_ended: boolean
+  achieved: boolean
+  created_at: string
+}
+
+/** Fields to create or update a goal. Amounts/dates are strings, never floats. */
+export interface GoalInput {
+  name: string
+  target_amount: string
+  target_date?: string
+  scope?: 'household' | 'user'
+  account_id?: string | null
+  category_id?: string | null
+}
+
+/** A parsed goal proposal from POST /api/goals/parse (never auto-saved). */
+export interface GoalProposal {
+  name: string
+  target_amount: string
+  target_date: string | null
+  kind: string
+}
+
+/** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */
+export interface ParsedAlert {
+  type: AlertType
+  config: Record<string, string | number>
+}
+
+/** A parsed budget proposal: the category is already resolved to a real id/slug. */
+export interface ParsedBudget {
+  category_id: string
+  category_slug: string
+  category_name: string
+  amount: string
+}
+
+/**
+ * The result of parsing a natural-language rule request. `kind` narrows which of
+ * `alert`/`budget` is present. `summary` describes exactly what the engine will
+ * enforce (not the user's phrasing); `caveats` flag any lost detail. An
+ * `unsupported` result carries only a `reason` and cannot be saved.
+ */
+export interface ParseRuleResult {
+  kind: 'alert' | 'budget' | 'unsupported'
+  alert?: ParsedAlert
+  budget?: ParsedBudget
+  summary?: string
+  caveats?: string[]
+  reason?: string
 }
 
 /** A detected recurring charge (subscription/bill). Amounts are decimal strings. */
@@ -645,6 +741,27 @@ export const api = {
 
   deleteBudget: (id: string) => request<void>('DELETE', `/api/budgets/${id}`),
 
+  // Proposes a round budget target per spending category, anchored on each
+  // category's true average. Works with or without AI (rule-based rounding when
+  // off); ai_tailored says which. Approval is a loop of setBudget, unchanged.
+  suggestBudgets: () =>
+    request<BudgetSuggestions>('POST', '/api/budgets/suggest'),
+
+  // --- Goals --------------------------------------------------------------
+  goals: () => request<Goal[]>('GET', '/api/goals'),
+
+  createGoal: (input: GoalInput) => request<Goal>('POST', '/api/goals', input),
+
+  updateGoal: (id: string, input: GoalInput) =>
+    request<Goal>('PUT', `/api/goals/${id}`, input),
+
+  archiveGoal: (id: string) => request<void>('DELETE', `/api/goals/${id}`),
+
+  // Parses a natural-language goal into a confirmable proposal. Never writes —
+  // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.
+  parseGoal: (text: string) =>
+    request<GoalProposal>('POST', '/api/goals/parse', { text }),
+
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),
 
@@ -689,6 +806,12 @@ export const api = {
   ) => request<Alert>('PUT', `/api/alerts/${id}`, { config, enabled }),
 
   deleteAlert: (id: string) => request<void>('DELETE', `/api/alerts/${id}`),
+
+  // Parses a natural-language sentence into a confirmable alert/budget proposal.
+  // Never writes — confirmation calls createAlert/updateAlert/setBudget. Returns
+  // kind 'unsupported' (not an error) when the request can't be enforced.
+  parseAlert: (text: string) =>
+    request<ParseRuleResult>('POST', '/api/alerts/parse', { text }),
 
   alertEvents: () => request<AlertEvent[]>('GET', '/api/alerts/events'),
 

@@ -61,6 +61,12 @@ const alertSweepInterval = 30 * time.Minute
 // AI is configured) only runs on the candidates a household actually has.
 const insightInterval = time.Hour
 
+// digestSweepInterval is how often the digest sweep runs. It runs hourly but the
+// cadence gating inside the sweep decides who is actually due (weekly users on
+// Monday, monthly users on the 1st/2nd), so it is cheap when nobody is — the
+// same pattern as SyncAllWorker. The period_key dedupe makes exact timing safe.
+const digestSweepInterval = time.Hour
+
 // securitySweepInterval is how often expired auth state is collected. Nothing
 // depends on it being prompt — every read path already filters on expiry — so
 // this is tuned to keep tables tidy, not to enforce anything.
@@ -185,6 +191,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
+		// The digest sweep runs unconditionally; cadence gating inside decides who
+		// is due, and the summary call self-gates on AI being enabled. Not
+		// RunOnStart — a digest is a scheduled outbound push, not something to fire
+		// on every worker restart.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(digestSweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return DigestSweepArgs{}, nil
+			},
+			nil,
+		),
 	}
 
 	if syncer != nil {
@@ -253,6 +270,22 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Queries: queries, Client: client,
 	}); err != nil {
 		return nil, fmt.Errorf("register insights sweep worker: %w", err)
+	}
+
+	// Digest sweep + per-user worker. Both enqueue other jobs (the sweep enqueues
+	// DigestArgs; the worker enqueues NotifyArgs), so they need the client and are
+	// registered after construction. Registered unconditionally — the deterministic
+	// parts (top insights) send without AI, and the summary call self-gates on
+	// Enabled() inside the worker.
+	if err := river.AddWorkerSafely(workers, &DigestWorker{
+		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+	}); err != nil {
+		return nil, fmt.Errorf("register digest worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, &DigestSweepWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register digest sweep worker: %w", err)
 	}
 
 	if aiEnabled {

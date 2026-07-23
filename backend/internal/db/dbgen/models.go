@@ -100,6 +100,28 @@ type CategoryRule struct {
 	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
+type DigestDelivery struct {
+	UserID    uuid.UUID    `json:"user_id"`
+	PeriodKey string       `json:"period_key"`
+	SentAt    stdtime.Time `json:"sent_at"`
+}
+
+type Goal struct {
+	ID           uuid.UUID       `json:"id"`
+	HouseholdID  uuid.UUID       `json:"household_id"`
+	Scope        string          `json:"scope"`
+	UserID       *uuid.UUID      `json:"user_id"`
+	Kind         string          `json:"kind"`
+	Name         string          `json:"name"`
+	TargetAmount decimal.Decimal `json:"target_amount"`
+	TargetDate   *stdtime.Time   `json:"target_date"`
+	AccountID    *uuid.UUID      `json:"account_id"`
+	CategoryID   *uuid.UUID      `json:"category_id"`
+	CreatedAt    stdtime.Time    `json:"created_at"`
+	AchievedAt   *stdtime.Time   `json:"achieved_at"`
+	ArchivedAt   *stdtime.Time   `json:"archived_at"`
+}
+
 type Holding struct {
 	ID               uuid.UUID           `json:"id"`
 	AccountID        uuid.UUID           `json:"account_id"`

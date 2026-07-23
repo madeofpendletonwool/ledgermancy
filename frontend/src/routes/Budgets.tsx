@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import type { BudgetProgress, Category } from '../lib/api'
+import type { BudgetProgress, BudgetProposal, Category } from '../lib/api'
 import { formatMoney } from '../lib/money'
 import { STATUS } from '../components/charts/tokens'
 
@@ -144,6 +144,8 @@ export function Budgets() {
         )}
       </section>
 
+      <SuggestBudgets />
+
       <AddBudget
         categories={budgetable}
         loading={categories.isPending}
@@ -269,6 +271,216 @@ function BudgetRow({
             : `${formatMoney(budget.remaining)} left`}
         </span>
       </div>
+    </div>
+  )
+}
+
+// A proposal is checked by default unless the category already has a budget that
+// already covers its average — no point re-proposing what's already handled.
+function defaultChecked(p: BudgetProposal): boolean {
+  if (p.already_budgeted && p.current_budget) {
+    return Number(p.current_budget) < Number(p.computed_average)
+  }
+  return true
+}
+
+// SuggestBudgets fetches a proposed target per spending category on demand, lets
+// the user review/edit/deselect, and applies the chosen rows through the same
+// single-write budget mutation the manual form uses.
+function SuggestBudgets() {
+  const qc = useQueryClient()
+  const [amounts, setAmounts] = useState<Record<string, string>>({})
+  const [checked, setChecked] = useState<Record<string, boolean>>({})
+
+  const suggest = useMutation({
+    mutationFn: api.suggestBudgets,
+    onSuccess: (data) => {
+      const a: Record<string, string> = {}
+      const c: Record<string, boolean> = {}
+      for (const p of data.proposals) {
+        a[p.category_id] = p.suggested_amount
+        c[p.category_id] = defaultChecked(p)
+      }
+      setAmounts(a)
+      setChecked(c)
+    },
+  })
+
+  const apply = useMutation({
+    mutationFn: async (rows: { categoryID: string; amount: string }[]) => {
+      // Sequential single writes, exactly like manual entry — keeps validation
+      // and audit identical to POST /api/budgets.
+      for (const row of rows) await api.setBudget(row.categoryID, row.amount)
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['budgets'] })
+      suggest.reset()
+    },
+  })
+
+  const data = suggest.data
+  const selectedRows = (data?.proposals ?? [])
+    .filter((p) => checked[p.category_id])
+    .map((p) => ({ categoryID: p.category_id, amount: amounts[p.category_id] }))
+    .filter((r) => r.amount !== '' && Number(r.amount) > 0)
+
+  const flexible = (data?.proposals ?? []).filter((p) => !p.is_fixed)
+  const fixed = (data?.proposals ?? []).filter((p) => p.is_fixed)
+
+  return (
+    <section className="glass p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-medium">Suggest budgets</h2>
+          <p className="mt-1 text-sm text-mist-300">
+            Propose a round target for each category from your last year of
+            spending. Review, tweak, and apply the ones you want.
+          </p>
+        </div>
+        {!data && (
+          <button
+            className="btn-primary px-4 py-2 text-sm"
+            disabled={suggest.isPending}
+            onClick={() => suggest.mutate()}
+          >
+            {suggest.isPending ? 'Thinking…' : 'Suggest budgets'}
+          </button>
+        )}
+      </div>
+
+      {suggest.isError && (
+        <p role="alert" className="mt-4 text-sm text-ember-400">
+          {suggest.error.message}
+        </p>
+      )}
+
+      {data && data.proposals.length === 0 && (
+        <Empty>
+          Not enough spending history yet to suggest budgets. Add a budget
+          manually below.
+        </Empty>
+      )}
+
+      {data && data.proposals.length > 0 && (
+        <div className="mt-5 space-y-5">
+          <p className="text-xs text-mist-500">
+            {data.ai_tailored
+              ? 'AI-tailored targets, anchored on your exact averages.'
+              : 'Rule-based targets rounded from your exact averages.'}
+          </p>
+
+          <div className="space-y-2">
+            {flexible.map((p) => (
+              <ProposalRow
+                key={p.category_id}
+                proposal={p}
+                amount={amounts[p.category_id] ?? ''}
+                checked={checked[p.category_id] ?? false}
+                onAmount={(v) =>
+                  setAmounts((m) => ({ ...m, [p.category_id]: v }))
+                }
+                onToggle={(v) =>
+                  setChecked((m) => ({ ...m, [p.category_id]: v }))
+                }
+              />
+            ))}
+          </div>
+
+          {fixed.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-mist-400">
+                Fixed costs — usually budgeted at their actual amount.
+              </p>
+              {fixed.map((p) => (
+                <ProposalRow
+                  key={p.category_id}
+                  proposal={p}
+                  amount={amounts[p.category_id] ?? ''}
+                  checked={checked[p.category_id] ?? false}
+                  onAmount={(v) =>
+                    setAmounts((m) => ({ ...m, [p.category_id]: v }))
+                  }
+                  onToggle={(v) =>
+                    setChecked((m) => ({ ...m, [p.category_id]: v }))
+                  }
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              className="btn-primary px-4 py-2 text-sm"
+              disabled={selectedRows.length === 0 || apply.isPending}
+              onClick={() => apply.mutate(selectedRows)}
+            >
+              {apply.isPending
+                ? 'Applying…'
+                : `Apply selected (${selectedRows.length})`}
+            </button>
+            <button
+              className="btn-ghost px-3 py-2 text-sm text-mist-300"
+              onClick={() => suggest.reset()}
+            >
+              Cancel
+            </button>
+            {apply.isError && (
+              <span role="alert" className="text-sm text-ember-400">
+                {apply.error.message}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ProposalRow({
+  proposal,
+  amount,
+  checked,
+  onAmount,
+  onToggle,
+}: {
+  proposal: BudgetProposal
+  amount: string
+  checked: boolean
+  onAmount: (value: string) => void
+  onToggle: (value: boolean) => void
+}) {
+  return (
+    <div className="rounded-xl border border-white/5 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="flex items-center gap-2 font-medium">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-arcane-500"
+            checked={checked}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
+          {proposal.category_name}
+          {proposal.already_budgeted && (
+            <span className="text-xs font-normal text-mist-500">
+              now {formatMoney(proposal.current_budget)}
+            </span>
+          )}
+        </label>
+
+        <div className="flex items-center gap-1">
+          <span className="text-mist-500">$</span>
+          <input
+            className="field w-28"
+            type="number"
+            min="0"
+            step="0.01"
+            value={amount}
+            onChange={(e) => onAmount(e.target.value)}
+            aria-label={`Budget amount for ${proposal.category_name}`}
+          />
+        </div>
+      </div>
+      <p className="mt-2 text-sm text-mist-400">{proposal.rationale}</p>
     </div>
   )
 }

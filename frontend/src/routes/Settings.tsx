@@ -1,19 +1,28 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { PreferenceWrite } from '../lib/api'
 import { Security } from './Security'
+import { Household } from './Household'
 
-type Tab = 'security' | 'notifications' | 'digest'
+type Tab = 'security' | 'notifications' | 'digest' | 'household'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'security', label: 'Security' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'digest', label: 'Digest' },
+  { id: 'household', label: 'Household' },
 ]
 
+const isTab = (v: string | null): v is Tab =>
+  TABS.some((t) => t.id === v)
+
 export function Settings() {
-  const [tab, setTab] = useState<Tab>('security')
+  // Deep links (e.g. the /household redirect) land on a specific tab via ?tab=.
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab')
+  const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : 'security')
 
   return (
     <div className="space-y-8">
@@ -43,6 +52,7 @@ export function Settings() {
       {tab === 'security' && <Security />}
       {tab === 'notifications' && <NotificationsSection />}
       {tab === 'digest' && <DigestSection />}
+      {tab === 'household' && <Household />}
     </div>
   )
 }
@@ -192,7 +202,7 @@ function DigestSection() {
   return (
     <Section
       title="Digest"
-      description="A periodic recap of your finances. Sending begins once the digest job is enabled."
+      description="A periodic recap — your monthly narrative plus the top insights — pushed to you on a schedule. It's delivered through your notification channel, so set one up in Notifications first."
     >
       {prefs.isPending ? (
         <Loading />
