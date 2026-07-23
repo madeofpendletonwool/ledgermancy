@@ -28,6 +28,7 @@ type alertResponse struct {
 	Type    string          `json:"type"`
 	Config  json.RawMessage `json:"config"`
 	Enabled bool            `json:"enabled"`
+	Push    bool            `json:"push"`
 }
 
 // toAlertResponse converts the stored []byte config into raw JSON so it reaches
@@ -39,6 +40,7 @@ func toAlertResponse(a dbgen.Alert) alertResponse {
 		Type:    a.Type,
 		Config:  json.RawMessage(a.Config),
 		Enabled: a.Enabled,
+		Push:    a.Push,
 	}
 }
 
@@ -62,25 +64,30 @@ type upsertAlertRequest struct {
 	Type    string          `json:"type"`
 	Config  json.RawMessage `json:"config"`
 	Enabled *bool           `json:"enabled"`
+	Push    *bool           `json:"push"`
 }
 
 // validateAlertBody checks the type and config, returning the config bytes to
-// store. enabled defaults to true.
-func validateAlertBody(req upsertAlertRequest) (config []byte, enabled bool, err error) {
+// store. enabled defaults to true; push (external delivery) defaults to false,
+// so a rule fires in-app until the household deliberately opts it into push.
+func validateAlertBody(req upsertAlertRequest) (config []byte, enabled, push bool, err error) {
 	if !alerts.IsValidType(req.Type) {
-		return nil, false, errors.New("unknown alert type")
+		return nil, false, false, errors.New("unknown alert type")
 	}
 	if len(req.Config) == 0 {
-		return nil, false, errors.New("config is required")
+		return nil, false, false, errors.New("config is required")
 	}
 	if err := alerts.ValidateConfig(req.Type, req.Config); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	enabled = true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	return req.Config, enabled, nil
+	if req.Push != nil {
+		push = *req.Push
+	}
+	return req.Config, enabled, push, nil
 }
 
 func (s *Server) handleCreateAlert(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +98,7 @@ func (s *Server) handleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	config, enabled, err := validateAlertBody(req)
+	config, enabled, push, err := validateAlertBody(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -102,6 +109,7 @@ func (s *Server) handleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		Type:        req.Type,
 		Config:      config,
 		Enabled:     enabled,
+		Push:        push,
 	})
 	if err != nil {
 		s.internalError(w, "create alert", err)
@@ -143,14 +151,14 @@ func (s *Server) handleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Type = existing.Type
 
-	config, enabled, err := validateAlertBody(req)
+	config, enabled, push, err := validateAlertBody(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	alert, err := s.Queries.UpdateAlert(r.Context(), dbgen.UpdateAlertParams{
-		ID: alertID, HouseholdID: identity.HouseholdID, Config: config, Enabled: enabled,
+		ID: alertID, HouseholdID: identity.HouseholdID, Config: config, Enabled: enabled, Push: push,
 	})
 	if err != nil {
 		s.internalError(w, "update alert", err)

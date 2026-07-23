@@ -130,10 +130,14 @@ func (w *DigestSweepWorker) Work(ctx context.Context, job *river.Job[DigestSweep
 }
 
 // DigestArgs assembles and delivers one user's digest. HouseholdID is carried so
-// the worker need not re-resolve it.
+// the worker need not re-resolve it. Force marks a "send one now" request from
+// Settings: it bypasses the opt-in re-check and the per-period dedupe (and does
+// not record one), so a manual test always goes out and never consumes the
+// scheduled digest's slot.
 type DigestArgs struct {
 	UserID      uuid.UUID `json:"user_id"`
 	HouseholdID uuid.UUID `json:"household_id"`
+	Force       bool      `json:"force,omitempty"`
 }
 
 func (DigestArgs) Kind() string { return "digest" }
@@ -168,14 +172,16 @@ type DigestWorker struct {
 func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) error {
 	userID := job.Args.UserID
 	householdID := job.Args.HouseholdID
+	force := job.Args.Force
 	now := time.Now()
 
-	// Re-check opt-in — a user may have turned it off between sweep and run.
-	if !boolPref(ctx, w.Queries, userID, "digest.enabled") {
+	// Re-check opt-in — a user may have turned it off between sweep and run. A
+	// forced ("send now") digest skips this: the user just asked for one.
+	if !force && !boolPref(ctx, w.Queries, userID, "digest.enabled") {
 		return nil
 	}
-	// No channel → nothing to deliver to. Skip without recording, so the digest
-	// resumes for this period once they configure one.
+	// No channel → nothing to deliver to. Applies even to a forced send; skip
+	// without recording, so the digest resumes once they configure one.
 	channel := stringPref(ctx, w.Queries, userID, "notify.channel")
 	if channel == "" || channel == "none" {
 		return nil
@@ -187,14 +193,19 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 	}
 	_, periodKey := digestDue(cadence, now)
 
-	exists, err := w.Queries.DigestDeliveryExists(ctx, dbgen.DigestDeliveryExistsParams{
-		UserID: userID, PeriodKey: periodKey,
-	})
-	if err != nil {
-		return fmt.Errorf("digest dedupe check: %w", err)
-	}
-	if exists {
-		return nil
+	// The per-period dedupe guards the scheduled path only. A forced send is a
+	// deliberate manual action: it neither honours nor records the dedupe, so it
+	// always goes out and never burns the real digest's slot for the period.
+	if !force {
+		exists, err := w.Queries.DigestDeliveryExists(ctx, dbgen.DigestDeliveryExistsParams{
+			UserID: userID, PeriodKey: periodKey,
+		})
+		if err != nil {
+			return fmt.Errorf("digest dedupe check: %w", err)
+		}
+		if exists {
+			return nil
+		}
 	}
 
 	monthDate, from, to, label, cacheable := digestWindow(cadence, now)
@@ -239,10 +250,17 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 		return fmt.Errorf("list digest insights: %w", err)
 	}
 
-	// Nothing to say this period: no narrative and no insights. Skip without
-	// recording, so a digest still goes out if insights appear later this period.
+	// Nothing to say this period: no narrative and no insights. On the scheduled
+	// path, skip without recording so a digest still goes out if insights appear
+	// later. On a forced test, send a short confirmation instead — the point is
+	// to prove the channel and digest pipeline work, not to withhold on a quiet
+	// period.
 	if strings.TrimSpace(narrative) == "" && len(insights) == 0 {
-		return nil
+		if !force {
+			return nil
+		}
+		narrative = "No activity to report for " + label +
+			" yet — but your digest is set up, and this is what one looks like."
 	}
 
 	n := buildDigestNotification(label, narrative, insights, w.AppURL)
@@ -258,13 +276,16 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 	}
 
 	// Record after enqueue: a crash between the two at worst re-sends next sweep,
-	// which is far better than silently dropping a digest.
-	if err := w.Queries.RecordDigestDelivery(ctx, dbgen.RecordDigestDeliveryParams{
-		UserID: userID, PeriodKey: periodKey,
-	}); err != nil {
-		return fmt.Errorf("record digest delivery: %w", err)
+	// which is far better than silently dropping a digest. A forced send records
+	// nothing, so it never blocks the period's real, scheduled digest.
+	if !force {
+		if err := w.Queries.RecordDigestDelivery(ctx, dbgen.RecordDigestDeliveryParams{
+			UserID: userID, PeriodKey: periodKey,
+		}); err != nil {
+			return fmt.Errorf("record digest delivery: %w", err)
+		}
 	}
-	slog.Info("digest delivered", "user_id", userID, "period", periodKey, "insights", len(insights))
+	slog.Info("digest delivered", "user_id", userID, "period", periodKey, "insights", len(insights), "forced", force)
 	return nil
 }
 

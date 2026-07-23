@@ -414,12 +414,22 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 	}
 
 	for _, ev := range events {
+		// The rule decides whether its events go out externally at all. A rule
+		// left in-app only still fires and shows in the feed; we just stamp its
+		// event notified so this and later sweeps skip it without pushing.
+		if !ev.Push {
+			if err := w.Queries.MarkAlertEventNotified(ctx, ev.ID); err != nil {
+				slog.Error("mark event notified", "error", err, "event_id", ev.ID)
+			}
+			continue
+		}
+
 		var payload map[string]string
 		_ = json.Unmarshal(ev.Payload, &payload)
 		n := alertNotification(ev.AlertType, payload, w.AppURL)
 
 		for _, m := range members {
-			if !w.wantsPush(ctx, m.ID, ev.AlertType) {
+			if !w.hasChannel(ctx, m.ID) {
 				continue
 			}
 			args := NotifyArgs{
@@ -443,20 +453,13 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 	return nil
 }
 
-// wantsPush reports whether a user has opted this alert kind into push: their
-// channel is a real one and their notify.push_kinds list includes the kind.
-// A read error or unset pref is treated as "no", never blocking the sweep.
-func (w *EvaluateAlertsWorker) wantsPush(ctx context.Context, userID uuid.UUID, kind string) bool {
+// hasChannel reports whether a user has a real delivery channel configured.
+// Which alerts push is now the rule's call (alerts.push); this only answers
+// "can we reach this member at all". A read error or unset pref is treated as
+// "no", never blocking the sweep.
+func (w *EvaluateAlertsWorker) hasChannel(ctx context.Context, userID uuid.UUID) bool {
 	channel := stringPref(ctx, w.Queries, userID, "notify.channel")
-	if channel == "" || channel == "none" {
-		return false
-	}
-	for _, k := range stringSlicePref(ctx, w.Queries, userID, "notify.push_kinds") {
-		if k == kind {
-			return true
-		}
-	}
-	return false
+	return channel != "" && channel != "none"
 }
 
 // NotifyArgs delivers one pre-formatted notification to one user. Content is
@@ -521,21 +524,6 @@ func stringPref(ctx context.Context, q *dbgen.Queries, userID uuid.UUID, key str
 	var s string
 	_ = json.Unmarshal(raw, &s)
 	return s
-}
-
-// stringSlicePref reads a JSON string-array user preference, returning nil when
-// unset or malformed.
-func stringSlicePref(ctx context.Context, q *dbgen.Queries, userID uuid.UUID, key string) []string {
-	raw, err := q.GetUserPreference(ctx, dbgen.GetUserPreferenceParams{UserID: &userID, Key: key})
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Error("read preference", "error", err, "key", key, "user_id", userID)
-		}
-		return nil
-	}
-	var out []string
-	_ = json.Unmarshal(raw, &out)
-	return out
 }
 
 // alertNotification renders an alert event into a push. Money in the payload is

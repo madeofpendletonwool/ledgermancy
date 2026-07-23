@@ -403,7 +403,10 @@ export interface Alert {
   id: string
   type: AlertType
   config: Record<string, string | number>
+  /** Whether the rule fires at all (and shows in the in-app feed). */
   enabled: boolean
+  /** Whether a fired event is also pushed to members' notification channels. */
+  push: boolean
 }
 
 /**
@@ -847,14 +850,17 @@ export const api = {
     type: AlertType,
     config: Record<string, string | number>,
     enabled: boolean,
-  ) => request<Alert>('POST', '/api/alerts/', { type, config, enabled }),
+    push: boolean,
+  ) => request<Alert>('POST', '/api/alerts/', { type, config, enabled, push }),
 
-  // The backend keeps an existing alert's type; only config and enabled change.
+  // The backend keeps an existing alert's type; only config, enabled and push
+  // change.
   updateAlert: (
     id: string,
     config: Record<string, string | number>,
     enabled: boolean,
-  ) => request<Alert>('PUT', `/api/alerts/${id}`, { config, enabled }),
+    push: boolean,
+  ) => request<Alert>('PUT', `/api/alerts/${id}`, { config, enabled, push }),
 
   deleteAlert: (id: string) => request<void>('DELETE', `/api/alerts/${id}`),
 
@@ -879,6 +885,16 @@ export const api = {
 
   setPreferences: (items: PreferenceWrite[]) =>
     request<void>('PUT', '/api/preferences', { items }),
+
+  // Sends one throwaway push to the caller's saved channel, synchronously, so
+  // the UI can report the real outcome. Errors (unconfigured, bad topic,
+  // unreachable server) come back as a thrown request error.
+  testNotification: () =>
+    request<{ status: string }>('POST', '/api/notifications/test'),
+
+  // Queues a one-off digest for the caller now, bypassing cadence/dedupe. Async
+  // — resolves once queued; the push itself arrives shortly after.
+  sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
 
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),

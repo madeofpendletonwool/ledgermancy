@@ -147,9 +147,12 @@ function NLAlertParser({
     mutationFn: async (r: ParseRuleResult) => {
       if (r.kind === 'alert' && r.alert) {
         const existing = existingByType.get(r.alert.type)
+        // Preserve an existing rule's push choice; a brand-new rule starts
+        // in-app only (push off), matching the schema default — the user opts
+        // into push explicitly on the rule below.
         return existing
-          ? api.updateAlert(existing.id, r.alert.config, true)
-          : api.createAlert(r.alert.type, r.alert.config, true)
+          ? api.updateAlert(existing.id, r.alert.config, true, existing.push)
+          : api.createAlert(r.alert.type, r.alert.config, true, false)
       }
       if (r.kind === 'budget' && r.budget) {
         return api.setBudget(r.budget.category_id, r.budget.amount)
@@ -391,6 +394,7 @@ function AlertRule({
   const meta = TYPE_META[type]
 
   const [enabled, setEnabled] = useState(existing?.enabled ?? false)
+  const [push, setPush] = useState(existing?.push ?? false)
   const [config, setConfig] = useState<Record<string, string>>(() =>
     initialConfig(meta, existing),
   )
@@ -399,9 +403,10 @@ function AlertRule({
   // another tab), so the form reflects the source of truth.
   useEffect(() => {
     setEnabled(existing?.enabled ?? false)
+    setPush(existing?.push ?? false)
     setConfig(initialConfig(meta, existing))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existing?.id, existing?.enabled, JSON.stringify(existing?.config)])
+  }, [existing?.id, existing?.enabled, existing?.push, JSON.stringify(existing?.config)])
 
   // Apply a parsed proposal's config when the user chose "Edit in form". Keyed on
   // the seed nonce so re-picking the same values still prefills.
@@ -425,18 +430,27 @@ function AlertRule({
   }
 
   const save = useMutation({
-    mutationFn: (next: { enabled: boolean }) => {
+    mutationFn: (next: { enabled: boolean; push: boolean }) => {
       const payload = coerceConfig(meta, config)
       return existing
-        ? api.updateAlert(existing.id, payload, next.enabled)
-        : api.createAlert(type, payload, next.enabled)
+        ? api.updateAlert(existing.id, payload, next.enabled, next.push)
+        : api.createAlert(type, payload, next.enabled, next.push)
     },
     onSuccess: invalidate,
   })
 
-  const toggle = (value: boolean) => {
+  const toggleEnabled = (value: boolean) => {
     setEnabled(value)
-    save.mutate({ enabled: value })
+    // A rule that's off can't push; clear push alongside so the two never
+    // disagree in the stored row.
+    const nextPush = value ? push : false
+    setPush(nextPush)
+    save.mutate({ enabled: value, push: nextPush })
+  }
+
+  const togglePush = (value: boolean) => {
+    setPush(value)
+    save.mutate({ enabled, push: value })
   }
 
   return (
@@ -451,11 +465,35 @@ function AlertRule({
             type="checkbox"
             className="h-4 w-4 accent-arcane-500"
             checked={enabled}
-            onChange={(e) => toggle(e.target.checked)}
+            onChange={(e) => toggleEnabled(e.target.checked)}
           />
           {enabled ? 'On' : 'Off'}
         </label>
       </div>
+
+      <label
+        className={`mt-3 flex items-center gap-2 text-sm ${
+          enabled ? 'text-mist-300' : 'text-mist-500'
+        }`}
+      >
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-arcane-500"
+          checked={push}
+          disabled={!enabled || save.isPending}
+          onChange={(e) => togglePush(e.target.checked)}
+        />
+        Also push this to my notification channel
+        {!enabled && (
+          <span className="text-xs text-mist-500">— turn the rule on first</span>
+        )}
+      </label>
+      {push && enabled && (
+        <p className="mt-1 text-xs text-mist-500">
+          Sent to every household member who has set a channel in Settings →
+          Notifications. Off means it only appears here, in-app.
+        </p>
+      )}
 
       <div className="mt-4 flex flex-wrap items-end gap-4">
         {meta.fields.map((field) => (
@@ -479,7 +517,7 @@ function AlertRule({
         <button
           className="btn-primary"
           disabled={save.isPending}
-          onClick={() => save.mutate({ enabled })}
+          onClick={() => save.mutate({ enabled, push })}
         >
           {save.isPending ? 'Saving…' : 'Save'}
         </button>

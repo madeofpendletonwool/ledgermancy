@@ -25,13 +25,13 @@ SELECT * FROM alerts WHERE household_id = $1 AND enabled ORDER BY type;
 SELECT * FROM alerts WHERE id = $1 AND household_id = $2;
 
 -- name: CreateAlert :one
-INSERT INTO alerts (household_id, type, config, enabled)
-VALUES ($1, $2, $3, $4)
+INSERT INTO alerts (household_id, type, config, enabled, push)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: UpdateAlert :one
 UPDATE alerts
-SET config = $3, enabled = $4, updated_at = now()
+SET config = $3, enabled = $4, push = $5, updated_at = now()
 WHERE id = $1 AND household_id = $2
 RETURNING *;
 
@@ -171,10 +171,10 @@ RETURNING *;
 
 -- name: ListUnnotifiedAlertEvents :many
 -- New alert events for a household that have not yet been dispatched for push.
--- Joined to the rule for its type so the dispatcher can match against each
--- member's notify.push_kinds. Oldest first, so pushes arrive in the order the
--- events were raised.
-SELECT e.id, e.payload, al.type AS alert_type
+-- Joined to the rule for its type and its `push` switch: the dispatcher pushes
+-- an event only when its rule opted in. Oldest first, so pushes arrive in the
+-- order the events were raised.
+SELECT e.id, e.payload, al.type AS alert_type, al.push AS push
 FROM alert_events e
 JOIN alerts al ON al.id = e.alert_id
 WHERE al.household_id = $1

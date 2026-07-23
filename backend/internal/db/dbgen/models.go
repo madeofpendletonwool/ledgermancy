@@ -36,6 +36,7 @@ type Alert struct {
 	Enabled     bool         `json:"enabled"`
 	CreatedAt   stdtime.Time `json:"created_at"`
 	UpdatedAt   stdtime.Time `json:"updated_at"`
+	Push        bool         `json:"push"`
 }
 
 type AlertEvent struct {

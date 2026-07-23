@@ -102,12 +102,13 @@ func Generate(
 		}
 	}
 
-	// --- High-priority push seam (consumer: doc 03, not yet merged) ---------
-	// When notifications land, newly-created insights above a priority
-	// threshold should enqueue a NotifyArgs push for each household member
-	// whose notify.push_kinds includes the insight's kind. Left as a clean seam
-	// so this doc does not block on 03: iterate `results` for Inserted &&
-	// Priority >= threshold and hand them to the Notifier here.
+	// --- High-priority push seam (not yet wired) ----------------------------
+	// Insights currently surface in-app only. When insight push lands it should
+	// enqueue a NotifyArgs for newly-created insights above a priority threshold
+	// for each household member with a channel configured — mirroring how alert
+	// events push once their rule opts in (jobs.EvaluateAlertsWorker). Left as a
+	// clean seam: iterate `results` for Inserted && Priority >= threshold and
+	// hand them to the Notifier here.
 
 	return results, nil
 }

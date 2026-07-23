@@ -21,6 +21,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/crypto"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/jobs"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 	"github.com/apex42group/ledgermancy/backend/internal/ratelimit"
 )
@@ -39,6 +40,7 @@ type Server struct {
 	Syncer  *plaid.Syncer
 	Jobs    *river.Client[pgx.Tx]
 	AI      *ai.Client
+	Notify  notify.Notifier
 
 	// Rate limiters, held on the Server so successful logins can reset the
 	// caller's counter rather than punishing someone who mistyped once.
@@ -77,12 +79,14 @@ const (
 // always constructed; when no API key is configured it is simply disabled, so
 // handlers gate on s.AI.Enabled() rather than a nil check.
 func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Server {
+	queries := dbgen.New(pool)
 	return &Server{
 		Config:          cfg,
 		Pool:            pool,
-		Queries:         dbgen.New(pool),
+		Queries:         queries,
 		Cipher:          cipher,
 		AI:              ai.New(cfg.AI),
+		Notify:          notify.New(cfg.NTFY, queries),
 		loginLimiter:    ratelimit.New(loginAttemptsPerWindow, loginWindow),
 		registerLimiter: ratelimit.New(registerAttemptsPerWindow, registerWindow),
 		accountLimiter:  ratelimit.New(accountAttemptsPerWindow, accountWindow),
@@ -195,6 +199,16 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleGetPreferences)
 			r.Put("/", s.handleUpsertPreferences)
+		})
+
+		r.Route("/notifications", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Post("/test", s.handleTestNotification)
+		})
+
+		r.Route("/digest", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Post("/test", s.handleSendDigestNow)
 		})
 
 		r.Route("/plaid", func(r chi.Router) {

@@ -15,7 +15,6 @@ import (
 var reservedUserPreferenceDefaults = map[string]json.RawMessage{
 	"notify.channel":    json.RawMessage(`"none"`),
 	"notify.ntfy_topic": json.RawMessage(`""`),
-	"notify.push_kinds": json.RawMessage(`[]`),
 	"digest.enabled":    json.RawMessage(`false`),
 	"digest.cadence":    json.RawMessage(`"weekly"`),
 }

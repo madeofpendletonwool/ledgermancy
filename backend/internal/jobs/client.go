@@ -320,3 +320,19 @@ func EnqueueAlertEval(ctx context.Context, client *river.Client[pgx.Tx], househo
 		slog.Error("enqueue alert evaluation", "error", err, "household_id", householdID)
 	}
 }
+
+// EnqueueDigestNow queues a one-off "send now" digest for a single user,
+// bypassing cadence and the per-period dedupe (see DigestArgs.Force). Unlike the
+// fire-and-forget enqueues above it returns the error, so a Settings "send one
+// now" action can tell the user when their request did not take.
+func EnqueueDigestNow(ctx context.Context, client *river.Client[pgx.Tx], userID, householdID uuid.UUID) error {
+	if client == nil {
+		return fmt.Errorf("background jobs are not available")
+	}
+	if _, err := client.Insert(ctx, DigestArgs{
+		UserID: userID, HouseholdID: householdID, Force: true,
+	}, nil); err != nil {
+		return fmt.Errorf("enqueue digest: %w", err)
+	}
+	return nil
+}

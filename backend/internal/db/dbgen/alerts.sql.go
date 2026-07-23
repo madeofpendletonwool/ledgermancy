@@ -206,9 +206,9 @@ func (q *Queries) CountUnreadAlertEvents(ctx context.Context, arg CountUnreadAle
 }
 
 const createAlert = `-- name: CreateAlert :one
-INSERT INTO alerts (household_id, type, config, enabled)
-VALUES ($1, $2, $3, $4)
-RETURNING id, household_id, type, config, enabled, created_at, updated_at
+INSERT INTO alerts (household_id, type, config, enabled, push)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, household_id, type, config, enabled, created_at, updated_at, push
 `
 
 type CreateAlertParams struct {
@@ -216,6 +216,7 @@ type CreateAlertParams struct {
 	Type        string    `json:"type"`
 	Config      []byte    `json:"config"`
 	Enabled     bool      `json:"enabled"`
+	Push        bool      `json:"push"`
 }
 
 func (q *Queries) CreateAlert(ctx context.Context, arg CreateAlertParams) (Alert, error) {
@@ -224,6 +225,7 @@ func (q *Queries) CreateAlert(ctx context.Context, arg CreateAlertParams) (Alert
 		arg.Type,
 		arg.Config,
 		arg.Enabled,
+		arg.Push,
 	)
 	var i Alert
 	err := row.Scan(
@@ -234,6 +236,7 @@ func (q *Queries) CreateAlert(ctx context.Context, arg CreateAlertParams) (Alert
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Push,
 	)
 	return i, err
 }
@@ -253,7 +256,7 @@ func (q *Queries) DeleteAlert(ctx context.Context, arg DeleteAlertParams) error 
 }
 
 const getAlert = `-- name: GetAlert :one
-SELECT id, household_id, type, config, enabled, created_at, updated_at FROM alerts WHERE id = $1 AND household_id = $2
+SELECT id, household_id, type, config, enabled, created_at, updated_at, push FROM alerts WHERE id = $1 AND household_id = $2
 `
 
 type GetAlertParams struct {
@@ -272,6 +275,7 @@ func (q *Queries) GetAlert(ctx context.Context, arg GetAlertParams) (Alert, erro
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Push,
 	)
 	return i, err
 }
@@ -371,7 +375,7 @@ func (q *Queries) ListAlertEvents(ctx context.Context, arg ListAlertEventsParams
 
 const listAlerts = `-- name: ListAlerts :many
 
-SELECT id, household_id, type, config, enabled, created_at, updated_at FROM alerts WHERE household_id = $1 ORDER BY type
+SELECT id, household_id, type, config, enabled, created_at, updated_at, push FROM alerts WHERE household_id = $1 ORDER BY type
 `
 
 // Alerts: household-configured rules and the events they raise.
@@ -407,6 +411,7 @@ func (q *Queries) ListAlerts(ctx context.Context, householdID uuid.UUID) ([]Aler
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Push,
 		); err != nil {
 			return nil, err
 		}
@@ -419,7 +424,7 @@ func (q *Queries) ListAlerts(ctx context.Context, householdID uuid.UUID) ([]Aler
 }
 
 const listEnabledAlerts = `-- name: ListEnabledAlerts :many
-SELECT id, household_id, type, config, enabled, created_at, updated_at FROM alerts WHERE household_id = $1 AND enabled ORDER BY type
+SELECT id, household_id, type, config, enabled, created_at, updated_at, push FROM alerts WHERE household_id = $1 AND enabled ORDER BY type
 `
 
 func (q *Queries) ListEnabledAlerts(ctx context.Context, householdID uuid.UUID) ([]Alert, error) {
@@ -439,6 +444,7 @@ func (q *Queries) ListEnabledAlerts(ctx context.Context, householdID uuid.UUID) 
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Push,
 		); err != nil {
 			return nil, err
 		}
@@ -522,7 +528,7 @@ func (q *Queries) ListRecentAlertEventsForExplanation(ctx context.Context, arg L
 }
 
 const listUnnotifiedAlertEvents = `-- name: ListUnnotifiedAlertEvents :many
-SELECT e.id, e.payload, al.type AS alert_type
+SELECT e.id, e.payload, al.type AS alert_type, al.push AS push
 FROM alert_events e
 JOIN alerts al ON al.id = e.alert_id
 WHERE al.household_id = $1
@@ -534,12 +540,13 @@ type ListUnnotifiedAlertEventsRow struct {
 	ID        uuid.UUID `json:"id"`
 	Payload   []byte    `json:"payload"`
 	AlertType string    `json:"alert_type"`
+	Push      bool      `json:"push"`
 }
 
 // New alert events for a household that have not yet been dispatched for push.
-// Joined to the rule for its type so the dispatcher can match against each
-// member's notify.push_kinds. Oldest first, so pushes arrive in the order the
-// events were raised.
+// Joined to the rule for its type and its `push` switch: the dispatcher pushes
+// an event only when its rule opted in. Oldest first, so pushes arrive in the
+// order the events were raised.
 func (q *Queries) ListUnnotifiedAlertEvents(ctx context.Context, householdID uuid.UUID) ([]ListUnnotifiedAlertEventsRow, error) {
 	rows, err := q.db.Query(ctx, listUnnotifiedAlertEvents, householdID)
 	if err != nil {
@@ -549,7 +556,12 @@ func (q *Queries) ListUnnotifiedAlertEvents(ctx context.Context, householdID uui
 	items := []ListUnnotifiedAlertEventsRow{}
 	for rows.Next() {
 		var i ListUnnotifiedAlertEventsRow
-		if err := rows.Scan(&i.ID, &i.Payload, &i.AlertType); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Payload,
+			&i.AlertType,
+			&i.Push,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -759,9 +771,9 @@ func (q *Queries) UnusualMerchantCandidates(ctx context.Context, arg UnusualMerc
 
 const updateAlert = `-- name: UpdateAlert :one
 UPDATE alerts
-SET config = $3, enabled = $4, updated_at = now()
+SET config = $3, enabled = $4, push = $5, updated_at = now()
 WHERE id = $1 AND household_id = $2
-RETURNING id, household_id, type, config, enabled, created_at, updated_at
+RETURNING id, household_id, type, config, enabled, created_at, updated_at, push
 `
 
 type UpdateAlertParams struct {
@@ -769,6 +781,7 @@ type UpdateAlertParams struct {
 	HouseholdID uuid.UUID `json:"household_id"`
 	Config      []byte    `json:"config"`
 	Enabled     bool      `json:"enabled"`
+	Push        bool      `json:"push"`
 }
 
 func (q *Queries) UpdateAlert(ctx context.Context, arg UpdateAlertParams) (Alert, error) {
@@ -777,6 +790,7 @@ func (q *Queries) UpdateAlert(ctx context.Context, arg UpdateAlertParams) (Alert
 		arg.HouseholdID,
 		arg.Config,
 		arg.Enabled,
+		arg.Push,
 	)
 	var i Alert
 	err := row.Scan(
@@ -787,6 +801,7 @@ func (q *Queries) UpdateAlert(ctx context.Context, arg UpdateAlertParams) (Alert
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Push,
 	)
 	return i, err
 }

@@ -57,20 +57,6 @@ export function Settings() {
   )
 }
 
-// The insight/alert kinds a user can choose to have pushed. Hardcoded for now —
-// 04 owns the canonical enumeration; this list mirrors the alert types plus the
-// initial insight kinds so the control is useful before those land.
-const PUSH_KINDS: { value: string; label: string }[] = [
-  { value: 'big_spend', label: 'Big spend' },
-  { value: 'budget_threshold', label: 'Budget threshold' },
-  { value: 'unusual_merchant', label: 'Unusual merchant' },
-  { value: 'low_leftover', label: 'Low leftover' },
-  { value: 'spending_spike', label: 'Spending spike' },
-  { value: 'new_recurring', label: 'New recurring charge' },
-  { value: 'subscription', label: 'Subscription' },
-  { value: 'forecast', label: 'Forecast' },
-]
-
 function NotificationsSection() {
   const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
   const capabilities = useQuery({
@@ -82,7 +68,6 @@ function NotificationsSection() {
 
   const [channel, setChannel] = useState('none')
   const [topic, setTopic] = useState('')
-  const [kinds, setKinds] = useState<string[]>([])
 
   // Seed the form once the stored values arrive. Keyed on the fetched object so
   // it re-seeds after a refetch but not on every keystroke.
@@ -91,25 +76,26 @@ function NotificationsSection() {
     if (!u) return
     setChannel(asString(u['notify.channel'], 'none'))
     setTopic(asString(u['notify.ntfy_topic'], ''))
-    setKinds(asStringArray(u['notify.push_kinds']))
   }, [prefs.data])
 
-  const toggleKind = (value: string) =>
-    setKinds((prev) =>
-      prev.includes(value) ? prev.filter((k) => k !== value) : [...prev, value],
-    )
+  // Sends to the SAVED topic (the server reads preferences), so a test is only
+  // meaningful once the current channel/topic have been saved.
+  const test = useMutation({ mutationFn: () => api.testNotification() })
+
+  const dirty =
+    asString(prefs.data?.user?.['notify.channel'], 'none') !== channel ||
+    asString(prefs.data?.user?.['notify.ntfy_topic'], '') !== topic
 
   const onSave = () =>
     save.mutate([
       { scope: 'user', key: 'notify.channel', value: channel },
       { scope: 'user', key: 'notify.ntfy_topic', value: topic },
-      { scope: 'user', key: 'notify.push_kinds', value: kinds },
     ])
 
   return (
     <Section
       title="Notifications"
-      description="Where the app pushes alerts and insights. Delivery turns on once a channel is configured."
+      description="Where the app reaches you. Pick a channel and topic here; choose which alerts push on the Alerts page."
     >
       {prefs.isPending ? (
         <Loading />
@@ -156,23 +142,38 @@ function NotificationsSection() {
             </div>
           )}
 
-          <fieldset>
-            <legend className="label">What to push</legend>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              {PUSH_KINDS.map((k) => (
-                <label key={k.value} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={kinds.includes(k.value)}
-                    onChange={() => toggleKind(k.value)}
-                  />
-                  {k.label}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
           <SaveRow save={save} onSave={onSave} />
+
+          {channel === 'ntfy' && (
+            <div className="border-t border-white/10 pt-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  className="btn-ghost px-4 py-2 text-sm"
+                  disabled={test.isPending || topic.trim() === '' || dirty}
+                  onClick={() => test.mutate()}
+                >
+                  {test.isPending ? 'Sending…' : 'Send test'}
+                </button>
+                {dirty ? (
+                  <span className="text-sm text-mist-500">
+                    Save your changes first, then send a test.
+                  </span>
+                ) : test.isError ? (
+                  <span role="alert" className="text-sm text-ember-400">
+                    {test.error.message}
+                  </span>
+                ) : test.isSuccess ? (
+                  <span className="text-sm text-rune-300">
+                    Sent — check your device.
+                  </span>
+                ) : (
+                  <span className="text-sm text-mist-500">
+                    Delivers one test push to your saved topic.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </Section>
@@ -192,6 +193,10 @@ function DigestSection() {
     setEnabled(asBool(u['digest.enabled']))
     setCadence(asString(u['digest.cadence'], 'weekly'))
   }, [prefs.data])
+
+  // Queues a digest immediately, independent of the cadence and opt-in above, so
+  // you can see what one looks like without waiting for the schedule.
+  const sendNow = useMutation({ mutationFn: () => api.sendDigestNow() })
 
   const onSave = () =>
     save.mutate([
@@ -234,6 +239,31 @@ function DigestSection() {
           </div>
 
           <SaveRow save={save} onSave={onSave} />
+
+          <div className="border-t border-white/10 pt-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                className="btn-ghost px-4 py-2 text-sm"
+                disabled={sendNow.isPending}
+                onClick={() => sendNow.mutate()}
+              >
+                {sendNow.isPending ? 'Queueing…' : 'Send one now'}
+              </button>
+              {sendNow.isError ? (
+                <span role="alert" className="text-sm text-ember-400">
+                  {sendNow.error.message}
+                </span>
+              ) : sendNow.isSuccess ? (
+                <span className="text-sm text-rune-300">
+                  Queued — it’ll arrive shortly.
+                </span>
+              ) : (
+                <span className="text-sm text-mist-500">
+                  Sends a digest to your channel right now, ignoring the schedule.
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </Section>
@@ -309,8 +339,4 @@ function asString(v: unknown, fallback: string): string {
 
 function asBool(v: unknown): boolean {
   return v === true
-}
-
-function asStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
