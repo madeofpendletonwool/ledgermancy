@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/config"
 	"github.com/apex42group/ledgermancy/backend/internal/crypto"
 	"github.com/apex42group/ledgermancy/backend/internal/db"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/jobs"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
 
@@ -69,7 +71,15 @@ func run() error {
 		slog.Warn("plaid not configured; sync jobs are disabled")
 	}
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer)
+	// Always constructed; a blank API key yields a disabled client and the
+	// categorisation jobs are simply not registered.
+	aiClient := ai.New(cfg.AI)
+
+	// Always constructed too; delivery is gated per-user inside the notifier, so
+	// there is nothing to branch on here.
+	notifier := notify.New(cfg.NTFY, dbgen.New(pool))
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, cfg.FrontendOrigin)
 	if err != nil {
 		return err
 	}

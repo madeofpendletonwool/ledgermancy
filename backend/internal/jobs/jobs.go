@@ -5,8 +5,11 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,9 +20,14 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
+	"github.com/apex42group/ledgermancy/backend/internal/alerts"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
+	"github.com/apex42group/ledgermancy/backend/internal/categorize"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/apex42group/ledgermancy/backend/internal/insights"
 	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 )
 
@@ -58,6 +66,12 @@ func (a SyncItemArgs) InsertOpts() river.InsertOpts {
 type SyncItemWorker struct {
 	river.WorkerDefaults[SyncItemArgs]
 	Syncer *plaid.Syncer
+	// Client and Queries let a finished sync kick off follow-up work for the
+	// item's household — alert evaluation always, and AI categorisation when
+	// EnqueueLLM is set. The periodic sweeps are the backstop if these are nil.
+	Client     *river.Client[pgx.Tx]
+	Queries    *dbgen.Queries
+	EnqueueLLM bool
 }
 
 func (w *SyncItemWorker) Work(ctx context.Context, job *river.Job[SyncItemArgs]) error {
@@ -81,6 +95,29 @@ func (w *SyncItemWorker) Work(ctx context.Context, job *river.Job[SyncItemArgs])
 		"accounts", result.AccountsUpserted,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
+
+	// Kick off follow-up work for this household. Failures here never fail the
+	// sync — the periodic sweeps are a backstop.
+	if w.Client != nil && w.Queries != nil {
+		householdID, err := w.Queries.GetHouseholdForItem(ctx, job.Args.ItemID)
+		if err != nil {
+			slog.Warn("resolve household for post-sync jobs", "error", err, "item_id", job.Args.ItemID)
+			return nil
+		}
+		if _, err := w.Client.Insert(ctx, EvaluateAlertsArgs{HouseholdID: householdID}, nil); err != nil {
+			slog.Error("enqueue alert evaluation", "error", err, "household_id", householdID)
+		}
+		// Insight generation is deterministic (phrasing is separately AI-gated
+		// inside the engine), so a fresh sync always refreshes the feed.
+		if _, err := w.Client.Insert(ctx, GenerateInsightsArgs{HouseholdID: householdID}, nil); err != nil {
+			slog.Error("enqueue insight generation", "error", err, "household_id", householdID)
+		}
+		if w.EnqueueLLM {
+			if _, err := w.Client.Insert(ctx, LLMCategoriseArgs{HouseholdID: householdID}, nil); err != nil {
+				slog.Error("enqueue llm categorise", "error", err, "household_id", householdID)
+			}
+		}
+	}
 	return nil
 }
 
@@ -225,6 +262,412 @@ func (w *SnapshotNetWorthWorker) Work(ctx context.Context, job *river.Job[Snapsh
 		return fmt.Errorf("snapshot net worth: %w", err)
 	}
 	slog.Info("net worth snapshots written", "households", n)
+	return nil
+}
+
+// LLMCategoriseArgs runs the AI categorisation fallback for one household: the
+// step-5 pass over transactions the deterministic resolver left uncategorised.
+type LLMCategoriseArgs struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (LLMCategoriseArgs) Kind() string { return "llm_categorise" }
+
+// InsertOpts collapses a burst of enqueues for one household — several items
+// finishing a sync at once, plus the sweep — into a single pass per minute.
+// Starts from River's required state set (see SyncItemArgs) so the insert is
+// not silently rejected.
+func (a LLMCategoriseArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Minute,
+		},
+	}
+}
+
+// LLMCategoriseWorker asks the model to place uncategorised merchants.
+type LLMCategoriseWorker struct {
+	river.WorkerDefaults[LLMCategoriseArgs]
+	Queries *dbgen.Queries
+	AI      *ai.Client
+}
+
+func (w *LLMCategoriseWorker) Work(ctx context.Context, job *river.Job[LLMCategoriseArgs]) error {
+	n, err := categorize.LLMCategoriseHousehold(ctx, w.Queries, w.AI, job.Args.HouseholdID)
+	if err != nil {
+		return fmt.Errorf("llm categorise household %s: %w", job.Args.HouseholdID, err)
+	}
+	if n > 0 {
+		slog.Info("llm categorisation complete",
+			"household_id", job.Args.HouseholdID, "merchants_decided", n)
+	}
+	return nil
+}
+
+// Timeout bounds a pass that may fan out to several batched model calls.
+func (w *LLMCategoriseWorker) Timeout(*river.Job[LLMCategoriseArgs]) time.Duration {
+	return 5 * time.Minute
+}
+
+// LLMCategoriseAllArgs sweeps every household so a quiet household still gets
+// its backlog categorised even when no sync is enqueuing per-household passes.
+type LLMCategoriseAllArgs struct{}
+
+func (LLMCategoriseAllArgs) Kind() string { return "llm_categorise_all" }
+
+// LLMCategoriseAllWorker enqueues a per-household categorise pass.
+type LLMCategoriseAllWorker struct {
+	river.WorkerDefaults[LLMCategoriseAllArgs]
+	Queries *dbgen.Queries
+	Client  *river.Client[pgx.Tx]
+}
+
+func (w *LLMCategoriseAllWorker) Work(ctx context.Context, job *river.Job[LLMCategoriseAllArgs]) error {
+	ids, err := w.Queries.ListHouseholdIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := w.Client.Insert(ctx, LLMCategoriseArgs{HouseholdID: id}, nil); err != nil {
+			slog.Error("enqueue llm categorise", "error", err, "household_id", id)
+		}
+	}
+	return nil
+}
+
+// EvaluateAlertsArgs runs the alert engine for one household. Unlike the AI
+// jobs this needs no API key — it is deterministic SQL — so it is always
+// registered.
+type EvaluateAlertsArgs struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (EvaluateAlertsArgs) Kind() string { return "evaluate_alerts" }
+
+// InsertOpts collapses a burst of enqueues (several items syncing, plus the
+// sweep) into one evaluation per household per minute. Starts from River's
+// required state set so the insert is not silently rejected.
+func (a EvaluateAlertsArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Minute,
+		},
+	}
+}
+
+// EvaluateAlertsWorker evaluates a household's alert rules and records events,
+// then dispatches external pushes for any newly-raised events.
+type EvaluateAlertsWorker struct {
+	river.WorkerDefaults[EvaluateAlertsArgs]
+	Queries *dbgen.Queries
+	// Client enqueues the per-user notify jobs. Nil-tolerant: without a queue
+	// (which cannot happen in the worker, but keeps the type usable in tests)
+	// dispatch is skipped.
+	Client *river.Client[pgx.Tx]
+	// AppURL is the frontend origin used to build a deep link back to the app.
+	AppURL string
+}
+
+func (w *EvaluateAlertsWorker) Work(ctx context.Context, job *river.Job[EvaluateAlertsArgs]) error {
+	n, err := alerts.Evaluate(ctx, w.Queries, job.Args.HouseholdID, time.Now())
+	if err != nil {
+		return fmt.Errorf("evaluate alerts for household %s: %w", job.Args.HouseholdID, err)
+	}
+	if n > 0 {
+		slog.Info("alerts raised", "household_id", job.Args.HouseholdID, "events", n)
+	}
+
+	// Dispatch pushes for un-notified events. A failure here must not fail
+	// evaluation — the events are already stored, and the next sweep retries
+	// dispatch (notified_at gates re-sending).
+	if err := w.dispatchNotifications(ctx, job.Args.HouseholdID); err != nil {
+		slog.Error("dispatch alert notifications", "error", err, "household_id", job.Args.HouseholdID)
+	}
+	return nil
+}
+
+// dispatchNotifications enqueues one notify job per (new event × member who
+// wants that kind pushed), then stamps each event notified so an overlapping
+// sweep never re-dispatches it. Enqueue-time stamping (rather than send-time)
+// keeps event dedupe unambiguous when a household has several members; the
+// per-user NotifyArgs additionally carry UniqueOpts as a second guard.
+func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, householdID uuid.UUID) error {
+	if w.Client == nil {
+		return nil
+	}
+	events, err := w.Queries.ListUnnotifiedAlertEvents(ctx, householdID)
+	if err != nil {
+		return fmt.Errorf("list unnotified events: %w", err)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	members, err := w.Queries.ListHouseholdMembers(ctx, householdID)
+	if err != nil {
+		return fmt.Errorf("list members: %w", err)
+	}
+
+	for _, ev := range events {
+		// The rule decides whether its events go out externally at all. A rule
+		// left in-app only still fires and shows in the feed; we just stamp its
+		// event notified so this and later sweeps skip it without pushing.
+		if !ev.Push {
+			if err := w.Queries.MarkAlertEventNotified(ctx, ev.ID); err != nil {
+				slog.Error("mark event notified", "error", err, "event_id", ev.ID)
+			}
+			continue
+		}
+
+		var payload map[string]string
+		_ = json.Unmarshal(ev.Payload, &payload)
+		n := alertNotification(ev.AlertType, payload, w.AppURL)
+
+		for _, m := range members {
+			if !w.hasChannel(ctx, m.ID) {
+				continue
+			}
+			args := NotifyArgs{
+				UserID:       m.ID,
+				AlertEventID: ev.ID,
+				Title:        n.Title,
+				Body:         n.Body,
+				Priority:     n.Priority,
+				Tags:         n.Tags,
+				ClickURL:     n.ClickURL,
+			}
+			if _, err := w.Client.Insert(ctx, args, nil); err != nil {
+				slog.Error("enqueue notify", "error", err, "user_id", m.ID, "event_id", ev.ID)
+			}
+		}
+
+		if err := w.Queries.MarkAlertEventNotified(ctx, ev.ID); err != nil {
+			slog.Error("mark event notified", "error", err, "event_id", ev.ID)
+		}
+	}
+	return nil
+}
+
+// hasChannel reports whether a user has a real delivery channel configured.
+// Which alerts push is now the rule's call (alerts.push); this only answers
+// "can we reach this member at all". A read error or unset pref is treated as
+// "no", never blocking the sweep.
+func (w *EvaluateAlertsWorker) hasChannel(ctx context.Context, userID uuid.UUID) bool {
+	channel := stringPref(ctx, w.Queries, userID, "notify.channel")
+	return channel != "" && channel != "none"
+}
+
+// NotifyArgs delivers one pre-formatted notification to one user. Content is
+// baked in at enqueue time so the worker never re-queries. AlertEventID is
+// carried only to key uniqueness, so overlapping sweeps collapse.
+type NotifyArgs struct {
+	UserID       uuid.UUID `json:"user_id"`
+	AlertEventID uuid.UUID `json:"alert_event_id"`
+	Title        string    `json:"title"`
+	Body         string    `json:"body"`
+	Priority     int       `json:"priority"`
+	Tags         []string  `json:"tags,omitempty"`
+	ClickURL     string    `json:"click_url,omitempty"`
+}
+
+func (NotifyArgs) Kind() string { return "notify" }
+
+// InsertOpts collapses duplicate pushes for the same (event, user) so a
+// re-enqueue after a crash between insert and stamping does not double-send.
+func (NotifyArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Hour,
+		},
+	}
+}
+
+// NotifyWorker delivers one notification via the Notifier. The Notifier no-ops
+// for users without a configured channel, so this worker never has to gate.
+type NotifyWorker struct {
+	river.WorkerDefaults[NotifyArgs]
+	Notifier notify.Notifier
+}
+
+func (w *NotifyWorker) Work(ctx context.Context, job *river.Job[NotifyArgs]) error {
+	a := job.Args
+	if err := w.Notifier.Send(ctx, a.UserID, notify.Notification{
+		Title:    a.Title,
+		Body:     a.Body,
+		Priority: a.Priority,
+		Tags:     a.Tags,
+		ClickURL: a.ClickURL,
+	}); err != nil {
+		return fmt.Errorf("send notification to %s: %w", a.UserID, err)
+	}
+	return nil
+}
+
+// stringPref reads a JSON-string user preference, returning "" when unset or
+// malformed — a dispatch decision should degrade to "off", never error.
+func stringPref(ctx context.Context, q *dbgen.Queries, userID uuid.UUID, key string) string {
+	raw, err := q.GetUserPreference(ctx, dbgen.GetUserPreferenceParams{UserID: &userID, Key: key})
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("read preference", "error", err, "key", key, "user_id", userID)
+		}
+		return ""
+	}
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
+}
+
+// alertNotification renders an alert event into a push. Money in the payload is
+// already a fixed-2 decimal string; this only decorates it. Unknown types get a
+// generic message rather than being dropped.
+func alertNotification(alertType string, p map[string]string, appURL string) notify.Notification {
+	click := ""
+	if appURL != "" {
+		click = strings.TrimRight(appURL, "/") + "/alerts"
+	}
+	n := notify.Notification{Priority: 3, ClickURL: click}
+	switch alertType {
+	case alerts.TypeBigSpend:
+		n.Title = "Large purchase"
+		n.Body = fmt.Sprintf("%s — $%s on %s", p["merchant"], p["amount"], p["date"])
+		n.Priority, n.Tags = 4, []string{"dollar"}
+	case alerts.TypeUnusualMerchant:
+		n.Title = "New merchant"
+		n.Body = fmt.Sprintf("First charge from %s: $%s on %s", p["merchant"], p["amount"], p["date"])
+		n.Tags = []string{"question"}
+	case alerts.TypeBudgetThreshold:
+		n.Title = "Budget alert"
+		n.Body = fmt.Sprintf("%s is at %s%% — $%s of $%s", p["category_name"], p["percent"], p["spent"], p["budgeted"])
+		n.Priority, n.Tags = 4, []string{"chart_with_upwards_trend"}
+	case alerts.TypeLowLeftover:
+		n.Title = "Low leftover"
+		n.Body = fmt.Sprintf("Only $%s left this period (floor $%s)", p["leftover"], p["floor"])
+		n.Priority, n.Tags = 4, []string{"warning"}
+	default:
+		n.Title = "Alert"
+		n.Body = "A financial alert was triggered."
+	}
+	return n
+}
+
+// EvaluateAlertsAllArgs sweeps every household so alerts still fire for a
+// household whose institutions are all quiet (e.g. a budget crossing driven by
+// the calendar rolling over, not by a sync).
+type EvaluateAlertsAllArgs struct{}
+
+func (EvaluateAlertsAllArgs) Kind() string { return "evaluate_alerts_all" }
+
+// EvaluateAlertsAllWorker enqueues a per-household evaluation.
+type EvaluateAlertsAllWorker struct {
+	river.WorkerDefaults[EvaluateAlertsAllArgs]
+	Queries *dbgen.Queries
+	Client  *river.Client[pgx.Tx]
+}
+
+func (w *EvaluateAlertsAllWorker) Work(ctx context.Context, job *river.Job[EvaluateAlertsAllArgs]) error {
+	ids, err := w.Queries.ListHouseholdIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := w.Client.Insert(ctx, EvaluateAlertsArgs{HouseholdID: id}, nil); err != nil {
+			slog.Error("enqueue alert evaluation", "error", err, "household_id", id)
+		}
+	}
+	return nil
+}
+
+// --------------------------------------------------------------------------
+// Insight generation
+// --------------------------------------------------------------------------
+
+// GenerateInsightsArgs runs the proactive-insight engine for one household: the
+// deterministic detectors, plus optional AI phrasing when a key is configured.
+//
+// Detection needs no API key, so unlike the LLM categorise job this worker is
+// always registered — gating the whole job on AI would leave the feed empty
+// without a key, defeating the point. Only the phrasing inside
+// insights.Generate is AI-gated.
+type GenerateInsightsArgs struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (GenerateInsightsArgs) Kind() string { return "insights" }
+
+// InsertOpts collapses a burst of enqueues for one household (several items
+// finishing a sync at once, plus the sweep) into a single pass per minute.
+// Starts from River's required state set (see SyncItemArgs) so the insert is not
+// silently rejected.
+func (a GenerateInsightsArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDefault,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByState:  append(rivertype.UniqueOptsByStateDefault(), rivertype.JobStateRetryable),
+			ByPeriod: time.Minute,
+		},
+	}
+}
+
+// GenerateInsightsWorker runs the insight engine for one household. AI is passed
+// through to insights.Generate, which uses it only for phrasing and falls back
+// to template text when it is disabled or errors.
+type GenerateInsightsWorker struct {
+	river.WorkerDefaults[GenerateInsightsArgs]
+	Queries *dbgen.Queries
+	AI      *ai.Client
+}
+
+func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[GenerateInsightsArgs]) error {
+	results, err := insights.Generate(ctx, w.Queries, w.AI, job.Args.HouseholdID, time.Now())
+	if err != nil {
+		return fmt.Errorf("generate insights for household %s: %w", job.Args.HouseholdID, err)
+	}
+	if len(results) > 0 {
+		slog.Info("insights generated",
+			"household_id", job.Args.HouseholdID, "candidates", len(results))
+	}
+	return nil
+}
+
+// Timeout bounds a pass that may fan out to one phrasing call per candidate.
+func (w *GenerateInsightsWorker) Timeout(*river.Job[GenerateInsightsArgs]) time.Duration {
+	return 5 * time.Minute
+}
+
+// GenerateInsightsAllArgs sweeps every household so a quiet household still gets
+// a refreshed feed even when no sync is enqueuing per-household passes (a budget
+// crossing driven by the calendar rolling over, say).
+type GenerateInsightsAllArgs struct{}
+
+func (GenerateInsightsAllArgs) Kind() string { return "insights_all" }
+
+// GenerateInsightsAllWorker enqueues a per-household generation pass.
+type GenerateInsightsAllWorker struct {
+	river.WorkerDefaults[GenerateInsightsAllArgs]
+	Queries *dbgen.Queries
+	Client  *river.Client[pgx.Tx]
+}
+
+func (w *GenerateInsightsAllWorker) Work(ctx context.Context, job *river.Job[GenerateInsightsAllArgs]) error {
+	ids, err := w.Queries.ListHouseholdIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := w.Client.Insert(ctx, GenerateInsightsArgs{HouseholdID: id}, nil); err != nil {
+			slog.Error("enqueue insight generation", "error", err, "household_id", id)
+		}
+	}
 	return nil
 }
 

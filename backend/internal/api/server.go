@@ -15,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/config"
 	"github.com/apex42group/ledgermancy/backend/internal/crypto"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/jobs"
+	"github.com/apex42group/ledgermancy/backend/internal/notify"
 	"github.com/apex42group/ledgermancy/backend/internal/plaid"
 	"github.com/apex42group/ledgermancy/backend/internal/ratelimit"
 )
@@ -37,6 +39,8 @@ type Server struct {
 	Plaid   *plaid.Client
 	Syncer  *plaid.Syncer
 	Jobs    *river.Client[pgx.Tx]
+	AI      *ai.Client
+	Notify  notify.Notifier
 
 	// Rate limiters, held on the Server so successful logins can reset the
 	// caller's counter rather than punishing someone who mistyped once.
@@ -71,13 +75,18 @@ const (
 	generalWindow            = time.Minute
 )
 
-// NewServer builds a Server from an open connection pool.
+// NewServer builds a Server from an open connection pool. The AI client is
+// always constructed; when no API key is configured it is simply disabled, so
+// handlers gate on s.AI.Enabled() rather than a nil check.
 func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Server {
+	queries := dbgen.New(pool)
 	return &Server{
 		Config:          cfg,
 		Pool:            pool,
-		Queries:         dbgen.New(pool),
+		Queries:         queries,
 		Cipher:          cipher,
+		AI:              ai.New(cfg.AI),
+		Notify:          notify.New(cfg.NTFY, queries),
 		loginLimiter:    ratelimit.New(loginAttemptsPerWindow, loginWindow),
 		registerLimiter: ratelimit.New(registerAttemptsPerWindow, registerWindow),
 		accountLimiter:  ratelimit.New(accountAttemptsPerWindow, accountWindow),
@@ -88,6 +97,13 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Se
 // enqueueSync schedules a background sync for an item.
 func (s *Server) enqueueSync(itemID uuid.UUID) {
 	jobs.EnqueueSync(context.Background(), s.Jobs, itemID)
+}
+
+// enqueueAlertEval schedules an immediate alert evaluation for a household, so
+// a just-changed alert surfaces without waiting for the periodic sweep. Nil
+// client (no queue configured) is tolerated.
+func (s *Server) enqueueAlertEval(householdID uuid.UUID) {
+	jobs.EnqueueAlertEval(context.Background(), s.Jobs, householdID)
 }
 
 // Routes returns the fully-wired HTTP handler.
@@ -179,6 +195,22 @@ func (s *Server) Routes() http.Handler {
 			r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
 		})
 
+		r.Route("/preferences", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleGetPreferences)
+			r.Put("/", s.handleUpsertPreferences)
+		})
+
+		r.Route("/notifications", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Post("/test", s.handleTestNotification)
+		})
+
+		r.Route("/digest", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Post("/test", s.handleSendDigestNow)
+		})
+
 		r.Route("/plaid", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Post("/link-token", s.handleCreateLinkToken)
@@ -197,19 +229,35 @@ func (s *Server) Routes() http.Handler {
 		r.Route("/transactions", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListTransactions)
+			r.Post("/", s.handleCreateManualTransaction)
 			r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
+			r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
+			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 		})
 
 		r.Route("/categories", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListCategories)
+			r.Post("/", s.handleCreateCategory)
+			r.Put("/{categoryID}", s.handleUpdateCategory)
+			r.Delete("/{categoryID}", s.handleDeleteCategory)
 		})
 
 		r.Route("/budgets", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleBudgetProgress)
 			r.Post("/", s.handleCreateBudget)
+			r.Post("/suggest", s.handleSuggestBudgets)
 			r.Delete("/{budgetID}", s.handleDeleteBudget)
+		})
+
+		r.Route("/goals", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListGoals)
+			r.Post("/", s.handleCreateGoal)
+			r.Post("/parse", s.handleParseGoal)
+			r.Put("/{goalID}", s.handleUpdateGoal)
+			r.Delete("/{goalID}", s.handleArchiveGoal)
 		})
 
 		r.Route("/networth", func(r chi.Router) {
@@ -252,6 +300,35 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)
+			r.Get("/recurring", s.handleRecurring)
+			r.Get("/monthly-summary", s.handleGetMonthlySummary)
+			r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/capabilities", s.handleCapabilities)
+			r.Post("/chat", s.handleChat)
+		})
+
+		r.Route("/insights", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListInsights)
+			r.Post("/{insightID}/read", s.handleMarkInsightRead)
+			r.Post("/{insightID}/dismiss", s.handleDismissInsight)
+		})
+
+		r.Route("/alerts", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListAlerts)
+			r.Post("/", s.handleCreateAlert)
+			r.Post("/parse", s.handleParseAlert)
+			r.Put("/{alertID}", s.handleUpdateAlert)
+			r.Delete("/{alertID}", s.handleDeleteAlert)
+			r.Get("/events", s.handleListAlertEvents)
+			r.Get("/events/unread-count", s.handleUnreadAlertCount)
+			r.Post("/events/read-all", s.handleMarkAllAlertEventsRead)
+			r.Post("/events/{eventID}/read", s.handleMarkAlertEventRead)
 		})
 	})
 

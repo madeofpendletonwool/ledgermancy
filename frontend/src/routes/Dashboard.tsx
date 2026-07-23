@@ -11,6 +11,7 @@ import {
 } from '../lib/money'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
+import { InsightFeed } from '../components/InsightFeed'
 
 /**
  * The dashboard is the at-a-glance view: this month's spend and pace, where the
@@ -102,6 +103,10 @@ export function Dashboard() {
           Importing your transaction history — this can take a minute.
         </div>
       )}
+
+      {/* Proactive feed — the app noticing things. Renders nothing when there
+          is nothing to flag, so it never leaves an empty box at the top. */}
+      <InsightFeed variant="card" limit={3} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile

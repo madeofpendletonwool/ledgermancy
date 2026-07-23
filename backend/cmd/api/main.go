@@ -63,6 +63,14 @@ func run() error {
 
 	server := api.NewServer(cfg, pool, cipher)
 
+	// The queue client is wired regardless of Plaid: alert evaluation and other
+	// non-Plaid jobs need to be enqueueable even when no institutions are linked.
+	riverClient, err := jobs.NewInsertOnlyClient(pool)
+	if err != nil {
+		return err
+	}
+	server.Jobs = riverClient
+
 	// Plaid is optional: without credentials the app runs normally and the
 	// Plaid endpoints report 503 rather than the process failing to start.
 	if cfg.Plaid.ClientID != "" && cfg.Plaid.Secret != "" {
@@ -70,13 +78,8 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		riverClient, err := jobs.NewInsertOnlyClient(pool)
-		if err != nil {
-			return err
-		}
 
 		server.Plaid = plaidClient
-		server.Jobs = riverClient
 		server.Syncer = &plaid.Syncer{
 			Pool:    pool,
 			Queries: server.Queries,

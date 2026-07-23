@@ -27,6 +27,124 @@ func (q *Queries) CountTransactionsForItem(ctx context.Context, plaidItemID uuid
 	return count, err
 }
 
+const createManualTransaction = `-- name: CreateManualTransaction :one
+INSERT INTO transactions (
+    account_id, amount, currency, date, name, merchant_name, merchant_key,
+    category_id, category_source, notes, source, pending
+)
+SELECT
+    a.id,
+    $1,
+    a.currency,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    CASE WHEN $6::uuid IS NULL THEN NULL ELSE 'manual' END,
+    $7,
+    'manual',
+    false
+FROM accounts a
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE a.id = $8
+  AND u.household_id = $9
+  AND (i.user_id = $10 OR i.is_shared)
+  AND a.is_active
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at
+`
+
+type CreateManualTransactionParams struct {
+	Amount       decimal.Decimal `json:"amount"`
+	Date         stdtime.Time    `json:"date"`
+	Name         string          `json:"name"`
+	MerchantName *string         `json:"merchant_name"`
+	MerchantKey  *string         `json:"merchant_key"`
+	CategoryID   *uuid.UUID      `json:"category_id"`
+	Notes        *string         `json:"notes"`
+	AccountID    uuid.UUID       `json:"account_id"`
+	HouseholdID  uuid.UUID       `json:"household_id"`
+	UserID       uuid.UUID       `json:"user_id"`
+}
+
+// Inserts a hand-entered transaction. Household scoping is enforced in the
+// SELECT: the row is created only when the target account belongs to the
+// caller's household and is visible to them (own or shared), so a foreign or
+// invisible account_id inserts nothing and the handler reads pgx.ErrNoRows.
+//
+// source='manual' and a NULL plaid_transaction_id keep it clear of the Plaid
+// sync upsert (which keys ON CONFLICT (plaid_transaction_id)) forever, and the
+// balance is never touched — manual rows correct spending math only.
+func (q *Queries) CreateManualTransaction(ctx context.Context, arg CreateManualTransactionParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, createManualTransaction,
+		arg.Amount,
+		arg.Date,
+		arg.Name,
+		arg.MerchantName,
+		arg.MerchantKey,
+		arg.CategoryID,
+		arg.Notes,
+		arg.AccountID,
+		arg.HouseholdID,
+		arg.UserID,
+	)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteManualTransaction = `-- name: DeleteManualTransaction :execrows
+DELETE FROM transactions t
+USING accounts a, plaid_items i, users u
+WHERE t.id = $1
+  AND t.source = 'manual'
+  AND a.id = t.account_id
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND u.household_id = $2
+`
+
+type DeleteManualTransactionParams struct {
+	ID          uuid.UUID `json:"id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+// Same source='manual' + household guard as the update. :execrows returns 0
+// when nothing matched (wrong household, or a Plaid id), which the handler maps
+// to 404.
+func (q *Queries) DeleteManualTransaction(ctx context.Context, arg DeleteManualTransactionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteManualTransaction, arg.ID, arg.HouseholdID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deletePendingSupersededBy = `-- name: DeletePendingSupersededBy :execrows
 DELETE FROM transactions WHERE plaid_transaction_id = $1
 `
@@ -54,8 +172,101 @@ func (q *Queries) DeleteTransactionByPlaidID(ctx context.Context, plaidTransacti
 	return result.RowsAffected(), nil
 }
 
+const listFilteredTransactions = `-- name: ListFilteredTransactions :many
+SELECT
+    t.date,
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount,
+    c.name AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND ($5::text IS NULL
+       OR c.slug = lower($5::text)
+       OR c.name ILIKE '%' || $5::text || '%')
+  AND ($6::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $6::text || '%')
+ORDER BY t.date DESC, t.amount DESC
+LIMIT $7
+`
+
+type ListFilteredTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Category    *string      `json:"category"`
+	Merchant    *string      `json:"merchant"`
+	Lim         int32        `json:"lim"`
+}
+
+type ListFilteredTransactionsRow struct {
+	Date         stdtime.Time    `json:"date"`
+	Merchant     string          `json:"merchant"`
+	Amount       decimal.Decimal `json:"amount"`
+	CategoryName string          `json:"category_name"`
+}
+
+// The per-transaction breakdown behind the same tool. Same filters as
+// SumFilteredTransactions; the list may be capped by the limit while the sum
+// above stays exact over every match.
+func (q *Queries) ListFilteredTransactions(ctx context.Context, arg ListFilteredTransactionsParams) ([]ListFilteredTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listFilteredTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Category,
+		arg.Merchant,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFilteredTransactionsRow{}
+	for rows.Next() {
+		var i ListFilteredTransactionsRow
+		if err := rows.Scan(
+			&i.Date,
+			&i.Merchant,
+			&i.Amount,
+			&i.CategoryName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
-SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name
+SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name,
+    -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
+    -- the same account for the same amount within four days — the issuer having
+    -- finally delivered a charge the user already entered by hand. Computed at
+    -- read time (never in the sync hot path) and only ever true for manual rows.
+    (t.source = 'manual' AND EXISTS (
+        SELECT 1 FROM transactions p
+        WHERE p.source = 'plaid'
+          AND p.account_id = t.account_id
+          AND p.amount = t.amount
+          AND abs(p.date - t.date) <= 4
+    )) AS is_possible_duplicate
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -67,18 +278,27 @@ WHERE u.household_id = $1
   AND t.date >= $3
   AND t.date <= $4
   AND ($7::uuid IS NULL OR t.account_id = $7::uuid)
+  -- Optional "needs a category" filter for draining the backlog: a row is
+  -- uncategorised when it has no category or sits in the fallback 'uncategorised'
+  -- category. NULL/false narg passes everything.
+  AND (
+    $8::bool IS NOT TRUE
+    OR t.category_id IS NULL
+    OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
+  )
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6
 `
 
 type ListVisibleTransactionsParams struct {
-	HouseholdID uuid.UUID    `json:"household_id"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Date        stdtime.Time `json:"date"`
-	Date_2      stdtime.Time `json:"date_2"`
-	Limit       int32        `json:"limit"`
-	Offset      int32        `json:"offset"`
-	AccountID   *uuid.UUID   `json:"account_id"`
+	HouseholdID   uuid.UUID    `json:"household_id"`
+	UserID        uuid.UUID    `json:"user_id"`
+	Date          stdtime.Time `json:"date"`
+	Date_2        stdtime.Time `json:"date_2"`
+	Limit         int32        `json:"limit"`
+	Offset        int32        `json:"offset"`
+	AccountID     *uuid.UUID   `json:"account_id"`
+	Uncategorised *bool        `json:"uncategorised"`
 }
 
 type ListVisibleTransactionsRow struct {
@@ -107,6 +327,7 @@ type ListVisibleTransactionsRow struct {
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
+	IsPossibleDuplicate  *bool           `json:"is_possible_duplicate"`
 }
 
 func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTransactionsParams) ([]ListVisibleTransactionsRow, error) {
@@ -118,6 +339,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.Limit,
 		arg.Offset,
 		arg.AccountID,
+		arg.Uncategorised,
 	)
 	if err != nil {
 		return nil, err
@@ -152,6 +374,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.UpdatedAt,
 			&i.AccountName,
 			&i.InstitutionName,
+			&i.IsPossibleDuplicate,
 		); err != nil {
 			return nil, err
 		}
@@ -161,6 +384,144 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		return nil, err
 	}
 	return items, nil
+}
+
+const sumFilteredTransactions = `-- name: SumFilteredTransactions :one
+SELECT
+    COUNT(*)::bigint                    AS transaction_count,
+    COALESCE(SUM(t.amount), 0)::numeric AS total
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND ($5::text IS NULL
+       OR c.slug = lower($5::text)
+       OR c.name ILIKE '%' || $5::text || '%')
+  AND ($6::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $6::text || '%')
+`
+
+type SumFilteredTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Category    *string      `json:"category"`
+	Merchant    *string      `json:"merchant"`
+}
+
+type SumFilteredTransactionsRow struct {
+	TransactionCount int64           `json:"transaction_count"`
+	Total            decimal.Decimal `json:"total"`
+}
+
+// Exact count and total of spending transactions in a period, optionally
+// narrowed to a category and/or merchant. Backs the assistant's breakdown tool
+// so the model quotes SQL-computed figures rather than summing rows itself.
+//
+// Filters mirror GetSpendingByCategory exactly (money out, non-income,
+// non-transfer, categorised) so a category count here reconciles with that
+// report. Category matches on exact slug or a name substring; merchant matches
+// on a name substring — both case-insensitive, both optional.
+func (q *Queries) SumFilteredTransactions(ctx context.Context, arg SumFilteredTransactionsParams) (SumFilteredTransactionsRow, error) {
+	row := q.db.QueryRow(ctx, sumFilteredTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Category,
+		arg.Merchant,
+	)
+	var i SumFilteredTransactionsRow
+	err := row.Scan(&i.TransactionCount, &i.Total)
+	return i, err
+}
+
+const updateManualTransaction = `-- name: UpdateManualTransaction :one
+UPDATE transactions t
+SET amount          = $1,
+    date            = $2,
+    name            = $3,
+    merchant_name   = $4,
+    merchant_key    = $5,
+    category_id     = $6,
+    category_source = CASE WHEN $6::uuid IS NULL THEN NULL ELSE 'manual' END,
+    notes           = $7,
+    updated_at      = now()
+FROM accounts a, plaid_items i, users u
+WHERE t.id = $8
+  AND t.source = 'manual'
+  AND a.id = t.account_id
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND u.household_id = $9
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at
+`
+
+type UpdateManualTransactionParams struct {
+	Amount       decimal.Decimal `json:"amount"`
+	Date         stdtime.Time    `json:"date"`
+	Name         string          `json:"name"`
+	MerchantName *string         `json:"merchant_name"`
+	MerchantKey  *string         `json:"merchant_key"`
+	CategoryID   *uuid.UUID      `json:"category_id"`
+	Notes        *string         `json:"notes"`
+	ID           uuid.UUID       `json:"id"`
+	HouseholdID  uuid.UUID       `json:"household_id"`
+}
+
+// Edits a manual row in place. The source='manual' guard means this can never
+// mutate a Plaid-synced transaction even with a valid id, and the household
+// join means it can never touch another household's row.
+func (q *Queries) UpdateManualTransaction(ctx context.Context, arg UpdateManualTransactionParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, updateManualTransaction,
+		arg.Amount,
+		arg.Date,
+		arg.Name,
+		arg.MerchantName,
+		arg.MerchantKey,
+		arg.CategoryID,
+		arg.Notes,
+		arg.ID,
+		arg.HouseholdID,
+	)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const upsertTransaction = `-- name: UpsertTransaction :one

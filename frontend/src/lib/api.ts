@@ -146,14 +146,43 @@ export interface Transaction {
   date: string
   name: string
   merchant_name: string | null
+  /** Normalized key the app caches categories by; present even when
+   * merchant_name is null, empty when there was too little signal to key on. */
+  merchant_key: string | null
   /** Positive = money out, negative = money in (Plaid's convention). */
   amount: string
   currency: string
   pending: boolean
+  account_id: string
   account_name: string
   institution_name: string | null
   plaid_category_primary: string | null
   plaid_category_detailed: string | null
+  category_id: string | null
+  notes: string | null
+  /** 'plaid' | 'csv' | 'manual'. Only 'manual' rows can be edited or deleted. */
+  source: string
+  /**
+   * A hand-entered row that a later Plaid charge now appears to match (same
+   * account, same amount, within four days) — likely the issuer finally
+   * delivering the charge the user reconciled by hand.
+   */
+  possible_duplicate: boolean
+}
+
+/**
+ * Body for creating or editing a manual transaction. Amount is a decimal string
+ * already signed by the caller (positive = money out, negative = a refund), so
+ * it never passes through a JS float.
+ */
+export interface ManualTransactionInput {
+  account_id: string
+  date: string
+  amount: string
+  name: string
+  merchant_name?: string | null
+  category_id?: string | null
+  notes?: string | null
 }
 
 export interface TransactionQuery {
@@ -163,6 +192,8 @@ export interface TransactionQuery {
   offset?: number
   /** Restrict to one account. Empty/omitted means all visible accounts. */
   account_id?: string
+  /** Only rows still needing a category (null or the fallback bucket). */
+  uncategorised?: boolean
 }
 
 export interface Category {
@@ -238,6 +269,30 @@ export interface BudgetProgress {
 export interface PeriodQuery {
   from?: string
   to?: string
+}
+
+/**
+ * One proposed budget from POST /api/budgets/suggest. `computed_average` is the
+ * exact SQL figure (never the model's); `suggested_amount` is a round target at
+ * or above it. All money fields are decimal strings — never summed here.
+ */
+export interface BudgetProposal {
+  category_id: string
+  category_name: string
+  slug: string
+  is_fixed: boolean
+  computed_average: string
+  suggested_amount: string
+  rationale: string
+  already_budgeted: boolean
+  current_budget?: string
+}
+
+export interface BudgetSuggestions {
+  period_months: number
+  /** True when an AI tailored the targets/rationale; false for rule-based rounding. */
+  ai_tailored: boolean
+  proposals: BudgetProposal[]
 }
 
 
@@ -323,6 +378,11 @@ export interface Projection {
   /** Always true. These are illustrations, not forecasts. */
   estimate: boolean
   basis: string
+  /**
+   * An AI-written phrasing of the same milestones, present only when AI is
+   * enabled and the call succeeded. The numbers and the caveat render without it.
+   */
+  narrative?: string | null
 }
 
 export interface ProjectionQuery {
@@ -330,6 +390,177 @@ export interface ProjectionQuery {
   monthly_surplus?: string
   annual_return_rate?: string
   annual_debt_paydown?: string
+}
+
+export type AlertType =
+  | 'big_spend'
+  | 'budget_threshold'
+  | 'unusual_merchant'
+  | 'low_leftover'
+
+/** A configured alert rule. config is the type-specific threshold object. */
+export interface Alert {
+  id: string
+  type: AlertType
+  config: Record<string, string | number>
+  /** Whether the rule fires at all (and shows in the in-app feed). */
+  enabled: boolean
+  /** Whether a fired event is also pushed to members' notification channels. */
+  push: boolean
+}
+
+/**
+ * A raised alert. payload is a flat map of display strings the backend already
+ * formatted (money as fixed-2 decimal strings — never summed here).
+ */
+export interface AlertEvent {
+  id: string
+  alert_type: AlertType
+  payload: Record<string, string>
+  triggered_at: string
+  read: boolean
+}
+
+/**
+ * A savings goal plus its DERIVED standing. `current_amount`, `required_monthly`
+ * and the on-track/shortfall figures are computed server-side (never stored, so
+ * they can't drift). All money fields are decimal strings — never summed here.
+ */
+export interface Goal {
+  id: string
+  scope: 'household' | 'user'
+  kind: string
+  name: string
+  target_amount: string
+  target_date: string | null
+  account_id: string | null
+  category_id: string | null
+  current_amount: string
+  required_monthly: string
+  shortfall: string
+  months_left: number
+  on_track: boolean
+  /** True when the goal has no target date, so there's nothing to be "behind" on. */
+  open_ended: boolean
+  achieved: boolean
+  created_at: string
+}
+
+/** Fields to create or update a goal. Amounts/dates are strings, never floats. */
+export interface GoalInput {
+  name: string
+  target_amount: string
+  target_date?: string
+  scope?: 'household' | 'user'
+  account_id?: string | null
+  category_id?: string | null
+}
+
+/** A parsed goal proposal from POST /api/goals/parse (never auto-saved). */
+export interface GoalProposal {
+  name: string
+  target_amount: string
+  target_date: string | null
+  kind: string
+}
+
+/** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */
+export interface ParsedAlert {
+  type: AlertType
+  config: Record<string, string | number>
+}
+
+/** A parsed budget proposal: the category is already resolved to a real id/slug. */
+export interface ParsedBudget {
+  category_id: string
+  category_slug: string
+  category_name: string
+  amount: string
+}
+
+/**
+ * The result of parsing a natural-language rule request. `kind` narrows which of
+ * `alert`/`budget` is present. `summary` describes exactly what the engine will
+ * enforce (not the user's phrasing); `caveats` flag any lost detail. An
+ * `unsupported` result carries only a `reason` and cannot be saved.
+ */
+export interface ParseRuleResult {
+  kind: 'alert' | 'budget' | 'unsupported'
+  alert?: ParsedAlert
+  budget?: ParsedBudget
+  summary?: string
+  caveats?: string[]
+  reason?: string
+}
+
+/** A detected recurring charge (subscription/bill). Amounts are decimal strings. */
+export interface RecurringMerchant {
+  merchant: string
+  occurrences: number
+  average_amount: string
+  avg_gap_days: string
+  /** weekly | every 2 weeks | monthly */
+  cadence: string
+  /** Charge normalised to a per-month figure, computed server-side. */
+  monthly_estimate: string
+  last_seen: string
+}
+
+/** The AI monthly recap. summary is null when none has been generated yet. */
+export interface MonthlySummary {
+  month: string
+  label: string
+  summary: string | null
+  model?: string
+  generated_at?: string
+}
+
+/** Optional-feature flags so the UI hides AI surfaces when no key is set. */
+export interface Capabilities {
+  ai_enabled: boolean
+  /** Whether an ntfy server is configured, so Settings can gate push controls. */
+  notify_enabled: boolean
+}
+
+/**
+ * One proactive-feed insight. `data` is the deterministic facts the narrative
+ * was built from — money as decimal strings, never summed here. Higher
+ * `priority` sorts first. `read_at`/`dismissed_at` are null until acted on.
+ */
+export interface Insight {
+  id: string
+  kind: string
+  priority: number
+  title: string
+  body: string
+  data: Record<string, string | number>
+  period: string | null
+  created_at: string
+  read_at: string | null
+  dismissed_at: string | null
+}
+
+/**
+ * The caller's resolved preferences: user-scoped values (with reserved-key
+ * defaults filled in by the server) and household-scoped values. Values are
+ * whatever JSON was stored — a string, boolean, or array depending on the key.
+ */
+export interface Preferences {
+  user: Record<string, unknown>
+  household: Record<string, unknown>
+}
+
+/** One preference to upsert. The owning ID is taken from the session, never here. */
+export interface PreferenceWrite {
+  scope: 'user' | 'household'
+  key: string
+  value: unknown
+}
+
+/** One turn in a chatbot conversation. */
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
 }
 
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
@@ -511,7 +742,27 @@ export const api = {
       { category_id: categoryID, apply_to_merchant: applyToMerchant },
     ),
 
+  createTransaction: (input: ManualTransactionInput) =>
+    request<{ id: string; source: string }>('POST', '/api/transactions', input),
+
+  updateTransaction: (id: string, input: ManualTransactionInput) =>
+    request<{ id: string; source: string }>('PUT', `/api/transactions/${id}`, input),
+
+  deleteTransaction: (id: string) =>
+    request<void>('DELETE', `/api/transactions/${id}`),
+
   categories: () => request<Category[]>('GET', '/api/categories'),
+
+  createCategory: (input: { name: string; color: string | null; is_fixed: boolean }) =>
+    request<Category>('POST', '/api/categories', input),
+
+  updateCategory: (
+    id: string,
+    input: { name: string; color: string | null; is_fixed: boolean },
+  ) => request<Category>('PUT', `/api/categories/${id}`, input),
+
+  deleteCategory: (id: string) =>
+    request<void>('DELETE', `/api/categories/${id}`),
 
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>
@@ -544,6 +795,27 @@ export const api = {
 
   deleteBudget: (id: string) => request<void>('DELETE', `/api/budgets/${id}`),
 
+  // Proposes a round budget target per spending category, anchored on each
+  // category's true average. Works with or without AI (rule-based rounding when
+  // off); ai_tailored says which. Approval is a loop of setBudget, unchanged.
+  suggestBudgets: () =>
+    request<BudgetSuggestions>('POST', '/api/budgets/suggest'),
+
+  // --- Goals --------------------------------------------------------------
+  goals: () => request<Goal[]>('GET', '/api/goals'),
+
+  createGoal: (input: GoalInput) => request<Goal>('POST', '/api/goals', input),
+
+  updateGoal: (id: string, input: GoalInput) =>
+    request<Goal>('PUT', `/api/goals/${id}`, input),
+
+  archiveGoal: (id: string) => request<void>('DELETE', `/api/goals/${id}`),
+
+  // Parses a natural-language goal into a confirmable proposal. Never writes —
+  // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.
+  parseGoal: (text: string) =>
+    request<GoalProposal>('POST', '/api/goals/parse', { text }),
+
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),
 
@@ -570,6 +842,160 @@ export const api = {
 
   deleteManualAsset: (id: string) =>
     request<void>('DELETE', `/api/manual-assets/${id}`),
+
+  // --- Alerts -------------------------------------------------------------
+  alerts: () => request<Alert[]>('GET', '/api/alerts/'),
+
+  createAlert: (
+    type: AlertType,
+    config: Record<string, string | number>,
+    enabled: boolean,
+    push: boolean,
+  ) => request<Alert>('POST', '/api/alerts/', { type, config, enabled, push }),
+
+  // The backend keeps an existing alert's type; only config, enabled and push
+  // change.
+  updateAlert: (
+    id: string,
+    config: Record<string, string | number>,
+    enabled: boolean,
+    push: boolean,
+  ) => request<Alert>('PUT', `/api/alerts/${id}`, { config, enabled, push }),
+
+  deleteAlert: (id: string) => request<void>('DELETE', `/api/alerts/${id}`),
+
+  // Parses a natural-language sentence into a confirmable alert/budget proposal.
+  // Never writes — confirmation calls createAlert/updateAlert/setBudget. Returns
+  // kind 'unsupported' (not an error) when the request can't be enforced.
+  parseAlert: (text: string) =>
+    request<ParseRuleResult>('POST', '/api/alerts/parse', { text }),
+
+  alertEvents: () => request<AlertEvent[]>('GET', '/api/alerts/events'),
+
+  unreadAlertCount: () =>
+    request<{ count: number }>('GET', '/api/alerts/events/unread-count'),
+
+  markAlertRead: (id: string) =>
+    request<void>('POST', `/api/alerts/events/${id}/read`),
+
+  markAllAlertsRead: () => request<void>('POST', '/api/alerts/events/read-all'),
+
+  // --- Preferences --------------------------------------------------------
+  preferences: () => request<Preferences>('GET', '/api/preferences'),
+
+  setPreferences: (items: PreferenceWrite[]) =>
+    request<void>('PUT', '/api/preferences', { items }),
+
+  // Sends one throwaway push to the caller's saved channel, synchronously, so
+  // the UI can report the real outcome. Errors (unconfigured, bad topic,
+  // unreachable server) come back as a thrown request error.
+  testNotification: () =>
+    request<{ status: string }>('POST', '/api/notifications/test'),
+
+  // Queues a one-off digest for the caller now, bypassing cadence/dedupe. Async
+  // — resolves once queued; the push itself arrives shortly after.
+  sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
+
+  // --- Insights -----------------------------------------------------------
+  capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
+
+  // The proactive feed. state 'all' includes dismissed insights; the default
+  // 'unread' hides them.
+  insights: (params: { state?: 'unread' | 'all' } = {}) =>
+    request<Insight[]>('GET', withQuery('/api/insights/', params)),
+
+  markInsightRead: (id: string) =>
+    request<void>('POST', `/api/insights/${id}/read`),
+
+  dismissInsight: (id: string) =>
+    request<void>('POST', `/api/insights/${id}/dismiss`),
+
+  recurring: () =>
+    request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
+
+  monthlySummary: (month: string) =>
+    request<MonthlySummary>(
+      'GET',
+      withQuery('/api/reports/monthly-summary', { month }),
+    ),
+
+  generateMonthlySummary: (month: string) =>
+    request<MonthlySummary>(
+      'POST',
+      withQuery('/api/reports/monthly-summary', { month }),
+    ),
+
+  // The chat endpoint streams its answer as Server-Sent Events: one
+  // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
+  // onDelta is called as text arrives so the UI can render it live.
+  chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
+    streamChat(messages, onDelta),
+}
+
+// streamChat POSTs the transcript and reads the SSE body, invoking onDelta for
+// each token. It resolves when the stream reports done and rejects on an error
+// frame or a transport failure, so callers can await completion.
+async function streamChat(
+  messages: ChatTurn[],
+  onDelta: (text: string) => void,
+): Promise<void> {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': await ensureCsrfToken(),
+      Accept: 'text/event-stream',
+    },
+    credentials: 'include',
+    body: JSON.stringify({ messages }),
+  })
+
+  if (!res.ok || !res.body) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  // SSE frames are separated by a blank line; each frame's payload is the
+  // concatenation of its `data:` lines. We only ever emit single-line frames,
+  // but parse defensively.
+  const handleFrame = (frame: string) => {
+    const data = frame
+      .split('\n')
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.slice(5).trim())
+      .join('')
+    if (!data) return
+    const evt = JSON.parse(data) as {
+      delta?: string
+      done?: boolean
+      error?: string
+    }
+    if (evt.error) throw new ApiError(500, evt.error)
+    if (evt.delta) onDelta(evt.delta)
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      handleFrame(frame)
+    }
+  }
+  if (buffer.trim()) handleFrame(buffer)
 }
 
 // Generic rather than Record<string, unknown>: an interface without an index

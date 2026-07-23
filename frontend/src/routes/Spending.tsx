@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { formatMoney } from '../lib/money'
+import { formatDate, formatMoney } from '../lib/money'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { TrendChart } from '../components/charts/TrendChart'
 import { CHART, STATUS } from '../components/charts/tokens'
@@ -37,6 +37,11 @@ export function Spending() {
   })
   const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
 
   const s = summary.data
 
@@ -107,6 +112,12 @@ export function Spending() {
           />
         </div>
       )}
+
+      {capabilities.data?.ai_enabled && (
+        <MonthlySummaryCard month={month.value} label={month.label} />
+      )}
+
+      <RecurringSection />
 
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">By category</h2>
@@ -248,4 +259,167 @@ function SplitTile({
 
 function Loading() {
   return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
+}
+
+// MonthlySummaryCard shows the AI-written recap for the selected month, cached
+// server-side. It only mounts when AI is enabled (the parent gates on it).
+function MonthlySummaryCard({ month, label }: { month: string; label: string }) {
+  const qc = useQueryClient()
+  const summary = useQuery({
+    queryKey: ['monthly-summary', month],
+    queryFn: () => api.monthlySummary(month),
+  })
+
+  const generate = useMutation({
+    mutationFn: () => api.generateMonthlySummary(month),
+    onSuccess: (data) => qc.setQueryData(['monthly-summary', month], data),
+  })
+
+  const text = summary.data?.summary
+  const busy = generate.isPending
+
+  return (
+    <section className="glass p-6">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-medium">Monthly recap</h2>
+          <p className="text-sm text-mist-300">{label}, in plain English</p>
+        </div>
+        <button
+          className="btn-ghost shrink-0 px-3 py-1.5 text-sm"
+          disabled={busy}
+          onClick={() => generate.mutate()}
+        >
+          {busy ? 'Writing…' : text ? 'Regenerate' : 'Generate'}
+        </button>
+      </div>
+
+      {generate.isError && (
+        <p role="alert" className="mt-4 text-sm text-ember-400">
+          {generate.error.message}
+        </p>
+      )}
+
+      <div className="mt-4">
+        {summary.isPending ? (
+          <Loading />
+        ) : text ? (
+          <p className="leading-relaxed text-mist-100">{text}</p>
+        ) : (
+          <p className="text-sm text-mist-500">
+            No recap yet. Generate one to see the month at a glance.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// RecurringSection lists detected subscriptions and regular bills, with each
+// charge normalised to a monthly figure (computed server-side — never summed
+// here). It also joins each row against the `subscription` insights (doc 05):
+// a "price up" badge when that merchant's charge has crept up, and, when AI is
+// enabled, the classified type. The join is by merchant name against the feed
+// the app already fetches — no bespoke endpoint. Everything degrades cleanly:
+// the table is fully deterministic, the badge and type are additive.
+function RecurringSection() {
+  const recurring = useQuery({ queryKey: ['recurring'], queryFn: api.recurring })
+  const insights = useQuery({
+    queryKey: ['insights', 'all'],
+    queryFn: () => api.insights({ state: 'all' }),
+  })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
+  const rows = recurring.data ?? []
+  const showType = capabilities.data?.ai_enabled ?? false
+
+  // Index subscription insights by merchant name for an O(1) per-row lookup.
+  // Both the recurring report and the insight use COALESCE(merchant_name, name)
+  // as the merchant, so the strings line up.
+  const subByMerchant = new Map<string, Record<string, string | number>>()
+  for (const i of insights.data ?? []) {
+    if (i.kind === 'subscription') subByMerchant.set(String(i.data.merchant), i.data)
+  }
+
+  const cols = showType ? 6 : 5
+
+  return (
+    <section className="glass overflow-hidden">
+      <div className="px-6 pt-6">
+        <h2 className="text-lg font-medium">Recurring &amp; subscriptions</h2>
+        <p className="mt-1 mb-5 text-sm text-mist-300">
+          Merchants that charge you on a regular cadence, detected from the last
+          year of activity.
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-y border-white/5 text-left text-xs text-mist-500">
+              <th className="px-6 py-2.5 font-medium">Merchant</th>
+              {showType && <th className="px-6 py-2.5 font-medium">Type</th>}
+              <th className="px-6 py-2.5 font-medium">Cadence</th>
+              <th className="px-6 py-2.5 text-right font-medium">Typical</th>
+              <th className="px-6 py-2.5 text-right font-medium">~ / month</th>
+              <th className="px-6 py-2.5 text-right font-medium">Last seen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {rows.map((m) => {
+              const sub = subByMerchant.get(m.merchant)
+              const creep = sub?.flavor === 'price_creep'
+              const type = sub?.category ? String(sub.category) : null
+              return (
+                <tr key={m.merchant}>
+                  <td className="px-6 py-2.5">
+                    <span className="flex items-center gap-2">
+                      {m.merchant}
+                      {creep && (
+                        <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
+                          price up
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  {showType && (
+                    <td className="px-6 py-2.5 text-mist-300 capitalize">
+                      {type ?? '—'}
+                    </td>
+                  )}
+                  <td className="px-6 py-2.5 text-mist-300">{m.cadence}</td>
+                  <td className="tabular px-6 py-2.5 text-right">
+                    {formatMoney(m.average_amount)}
+                  </td>
+                  <td className="tabular px-6 py-2.5 text-right text-mist-300">
+                    {formatMoney(m.monthly_estimate)}
+                  </td>
+                  <td className="tabular px-6 py-2.5 text-right text-mist-500">
+                    {formatDate(m.last_seen)}
+                  </td>
+                </tr>
+              )
+            })}
+            {!recurring.isPending && rows.length === 0 && (
+              <tr>
+                <td colSpan={cols} className="px-6 py-8 text-center text-mist-500">
+                  No recurring charges detected yet.
+                </td>
+              </tr>
+            )}
+            {recurring.isPending && (
+              <tr>
+                <td colSpan={cols} className="px-6 py-8 text-center text-mist-500">
+                  Loading…
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
 }

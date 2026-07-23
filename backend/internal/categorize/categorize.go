@@ -196,9 +196,11 @@ func CategoriseHousehold(ctx context.Context, q *dbgen.Queries, householdID uuid
 
 		for _, t := range pending {
 			result, ok, err := resolver.Resolve(ctx, Input{
-				MerchantKey: deref(t.MerchantKey),
-				PFCPrimary:  deref(t.PlaidPfcPrimary),
-				PFCDetailed: deref(t.PlaidPfcDetailed),
+				MerchantKey:  deref(t.MerchantKey),
+				MerchantName: deref(t.MerchantName),
+				Name:         t.Name,
+				PFCPrimary:   deref(t.PlaidPfcPrimary),
+				PFCDetailed:  deref(t.PlaidPfcDetailed),
 			})
 			if err != nil {
 				return total, err

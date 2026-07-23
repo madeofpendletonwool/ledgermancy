@@ -3,15 +3,20 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
 import { Sigil } from './components/Brand'
 import { Accounts } from './routes/Accounts'
+import { Alerts } from './routes/Alerts'
+import { Assistant } from './routes/Assistant'
+import { Budgets } from './routes/Budgets'
+import { Categories } from './routes/Categories'
 import { Dashboard } from './routes/Dashboard'
-import { Household } from './routes/Household'
+import { Goals } from './routes/Goals'
+import { Insights } from './routes/Insights'
 import { Transactions } from './routes/Transactions'
 import { Login } from './routes/Login'
 import { NetWorth } from './routes/NetWorth'
 import { Spending } from './routes/Spending'
 import { Register } from './routes/Register'
 import { Report } from './routes/Report'
-import { Security } from './routes/Security'
+import { Settings } from './routes/Settings'
 import { useSession } from './lib/session'
 
 export default function App() {
@@ -42,13 +47,25 @@ export default function App() {
         }
       >
         <Route index element={<Dashboard />} />
+        <Route path="/insights" element={<Insights />} />
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/spending" element={<Spending />} />
+        <Route path="/budgets" element={<Budgets />} />
+        <Route path="/goals" element={<Goals />} />
         <Route path="/net-worth" element={<NetWorth />} />
         <Route path="/report" element={<Report />} />
         <Route path="/transactions" element={<Transactions />} />
-        <Route path="/household" element={<Household />} />
-        <Route path="/security" element={<Security />} />
+        <Route path="/categories" element={<Categories />} />
+        <Route path="/alerts" element={<Alerts />} />
+        <Route path="/assistant" element={<Assistant />} />
+        <Route path="/settings" element={<Settings />} />
+        {/* Old paths preserved so existing bookmarks keep working; Household and
+            Security now live as tabs inside Settings. */}
+        <Route
+          path="/household"
+          element={<Navigate to="/settings?tab=household" replace />}
+        />
+        <Route path="/security" element={<Navigate to="/settings" replace />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
