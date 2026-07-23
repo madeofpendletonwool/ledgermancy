@@ -191,6 +191,13 @@ export function Report() {
         {projection.data && projection.data.points.length > 0 && (
           <section className="break-inside-avoid">
             <h2 className="report-h2">Outlook</h2>
+            {/* AI narration supplements — never replaces — the numbers and the
+                caveat below. Absent when AI is off. */}
+            {projection.data.narrative && (
+              <p className="mb-3 leading-relaxed text-mist-100">
+                {projection.data.narrative}
+              </p>
+            )}
             {/* The caveat travels with the numbers, on the page, not just in
                 the UI around it. */}
             <p className="mb-3 text-sm text-mist-300">

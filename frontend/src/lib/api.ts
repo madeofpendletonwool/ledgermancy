@@ -323,6 +323,11 @@ export interface Projection {
   /** Always true. These are illustrations, not forecasts. */
   estimate: boolean
   basis: string
+  /**
+   * An AI-written phrasing of the same milestones, present only when AI is
+   * enabled and the call succeeded. The numbers and the caveat render without it.
+   */
+  narrative?: string | null
 }
 
 export interface ProjectionQuery {

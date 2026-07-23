@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 	"github.com/apex42group/ledgermancy/backend/internal/networth"
@@ -308,6 +311,10 @@ type projectionResponse struct {
 	// these numbers without the caveat travelling with them.
 	Estimate bool   `json:"estimate"`
 	Basis    string `json:"basis"`
+	// Narrative is an AI-written phrasing of the same milestones, present only
+	// when AI is enabled and the call succeeded. Nil is normal — the numbers and
+	// the caveat render without it.
+	Narrative *string `json:"narrative,omitempty"`
 }
 
 // handleProjection rolls the current position forward.
@@ -325,20 +332,14 @@ func (s *Server) handleProjection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default surplus: the trailing year's average monthly leftover.
+	// Default surplus: the trailing year's average monthly leftover. Shared with
+	// the narrator so the two never drift.
 	now := time.Now()
-	from := now.AddDate(-1, 0, 0)
-	summary, err := s.Queries.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
-		HouseholdID: identity.HouseholdID,
-		UserID:      identity.UserID,
-		Date:        from,
-		Date_2:      now,
-	})
+	defaultSurplus, err := networth.DefaultMonthlySurplus(ctx, s.Queries, identity.HouseholdID, identity.UserID, now)
 	if err != nil {
 		s.internalError(w, "spending summary", err)
 		return
 	}
-	defaultSurplus := summary.Income.Sub(summary.Spending).Div(decimal.NewFromInt(12)).Round(2)
 
 	q := r.URL.Query()
 	assumptions := networth.Assumptions{
@@ -358,7 +359,105 @@ func (s *Server) handleProjection(w http.ResponseWriter, r *http.Request) {
 	resp.Assumptions.AnnualDebtPaydown = assumptions.AnnualDebtPaydown
 	resp.Assumptions.Months = assumptions.Months
 
+	// Narration is a best-effort supplement: only attempted when AI is on, and a
+	// slow or failed call leaves Narrative nil so the table still renders.
+	if s.AI.Enabled() {
+		in := s.buildForecastInput(ctx, identity, resp.Points, assumptions, resp.Basis, now)
+		if text, err := s.AI.ForecastNarration(ctx, in); err != nil {
+			slog.Warn("forecast narration failed", "household_id", identity.HouseholdID, "error", err)
+		} else if text != "" {
+			resp.Narrative = &text
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// buildForecastInput assembles the finished figures the narrator quotes: the
+// milestone net-worth values (read straight from the projection, never
+// recomputed) and the discretionary "lever" the household could trim, computed
+// in decimal from the same reporting queries the summary uses.
+func (s *Server) buildForecastInput(
+	ctx context.Context,
+	identity auth.Identity,
+	points []networth.ProjectionPoint,
+	assumptions networth.Assumptions,
+	basis string,
+	now time.Time,
+) ai.ForecastInput {
+	in := ai.ForecastInput{
+		MonthlySurplus:   assumptions.MonthlySurplus.StringFixed(2),
+		AnnualReturnRate: assumptions.AnnualReturnRate.String(),
+		Basis:            basis,
+	}
+	for _, i := range networth.ForecastMilestones {
+		if i < len(points) {
+			in.Milestones = append(in.Milestones, ai.ForecastMilestone{
+				Months:   i + 1,
+				Month:    points[i].Month,
+				NetWorth: points[i].NetWorth.StringFixed(2),
+			})
+		}
+	}
+	if lever, ok := s.topDiscretionaryLever(ctx, identity, now); ok {
+		in.Levers = append(in.Levers, lever)
+	}
+	return in
+}
+
+// leverFloorDollars keeps a trivially-small overage from being narrated as a
+// "lever" — noise below this is not worth suggesting the reader cut.
+const leverFloorDollars = 25
+
+// topDiscretionaryLever finds the discretionary category the household is
+// spending the most above its own 6-month average this month, and reports that
+// overage as a monthly saving. The subtraction is done here in decimal; the
+// model only quotes the finished figure.
+func (s *Server) topDiscretionaryLever(ctx context.Context, identity auth.Identity, now time.Time) (ai.ForecastLever, bool) {
+	mStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	mEnd := mStart.AddDate(0, 1, -1)
+
+	thisMonth, err := s.Queries.GetSpendingByCategory(ctx, dbgen.GetSpendingByCategoryParams{
+		HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: mStart, Date_2: mEnd,
+	})
+	if err != nil {
+		return ai.ForecastLever{}, false
+	}
+	averages, err := s.Queries.GetCategoryAverages(ctx, dbgen.GetCategoryAveragesParams{
+		HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+		Date: mStart.AddDate(0, -6, 0), Date_2: mStart.AddDate(0, 0, -1),
+	})
+	if err != nil {
+		return ai.ForecastLever{}, false
+	}
+	avgBySlug := make(map[string]decimal.Decimal, len(averages))
+	for _, a := range averages {
+		avgBySlug[a.CategorySlug] = a.MonthlyAverage
+	}
+
+	floor := decimal.NewFromInt(leverFloorDollars)
+	var best ai.ForecastLever
+	var bestDelta decimal.Decimal
+	for _, c := range thisMonth {
+		if c.IsFixed {
+			continue // only discretionary categories are truly a lever
+		}
+		avg, ok := avgBySlug[c.CategorySlug]
+		if !ok || !avg.IsPositive() {
+			continue
+		}
+		delta := c.Total.Sub(avg)
+		if delta.LessThan(floor) || !delta.GreaterThan(bestDelta) {
+			continue
+		}
+		bestDelta = delta
+		best = ai.ForecastLever{
+			Label:          c.CategoryName,
+			MonthlySavings: delta.Round(2).StringFixed(2),
+			Basis:          "your 6-month average",
+		}
+	}
+	return best, bestDelta.IsPositive()
 }
 
 func parseDecimal(raw string, fallback decimal.Decimal) decimal.Decimal {

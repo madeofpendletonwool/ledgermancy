@@ -317,10 +317,34 @@ function MonthlySummaryCard({ month, label }: { month: string; label: string }) 
 
 // RecurringSection lists detected subscriptions and regular bills, with each
 // charge normalised to a monthly figure (computed server-side — never summed
-// here).
+// here). It also joins each row against the `subscription` insights (doc 05):
+// a "price up" badge when that merchant's charge has crept up, and, when AI is
+// enabled, the classified type. The join is by merchant name against the feed
+// the app already fetches — no bespoke endpoint. Everything degrades cleanly:
+// the table is fully deterministic, the badge and type are additive.
 function RecurringSection() {
   const recurring = useQuery({ queryKey: ['recurring'], queryFn: api.recurring })
+  const insights = useQuery({
+    queryKey: ['insights', 'all'],
+    queryFn: () => api.insights({ state: 'all' }),
+  })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
   const rows = recurring.data ?? []
+  const showType = capabilities.data?.ai_enabled ?? false
+
+  // Index subscription insights by merchant name for an O(1) per-row lookup.
+  // Both the recurring report and the insight use COALESCE(merchant_name, name)
+  // as the merchant, so the strings line up.
+  const subByMerchant = new Map<string, Record<string, string | number>>()
+  for (const i of insights.data ?? []) {
+    if (i.kind === 'subscription') subByMerchant.set(String(i.data.merchant), i.data)
+  }
+
+  const cols = showType ? 6 : 5
 
   return (
     <section className="glass overflow-hidden">
@@ -337,6 +361,7 @@ function RecurringSection() {
           <thead>
             <tr className="border-y border-white/5 text-left text-xs text-mist-500">
               <th className="px-6 py-2.5 font-medium">Merchant</th>
+              {showType && <th className="px-6 py-2.5 font-medium">Type</th>}
               <th className="px-6 py-2.5 font-medium">Cadence</th>
               <th className="px-6 py-2.5 text-right font-medium">Typical</th>
               <th className="px-6 py-2.5 text-right font-medium">~ / month</th>
@@ -344,31 +369,50 @@ function RecurringSection() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {rows.map((m) => (
-              <tr key={m.merchant}>
-                <td className="px-6 py-2.5">{m.merchant}</td>
-                <td className="px-6 py-2.5 text-mist-300">{m.cadence}</td>
-                <td className="tabular px-6 py-2.5 text-right">
-                  {formatMoney(m.average_amount)}
-                </td>
-                <td className="tabular px-6 py-2.5 text-right text-mist-300">
-                  {formatMoney(m.monthly_estimate)}
-                </td>
-                <td className="tabular px-6 py-2.5 text-right text-mist-500">
-                  {formatDate(m.last_seen)}
-                </td>
-              </tr>
-            ))}
+            {rows.map((m) => {
+              const sub = subByMerchant.get(m.merchant)
+              const creep = sub?.flavor === 'price_creep'
+              const type = sub?.category ? String(sub.category) : null
+              return (
+                <tr key={m.merchant}>
+                  <td className="px-6 py-2.5">
+                    <span className="flex items-center gap-2">
+                      {m.merchant}
+                      {creep && (
+                        <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
+                          price up
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  {showType && (
+                    <td className="px-6 py-2.5 text-mist-300 capitalize">
+                      {type ?? '—'}
+                    </td>
+                  )}
+                  <td className="px-6 py-2.5 text-mist-300">{m.cadence}</td>
+                  <td className="tabular px-6 py-2.5 text-right">
+                    {formatMoney(m.average_amount)}
+                  </td>
+                  <td className="tabular px-6 py-2.5 text-right text-mist-300">
+                    {formatMoney(m.monthly_estimate)}
+                  </td>
+                  <td className="tabular px-6 py-2.5 text-right text-mist-500">
+                    {formatDate(m.last_seen)}
+                  </td>
+                </tr>
+              )
+            })}
             {!recurring.isPending && rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-mist-500">
+                <td colSpan={cols} className="px-6 py-8 text-center text-mist-500">
                   No recurring charges detected yet.
                 </td>
               </tr>
             )}
             {recurring.isPending && (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-mist-500">
+                <td colSpan={cols} className="px-6 py-8 text-center text-mist-500">
                   Loading…
                 </td>
               </tr>

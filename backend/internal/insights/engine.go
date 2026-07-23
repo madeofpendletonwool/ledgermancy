@@ -49,6 +49,18 @@ func Generate(
 			continue
 		}
 
+		// Optional AI enrichment (labels only, never numbers), best-effort: a
+		// failure leaves the deterministic Data untouched. Runs once per producer
+		// over its whole batch, so a classifier can make a single model call.
+		if aiClient.Enabled() {
+			if cl, ok := p.(Classifier); ok {
+				if err := cl.Classify(ctx, aiClient, candidates); err != nil {
+					slog.Debug("insight classification fell back",
+						"kind", p.Kind(), "household_id", householdID, "error", err)
+				}
+			}
+		}
+
 		for _, c := range candidates {
 			title, body := c.Title, c.Body
 			if aiClient.Enabled() {

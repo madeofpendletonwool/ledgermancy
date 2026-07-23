@@ -181,6 +181,35 @@ WHERE al.household_id = $1
   AND e.notified_at IS NULL
 ORDER BY e.triggered_at;
 
+-- name: ListRecentAlertEventsForExplanation :many
+-- Recent alert events for a household that do not yet have an explanation
+-- insight, so the alert_explanation producer only spends a model call on new
+-- ones. merchant_key comes from the linked transaction (null for aggregate
+-- alerts). Household-shared visibility only — a private transaction's event is
+-- never explained into the shared feed.
+SELECT
+    e.id,
+    al.type          AS alert_type,
+    e.payload,
+    e.transaction_id,
+    e.triggered_at,
+    t.merchant_key
+FROM alert_events e
+JOIN alerts al          ON al.id = e.alert_id
+LEFT JOIN transactions t ON t.id = e.transaction_id
+LEFT JOIN accounts a    ON a.id = t.account_id
+LEFT JOIN plaid_items i  ON i.id = a.plaid_item_id
+WHERE al.household_id = $1
+  AND e.triggered_at >= $2
+  AND (e.transaction_id IS NULL OR i.is_shared)
+  AND NOT EXISTS (
+      SELECT 1 FROM insights ins
+      WHERE ins.household_id = al.household_id
+        AND ins.dedupe_key = 'alert_explanation:' || e.id::text
+  )
+ORDER BY e.triggered_at DESC
+LIMIT 50;
+
 -- name: MarkAlertEventNotified :exec
 -- Stamp an event as dispatched. Called once per event after its member
 -- notifications are enqueued, so a re-run or overlapping sweep skips it.

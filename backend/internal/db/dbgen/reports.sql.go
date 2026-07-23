@@ -113,6 +113,7 @@ func (q *Queries) ExportTransactions(ctx context.Context, arg ExportTransactions
 }
 
 const getBudgetProgress = `-- name: GetBudgetProgress :many
+
 SELECT
     b.id          AS budget_id,
     b.amount      AS budgeted,
@@ -158,6 +159,7 @@ type GetBudgetProgressRow struct {
 	Spent         decimal.Decimal `json:"spent"`
 }
 
+// ≥10% rise clears noise
 // Each budget alongside what has been spent against it this period, so the UI
 // can show "$X of $Y left in this category".
 func (q *Queries) GetBudgetProgress(ctx context.Context, arg GetBudgetProgressParams) ([]GetBudgetProgressRow, error) {
@@ -292,6 +294,61 @@ func (q *Queries) GetCategoryAverages(ctx context.Context, arg GetCategoryAverag
 	return items, nil
 }
 
+const getMerchantSpendBaseline = `-- name: GetMerchantSpendBaseline :one
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
+    COUNT(*)::bigint                    AS visit_count,
+    COALESCE(MIN(t.amount), 0)::numeric AS min_amount,
+    COALESCE(MAX(t.amount), 0)::numeric AS max_amount
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.merchant_key = $3::text
+  AND t.id <> $4::uuid
+  AND t.amount > 0
+`
+
+type GetMerchantSpendBaselineParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+	MerchantKey string    `json:"merchant_key"`
+	ExcludeTx   uuid.UUID `json:"exclude_tx"`
+}
+
+type GetMerchantSpendBaselineRow struct {
+	TypicalAmount decimal.Decimal `json:"typical_amount"`
+	VisitCount    int64           `json:"visit_count"`
+	MinAmount     decimal.Decimal `json:"min_amount"`
+	MaxAmount     decimal.Decimal `json:"max_amount"`
+}
+
+// Typical spend at one merchant for this household, EXCLUDING the flagged
+// transaction, so "you normally spend ~$X" is a real prior rather than one
+// skewed by the charge that triggered the alert. All arithmetic stays in SQL;
+// the model only quotes the result. Same visibility scoping as every report.
+func (q *Queries) GetMerchantSpendBaseline(ctx context.Context, arg GetMerchantSpendBaselineParams) (GetMerchantSpendBaselineRow, error) {
+	row := q.db.QueryRow(ctx, getMerchantSpendBaseline,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.MerchantKey,
+		arg.ExcludeTx,
+	)
+	var i GetMerchantSpendBaselineRow
+	err := row.Scan(
+		&i.TypicalAmount,
+		&i.VisitCount,
+		&i.MinAmount,
+		&i.MaxAmount,
+	)
+	return i, err
+}
+
 const getMonthlyTrend = `-- name: GetMonthlyTrend :many
 SELECT
     date_trunc('month', t.date)::date AS month,
@@ -344,6 +401,99 @@ func (q *Queries) GetMonthlyTrend(ctx context.Context, arg GetMonthlyTrendParams
 	for rows.Next() {
 		var i GetMonthlyTrendRow
 		if err := rows.Scan(&i.Month, &i.Income, &i.Spending); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRecurringAmountTrend = `-- name: GetRecurringAmountTrend :many
+WITH tx AS (
+    SELECT
+        t.merchant_key,
+        COALESCE(t.merchant_name, t.name) AS merchant,
+        t.date,
+        t.amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.merchant_key IS NOT NULL
+      AND t.amount > 0
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.date >= $3
+),
+ranked AS (
+    SELECT
+        merchant_key,
+        merchant,
+        amount,
+        NTILE(2) OVER (PARTITION BY merchant_key ORDER BY date) AS half
+    FROM tx
+)
+SELECT
+    merchant_key,
+    COALESCE(MAX(merchant), '')::text                                      AS merchant,
+    COALESCE(AVG(amount) FILTER (WHERE half = 1), 0)::numeric              AS early_avg,
+    COALESCE(AVG(amount) FILTER (WHERE half = 2), 0)::numeric              AS recent_avg,
+    COALESCE(
+        AVG(amount) FILTER (WHERE half = 2) - AVG(amount) FILTER (WHERE half = 1),
+        0
+    )::numeric                                                            AS delta
+FROM ranked
+GROUP BY merchant_key
+HAVING COUNT(*) >= 4                                    -- two charges per half
+   AND AVG(amount) FILTER (WHERE half = 1) > 0
+   AND (AVG(amount) FILTER (WHERE half = 2) - AVG(amount) FILTER (WHERE half = 1))
+       >= AVG(amount) FILTER (WHERE half = 1) * 0.10
+`
+
+type GetRecurringAmountTrendParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+}
+
+type GetRecurringAmountTrendRow struct {
+	MerchantKey *string         `json:"merchant_key"`
+	Merchant    string          `json:"merchant"`
+	EarlyAvg    decimal.Decimal `json:"early_avg"`
+	RecentAvg   decimal.Decimal `json:"recent_avg"`
+	Delta       decimal.Decimal `json:"delta"`
+}
+
+// Price-creep detection for recurring merchants: split each merchant's charges
+// into an older half and a newer half by date and compare the averages. The
+// split and the difference are computed here in SQL; the caller only formats and
+// explains, never subtracts. Same tx CTE (visibility + spend filters) as
+// GetRecurringMerchants so both agree on what counts as a charge.
+func (q *Queries) GetRecurringAmountTrend(ctx context.Context, arg GetRecurringAmountTrendParams) ([]GetRecurringAmountTrendRow, error) {
+	rows, err := q.db.Query(ctx, getRecurringAmountTrend, arg.HouseholdID, arg.UserID, arg.Date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetRecurringAmountTrendRow{}
+	for rows.Next() {
+		var i GetRecurringAmountTrendRow
+		if err := rows.Scan(
+			&i.MerchantKey,
+			&i.Merchant,
+			&i.EarlyAvg,
+			&i.RecentAvg,
+			&i.Delta,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

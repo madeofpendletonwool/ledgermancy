@@ -253,6 +253,81 @@ WHERE n >= 3
   AND gap_stddev <= avg_gap * 0.5
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC;
 
+-- name: GetMerchantSpendBaseline :one
+-- Typical spend at one merchant for this household, EXCLUDING the flagged
+-- transaction, so "you normally spend ~$X" is a real prior rather than one
+-- skewed by the charge that triggered the alert. All arithmetic stays in SQL;
+-- the model only quotes the result. Same visibility scoping as every report.
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
+    COUNT(*)::bigint                    AS visit_count,
+    COALESCE(MIN(t.amount), 0)::numeric AS min_amount,
+    COALESCE(MAX(t.amount), 0)::numeric AS max_amount
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE u.household_id = @household_id
+  AND (i.user_id = @user_id OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.merchant_key = @merchant_key::text
+  AND t.id <> @exclude_tx::uuid
+  AND t.amount > 0;
+
+-- name: GetRecurringAmountTrend :many
+-- Price-creep detection for recurring merchants: split each merchant's charges
+-- into an older half and a newer half by date and compare the averages. The
+-- split and the difference are computed here in SQL; the caller only formats and
+-- explains, never subtracts. Same tx CTE (visibility + spend filters) as
+-- GetRecurringMerchants so both agree on what counts as a charge.
+WITH tx AS (
+    SELECT
+        t.merchant_key,
+        COALESCE(t.merchant_name, t.name) AS merchant,
+        t.date,
+        t.amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.merchant_key IS NOT NULL
+      AND t.amount > 0
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.date >= $3
+),
+ranked AS (
+    SELECT
+        merchant_key,
+        merchant,
+        amount,
+        NTILE(2) OVER (PARTITION BY merchant_key ORDER BY date) AS half
+    FROM tx
+)
+SELECT
+    merchant_key,
+    COALESCE(MAX(merchant), '')::text                                      AS merchant,
+    COALESCE(AVG(amount) FILTER (WHERE half = 1), 0)::numeric              AS early_avg,
+    COALESCE(AVG(amount) FILTER (WHERE half = 2), 0)::numeric              AS recent_avg,
+    COALESCE(
+        AVG(amount) FILTER (WHERE half = 2) - AVG(amount) FILTER (WHERE half = 1),
+        0
+    )::numeric                                                            AS delta
+FROM ranked
+GROUP BY merchant_key
+HAVING COUNT(*) >= 4                                    -- two charges per half
+   AND AVG(amount) FILTER (WHERE half = 1) > 0
+   AND (AVG(amount) FILTER (WHERE half = 2) - AVG(amount) FILTER (WHERE half = 1))
+       >= AVG(amount) FILTER (WHERE half = 1) * 0.10;  -- ≥10% rise clears noise
+
 -- name: GetBudgetProgress :many
 -- Each budget alongside what has been spent against it this period, so the UI
 -- can show "$X of $Y left in this category".

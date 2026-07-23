@@ -450,6 +450,77 @@ func (q *Queries) ListEnabledAlerts(ctx context.Context, householdID uuid.UUID) 
 	return items, nil
 }
 
+const listRecentAlertEventsForExplanation = `-- name: ListRecentAlertEventsForExplanation :many
+SELECT
+    e.id,
+    al.type          AS alert_type,
+    e.payload,
+    e.transaction_id,
+    e.triggered_at,
+    t.merchant_key
+FROM alert_events e
+JOIN alerts al          ON al.id = e.alert_id
+LEFT JOIN transactions t ON t.id = e.transaction_id
+LEFT JOIN accounts a    ON a.id = t.account_id
+LEFT JOIN plaid_items i  ON i.id = a.plaid_item_id
+WHERE al.household_id = $1
+  AND e.triggered_at >= $2
+  AND (e.transaction_id IS NULL OR i.is_shared)
+  AND NOT EXISTS (
+      SELECT 1 FROM insights ins
+      WHERE ins.household_id = al.household_id
+        AND ins.dedupe_key = 'alert_explanation:' || e.id::text
+  )
+ORDER BY e.triggered_at DESC
+LIMIT 50
+`
+
+type ListRecentAlertEventsForExplanationParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	TriggeredAt stdtime.Time `json:"triggered_at"`
+}
+
+type ListRecentAlertEventsForExplanationRow struct {
+	ID            uuid.UUID    `json:"id"`
+	AlertType     string       `json:"alert_type"`
+	Payload       []byte       `json:"payload"`
+	TransactionID *uuid.UUID   `json:"transaction_id"`
+	TriggeredAt   stdtime.Time `json:"triggered_at"`
+	MerchantKey   *string      `json:"merchant_key"`
+}
+
+// Recent alert events for a household that do not yet have an explanation
+// insight, so the alert_explanation producer only spends a model call on new
+// ones. merchant_key comes from the linked transaction (null for aggregate
+// alerts). Household-shared visibility only — a private transaction's event is
+// never explained into the shared feed.
+func (q *Queries) ListRecentAlertEventsForExplanation(ctx context.Context, arg ListRecentAlertEventsForExplanationParams) ([]ListRecentAlertEventsForExplanationRow, error) {
+	rows, err := q.db.Query(ctx, listRecentAlertEventsForExplanation, arg.HouseholdID, arg.TriggeredAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentAlertEventsForExplanationRow{}
+	for rows.Next() {
+		var i ListRecentAlertEventsForExplanationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AlertType,
+			&i.Payload,
+			&i.TransactionID,
+			&i.TriggeredAt,
+			&i.MerchantKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnnotifiedAlertEvents = `-- name: ListUnnotifiedAlertEvents :many
 SELECT e.id, e.payload, al.type AS alert_type
 FROM alert_events e

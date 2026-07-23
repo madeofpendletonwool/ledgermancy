@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
 )
 
@@ -39,6 +40,17 @@ type Producer interface {
 	Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error)
 }
 
+// Classifier is an optional capability a Producer may implement to enrich its
+// candidates with AI *labels* — never numbers — during the engine's AI-gated
+// phase. Detection in Detect stays deterministic and the numbers in Data stay
+// authoritative; Classify only fills in soft fields (e.g. a subscription's
+// category) and is best-effort, so the feed is unchanged without a key. The
+// engine calls it, after Detect and only when AI is enabled, mutating the
+// candidates' Data maps in place before phrasing and upsert.
+type Classifier interface {
+	Classify(ctx context.Context, client *ai.Client, candidates []Candidate) error
+}
+
 // DefaultProducers is the registry the generation job iterates. Keeping
 // registration in one place means a new producer is a one-line append.
 func DefaultProducers() []Producer {
@@ -47,5 +59,8 @@ func DefaultProducers() []Producer {
 		newRecurringProducer{},
 		budgetPaceProducer{},
 		lowLeftoverProducer{},
+		subscriptionProducer{},
+		forecastProducer{},
+		alertExplanationProducer{},
 	}
 }

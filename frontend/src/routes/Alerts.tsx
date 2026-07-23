@@ -97,6 +97,26 @@ function RecentEvents({
 }) {
   const qc = useQueryClient()
 
+  // AI explanations live as alert_explanation insights linked back by event id.
+  // Match against the feed the app already fetches — no per-event endpoint — and
+  // only when AI is on; the deterministic title/detail always render.
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
+  const insights = useQuery({
+    queryKey: ['insights', 'all'],
+    queryFn: () => api.insights({ state: 'all' }),
+    enabled: capabilities.data?.ai_enabled ?? false,
+  })
+  const explByEvent = new Map<string, string>()
+  for (const i of insights.data ?? []) {
+    if (i.kind === 'alert_explanation') {
+      explByEvent.set(String(i.data.alert_event_id), i.body)
+    }
+  }
+
   const markAll = useMutation({
     mutationFn: api.markAllAlertsRead,
     onSuccess: () => {
@@ -138,6 +158,7 @@ function RecentEvents({
         )}
         {events?.map((e) => {
           const { title, detail } = describeEvent(e)
+          const explanation = explByEvent.get(e.id)
           return (
             <li key={e.id} className="flex items-start gap-3 py-3">
               {!e.read && (
@@ -149,6 +170,9 @@ function RecentEvents({
               <div className={`min-w-0 ${e.read ? 'opacity-60' : ''}`}>
                 <p className="font-medium">{title}</p>
                 <p className="truncate text-sm text-mist-400">{detail}</p>
+                {explanation && (
+                  <p className="mt-1 text-sm italic text-mist-500">{explanation}</p>
+                )}
                 <p className="mt-0.5 text-xs text-mist-500">
                   {formatRelative(e.triggered_at)}
                 </p>
