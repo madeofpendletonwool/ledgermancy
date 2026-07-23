@@ -398,11 +398,16 @@ func parseInt(raw string, fallback, min, max int) int {
 	if raw == "" {
 		return fallback
 	}
-	v, err := strconv.Atoi(raw)
+	// Parse within 32 bits. Every caller clamps to a small range and the result
+	// is later narrowed to int32 for sqlc params, so a value that could not fit
+	// int32 is out of any caller's range by definition — treat it as absent (use
+	// the fallback) rather than truncating. Parsing at bitSize 32 also makes the
+	// downstream int32() conversions provably in-range, not just clamped ones.
+	v, err := strconv.ParseInt(raw, 10, 32)
 	if err != nil {
 		return fallback
 	}
-	return clamp(v, min, max)
+	return clamp(int(v), min, max)
 }
 
 func clamp(v, lo, hi int) int {
