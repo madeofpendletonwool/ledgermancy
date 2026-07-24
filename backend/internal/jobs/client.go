@@ -72,6 +72,12 @@ const digestSweepInterval = time.Hour
 // this is tuned to keep tables tidy, not to enforce anything.
 const securitySweepInterval = 6 * time.Hour
 
+// summaryRefreshInterval is how often the monthly-recap auto-generation sweep
+// runs. Daily: the worker throttles the actual model calls (weekly-ish per
+// household, once per completed month), so the frequent tick only exists to
+// catch month rollover promptly rather than to regenerate anything daily.
+const summaryRefreshInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -124,18 +130,6 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		AuthEventTTL: authEventRetention,
 	}); err != nil {
 		return nil, fmt.Errorf("register security sweep worker: %w", err)
-	}
-
-	// Insight generation is deterministic and useful without a key — only the
-	// phrasing inside insights.Generate is AI-gated — so the per-household
-	// worker is registered unconditionally (unlike the LLM workers below). This
-	// is a deliberate deviation from the shared-contract's "AI-gated periodic
-	// jobs" list: literal AI-gating would leave the feed empty without a key,
-	// defeating the point of a deterministic feed. The AI client is still passed
-	// through; the engine no-ops the phrasing when it is disabled. The sweep
-	// that enqueues this worker needs the client and is registered afterwards.
-	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{Queries: queries, AI: aiClient}); err != nil {
-		return nil, fmt.Errorf("register insights worker: %w", err)
 	}
 
 	// The per-household categorise worker only needs the AI client and queries,
@@ -222,6 +216,19 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		))
+
+		// Recap auto-generation sweep. Runs daily, but the worker itself keeps the
+		// current month's recap on a weekly-ish refresh and finalises a completed
+		// month exactly once — so a daily tick is cheap and reliably catches month
+		// rollover regardless of when the interval happens to fall. RunOnStart so a
+		// fresh deploy warms recaps without waiting a day.
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(summaryRefreshInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SummaryRefreshSweepArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
 	}
 
 	client, err := river.NewClient(riverpgxv5.New(pool), config)
@@ -264,6 +271,18 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register alerts sweep worker: %w", err)
 	}
 
+	// Insight generation is deterministic and useful without a key — only the
+	// phrasing inside insights.Generate is AI-gated — so the per-household worker
+	// is registered unconditionally (unlike the LLM workers). Literal AI-gating
+	// would leave the feed empty without a key, defeating a deterministic feed.
+	// It carries the client and app URL to push the highest-priority new insights,
+	// so it is registered after construction like the sweeps.
+	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{
+		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+	}); err != nil {
+		return nil, fmt.Errorf("register insights worker: %w", err)
+	}
+
 	// The insight sweep enqueues per-household jobs, so it needs the client and
 	// is registered after construction. Always on, like the alert sweep.
 	if err := river.AddWorkerSafely(workers, &GenerateInsightsAllWorker{
@@ -293,6 +312,20 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			Queries: queries, Client: client,
 		}); err != nil {
 			return nil, fmt.Errorf("register llm sweep worker: %w", err)
+		}
+
+		// Monthly recap auto-generation. The sweep fans out per household (needs the
+		// client); the worker generates and caches (needs AI). Both are AI-only, so
+		// they are registered here alongside the periodic sweep below.
+		if err := river.AddWorkerSafely(workers, &SummaryRefreshSweepWorker{
+			Queries: queries, Client: client,
+		}); err != nil {
+			return nil, fmt.Errorf("register summary refresh sweep worker: %w", err)
+		}
+		if err := river.AddWorkerSafely(workers, &SummaryRefreshWorker{
+			Queries: queries, AI: aiClient,
+		}); err != nil {
+			return nil, fmt.Errorf("register summary refresh worker: %w", err)
 		}
 	}
 

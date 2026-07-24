@@ -71,6 +71,7 @@ type Budget struct {
 	EffectiveFrom *stdtime.Time   `json:"effective_from"`
 	CreatedAt     stdtime.Time    `json:"created_at"`
 	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	Rollover      bool            `json:"rollover"`
 }
 
 type Category struct {
@@ -299,6 +300,14 @@ type Preference struct {
 	Key         string       `json:"key"`
 	Value       []byte       `json:"value"`
 	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
+type RecurringOverride struct {
+	ID            uuid.UUID    `json:"id"`
+	HouseholdID   uuid.UUID    `json:"household_id"`
+	MerchantKey   string       `json:"merchant_key"`
+	MerchantLabel string       `json:"merchant_label"`
+	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
 type Security struct {

@@ -111,6 +111,54 @@ func TestReportQueriesExecute(t *testing.T) {
 		t.Errorf("Netflix occurrences = %d, want 4", netflix.Occurrences)
 	}
 
+	// 1a. Chipotle is a coincidental cluster — three charges inside 15 days — not
+	//     a subscription. The minimum-span rule must keep it OUT of the recurring
+	//     detector even though its gaps look weekly.
+	for _, m := range recurring {
+		if m.Merchant == "Chipotle" {
+			t.Errorf("Chipotle (15-day burst) should not be flagged as recurring: %+v", m)
+		}
+	}
+
+	// 1b. The "not recurring" override suppresses a merchant across the detector.
+	//     Suppress Netflix → it drops out; restore it → it returns.
+	if err := q.SuppressRecurringMerchant(ctx, dbgen.SuppressRecurringMerchantParams{
+		HouseholdID: householdID, MerchantKey: "netflix", MerchantLabel: "Netflix",
+	}); err != nil {
+		t.Fatalf("SuppressRecurringMerchant: %v", err)
+	}
+	suppressed, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
+		HouseholdID: householdID, UserID: userID, Date: yearStart,
+	})
+	if err != nil {
+		t.Fatalf("GetRecurringMerchants (suppressed): %v", err)
+	}
+	for _, m := range suppressed {
+		if m.Merchant == "Netflix" {
+			t.Errorf("Netflix should be suppressed after override, still present: %+v", m)
+		}
+	}
+	if err := q.UnsuppressRecurringMerchant(ctx, dbgen.UnsuppressRecurringMerchantParams{
+		HouseholdID: householdID, MerchantKey: "netflix",
+	}); err != nil {
+		t.Fatalf("UnsuppressRecurringMerchant: %v", err)
+	}
+	restored, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
+		HouseholdID: householdID, UserID: userID, Date: yearStart,
+	})
+	if err != nil {
+		t.Fatalf("GetRecurringMerchants (restored): %v", err)
+	}
+	var back bool
+	for _, m := range restored {
+		if m.Merchant == "Netflix" {
+			back = true
+		}
+	}
+	if !back {
+		t.Errorf("Netflix should return after the override is removed")
+	}
+
 	// 2. spend_by_category — the count the chat tool now surfaces.
 	byCat, err := q.GetSpendingByCategory(ctx, dbgen.GetSpendingByCategoryParams{
 		HouseholdID: householdID, UserID: userID, Date: yearStart, Date_2: yearEnd,

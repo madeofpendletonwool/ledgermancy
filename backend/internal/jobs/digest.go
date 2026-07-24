@@ -223,7 +223,7 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 	} else if w.AI.Enabled() {
 		// Generate with the recipient's own visibility, matching what they'd get
 		// from the on-demand button.
-		input, err := reporting.BuildMonthlySummaryInput(ctx, w.Queries, householdID, userID, from, to, label)
+		input, err := reporting.BuildMonthlySummaryInput(ctx, w.Queries, householdID, userID, from, to, label, now)
 		if err != nil {
 			return fmt.Errorf("build summary input: %w", err)
 		}

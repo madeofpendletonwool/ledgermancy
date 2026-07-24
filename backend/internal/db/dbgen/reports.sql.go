@@ -112,15 +112,72 @@ func (q *Queries) ExportTransactions(ctx context.Context, arg ExportTransactions
 	return items, nil
 }
 
+const getAverageSpendingTransaction = `-- name: GetAverageSpendingTransaction :one
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS avg_amount,
+    COUNT(*)::bigint                    AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.amount > 0
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.date >= $3
+`
+
+type GetAverageSpendingTransactionParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+}
+
+type GetAverageSpendingTransactionRow struct {
+	AvgAmount        decimal.Decimal `json:"avg_amount"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// The household's typical single spending transaction over a window — the
+// baseline the "unusually large transaction" insight measures against. Same
+// spend definition and visibility scoping as every other report. The producer
+// compares individual charges (from GetLargestTransactions) to this in Go, so
+// no arithmetic the model sees happens outside SQL/decimal.
+func (q *Queries) GetAverageSpendingTransaction(ctx context.Context, arg GetAverageSpendingTransactionParams) (GetAverageSpendingTransactionRow, error) {
+	row := q.db.QueryRow(ctx, getAverageSpendingTransaction, arg.HouseholdID, arg.UserID, arg.Date)
+	var i GetAverageSpendingTransactionRow
+	err := row.Scan(&i.AvgAmount, &i.TransactionCount)
+	return i, err
+}
+
 const getBudgetProgress = `-- name: GetBudgetProgress :many
 
 SELECT
     b.id          AS budget_id,
     b.amount      AS budgeted,
+    b.period      AS period,
+    b.rollover    AS rollover,
     c.id          AS category_id,
     c.name        AS category_name,
     c.slug        AS category_slug,
     c.color       AS category_color,
+    (CASE b.period
+        WHEN 'weekly' THEN date_trunc('week', $1::date)::date
+        WHEN 'yearly' THEN date_trunc('year', $1::date)::date
+        ELSE $2::date
+     END)::date AS period_start,
+    (CASE b.period
+        WHEN 'weekly' THEN (date_trunc('week', $1::date) + interval '6 days')::date
+        WHEN 'yearly' THEN (date_trunc('year', $1::date) + interval '1 year' - interval '1 day')::date
+        ELSE $3::date
+     END)::date AS period_end,
+    COALESCE(date_trunc('month', b.effective_from)::date,
+             date_trunc('month', b.created_at)::date)::date AS rollover_start,
     COALESCE((
         SELECT SUM(t.amount)
         FROM transactions t
@@ -128,46 +185,90 @@ SELECT
         JOIN plaid_items i ON i.id = a.plaid_item_id
         JOIN users u       ON u.id = i.user_id
         WHERE u.household_id = b.household_id
-          AND (i.user_id = $2 OR i.is_shared)
+          AND (i.user_id = $4 OR i.is_shared)
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
           AND t.amount > 0
-          AND t.date >= $3 AND t.date <= $4
-    ), 0)::numeric AS spent
+          AND t.date >= (CASE b.period
+                WHEN 'weekly' THEN date_trunc('week', $1::date)::date
+                WHEN 'yearly' THEN date_trunc('year', $1::date)::date
+                ELSE $2::date END)
+          AND t.date <= (CASE b.period
+                WHEN 'weekly' THEN (date_trunc('week', $1::date) + interval '6 days')::date
+                WHEN 'yearly' THEN (date_trunc('year', $1::date) + interval '1 year' - interval '1 day')::date
+                ELSE $3::date END)
+    ), 0)::numeric AS spent,
+    COALESCE((
+        SELECT SUM(t.amount)
+        FROM transactions t
+        JOIN accounts a    ON a.id = t.account_id
+        JOIN plaid_items i ON i.id = a.plaid_item_id
+        JOIN users u       ON u.id = i.user_id
+        WHERE u.household_id = b.household_id
+          AND (i.user_id = $4 OR i.is_shared)
+          AND a.is_active
+          AND NOT t.excluded_from_reports
+          AND NOT t.pending
+          AND t.category_id = b.category_id
+          AND t.amount > 0
+          AND t.date >= COALESCE(date_trunc('month', b.effective_from)::date,
+                                 date_trunc('month', b.created_at)::date)
+          AND t.date < $2::date
+    ), 0)::numeric AS prior_spent
 FROM budgets b
 JOIN categories c ON c.id = b.category_id
-WHERE b.household_id = $1
+WHERE b.household_id = $5
 ORDER BY c.sort_order, c.name
 `
 
 type GetBudgetProgressParams struct {
-	HouseholdID uuid.UUID    `json:"household_id"`
+	Ref         stdtime.Time `json:"ref"`
+	WindowStart stdtime.Time `json:"window_start"`
+	WindowEnd   stdtime.Time `json:"window_end"`
 	UserID      uuid.UUID    `json:"user_id"`
-	Date        stdtime.Time `json:"date"`
-	Date_2      stdtime.Time `json:"date_2"`
+	HouseholdID uuid.UUID    `json:"household_id"`
 }
 
 type GetBudgetProgressRow struct {
 	BudgetID      uuid.UUID       `json:"budget_id"`
 	Budgeted      decimal.Decimal `json:"budgeted"`
+	Period        string          `json:"period"`
+	Rollover      bool            `json:"rollover"`
 	CategoryID    uuid.UUID       `json:"category_id"`
 	CategoryName  string          `json:"category_name"`
 	CategorySlug  string          `json:"category_slug"`
 	CategoryColor *string         `json:"category_color"`
+	PeriodStart   stdtime.Time    `json:"period_start"`
+	PeriodEnd     stdtime.Time    `json:"period_end"`
+	RolloverStart stdtime.Time    `json:"rollover_start"`
 	Spent         decimal.Decimal `json:"spent"`
+	PriorSpent    decimal.Decimal `json:"prior_spent"`
 }
 
 // ≥10% rise clears noise
 // Each budget alongside what has been spent against it this period, so the UI
 // can show "$X of $Y left in this category".
+//
+// For rollover (envelope) budgets it also returns the spend BEFORE this period,
+// since the budget's start month, and that start month itself. The caller
+// derives the carried balance from those in decimal (amount × prior months −
+// prior spend), so the envelope math stays out of SQL but the inputs come from
+// one query. rollover_start is effective_from's month, or the month the budget
+// was created when effective_from is unset.
+// The spend window is period-aware: a monthly budget measures against the
+// selected month (@window_start/@window_end); a weekly or yearly budget always measures against
+// the current week or year of the reference date @ref, since "this week"/"this
+// year" only make sense relative to now. period_start/period_end are returned so
+// the caller can label the window.
 func (q *Queries) GetBudgetProgress(ctx context.Context, arg GetBudgetProgressParams) ([]GetBudgetProgressRow, error) {
 	rows, err := q.db.Query(ctx, getBudgetProgress,
-		arg.HouseholdID,
+		arg.Ref,
+		arg.WindowStart,
+		arg.WindowEnd,
 		arg.UserID,
-		arg.Date,
-		arg.Date_2,
+		arg.HouseholdID,
 	)
 	if err != nil {
 		return nil, err
@@ -179,11 +280,17 @@ func (q *Queries) GetBudgetProgress(ctx context.Context, arg GetBudgetProgressPa
 		if err := rows.Scan(
 			&i.BudgetID,
 			&i.Budgeted,
+			&i.Period,
+			&i.Rollover,
 			&i.CategoryID,
 			&i.CategoryName,
 			&i.CategorySlug,
 			&i.CategoryColor,
+			&i.PeriodStart,
+			&i.PeriodEnd,
+			&i.RolloverStart,
 			&i.Spent,
+			&i.PriorSpent,
 		); err != nil {
 			return nil, err
 		}
@@ -283,6 +390,81 @@ func (q *Queries) GetCategoryAverages(ctx context.Context, arg GetCategoryAverag
 			&i.Total,
 			&i.MonthlyAverage,
 			&i.TransactionCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getLargestTransactions = `-- name: GetLargestTransactions :many
+SELECT
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount::numeric                 AS amount,
+    t.date::date                      AS date,
+    COALESCE(c.name, '')              AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+ORDER BY t.amount DESC
+LIMIT $5
+`
+
+type GetLargestTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Limit       int32        `json:"limit"`
+}
+
+type GetLargestTransactionsRow struct {
+	Merchant     string          `json:"merchant"`
+	Amount       decimal.Decimal `json:"amount"`
+	Date         stdtime.Time    `json:"date"`
+	CategoryName string          `json:"category_name"`
+}
+
+// The single biggest purchases in a window, largest first. Feeds the monthly
+// recap ("your biggest hits were …"). Same spend definition and visibility
+// scoping as every other report: money out (amount > 0), no income, no
+// transfers. Merchant falls back to the raw transaction name when Plaid has no
+// cleaned merchant.
+func (q *Queries) GetLargestTransactions(ctx context.Context, arg GetLargestTransactionsParams) ([]GetLargestTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, getLargestTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetLargestTransactionsRow{}
+	for rows.Next() {
+		var i GetLargestTransactionsRow
+		if err := rows.Scan(
+			&i.Merchant,
+			&i.Amount,
+			&i.Date,
+			&i.CategoryName,
 		); err != nil {
 			return nil, err
 		}
@@ -526,6 +708,11 @@ WITH tx AS (
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
       AND t.date >= $3
+      AND NOT EXISTS (
+          SELECT 1 FROM recurring_overrides ro
+          WHERE ro.household_id = $1
+            AND ro.merchant_key = t.merchant_key
+      )
 ),
 gaps AS (
     SELECT
@@ -543,6 +730,7 @@ agg AS (
         COUNT(*)                                                   AS n,
         AVG(amount)                                                AS avg_amount,
         MAX(date)                                                  AS last_seen,
+        MIN(date)                                                  AS first_seen,
         AVG(gap) FILTER (WHERE gap IS NOT NULL)                    AS avg_gap,
         COALESCE(STDDEV_POP(gap) FILTER (WHERE gap IS NOT NULL), 0) AS gap_stddev
     FROM gaps
@@ -560,6 +748,11 @@ WHERE n >= 3
   AND avg_gap IS NOT NULL
   AND avg_gap BETWEEN 6 AND 40
   AND gap_stddev <= avg_gap * 0.5
+  -- Minimum span between first and last charge (days). A real subscription
+  -- persists across cycles; a coincidental cluster of a few charges within a
+  -- few weeks does not. 45 days clears a 3-charge monthly subscription (~60-day
+  -- span) while dropping a short burst at one merchant.
+  AND (last_seen - first_seen) >= 45
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
 `
 
@@ -583,9 +776,15 @@ type GetRecurringMerchantsRow struct {
 // history. Same spend definition and visibility scoping as every other report.
 //
 // A merchant qualifies when it has at least three charges over the window, the
-// average gap between them is weekly-to-monthly, and those gaps are fairly
-// regular (low spread relative to the mean). COALESCE wraps the averaged
-// columns so they are non-null Go types — the WHERE already guarantees a value.
+// average gap between them is weekly-to-monthly, those gaps are fairly regular
+// (low spread relative to the mean), and the charges span enough time that a
+// short coincidental burst does not look like a subscription (see the minimum
+// span below). COALESCE wraps the averaged columns so they are non-null Go types
+// — the WHERE already guarantees a value.
+//
+// A merchant the household has explicitly marked "not recurring" is excluded
+// outright via recurring_overrides, so every consumer of this query (report
+// table, insight producers, recap, chat) honours the suppression at once.
 func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMerchantsParams) ([]GetRecurringMerchantsRow, error) {
 	rows, err := q.db.Query(ctx, getRecurringMerchants, arg.HouseholdID, arg.UserID, arg.Date)
 	if err != nil {
@@ -898,24 +1097,130 @@ func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams
 	return items, nil
 }
 
+const listRecurringOverrides = `-- name: ListRecurringOverrides :many
+SELECT merchant_key, merchant_label, created_at
+FROM recurring_overrides
+WHERE household_id = $1
+ORDER BY merchant_label, merchant_key
+`
+
+type ListRecurringOverridesRow struct {
+	MerchantKey   string       `json:"merchant_key"`
+	MerchantLabel string       `json:"merchant_label"`
+	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
+// The household's suppressed merchants, for the "restore" UI.
+func (q *Queries) ListRecurringOverrides(ctx context.Context, householdID uuid.UUID) ([]ListRecurringOverridesRow, error) {
+	rows, err := q.db.Query(ctx, listRecurringOverrides, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecurringOverridesRow{}
+	for rows.Next() {
+		var i ListRecurringOverridesRow
+		if err := rows.Scan(&i.MerchantKey, &i.MerchantLabel, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const sumHouseholdBudgets = `-- name: SumHouseholdBudgets :one
+SELECT
+    COALESCE(SUM(b.amount) FILTER (WHERE c.is_fixed), 0)::numeric      AS fixed_budgeted,
+    COALESCE(SUM(b.amount) FILTER (WHERE NOT c.is_fixed), 0)::numeric  AS discretionary_budgeted
+FROM budgets b
+JOIN categories c ON c.id = b.category_id
+WHERE b.household_id = $1
+  AND b.owner_scope = 'household'
+  AND b.period = 'monthly'
+`
+
+type SumHouseholdBudgetsRow struct {
+	FixedBudgeted         decimal.Decimal `json:"fixed_budgeted"`
+	DiscretionaryBudgeted decimal.Decimal `json:"discretionary_budgeted"`
+}
+
+// Total household monthly budget, split by whether the category is fixed. Feeds
+// the "safe to spend" calculation, which counts fixed categories at their actual
+// typical cost (not their budget) and discretionary categories at their budgeted
+// envelope — so the split keeps those from being double-counted.
+func (q *Queries) SumHouseholdBudgets(ctx context.Context, householdID uuid.UUID) (SumHouseholdBudgetsRow, error) {
+	row := q.db.QueryRow(ctx, sumHouseholdBudgets, householdID)
+	var i SumHouseholdBudgetsRow
+	err := row.Scan(&i.FixedBudgeted, &i.DiscretionaryBudgeted)
+	return i, err
+}
+
+const suppressRecurringMerchant = `-- name: SuppressRecurringMerchant :exec
+INSERT INTO recurring_overrides (household_id, merchant_key, merchant_label)
+VALUES ($1, $2, $3)
+ON CONFLICT (household_id, merchant_key) DO NOTHING
+`
+
+type SuppressRecurringMerchantParams struct {
+	HouseholdID   uuid.UUID `json:"household_id"`
+	MerchantKey   string    `json:"merchant_key"`
+	MerchantLabel string    `json:"merchant_label"`
+}
+
+// Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
+// already-suppressed merchant is a no-op (and does not disturb the label).
+func (q *Queries) SuppressRecurringMerchant(ctx context.Context, arg SuppressRecurringMerchantParams) error {
+	_, err := q.db.Exec(ctx, suppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey, arg.MerchantLabel)
+	return err
+}
+
+const unsuppressRecurringMerchant = `-- name: UnsuppressRecurringMerchant :exec
+DELETE FROM recurring_overrides
+WHERE household_id = $1 AND merchant_key = $2
+`
+
+type UnsuppressRecurringMerchantParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	MerchantKey string    `json:"merchant_key"`
+}
+
+// Restore a merchant to the recurring detector.
+func (q *Queries) UnsuppressRecurringMerchant(ctx context.Context, arg UnsuppressRecurringMerchantParams) error {
+	_, err := q.db.Exec(ctx, unsuppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey)
+	return err
+}
+
 const upsertBudget = `-- name: UpsertBudget :one
-INSERT INTO budgets (household_id, category_id, amount, owner_scope, period)
-VALUES ($1, $2, $3, 'household', 'monthly')
-ON CONFLICT (household_id, category_id, owner_scope, period)
+INSERT INTO budgets (household_id, category_id, amount, owner_scope, period, rollover)
+VALUES ($1, $2, $3, 'household', $4, $5)
+ON CONFLICT (household_id, category_id, owner_scope)
     WHERE user_id IS NULL
-DO UPDATE SET amount = EXCLUDED.amount
-RETURNING id, household_id, category_id, owner_scope, user_id, period, amount, effective_from, created_at, updated_at
+DO UPDATE SET amount = EXCLUDED.amount, period = EXCLUDED.period,
+              rollover = EXCLUDED.rollover, updated_at = now()
+RETURNING id, household_id, category_id, owner_scope, user_id, period, amount, effective_from, created_at, updated_at, rollover
 `
 
 type UpsertBudgetParams struct {
 	HouseholdID uuid.UUID       `json:"household_id"`
 	CategoryID  uuid.UUID       `json:"category_id"`
 	Amount      decimal.Decimal `json:"amount"`
+	Period      string          `json:"period"`
+	Rollover    bool            `json:"rollover"`
 }
 
-// One monthly budget per category per household; setting it again updates it.
+// One household budget per category; setting it again updates its amount,
+// period, and rollover flag in place.
 func (q *Queries) UpsertBudget(ctx context.Context, arg UpsertBudgetParams) (Budget, error) {
-	row := q.db.QueryRow(ctx, upsertBudget, arg.HouseholdID, arg.CategoryID, arg.Amount)
+	row := q.db.QueryRow(ctx, upsertBudget,
+		arg.HouseholdID,
+		arg.CategoryID,
+		arg.Amount,
+		arg.Period,
+		arg.Rollover,
+	)
 	var i Budget
 	err := row.Scan(
 		&i.ID,
@@ -928,6 +1233,7 @@ func (q *Queries) UpsertBudget(ctx context.Context, arg UpsertBudgetParams) (Bud
 		&i.EffectiveFrom,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Rollover,
 	)
 	return i, err
 }

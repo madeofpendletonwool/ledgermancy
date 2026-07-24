@@ -455,10 +455,16 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 
 // hasChannel reports whether a user has a real delivery channel configured.
 // Which alerts push is now the rule's call (alerts.push); this only answers
-// "can we reach this member at all". A read error or unset pref is treated as
-// "no", never blocking the sweep.
+// "can we reach this member at all".
 func (w *EvaluateAlertsWorker) hasChannel(ctx context.Context, userID uuid.UUID) bool {
-	channel := stringPref(ctx, w.Queries, userID, "notify.channel")
+	return hasNotifyChannel(ctx, w.Queries, userID)
+}
+
+// hasNotifyChannel reports whether a user has a real delivery channel configured.
+// A read error or unset pref is treated as "no", never blocking a sweep. Shared
+// by alert and insight dispatch so both gate on delivery the same way.
+func hasNotifyChannel(ctx context.Context, q *dbgen.Queries, userID uuid.UUID) bool {
+	channel := stringPref(ctx, q, userID, "notify.channel")
 	return channel != "" && channel != "none"
 }
 
@@ -618,13 +624,24 @@ func (a GenerateInsightsArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// insightPushMinPriority is the floor for pushing an insight out of the app. The
+// feed carries everything (priority 1–5); only genuinely urgent items — a big
+// projected shortfall, an outsized charge, a real income change — earn a phone
+// buzz. Celebratory or low-stakes insights (milestones, new_recurring) stay
+// in-app. 4 keeps the push channel quiet enough to stay trusted.
+const insightPushMinPriority = 4
+
 // GenerateInsightsWorker runs the insight engine for one household. AI is passed
 // through to insights.Generate, which uses it only for phrasing and falls back
-// to template text when it is disabled or errors.
+// to template text when it is disabled or errors. Client/AppURL are used to push
+// the highest-priority new insights, mirroring alert dispatch; both may be zero
+// (no queue / no configured URL), in which case the push is simply skipped.
 type GenerateInsightsWorker struct {
 	river.WorkerDefaults[GenerateInsightsArgs]
 	Queries *dbgen.Queries
 	AI      *ai.Client
+	Client  *river.Client[pgx.Tx]
+	AppURL  string
 }
 
 func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[GenerateInsightsArgs]) error {
@@ -636,7 +653,81 @@ func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[Genera
 		slog.Info("insights generated",
 			"household_id", job.Args.HouseholdID, "candidates", len(results))
 	}
+	if err := w.dispatchInsightPushes(ctx, job.Args.HouseholdID, results); err != nil {
+		// A push failure must not fail (and retry) the whole generation pass — the
+		// feed is already written. Log and move on.
+		slog.Warn("insight push dispatch", "error", err, "household_id", job.Args.HouseholdID)
+	}
 	return nil
+}
+
+// dispatchInsightPushes enqueues one notify job per (newly-created high-priority
+// insight × member who has a channel). It mirrors EvaluateAlertsWorker's
+// dispatch, minus the per-event notified stamp: insight pushes dedupe purely on
+// NotifyArgs uniqueness (a refreshed insight is not Inserted, so it never reaches
+// here; an identical re-insert collapses via ByArgs/ByPeriod). Only pushes when a
+// queue is wired.
+func (w *GenerateInsightsWorker) dispatchInsightPushes(ctx context.Context, householdID uuid.UUID, results []insights.Result) error {
+	if w.Client == nil {
+		return nil
+	}
+
+	// Cheap pre-filter so a quiet pass touches nothing.
+	var pushable []insights.Result
+	for _, r := range results {
+		if r.Inserted && r.Priority >= insightPushMinPriority {
+			pushable = append(pushable, r)
+		}
+	}
+	if len(pushable) == 0 {
+		return nil
+	}
+
+	members, err := w.Queries.ListHouseholdMembers(ctx, householdID)
+	if err != nil {
+		return fmt.Errorf("list members: %w", err)
+	}
+
+	for _, r := range pushable {
+		n := insightNotification(r, w.AppURL)
+		for _, m := range members {
+			if !hasNotifyChannel(ctx, w.Queries, m.ID) {
+				continue
+			}
+			if _, err := w.Client.Insert(ctx, NotifyArgs{
+				UserID:   m.ID,
+				Title:    n.Title,
+				Body:     n.Body,
+				Priority: n.Priority,
+				Tags:     n.Tags,
+				ClickURL: n.ClickURL,
+			}, nil); err != nil {
+				slog.Error("enqueue insight notify", "error", err, "user_id", m.ID, "insight_id", r.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// insightNotification renders an insight Result as a push. The feed already
+// carries the final (AI-phrased) Title/Body, so this only maps priority to the
+// ntfy band and points the click-through at the feed.
+func insightNotification(r insights.Result, appURL string) notify.Notification {
+	click := ""
+	if appURL != "" {
+		click = strings.TrimRight(appURL, "/") + "/insights"
+	}
+	priority := r.Priority
+	if priority > 5 {
+		priority = 5
+	}
+	return notify.Notification{
+		Title:    r.Title,
+		Body:     r.Body,
+		Priority: priority,
+		Tags:     []string{"bulb"},
+		ClickURL: click,
+	}
 }
 
 // Timeout bounds a pass that may fan out to one phrasing call per candidate.

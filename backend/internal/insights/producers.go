@@ -207,7 +207,8 @@ func (budgetPaceProducer) Detect(ctx context.Context, q *dbgen.Queries, househol
 	mEnd := monthEnd(mStart)
 
 	rows, err := q.GetBudgetProgress(ctx, dbgen.GetBudgetProgressParams{
-		HouseholdID: householdID, UserID: sharedUser, Date: mStart, Date_2: mEnd,
+		HouseholdID: householdID, UserID: sharedUser,
+		WindowStart: mStart, WindowEnd: mEnd, Ref: now,
 	})
 	if err != nil {
 		return nil, err
@@ -223,6 +224,11 @@ func (budgetPaceProducer) Detect(ctx context.Context, q *dbgen.Queries, househol
 
 	var out []Candidate
 	for _, b := range rows {
+		// This is a month-pace signal; a weekly or yearly budget's spend is over a
+		// different window, so the month fraction would misjudge it.
+		if b.Period != "monthly" {
+			continue
+		}
 		if !b.Budgeted.IsPositive() || !b.Spent.IsPositive() {
 			continue
 		}

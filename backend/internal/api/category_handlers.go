@@ -17,6 +17,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/ai"
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/apex42group/ledgermancy/backend/internal/reporting"
 )
 
 type categoryResponse struct {
@@ -370,8 +371,27 @@ type budgetResponse struct {
 	Slug       string          `json:"slug"`
 	Color      *string         `json:"color"`
 	Budgeted   decimal.Decimal `json:"budgeted"`
-	Spent      decimal.Decimal `json:"spent"`
-	Remaining  decimal.Decimal `json:"remaining"`
+	// Period is weekly|monthly|yearly; PeriodStart/PeriodEnd bound the window the
+	// spend is measured over (the selected month for monthly budgets, the current
+	// week/year for the others).
+	Period      string `json:"period"`
+	PeriodStart string `json:"period_start"`
+	PeriodEnd   string `json:"period_end"`
+	Rollover    bool   `json:"rollover"`
+	// Carryover is the balance rolled in from prior months (can be negative when
+	// the envelope was overspent); Available is this month's amount plus that
+	// carryover; both are zero/equal-to-budgeted for a non-rollover budget.
+	Carryover decimal.Decimal `json:"carryover"`
+	Available decimal.Decimal `json:"available"`
+	Spent     decimal.Decimal `json:"spent"`
+	Remaining decimal.Decimal `json:"remaining"`
+}
+
+// monthsInclusive counts calendar months from start's month through target's
+// month, inclusive (both are first-of-month dates). 1 when they are the same
+// month, 0 or negative when target precedes start.
+func monthsInclusive(start, target time.Time) int {
+	return (target.Year()-start.Year())*12 + int(target.Month()) - int(start.Month()) + 1
 }
 
 func (s *Server) handleBudgetProgress(w http.ResponseWriter, r *http.Request) {
@@ -381,8 +401,9 @@ func (s *Server) handleBudgetProgress(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Queries.GetBudgetProgress(r.Context(), dbgen.GetBudgetProgressParams{
 		HouseholdID: identity.HouseholdID,
 		UserID:      identity.UserID,
-		Date:        from,
-		Date_2:      to,
+		WindowStart: from,
+		WindowEnd:   to,
+		Ref:         time.Now().UTC(),
 	})
 	if err != nil {
 		s.internalError(w, "budget progress", err)
@@ -391,24 +412,78 @@ func (s *Server) handleBudgetProgress(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]budgetResponse, 0, len(rows))
 	for _, b := range rows {
+		// Envelope math (decimal, from SQL-sourced figures):
+		//   carryover (balance entering this month) = amount×(months−1) − prior spend
+		//   available this month                    = amount + carryover
+		// A non-rollover budget carries nothing and resets each period. Rollover is
+		// monthly-only, so the month-based carryover matches the budget's window.
+		carryover := decimal.Zero
+		available := b.Budgeted
+		if b.Rollover {
+			if months := monthsInclusive(b.RolloverStart, from); months > 1 {
+				carryover = b.Budgeted.Mul(decimal.NewFromInt(int64(months - 1))).Sub(b.PriorSpent)
+			}
+			available = b.Budgeted.Add(carryover)
+		}
 		out = append(out, budgetResponse{
-			BudgetID:   b.BudgetID,
-			CategoryID: b.CategoryID,
-			Name:       b.CategoryName,
-			Slug:       b.CategorySlug,
-			Color:      b.CategoryColor,
-			Budgeted:   b.Budgeted,
-			Spent:      b.Spent,
-			Remaining:  b.Budgeted.Sub(b.Spent),
+			BudgetID:    b.BudgetID,
+			CategoryID:  b.CategoryID,
+			Name:        b.CategoryName,
+			Slug:        b.CategorySlug,
+			Color:       b.CategoryColor,
+			Budgeted:    b.Budgeted,
+			Period:      b.Period,
+			PeriodStart: b.PeriodStart.Format(time.DateOnly),
+			PeriodEnd:   b.PeriodEnd.Format(time.DateOnly),
+			Rollover:    b.Rollover,
+			Carryover:   carryover,
+			Available:   available,
+			Spent:       b.Spent,
+			Remaining:   available.Sub(b.Spent),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+type safeToSpendResponse struct {
+	ExpectedIncome        decimal.Decimal `json:"expected_income"`
+	FixedCosts            decimal.Decimal `json:"fixed_costs"`
+	BudgetedDiscretionary decimal.Decimal `json:"budgeted_discretionary"`
+	GoalContributions     decimal.Decimal `json:"goal_contributions"`
+	SafeToSpend           decimal.Decimal `json:"safe_to_spend"`
+	IncomeMonths          int             `json:"income_months"`
+}
+
+// handleSafeToSpend returns the household's "safe to spend" figure and its parts:
+// expected income minus fixed costs, discretionary budgets, and goal savings.
+func (s *Server) handleSafeToSpend(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	sts, err := reporting.BuildSafeToSpend(r.Context(), s.Queries, identity.HouseholdID, time.Now().UTC())
+	if err != nil {
+		s.internalError(w, "safe to spend", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, safeToSpendResponse{
+		ExpectedIncome:        sts.ExpectedIncome,
+		FixedCosts:            sts.FixedCosts,
+		BudgetedDiscretionary: sts.BudgetedDiscretionary,
+		GoalContributions:     sts.GoalContributions,
+		SafeToSpend:           sts.Amount,
+		IncomeMonths:          sts.IncomeMonths,
+	})
+}
+
 type createBudgetRequest struct {
 	CategoryID uuid.UUID `json:"category_id"`
 	Amount     string    `json:"amount"`
+	Period     string    `json:"period"`
+	Rollover   bool      `json:"rollover"`
 }
+
+// validBudgetPeriods is the set the schema's period check allows.
+var validBudgetPeriods = map[string]bool{"weekly": true, "monthly": true, "yearly": true}
 
 func (s *Server) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
@@ -430,10 +505,25 @@ func (s *Server) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default to monthly; reject anything the schema would.
+	budgetPeriod := req.Period
+	if budgetPeriod == "" {
+		budgetPeriod = "monthly"
+	}
+	if !validBudgetPeriods[budgetPeriod] {
+		writeError(w, http.StatusBadRequest, "period must be weekly, monthly, or yearly")
+		return
+	}
+	// Rollover (envelope carryover) is a monthly concept for now, so it is only
+	// honoured on monthly budgets.
+	rollover := req.Rollover && budgetPeriod == "monthly"
+
 	budget, err := s.Queries.UpsertBudget(r.Context(), dbgen.UpsertBudgetParams{
 		HouseholdID: identity.HouseholdID,
 		CategoryID:  req.CategoryID,
 		Amount:      amount,
+		Period:      budgetPeriod,
+		Rollover:    rollover,
 	})
 	if err != nil {
 		s.internalError(w, "create budget", err)
@@ -444,6 +534,8 @@ func (s *Server) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 		"id":          budget.ID,
 		"category_id": budget.CategoryID,
 		"amount":      budget.Amount,
+		"period":      budget.Period,
+		"rollover":    budget.Rollover,
 	})
 }
 
@@ -516,7 +608,8 @@ func (s *Server) handleSuggestBudgets(w http.ResponseWriter, r *http.Request) {
 	// $X" rather than proposing blind.
 	from, to := period(r)
 	budgets, err := s.Queries.GetBudgetProgress(ctx, dbgen.GetBudgetProgressParams{
-		HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
+		HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+		WindowStart: from, WindowEnd: to, Ref: time.Now().UTC(),
 	})
 	if err != nil {
 		s.internalError(w, "budget progress for suggestions", err)

@@ -330,6 +330,7 @@ function MonthlySummaryCard({ month, label }: { month: string; label: string }) 
 // the app already fetches — no bespoke endpoint. Everything degrades cleanly:
 // the table is fully deterministic, the badge and type are additive.
 function RecurringSection() {
+  const queryClient = useQueryClient()
   const recurring = useQuery({ queryKey: ['recurring'], queryFn: api.recurring })
   const insights = useQuery({
     queryKey: ['insights', 'all'],
@@ -340,8 +341,29 @@ function RecurringSection() {
     queryFn: api.capabilities,
     staleTime: Infinity,
   })
+  const suppressed = useQuery({
+    queryKey: ['recurring', 'suppressed'],
+    queryFn: api.suppressedRecurring,
+  })
   const rows = recurring.data ?? []
   const showType = capabilities.data?.ai_enabled ?? false
+
+  // A change to the override list ripples into the recurring table, the
+  // suppressed list, and the insight feed (whose new_recurring/subscription rows
+  // read the same detector), so refresh all three after a mutation.
+  const refreshAfterOverride = () => {
+    queryClient.invalidateQueries({ queryKey: ['recurring'] })
+    queryClient.invalidateQueries({ queryKey: ['insights'] })
+  }
+  const suppress = useMutation({
+    mutationFn: (m: { merchantKey: string; merchant: string }) =>
+      api.suppressRecurring(m.merchantKey, m.merchant),
+    onSuccess: refreshAfterOverride,
+  })
+  const restore = useMutation({
+    mutationFn: (merchantKey: string) => api.unsuppressRecurring(merchantKey),
+    onSuccess: refreshAfterOverride,
+  })
 
   // Index subscription insights by merchant name for an O(1) per-row lookup.
   // Both the recurring report and the insight use COALESCE(merchant_name, name)
@@ -351,7 +373,9 @@ function RecurringSection() {
     if (i.kind === 'subscription') subByMerchant.set(String(i.data.merchant), i.data)
   }
 
-  const cols = showType ? 6 : 5
+  // Merchant, Type?, Cadence, Typical, ~/month, Last seen, actions.
+  const cols = showType ? 7 : 6
+  const suppressedRows = suppressed.data ?? []
 
   return (
     <section className="glass overflow-hidden">
@@ -359,7 +383,8 @@ function RecurringSection() {
         <h2 className="text-lg font-medium">Recurring &amp; subscriptions</h2>
         <p className="mt-1 mb-5 text-sm text-mist-300">
           Merchants that charge you on a regular cadence, detected from the last
-          year of activity.
+          year of activity. If one is a coincidence, mark it{' '}
+          <span className="text-mist-400">Not recurring</span> to hide it.
         </p>
       </div>
 
@@ -373,6 +398,9 @@ function RecurringSection() {
               <th className="px-6 py-2.5 text-right font-medium">Typical</th>
               <th className="px-6 py-2.5 text-right font-medium">~ / month</th>
               <th className="px-6 py-2.5 text-right font-medium">Last seen</th>
+              <th className="px-6 py-2.5 font-medium">
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
@@ -380,8 +408,10 @@ function RecurringSection() {
               const sub = subByMerchant.get(m.merchant)
               const creep = sub?.flavor === 'price_creep'
               const type = sub?.category ? String(sub.category) : null
+              const suppressing =
+                suppress.isPending && suppress.variables?.merchantKey === m.merchant_key
               return (
-                <tr key={m.merchant}>
+                <tr key={m.merchant_key}>
                   <td className="px-6 py-2.5">
                     <span className="flex items-center gap-2">
                       {m.merchant}
@@ -407,6 +437,21 @@ function RecurringSection() {
                   <td className="tabular px-6 py-2.5 text-right text-mist-500">
                     {formatDate(m.last_seen)}
                   </td>
+                  <td className="px-6 py-2.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        suppress.mutate({
+                          merchantKey: m.merchant_key,
+                          merchant: m.merchant,
+                        })
+                      }
+                      disabled={suppressing}
+                      className="text-xs text-mist-500 transition-colors hover:text-mist-200 disabled:opacity-50"
+                    >
+                      {suppressing ? 'Hiding…' : 'Not recurring'}
+                    </button>
+                  </td>
                 </tr>
               )
             })}
@@ -427,6 +472,37 @@ function RecurringSection() {
           </tbody>
         </table>
       </div>
+
+      {suppressedRows.length > 0 && (
+        <div className="border-t border-white/5 px-6 py-4">
+          <p className="text-xs text-mist-500">
+            Marked not recurring — won&apos;t appear above or in insights:
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {suppressedRows.map((s) => {
+              const restoring =
+                restore.isPending && restore.variables === s.merchant_key
+              return (
+                <span
+                  key={s.merchant_key}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-mist-300"
+                >
+                  {s.merchant || s.merchant_key}
+                  <button
+                    type="button"
+                    onClick={() => restore.mutate(s.merchant_key)}
+                    disabled={restoring}
+                    className="text-mist-500 transition-colors hover:text-mist-100 disabled:opacity-50"
+                    title="Restore to the recurring detector"
+                  >
+                    {restoring ? '…' : '×'}
+                  </button>
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </section>
   )
 }

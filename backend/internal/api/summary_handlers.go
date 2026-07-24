@@ -99,7 +99,7 @@ func (s *Server) handleGenerateMonthlySummary(w http.ResponseWriter, r *http.Req
 	}
 
 	input, err := reporting.BuildMonthlySummaryInput(
-		r.Context(), s.Queries, identity.HouseholdID, identity.UserID, from, to, label)
+		r.Context(), s.Queries, identity.HouseholdID, identity.UserID, from, to, label, time.Now().UTC())
 	if err != nil {
 		s.internalError(w, "gather summary data", err)
 		return

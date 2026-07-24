@@ -247,6 +247,7 @@ func (s *Server) Routes() http.Handler {
 		r.Route("/budgets", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleBudgetProgress)
+			r.Get("/safe-to-spend", s.handleSafeToSpend)
 			r.Post("/", s.handleCreateBudget)
 			r.Post("/suggest", s.handleSuggestBudgets)
 			r.Delete("/{budgetID}", s.handleDeleteBudget)
@@ -302,6 +303,9 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)
 			r.Get("/recurring", s.handleRecurring)
+			r.Post("/recurring/suppress", s.handleSuppressRecurring)
+			r.Delete("/recurring/suppress", s.handleUnsuppressRecurring)
+			r.Get("/recurring/suppressed", s.handleListSuppressedRecurring)
 			r.Get("/monthly-summary", s.handleGetMonthlySummary)
 			r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
 		})

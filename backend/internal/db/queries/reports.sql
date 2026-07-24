@@ -193,9 +193,15 @@ LIMIT $5;
 -- history. Same spend definition and visibility scoping as every other report.
 --
 -- A merchant qualifies when it has at least three charges over the window, the
--- average gap between them is weekly-to-monthly, and those gaps are fairly
--- regular (low spread relative to the mean). COALESCE wraps the averaged
--- columns so they are non-null Go types — the WHERE already guarantees a value.
+-- average gap between them is weekly-to-monthly, those gaps are fairly regular
+-- (low spread relative to the mean), and the charges span enough time that a
+-- short coincidental burst does not look like a subscription (see the minimum
+-- span below). COALESCE wraps the averaged columns so they are non-null Go types
+-- — the WHERE already guarantees a value.
+--
+-- A merchant the household has explicitly marked "not recurring" is excluded
+-- outright via recurring_overrides, so every consumer of this query (report
+-- table, insight producers, recap, chat) honours the suppression at once.
 WITH tx AS (
     SELECT
         t.merchant_key,
@@ -217,6 +223,11 @@ WITH tx AS (
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
       AND t.date >= $3
+      AND NOT EXISTS (
+          SELECT 1 FROM recurring_overrides ro
+          WHERE ro.household_id = $1
+            AND ro.merchant_key = t.merchant_key
+      )
 ),
 gaps AS (
     SELECT
@@ -234,6 +245,7 @@ agg AS (
         COUNT(*)                                                   AS n,
         AVG(amount)                                                AS avg_amount,
         MAX(date)                                                  AS last_seen,
+        MIN(date)                                                  AS first_seen,
         AVG(gap) FILTER (WHERE gap IS NOT NULL)                    AS avg_gap,
         COALESCE(STDDEV_POP(gap) FILTER (WHERE gap IS NOT NULL), 0) AS gap_stddev
     FROM gaps
@@ -251,7 +263,55 @@ WHERE n >= 3
   AND avg_gap IS NOT NULL
   AND avg_gap BETWEEN 6 AND 40
   AND gap_stddev <= avg_gap * 0.5
+  -- Minimum span between first and last charge (days). A real subscription
+  -- persists across cycles; a coincidental cluster of a few charges within a
+  -- few weeks does not. 45 days clears a 3-charge monthly subscription (~60-day
+  -- span) while dropping a short burst at one merchant.
+  AND (last_seen - first_seen) >= 45
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC;
+
+-- name: GetAverageSpendingTransaction :one
+-- The household's typical single spending transaction over a window — the
+-- baseline the "unusually large transaction" insight measures against. Same
+-- spend definition and visibility scoping as every other report. The producer
+-- compares individual charges (from GetLargestTransactions) to this in Go, so
+-- no arithmetic the model sees happens outside SQL/decimal.
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS avg_amount,
+    COUNT(*)::bigint                    AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.amount > 0
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.date >= $3;
+
+-- name: SuppressRecurringMerchant :exec
+-- Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
+-- already-suppressed merchant is a no-op (and does not disturb the label).
+INSERT INTO recurring_overrides (household_id, merchant_key, merchant_label)
+VALUES ($1, $2, $3)
+ON CONFLICT (household_id, merchant_key) DO NOTHING;
+
+-- name: UnsuppressRecurringMerchant :exec
+-- Restore a merchant to the recurring detector.
+DELETE FROM recurring_overrides
+WHERE household_id = $1 AND merchant_key = $2;
+
+-- name: ListRecurringOverrides :many
+-- The household's suppressed merchants, for the "restore" UI.
+SELECT merchant_key, merchant_label, created_at
+FROM recurring_overrides
+WHERE household_id = $1
+ORDER BY merchant_label, merchant_key;
 
 -- name: GetMerchantSpendBaseline :one
 -- Typical spend at one merchant for this household, EXCLUDING the flagged
@@ -331,13 +391,39 @@ HAVING COUNT(*) >= 4                                    -- two charges per half
 -- name: GetBudgetProgress :many
 -- Each budget alongside what has been spent against it this period, so the UI
 -- can show "$X of $Y left in this category".
+--
+-- For rollover (envelope) budgets it also returns the spend BEFORE this period,
+-- since the budget's start month, and that start month itself. The caller
+-- derives the carried balance from those in decimal (amount × prior months −
+-- prior spend), so the envelope math stays out of SQL but the inputs come from
+-- one query. rollover_start is effective_from's month, or the month the budget
+-- was created when effective_from is unset.
+-- The spend window is period-aware: a monthly budget measures against the
+-- selected month (@window_start/@window_end); a weekly or yearly budget always measures against
+-- the current week or year of the reference date @ref, since "this week"/"this
+-- year" only make sense relative to now. period_start/period_end are returned so
+-- the caller can label the window.
 SELECT
     b.id          AS budget_id,
     b.amount      AS budgeted,
+    b.period      AS period,
+    b.rollover    AS rollover,
     c.id          AS category_id,
     c.name        AS category_name,
     c.slug        AS category_slug,
     c.color       AS category_color,
+    (CASE b.period
+        WHEN 'weekly' THEN date_trunc('week', @ref::date)::date
+        WHEN 'yearly' THEN date_trunc('year', @ref::date)::date
+        ELSE @window_start::date
+     END)::date AS period_start,
+    (CASE b.period
+        WHEN 'weekly' THEN (date_trunc('week', @ref::date) + interval '6 days')::date
+        WHEN 'yearly' THEN (date_trunc('year', @ref::date) + interval '1 year' - interval '1 day')::date
+        ELSE @window_end::date
+     END)::date AS period_end,
+    COALESCE(date_trunc('month', b.effective_from)::date,
+             date_trunc('month', b.created_at)::date)::date AS rollover_start,
     COALESCE((
         SELECT SUM(t.amount)
         FROM transactions t
@@ -345,30 +431,70 @@ SELECT
         JOIN plaid_items i ON i.id = a.plaid_item_id
         JOIN users u       ON u.id = i.user_id
         WHERE u.household_id = b.household_id
-          AND (i.user_id = $2 OR i.is_shared)
+          AND (i.user_id = @user_id OR i.is_shared)
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
           AND t.amount > 0
-          AND t.date >= $3 AND t.date <= $4
-    ), 0)::numeric AS spent
+          AND t.date >= (CASE b.period
+                WHEN 'weekly' THEN date_trunc('week', @ref::date)::date
+                WHEN 'yearly' THEN date_trunc('year', @ref::date)::date
+                ELSE @window_start::date END)
+          AND t.date <= (CASE b.period
+                WHEN 'weekly' THEN (date_trunc('week', @ref::date) + interval '6 days')::date
+                WHEN 'yearly' THEN (date_trunc('year', @ref::date) + interval '1 year' - interval '1 day')::date
+                ELSE @window_end::date END)
+    ), 0)::numeric AS spent,
+    COALESCE((
+        SELECT SUM(t.amount)
+        FROM transactions t
+        JOIN accounts a    ON a.id = t.account_id
+        JOIN plaid_items i ON i.id = a.plaid_item_id
+        JOIN users u       ON u.id = i.user_id
+        WHERE u.household_id = b.household_id
+          AND (i.user_id = @user_id OR i.is_shared)
+          AND a.is_active
+          AND NOT t.excluded_from_reports
+          AND NOT t.pending
+          AND t.category_id = b.category_id
+          AND t.amount > 0
+          AND t.date >= COALESCE(date_trunc('month', b.effective_from)::date,
+                                 date_trunc('month', b.created_at)::date)
+          AND t.date < @window_start::date
+    ), 0)::numeric AS prior_spent
 FROM budgets b
 JOIN categories c ON c.id = b.category_id
-WHERE b.household_id = $1
+WHERE b.household_id = @household_id
 ORDER BY c.sort_order, c.name;
 
 -- name: UpsertBudget :one
--- One monthly budget per category per household; setting it again updates it.
-INSERT INTO budgets (household_id, category_id, amount, owner_scope, period)
-VALUES ($1, $2, $3, 'household', 'monthly')
-ON CONFLICT (household_id, category_id, owner_scope, period)
+-- One household budget per category; setting it again updates its amount,
+-- period, and rollover flag in place.
+INSERT INTO budgets (household_id, category_id, amount, owner_scope, period, rollover)
+VALUES (@household_id, @category_id, @amount, 'household', @period, @rollover)
+ON CONFLICT (household_id, category_id, owner_scope)
     WHERE user_id IS NULL
-DO UPDATE SET amount = EXCLUDED.amount
+DO UPDATE SET amount = EXCLUDED.amount, period = EXCLUDED.period,
+              rollover = EXCLUDED.rollover, updated_at = now()
 RETURNING *;
 
 -- name: DeleteBudget :exec
 DELETE FROM budgets WHERE id = $1 AND household_id = $2;
+
+-- name: SumHouseholdBudgets :one
+-- Total household monthly budget, split by whether the category is fixed. Feeds
+-- the "safe to spend" calculation, which counts fixed categories at their actual
+-- typical cost (not their budget) and discretionary categories at their budgeted
+-- envelope — so the split keeps those from being double-counted.
+SELECT
+    COALESCE(SUM(b.amount) FILTER (WHERE c.is_fixed), 0)::numeric      AS fixed_budgeted,
+    COALESCE(SUM(b.amount) FILTER (WHERE NOT c.is_fixed), 0)::numeric  AS discretionary_budgeted
+FROM budgets b
+JOIN categories c ON c.id = b.category_id
+WHERE b.household_id = $1
+  AND b.owner_scope = 'household'
+  AND b.period = 'monthly';
 
 -- name: ExportTransactions :many
 -- Every visible transaction in a window, flattened for CSV. Includes the
@@ -397,3 +523,31 @@ WHERE u.household_id = $1
   AND NOT t.pending
   AND t.date >= $3 AND t.date <= $4
 ORDER BY t.date DESC, t.created_at DESC;
+
+-- name: GetLargestTransactions :many
+-- The single biggest purchases in a window, largest first. Feeds the monthly
+-- recap ("your biggest hits were …"). Same spend definition and visibility
+-- scoping as every other report: money out (amount > 0), no income, no
+-- transfers. Merchant falls back to the raw transaction name when Plaid has no
+-- cleaned merchant.
+SELECT
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount::numeric                 AS amount,
+    t.date::date                      AS date,
+    COALESCE(c.name, '')              AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+ORDER BY t.amount DESC
+LIMIT $5;

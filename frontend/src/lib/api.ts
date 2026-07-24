@@ -288,8 +288,33 @@ export interface BudgetProgress {
   slug: string
   color: string | null
   budgeted: string
+  /** weekly | monthly | yearly. */
+  period: string
+  /** Inclusive window the spend is measured over (YYYY-MM-DD). */
+  period_start: string
+  period_end: string
+  /** Whether unspent amount rolls into next month (envelope budgeting; monthly only). */
+  rollover: boolean
+  /** Balance carried in from prior months; negative if the envelope was overspent. */
+  carryover: string
+  /** This month's amount plus carryover — the true ceiling this month. */
+  available: string
   spent: string
   remaining: string
+}
+
+/**
+ * "Safe to spend" and its parts. All amounts are decimal strings. safe_to_spend
+ * = expected_income − fixed_costs − budgeted_discretionary − goal_contributions.
+ */
+export interface SafeToSpend {
+  expected_income: string
+  fixed_costs: string
+  budgeted_discretionary: string
+  goal_contributions: string
+  safe_to_spend: string
+  /** Months the income average is based on; low values mean a thin history. */
+  income_months: number
 }
 
 export interface PeriodQuery {
@@ -521,6 +546,8 @@ export interface ParseRuleResult {
 
 /** A detected recurring charge (subscription/bill). Amounts are decimal strings. */
 export interface RecurringMerchant {
+  /** Stable key the detector groups by; what a "not recurring" override acts on. */
+  merchant_key: string
   merchant: string
   occurrences: number
   average_amount: string
@@ -530,6 +557,13 @@ export interface RecurringMerchant {
   /** Charge normalised to a per-month figure, computed server-side. */
   monthly_estimate: string
   last_seen: string
+}
+
+/** A merchant the household has marked "not recurring". */
+export interface SuppressedRecurringMerchant {
+  merchant_key: string
+  merchant: string
+  suppressed_at: string
 }
 
 /** The AI monthly recap. summary is null when none has been generated yet. */
@@ -819,13 +853,25 @@ export const api = {
   budgets: (params: PeriodQuery = {}) =>
     request<BudgetProgress[]>('GET', withQuery('/api/budgets', params)),
 
-  setBudget: (categoryID: string, amount: string) =>
+  setBudget: (
+    categoryID: string,
+    amount: string,
+    period: 'weekly' | 'monthly' | 'yearly' = 'monthly',
+    rollover = false,
+  ) =>
     request<{ id: string }>('POST', '/api/budgets', {
       category_id: categoryID,
       amount,
+      period,
+      rollover,
     }),
 
   deleteBudget: (id: string) => request<void>('DELETE', `/api/budgets/${id}`),
+
+  // How much is left to spend freely this month after fixed costs, discretionary
+  // budgets, and goal contributions — computed server-side from typical income.
+  safeToSpend: () =>
+    request<SafeToSpend>('GET', '/api/budgets/safe-to-spend'),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when
@@ -944,6 +990,27 @@ export const api = {
 
   recurring: () =>
     request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
+
+  /** Mark a merchant "not recurring" so it drops out of the detector everywhere. */
+  suppressRecurring: (merchantKey: string, merchant: string) =>
+    request<void>('POST', '/api/reports/recurring/suppress', {
+      merchant_key: merchantKey,
+      merchant,
+    }),
+
+  /** Restore a previously-suppressed merchant to the detector. */
+  unsuppressRecurring: (merchantKey: string) =>
+    request<void>(
+      'DELETE',
+      withQuery('/api/reports/recurring/suppress', { merchant_key: merchantKey }),
+    ),
+
+  /** The household's suppressed merchants, for the restore list. */
+  suppressedRecurring: () =>
+    request<SuppressedRecurringMerchant[]>(
+      'GET',
+      '/api/reports/recurring/suppressed',
+    ),
 
   monthlySummary: (month: string) =>
     request<MonthlySummary>(
