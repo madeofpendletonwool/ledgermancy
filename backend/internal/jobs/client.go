@@ -321,6 +321,19 @@ func EnqueueAlertEval(ctx context.Context, client *river.Client[pgx.Tx], househo
 	}
 }
 
+// EnqueueLLMCategorise kicks the AI categorisation pass for a household now,
+// rather than waiting for the periodic sweep — used right after a CSV import so
+// freshly-imported merchants get placed promptly. Fire-and-forget: a failure to
+// enqueue just means the periodic sweep picks them up on its next run.
+func EnqueueLLMCategorise(ctx context.Context, client *river.Client[pgx.Tx], householdID uuid.UUID) {
+	if client == nil {
+		return
+	}
+	if _, err := client.Insert(ctx, LLMCategoriseArgs{HouseholdID: householdID}, nil); err != nil {
+		slog.Error("enqueue llm categorise", "error", err, "household_id", householdID)
+	}
+}
+
 // EnqueueDigestNow queues a one-off "send now" digest for a single user,
 // bypassing cadence and the per-period dedupe (see DigestArgs.Force). Unlike the
 // fire-and-forget enqueues above it returns the error, so a Settings "send one

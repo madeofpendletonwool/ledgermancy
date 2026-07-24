@@ -116,7 +116,10 @@ export function Transactions() {
         </div>
       </div>
 
-      <div className="glass flex flex-wrap items-end gap-4 p-4">
+      {/* relative z-20 lifts this whole bar (and the account dropdown that
+          overflows it) above the transactions panel below, which is a sibling
+          `glass` layer that would otherwise paint on top of the popover. */}
+      <div className="glass relative z-20 flex flex-wrap items-end gap-4 p-4">
         <div>
           <label className="label" htmlFor="from">
             From

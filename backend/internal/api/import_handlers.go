@@ -13,6 +13,7 @@ import (
 	"github.com/apex42group/ledgermancy/backend/internal/auth"
 	"github.com/apex42group/ledgermancy/backend/internal/categorize"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/apex42group/ledgermancy/backend/internal/jobs"
 )
 
 // maxImportRows caps one upload. Capital One (and most banks) export at most a
@@ -109,11 +110,11 @@ func (s *Server) handleImportTransactions(w http.ResponseWriter, r *http.Request
 		}
 		merchantKey := importMerchantKey(name)
 
-		// Deterministic categorisation only (rules → cache → heuristic). A CSV
-		// row carries no Plaid PFC, so an unmatched row is left uncategorised
-		// for the periodic sweep / LLM pass, exactly like a synced one.
-		var categoryID *uuid.UUID
-		var categorySource *string
+		// Deterministic categorisation (rules → cache → heuristic). A CSV row
+		// carries no Plaid PFC, so an unmatched row lands in the fallback
+		// "uncategorised" category with a null source — exactly the shape the
+		// LLM pass (enqueued below) looks for, mirroring a synced-but-unmatched
+		// row.
 		result, ok, err := resolver.Resolve(r.Context(), categorize.Input{
 			MerchantKey:  merchantKey,
 			MerchantName: name,
@@ -123,15 +124,17 @@ func (s *Server) handleImportTransactions(w http.ResponseWriter, r *http.Request
 			s.internalError(w, "categorise imported row", err)
 			return
 		}
+		categoryID := resolver.Fallback()
+		var categorySource *string
 		if ok {
-			id := result.CategoryID
+			categoryID = result.CategoryID
 			src := string(result.Source)
-			categoryID, categorySource = &id, &src
+			categorySource = &src
 		}
 
 		mn := name
 		mk := merchantKey
-		newID, err := s.Queries.InsertImportedTransactionIfNew(r.Context(), dbgen.InsertImportedTransactionIfNewParams{
+		_, err = s.Queries.InsertImportedTransactionIfNew(r.Context(), dbgen.InsertImportedTransactionIfNewParams{
 			AccountID:      req.AccountID,
 			Amount:         amount,
 			Currency:       account.Currency,
@@ -139,7 +142,7 @@ func (s *Server) handleImportTransactions(w http.ResponseWriter, r *http.Request
 			Name:           name,
 			MerchantName:   &mn,
 			MerchantKey:    &mk,
-			CategoryID:     categoryID,
+			CategoryID:     &categoryID,
 			CategorySource: categorySource,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -150,11 +153,16 @@ func (s *Server) handleImportTransactions(w http.ResponseWriter, r *http.Request
 			s.internalError(w, "insert imported transaction", err)
 			return
 		}
-		_ = newID
 		resp.Imported++
-		if categoryID == nil {
+		if !ok {
 			resp.Uncategorized++
 		}
+	}
+
+	// Placed deterministically above; hand the leftovers to the model so they
+	// don't wait for the next periodic sweep. No-op when AI is unconfigured.
+	if resp.Imported > 0 {
+		jobs.EnqueueLLMCategorise(r.Context(), s.Jobs, identity.HouseholdID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
