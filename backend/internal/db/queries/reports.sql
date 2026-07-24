@@ -397,3 +397,31 @@ WHERE u.household_id = $1
   AND NOT t.pending
   AND t.date >= $3 AND t.date <= $4
 ORDER BY t.date DESC, t.created_at DESC;
+
+-- name: GetLargestTransactions :many
+-- The single biggest purchases in a window, largest first. Feeds the monthly
+-- recap ("your biggest hits were …"). Same spend definition and visibility
+-- scoping as every other report: money out (amount > 0), no income, no
+-- transfers. Merchant falls back to the raw transaction name when Plaid has no
+-- cleaned merchant.
+SELECT
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount::numeric                 AS amount,
+    t.date::date                      AS date,
+    COALESCE(c.name, '')              AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+ORDER BY t.amount DESC
+LIMIT $5;

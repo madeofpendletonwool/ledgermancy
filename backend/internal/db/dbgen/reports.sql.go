@@ -294,6 +294,81 @@ func (q *Queries) GetCategoryAverages(ctx context.Context, arg GetCategoryAverag
 	return items, nil
 }
 
+const getLargestTransactions = `-- name: GetLargestTransactions :many
+SELECT
+    COALESCE(t.merchant_name, t.name) AS merchant,
+    t.amount::numeric                 AS amount,
+    t.date::date                      AS date,
+    COALESCE(c.name, '')              AS category_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+ORDER BY t.amount DESC
+LIMIT $5
+`
+
+type GetLargestTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Limit       int32        `json:"limit"`
+}
+
+type GetLargestTransactionsRow struct {
+	Merchant     string          `json:"merchant"`
+	Amount       decimal.Decimal `json:"amount"`
+	Date         stdtime.Time    `json:"date"`
+	CategoryName string          `json:"category_name"`
+}
+
+// The single biggest purchases in a window, largest first. Feeds the monthly
+// recap ("your biggest hits were …"). Same spend definition and visibility
+// scoping as every other report: money out (amount > 0), no income, no
+// transfers. Merchant falls back to the raw transaction name when Plaid has no
+// cleaned merchant.
+func (q *Queries) GetLargestTransactions(ctx context.Context, arg GetLargestTransactionsParams) ([]GetLargestTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, getLargestTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetLargestTransactionsRow{}
+	for rows.Next() {
+		var i GetLargestTransactionsRow
+		if err := rows.Scan(
+			&i.Merchant,
+			&i.Amount,
+			&i.Date,
+			&i.CategoryName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMerchantSpendBaseline = `-- name: GetMerchantSpendBaseline :one
 SELECT
     COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
