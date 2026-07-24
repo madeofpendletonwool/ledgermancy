@@ -301,6 +301,14 @@ type Preference struct {
 	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
+type RecurringOverride struct {
+	ID            uuid.UUID    `json:"id"`
+	HouseholdID   uuid.UUID    `json:"household_id"`
+	MerchantKey   string       `json:"merchant_key"`
+	MerchantLabel string       `json:"merchant_label"`
+	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
 type Security struct {
 	ID               uuid.UUID           `json:"id"`
 	PlaidSecurityID  string              `json:"plaid_security_id"`

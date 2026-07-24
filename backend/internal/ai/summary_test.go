@@ -86,15 +86,15 @@ func TestMonthlySummaryTenseAndDetail(t *testing.T) {
 
 	// In-progress: present tense, as-of date, and the new detail sections.
 	if _, err := c.MonthlySummary(context.Background(), MonthlySummaryInput{
-		Month:          "July 2026",
-		InProgress:     true,
-		AsOf:           "July 23, 2026",
-		Income:         "$5,000.00",
-		Spending:       "$3,200.00",
-		SavingsRate:    "36%",
-		RecurringTotal: "$240.00",
-		AboveBaseline:  []CategoryDelta{{Name: "Dining", ThisMonth: "$400.00", Typical: "$250.00", Over: "$150.00"}},
-		TopMerchants:   []MerchantLine{{Name: "Costco", Total: "$180.00", Count: 2}},
+		Month:               "July 2026",
+		InProgress:          true,
+		AsOf:                "July 23, 2026",
+		Income:              "$5,000.00",
+		Spending:            "$3,200.00",
+		SavingsRate:         "36%",
+		RecurringTotal:      "$240.00",
+		AboveBaseline:       []CategoryDelta{{Name: "Dining", ThisMonth: "$400.00", Typical: "$250.00", Over: "$150.00"}},
+		TopMerchants:        []MerchantLine{{Name: "Costco", Total: "$180.00", Count: 2}},
 		BiggestTransactions: []TxnLine{{Merchant: "Delta", Amount: "$620.00", Date: "Jul 12", Category: "Travel"}},
 	}); err != nil {
 		t.Fatalf("MonthlySummary in-progress: %v", err)

@@ -601,6 +601,11 @@ WITH tx AS (
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
       AND t.date >= $3
+      AND NOT EXISTS (
+          SELECT 1 FROM recurring_overrides ro
+          WHERE ro.household_id = $1
+            AND ro.merchant_key = t.merchant_key
+      )
 ),
 gaps AS (
     SELECT
@@ -618,6 +623,7 @@ agg AS (
         COUNT(*)                                                   AS n,
         AVG(amount)                                                AS avg_amount,
         MAX(date)                                                  AS last_seen,
+        MIN(date)                                                  AS first_seen,
         AVG(gap) FILTER (WHERE gap IS NOT NULL)                    AS avg_gap,
         COALESCE(STDDEV_POP(gap) FILTER (WHERE gap IS NOT NULL), 0) AS gap_stddev
     FROM gaps
@@ -635,6 +641,11 @@ WHERE n >= 3
   AND avg_gap IS NOT NULL
   AND avg_gap BETWEEN 6 AND 40
   AND gap_stddev <= avg_gap * 0.5
+  -- Minimum span between first and last charge (days). A real subscription
+  -- persists across cycles; a coincidental cluster of a few charges within a
+  -- few weeks does not. 45 days clears a 3-charge monthly subscription (~60-day
+  -- span) while dropping a short burst at one merchant.
+  AND (last_seen - first_seen) >= 45
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
 `
 
@@ -658,9 +669,15 @@ type GetRecurringMerchantsRow struct {
 // history. Same spend definition and visibility scoping as every other report.
 //
 // A merchant qualifies when it has at least three charges over the window, the
-// average gap between them is weekly-to-monthly, and those gaps are fairly
-// regular (low spread relative to the mean). COALESCE wraps the averaged
-// columns so they are non-null Go types — the WHERE already guarantees a value.
+// average gap between them is weekly-to-monthly, those gaps are fairly regular
+// (low spread relative to the mean), and the charges span enough time that a
+// short coincidental burst does not look like a subscription (see the minimum
+// span below). COALESCE wraps the averaged columns so they are non-null Go types
+// — the WHERE already guarantees a value.
+//
+// A merchant the household has explicitly marked "not recurring" is excluded
+// outright via recurring_overrides, so every consumer of this query (report
+// table, insight producers, recap, chat) honours the suppression at once.
 func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMerchantsParams) ([]GetRecurringMerchantsRow, error) {
 	rows, err := q.db.Query(ctx, getRecurringMerchants, arg.HouseholdID, arg.UserID, arg.Date)
 	if err != nil {
@@ -971,6 +988,75 @@ func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const listRecurringOverrides = `-- name: ListRecurringOverrides :many
+SELECT merchant_key, merchant_label, created_at
+FROM recurring_overrides
+WHERE household_id = $1
+ORDER BY merchant_label, merchant_key
+`
+
+type ListRecurringOverridesRow struct {
+	MerchantKey   string       `json:"merchant_key"`
+	MerchantLabel string       `json:"merchant_label"`
+	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
+// The household's suppressed merchants, for the "restore" UI.
+func (q *Queries) ListRecurringOverrides(ctx context.Context, householdID uuid.UUID) ([]ListRecurringOverridesRow, error) {
+	rows, err := q.db.Query(ctx, listRecurringOverrides, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecurringOverridesRow{}
+	for rows.Next() {
+		var i ListRecurringOverridesRow
+		if err := rows.Scan(&i.MerchantKey, &i.MerchantLabel, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const suppressRecurringMerchant = `-- name: SuppressRecurringMerchant :exec
+INSERT INTO recurring_overrides (household_id, merchant_key, merchant_label)
+VALUES ($1, $2, $3)
+ON CONFLICT (household_id, merchant_key) DO NOTHING
+`
+
+type SuppressRecurringMerchantParams struct {
+	HouseholdID   uuid.UUID `json:"household_id"`
+	MerchantKey   string    `json:"merchant_key"`
+	MerchantLabel string    `json:"merchant_label"`
+}
+
+// Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
+// already-suppressed merchant is a no-op (and does not disturb the label).
+func (q *Queries) SuppressRecurringMerchant(ctx context.Context, arg SuppressRecurringMerchantParams) error {
+	_, err := q.db.Exec(ctx, suppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey, arg.MerchantLabel)
+	return err
+}
+
+const unsuppressRecurringMerchant = `-- name: UnsuppressRecurringMerchant :exec
+DELETE FROM recurring_overrides
+WHERE household_id = $1 AND merchant_key = $2
+`
+
+type UnsuppressRecurringMerchantParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	MerchantKey string    `json:"merchant_key"`
+}
+
+// Restore a merchant to the recurring detector.
+func (q *Queries) UnsuppressRecurringMerchant(ctx context.Context, arg UnsuppressRecurringMerchantParams) error {
+	_, err := q.db.Exec(ctx, unsuppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey)
+	return err
 }
 
 const upsertBudget = `-- name: UpsertBudget :one

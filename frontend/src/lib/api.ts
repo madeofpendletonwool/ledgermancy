@@ -521,6 +521,8 @@ export interface ParseRuleResult {
 
 /** A detected recurring charge (subscription/bill). Amounts are decimal strings. */
 export interface RecurringMerchant {
+  /** Stable key the detector groups by; what a "not recurring" override acts on. */
+  merchant_key: string
   merchant: string
   occurrences: number
   average_amount: string
@@ -530,6 +532,13 @@ export interface RecurringMerchant {
   /** Charge normalised to a per-month figure, computed server-side. */
   monthly_estimate: string
   last_seen: string
+}
+
+/** A merchant the household has marked "not recurring". */
+export interface SuppressedRecurringMerchant {
+  merchant_key: string
+  merchant: string
+  suppressed_at: string
 }
 
 /** The AI monthly recap. summary is null when none has been generated yet. */
@@ -944,6 +953,27 @@ export const api = {
 
   recurring: () =>
     request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
+
+  /** Mark a merchant "not recurring" so it drops out of the detector everywhere. */
+  suppressRecurring: (merchantKey: string, merchant: string) =>
+    request<void>('POST', '/api/reports/recurring/suppress', {
+      merchant_key: merchantKey,
+      merchant,
+    }),
+
+  /** Restore a previously-suppressed merchant to the detector. */
+  unsuppressRecurring: (merchantKey: string) =>
+    request<void>(
+      'DELETE',
+      withQuery('/api/reports/recurring/suppress', { merchant_key: merchantKey }),
+    ),
+
+  /** The household's suppressed merchants, for the restore list. */
+  suppressedRecurring: () =>
+    request<SuppressedRecurringMerchant[]>(
+      'GET',
+      '/api/reports/recurring/suppressed',
+    ),
 
   monthlySummary: (month: string) =>
     request<MonthlySummary>(

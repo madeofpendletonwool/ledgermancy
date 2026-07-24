@@ -287,11 +287,19 @@ func (s *Server) handleTopMerchants(w http.ResponseWriter, r *http.Request) {
 // enough to see an annual charge twice and a monthly one many times.
 const recurringLookbackMonths = 12
 
+// recurringActiveDays gates out merchants that have gone quiet, so a cancelled
+// or paid-off subscription stops lingering in the recurring table. Mirrors the
+// same cutoff the subscription/new_recurring insight producers apply (they gate
+// in Go too); the detection query returns everything in the lookback window and
+// callers drop the stale rows.
+const recurringActiveDays = 45
+
 // daysPerMonth is the average calendar month, used only to normalise a
 // merchant's cadence into an estimated monthly cost for display.
 var daysPerMonth = decimal.NewFromFloat(30.4368)
 
 type recurringResponse struct {
+	MerchantKey     string          `json:"merchant_key"`
 	Merchant        string          `json:"merchant"`
 	Occurrences     int64           `json:"occurrences"`
 	AverageAmount   decimal.Decimal `json:"average_amount"`
@@ -303,7 +311,9 @@ type recurringResponse struct {
 
 func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
-	since := time.Now().AddDate(0, -recurringLookbackMonths, 0)
+	now := time.Now()
+	since := now.AddDate(0, -recurringLookbackMonths, 0)
+	activeCutoff := now.AddDate(0, 0, -recurringActiveDays)
 
 	rows, err := s.Queries.GetRecurringMerchants(r.Context(), dbgen.GetRecurringMerchantsParams{
 		HouseholdID: identity.HouseholdID,
@@ -317,12 +327,20 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]recurringResponse, 0, len(rows))
 	for _, m := range rows {
+		// Drop merchants that have gone quiet: a paid-off or cancelled charge
+		// should not linger in the table for months. Also skip rows without a
+		// merchant_key — suppression is keyed by it, so an unkeyed row could not
+		// be acted on anyway.
+		if m.MerchantKey == nil || m.LastSeen.Before(activeCutoff) {
+			continue
+		}
 		// Normalise the charge to a monthly figure: amount * (month / gap).
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {
 			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
 		out = append(out, recurringResponse{
+			MerchantKey:     *m.MerchantKey,
 			Merchant:        m.Merchant,
 			Occurrences:     m.Occurrences,
 			AverageAmount:   m.AverageAmount.Round(2),
@@ -330,6 +348,85 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 			Cadence:         cadenceLabel(m.AvgGapDays),
 			MonthlyEstimate: monthly,
 			LastSeen:        m.LastSeen.Format(time.DateOnly),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// suppressRecurringRequest marks a merchant "not recurring". merchant is the
+// label captured for the restore UI; merchant_key is what the detector is keyed
+// by and what suppression acts on.
+type suppressRecurringRequest struct {
+	MerchantKey string `json:"merchant_key"`
+	Merchant    string `json:"merchant"`
+}
+
+func (s *Server) handleSuppressRecurring(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	var req suppressRecurringRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.MerchantKey == "" {
+		writeError(w, http.StatusBadRequest, "merchant_key is required")
+		return
+	}
+
+	if err := s.Queries.SuppressRecurringMerchant(r.Context(), dbgen.SuppressRecurringMerchantParams{
+		HouseholdID:   identity.HouseholdID,
+		MerchantKey:   req.MerchantKey,
+		MerchantLabel: req.Merchant,
+	}); err != nil {
+		s.internalError(w, "suppress recurring merchant", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUnsuppressRecurring(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	// The key can be long and contain URL-unfriendly characters, so it comes on
+	// the query string rather than in the path.
+	key := r.URL.Query().Get("merchant_key")
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "merchant_key is required")
+		return
+	}
+
+	if err := s.Queries.UnsuppressRecurringMerchant(r.Context(), dbgen.UnsuppressRecurringMerchantParams{
+		HouseholdID: identity.HouseholdID,
+		MerchantKey: key,
+	}); err != nil {
+		s.internalError(w, "restore recurring merchant", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type suppressedRecurringResponse struct {
+	MerchantKey  string `json:"merchant_key"`
+	Merchant     string `json:"merchant"`
+	SuppressedAt string `json:"suppressed_at"`
+}
+
+func (s *Server) handleListSuppressedRecurring(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	rows, err := s.Queries.ListRecurringOverrides(r.Context(), identity.HouseholdID)
+	if err != nil {
+		s.internalError(w, "list suppressed recurring", err)
+		return
+	}
+
+	out := make([]suppressedRecurringResponse, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, suppressedRecurringResponse{
+			MerchantKey:  m.MerchantKey,
+			Merchant:     m.MerchantLabel,
+			SuppressedAt: m.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
