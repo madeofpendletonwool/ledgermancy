@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
@@ -26,6 +27,12 @@ export function Spending() {
   const [monthValue, setMonthValue] = useState(months[0].value)
   const month = months.find((m) => m.value === monthValue) ?? months[0]
   const range = { from: month.from, to: month.to }
+  const navigate = useNavigate()
+
+  // Drill from a category bar into that category's transactions for the month
+  // currently in view — the Transactions page reads these same URL params.
+  const openCategory = (categoryID: string) =>
+    navigate(`/transactions?category=${categoryID}&from=${range.from}&to=${range.to}`)
 
   const summary = useQuery({
     queryKey: ['summary', range.from, range.to],
@@ -125,7 +132,7 @@ export function Spending() {
         {byCategory.isPending ? (
           <Loading />
         ) : (
-          <CategoryBars data={byCategory.data ?? []} />
+          <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
         )}
       </section>
 

@@ -230,6 +230,7 @@ func (s *Server) Routes() http.Handler {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListTransactions)
 			r.Post("/", s.handleCreateManualTransaction)
+			r.Post("/import", s.handleImportTransactions)
 			r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
 			r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only

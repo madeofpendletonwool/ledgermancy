@@ -137,6 +137,13 @@ type categoryWriteRequest struct {
 	Name    string  `json:"name"`
 	Color   *string `json:"color"`
 	IsFixed bool    `json:"is_fixed"`
+	// IsIncome / IsTransfer decide how the category counts. A transfer is money
+	// moving between your own accounts (a credit-card payment, a transfer to
+	// savings) and is excluded from spending entirely — this is what lets a
+	// custom category avoid the "counted as spending" trap. At most one may be
+	// set; fixed only means anything for a spending category.
+	IsIncome   bool `json:"is_income"`
+	IsTransfer bool `json:"is_transfer"`
 }
 
 func (r categoryWriteRequest) validate() error {
@@ -146,7 +153,20 @@ func (r categoryWriteRequest) validate() error {
 	if len(r.Name) > 60 {
 		return errors.New("name must be 60 characters or fewer")
 	}
+	if r.IsIncome && r.IsTransfer {
+		return errors.New("a category can be income or a transfer, not both")
+	}
 	return nil
+}
+
+// isFixedFor collapses the fixed flag to false for non-spending categories:
+// "fixed" is a spending concept (a recurring bill), meaningless for income or a
+// transfer, so we never store a contradictory combination.
+func (r categoryWriteRequest) isFixedFor() bool {
+	if r.IsIncome || r.IsTransfer {
+		return false
+	}
+	return r.IsFixed
 }
 
 // handleCreateCategory creates a household-scoped custom category. System
@@ -165,6 +185,19 @@ func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Duplicate guard: if a built-in category already carries this name, point
+	// the user at it rather than letting them create a second one — a divergent
+	// duplicate (e.g. a "Credit Card Payment" that is NOT a transfer) is exactly
+	// how spending gets silently inflated.
+	if dup, err := s.systemCategoryNamed(r.Context(), req.Name); err != nil {
+		s.internalError(w, "check system categories", err)
+		return
+	} else if dup != "" {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"A built-in %q category already exists — assign transactions to it instead of creating a duplicate.", dup))
+		return
+	}
+
 	slug, err := s.uniqueCategorySlug(r.Context(), identity.HouseholdID, req.Name)
 	if err != nil {
 		s.internalError(w, "derive category slug", err)
@@ -176,7 +209,9 @@ func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		Name:        strings.TrimSpace(req.Name),
 		Slug:        slug,
 		Color:       req.Color,
-		IsFixed:     req.IsFixed,
+		IsFixed:     req.isFixedFor(),
+		IsIncome:    req.IsIncome,
+		IsTransfer:  req.IsTransfer,
 	})
 	if err != nil {
 		s.internalError(w, "create category", err)
@@ -221,7 +256,9 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		HouseholdID: &identity.HouseholdID,
 		Name:        strings.TrimSpace(req.Name),
 		Color:       req.Color,
-		IsFixed:     req.IsFixed,
+		IsFixed:     req.isFixedFor(),
+		IsIncome:    req.IsIncome,
+		IsTransfer:  req.IsTransfer,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "category not found or not editable")
@@ -260,6 +297,27 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// systemCategoryNamed returns the canonical name of a built-in (system)
+// category matching the given name case-insensitively, or "" if none. Used to
+// stop a user re-creating a category the app already ships — most importantly a
+// transfer category like "Credit Card Payment", where a plain-spending
+// duplicate silently double-counts.
+func (s *Server) systemCategoryNamed(ctx context.Context, name string) (string, error) {
+	// ListCategories with a household id returns system rows (household_id NULL)
+	// plus that household's own; we only compare against the system ones.
+	rows, err := s.Queries.ListCategories(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	want := strings.ToLower(strings.TrimSpace(name))
+	for _, c := range rows {
+		if c.HouseholdID == nil && strings.ToLower(c.Name) == want {
+			return c.Name, nil
+		}
+	}
+	return "", nil
 }
 
 // uniqueCategorySlug derives a URL-safe slug from a name and appends -2, -3, …

@@ -42,7 +42,14 @@ const maxRequestBody = 1 << 20 // 1 MiB
 // decodeJSON reads a JSON request body into dst, rejecting unknown fields so
 // a typo in a client payload fails loudly instead of being silently ignored.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	return decodeJSONLimit(w, r, dst, maxRequestBody)
+}
+
+// decodeJSONLimit is decodeJSON with a caller-chosen body ceiling, for the few
+// endpoints (CSV import) that legitimately carry a larger payload than the 1 MiB
+// default. Everything else should use decodeJSON.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

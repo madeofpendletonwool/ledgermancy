@@ -185,13 +185,25 @@ export interface ManualTransactionInput {
   notes?: string | null
 }
 
+export interface ImportResult {
+  imported: number
+  skipped_duplicates: number
+  skipped_invalid: number
+  uncategorized: number
+}
+
 export interface TransactionQuery {
   from?: string
   to?: string
   limit?: number
   offset?: number
-  /** Restrict to one account. Empty/omitted means all visible accounts. */
-  account_id?: string
+  /**
+   * Restrict to these accounts. Serialized comma-joined (an empty array drops
+   * out entirely), which the API reads as "all visible accounts".
+   */
+  accounts?: string[]
+  /** Restrict to one category. Empty/omitted means all categories. */
+  category_id?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
 }
@@ -205,6 +217,20 @@ export interface Category {
   is_transfer: boolean
   is_fixed: boolean
   is_system: boolean
+}
+
+/**
+ * Body for creating/editing a custom category. `is_transfer` marks money moving
+ * between your own accounts (a card payment, a transfer to savings) — excluded
+ * from spending entirely; `is_income` marks money coming in. At most one is
+ * true; the server treats a transfer/income category as never "fixed".
+ */
+export interface CategoryWrite {
+  name: string
+  color: string | null
+  is_fixed: boolean
+  is_income: boolean
+  is_transfer: boolean
 }
 
 /** All money fields are decimal strings. Never sum them in JavaScript. */
@@ -745,6 +771,14 @@ export const api = {
   createTransaction: (input: ManualTransactionInput) =>
     request<{ id: string; source: string }>('POST', '/api/transactions', input),
 
+  // Imports pre-mapped CSV rows into one account. The caller has already turned
+  // each row into a signed amount (positive = spending, negative = money in),
+  // so the server never sees the source bank's column layout.
+  importTransactions: (input: {
+    account_id: string
+    rows: { date: string; amount: string; description: string }[]
+  }) => request<ImportResult>('POST', '/api/transactions/import', input),
+
   updateTransaction: (id: string, input: ManualTransactionInput) =>
     request<{ id: string; source: string }>('PUT', `/api/transactions/${id}`, input),
 
@@ -753,13 +787,11 @@ export const api = {
 
   categories: () => request<Category[]>('GET', '/api/categories'),
 
-  createCategory: (input: { name: string; color: string | null; is_fixed: boolean }) =>
+  createCategory: (input: CategoryWrite) =>
     request<Category>('POST', '/api/categories', input),
 
-  updateCategory: (
-    id: string,
-    input: { name: string; color: string | null; is_fixed: boolean },
-  ) => request<Category>('PUT', `/api/categories/${id}`, input),
+  updateCategory: (id: string, input: CategoryWrite) =>
+    request<Category>('PUT', `/api/categories/${id}`, input),
 
   deleteCategory: (id: string) =>
     request<void>('DELETE', `/api/categories/${id}`),

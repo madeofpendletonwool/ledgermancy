@@ -26,6 +26,7 @@ export function DayBars({
   month,
   days,
   lastMonthAvgDaily,
+  onSelect,
 }: {
   /** Full year, e.g. 2026. */
   year: number
@@ -34,6 +35,8 @@ export function DayBars({
   days: DaySpend[]
   /** Last month's mean spend per day, for the reference line. */
   lastMonthAvgDaily: number
+  /** Clicking a (non-future) day calls this with its 1-based day-of-month. */
+  onSelect?: (dom: number) => void
 }) {
   const [active, setActive] = useState<number | null>(null)
 
@@ -169,18 +172,24 @@ export function DayBars({
             />
           )}
 
-          {/* Invisible per-day hit targets, full band wide. */}
-          {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((dom) => (
-            <rect
-              key={dom}
-              x={x(dom) - band / 2}
-              y={PAD.top}
-              width={band}
-              height={PLOT_H}
-              fill="transparent"
-              onMouseEnter={() => setActive(dom)}
-            />
-          ))}
+          {/* Invisible per-day hit targets, full band wide. Past/current days
+              are clickable to drill into that day's transactions. */}
+          {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((dom) => {
+            const clickable = onSelect !== undefined && dom <= todayDom
+            return (
+              <rect
+                key={dom}
+                x={x(dom) - band / 2}
+                y={PAD.top}
+                width={band}
+                height={PLOT_H}
+                fill="transparent"
+                style={{ cursor: clickable ? 'pointer' : 'default' }}
+                onMouseEnter={() => setActive(dom)}
+                onClick={clickable ? () => onSelect(dom) : undefined}
+              />
+            )
+          })}
         </svg>
 
         {active !== null && (

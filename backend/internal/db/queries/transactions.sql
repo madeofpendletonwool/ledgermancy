@@ -49,6 +49,41 @@ FROM transactions t
 JOIN accounts a ON a.id = t.account_id
 WHERE a.plaid_item_id = $1;
 
+-- name: GetImportAccount :one
+-- Validates that an account belongs to the caller's household and is visible to
+-- them, returning its currency for imported rows. No row means "not yours".
+SELECT a.id, a.currency
+FROM accounts a
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE a.id = $1
+  AND u.household_id = $2
+  AND (i.user_id = $3 OR i.is_shared)
+  AND a.is_active;
+
+-- name: InsertImportedTransactionIfNew :one
+-- Inserts one CSV-imported row unless a transaction on the same account already
+-- matches its amount within a few days — the same window the ledger uses to
+-- flag possible duplicates — so re-importing, or overlapping Plaid's synced
+-- window, never double-counts. Returns the new id, or no rows when skipped as a
+-- duplicate.
+INSERT INTO transactions (
+    account_id, amount, currency, date, name, merchant_name, merchant_key,
+    category_id, category_source, source, pending
+)
+SELECT
+    sqlc.arg('account_id'), sqlc.arg('amount'), sqlc.arg('currency'),
+    sqlc.arg('date'), sqlc.arg('name'), sqlc.narg('merchant_name'),
+    sqlc.narg('merchant_key'), sqlc.narg('category_id'),
+    sqlc.narg('category_source'), 'csv', false
+WHERE NOT EXISTS (
+    SELECT 1 FROM transactions d
+    WHERE d.account_id = sqlc.arg('account_id')
+      AND d.amount = sqlc.arg('amount')
+      AND abs(d.date - sqlc.arg('date')) <= 4
+)
+RETURNING id;
+
 -- name: ListVisibleTransactions :many
 SELECT t.*, a.name AS account_name, i.institution_name,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
@@ -72,7 +107,15 @@ WHERE u.household_id = $1
   AND NOT t.excluded_from_reports
   AND t.date >= $3
   AND t.date <= $4
-  AND (sqlc.narg('account_id')::uuid IS NULL OR t.account_id = sqlc.narg('account_id')::uuid)
+  -- Optional multi-account filter: NULL/empty array passes everything, so "all
+  -- accounts" needs no special case. Anything else narrows to the listed ids.
+  AND (
+    sqlc.narg('account_ids')::uuid[] IS NULL
+    OR cardinality(sqlc.narg('account_ids')::uuid[]) = 0
+    OR t.account_id = ANY(sqlc.narg('account_ids')::uuid[])
+  )
+  -- Optional category filter (a null narg passes everything).
+  AND (sqlc.narg('category_id')::uuid IS NULL OR t.category_id = sqlc.narg('category_id')::uuid)
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
   -- category. NULL/false narg passes everything.

@@ -29,12 +29,38 @@ import (
 type Source string
 
 const (
-	SourceManual Source = "manual"
-	SourceRule   Source = "rule"
-	SourceCache  Source = "cache"
-	SourcePlaid  Source = "plaid"
-	SourceLLM    Source = "llm"
+	SourceManual    Source = "manual"
+	SourceRule      Source = "rule"
+	SourceCache     Source = "cache"
+	SourcePlaid     Source = "plaid"
+	SourceHeuristic Source = "heuristic"
+	SourceLLM       Source = "llm"
 )
+
+// Transfer/card-payment name heuristics. Plaid frequently returns OTHER_OTHER
+// for a household's own internal movements — most damagingly credit-card
+// payments — which then fall to "uncategorised" and, once a user hand-files
+// them, silently count as spending. These patterns rescue the clear cases by
+// name so they land in an excluded-from-spending transfer category. They are
+// deliberately high-precision: a false positive HIDES real spending, so we only
+// match distinctive payment/transfer phrasings, and only on rows nothing else
+// claimed (so a real PFC or a user's own choice always wins).
+var (
+	cardPaymentRE = regexp.MustCompile(`(?i)(mobile\s*pmt|card\s*member|card\s*payment|payment\s+thank\s+you|(^|\W)(crd|cc)\s*pmt|autopay|auto\s+pay|e-?payment|epay|(capital one|chase|discover|amex|american express|citi|barclays|synchrony|us ?bank|wells fargo|bank ?of ?america|\bboa\b|quicksilver)\W+(pmt|payment))`)
+	transferRE    = regexp.MustCompile(`(?i)(\bxfer\b|online\s+transfer|mobile\s+transfer|internal\s+transfer|acct\s+transfer|account\s+transfer|-\s*transfer\b|\bach\b.*\btransfer\b|\btransfer\b.*\bach\b|transfer\s+(to|from)\s+(savings|checking|share|money\s*market))`)
+)
+
+// detectTransfer returns the system category slug a name looks like an internal
+// transfer for, or "" when it does not clearly look like one.
+func detectTransfer(haystack string) string {
+	switch {
+	case cardPaymentRE.MatchString(haystack):
+		return "credit-card-payment"
+	case transferRE.MatchString(haystack):
+		return "transfer-out"
+	}
+	return ""
+}
 
 // Input is what the resolver needs to categorise one transaction.
 type Input struct {
@@ -57,10 +83,11 @@ type Result struct {
 // process thousands of rows, and re-reading a handful of rules each time would
 // dominate the work.
 type Resolver struct {
-	queries     *dbgen.Queries
-	householdID uuid.UUID
-	rules       []compiledRule
-	fallbackID  uuid.UUID
+	queries      *dbgen.Queries
+	householdID  uuid.UUID
+	rules        []compiledRule
+	fallbackID   uuid.UUID
+	systemBySlug map[string]uuid.UUID // transfer categories the heuristic maps to
 }
 
 type compiledRule struct {
@@ -105,11 +132,26 @@ func NewResolver(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID) (
 		return nil, fmt.Errorf("load fallback category: %w", err)
 	}
 
+	// System transfer categories the heuristic step resolves to. Missing ones
+	// (a stripped-down seed) just disable that branch rather than erroring.
+	systemBySlug := make(map[string]uuid.UUID, 2)
+	for _, slug := range []string{"credit-card-payment", "transfer-out"} {
+		cat, err := q.GetCategoryBySlug(ctx, dbgen.GetCategoryBySlugParams{
+			Slug: slug, HouseholdID: &householdID,
+		})
+		if err == nil {
+			systemBySlug[slug] = cat.ID
+		} else if err != pgx.ErrNoRows {
+			return nil, fmt.Errorf("load %s category: %w", slug, err)
+		}
+	}
+
 	return &Resolver{
-		queries:     q,
-		householdID: householdID,
-		rules:       compiled,
-		fallbackID:  fallback.ID,
+		queries:      q,
+		householdID:  householdID,
+		rules:        compiled,
+		fallbackID:   fallback.ID,
+		systemBySlug: systemBySlug,
 	}, nil
 }
 
@@ -153,6 +195,16 @@ func (r *Resolver) Resolve(ctx context.Context, in Input) (Result, bool, error) 
 		}
 		if err != pgx.ErrNoRows {
 			return Result{}, false, fmt.Errorf("pfc lookup: %w", err)
+		}
+	}
+
+	// 4.5 Transfer/card-payment heuristics. Runs only after Plaid's own category
+	//     has had its say, so a real PFC (or a manual/rule/cache choice above)
+	//     always wins; this only rescues rows that would otherwise fall to the
+	//     uncategorised fallback — exactly where OTHER_OTHER card payments land.
+	if slug := detectTransfer(haystack); slug != "" {
+		if id, ok := r.systemBySlug[slug]; ok {
+			return Result{CategoryID: id, Source: SourceHeuristic}, true, nil
 		}
 	}
 

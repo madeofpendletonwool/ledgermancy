@@ -31,7 +31,13 @@ func (q *Queries) DismissInsight(ctx context.Context, arg DismissInsightParams) 
 const listInsights = `-- name: ListInsights :many
 SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at FROM insights
 WHERE household_id = $1
-  AND (dismissed_at IS NULL OR $2::bool)
+  AND (
+    $2::bool
+    OR (
+      dismissed_at IS NULL
+      AND (period IS NULL OR period >= date_trunc('month', now())::date)
+    )
+  )
 ORDER BY priority DESC, created_at DESC
 `
 
@@ -40,8 +46,13 @@ type ListInsightsParams struct {
 	IncludeDismissed bool      `json:"include_dismissed"`
 }
 
-// Feed order. With include_dismissed false (the unread feed) dismissed rows are
-// hidden; with it true (the "show dismissed" view) everything is returned.
+// Feed order. The default feed shows non-dismissed insights that are still
+// current: a period-scoped insight (e.g. "spending up this month") is hidden
+// once its month has passed, so a July insight stops cluttering — and
+// misleading with stale "this month" wording — the August feed. Insights with
+// no period (event-anchored) are always current until dismissed. With
+// include_dismissed true, everything is returned (the full history view),
+// dismissed and past-period alike.
 func (q *Queries) ListInsights(ctx context.Context, arg ListInsightsParams) ([]Insight, error) {
 	rows, err := q.db.Query(ctx, listInsights, arg.HouseholdID, arg.IncludeDismissed)
 	if err != nil {

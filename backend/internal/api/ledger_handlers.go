@@ -103,13 +103,21 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	limit := parseInt(q.Get("limit"), 100, 1, 500)
 	offset := parseInt(q.Get("offset"), 0, 0, 1_000_000)
 
-	// Optional account filter. A malformed id is ignored, which reads as "all
-	// accounts"; household/shared scoping in the query means a foreign id
-	// simply matches nothing rather than leaking another household's rows.
-	var accountID *uuid.UUID
-	if v := q.Get("account_id"); v != "" {
+	// Optional multi-account filter, as a comma-separated `accounts` list (or a
+	// single legacy `account_id`). Malformed ids are dropped, which reads as
+	// "all"; household/shared scoping in the query means a foreign id matches
+	// nothing rather than leaking another household's rows. An empty slice is
+	// passed through as "all accounts".
+	accountIDs := parseUUIDList(q.Get("accounts"))
+	if len(accountIDs) == 0 {
+		accountIDs = parseUUIDList(q.Get("account_id"))
+	}
+
+	// Optional single-category filter.
+	var categoryID *uuid.UUID
+	if v := q.Get("category_id"); v != "" {
 		if id, err := uuid.Parse(v); err == nil {
-			accountID = &id
+			categoryID = &id
 		}
 	}
 
@@ -128,7 +136,8 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		Date_2:        to,
 		Limit:         int32(limit),
 		Offset:        int32(offset),
-		AccountID:     accountID,
+		AccountIds:    accountIDs,
+		CategoryID:    categoryID,
 		Uncategorised: uncategorised,
 	})
 	if err != nil {
@@ -392,6 +401,26 @@ func parseDate(raw string, fallback time.Time) time.Time {
 		return fallback
 	}
 	return parsed
+}
+
+// parseUUIDList parses a comma-separated list of UUIDs, silently dropping blank
+// or malformed entries. An empty or all-junk input yields nil, which the query
+// treats as "no filter".
+func parseUUIDList(raw string) []uuid.UUID {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []uuid.UUID
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if id, err := uuid.Parse(part); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func parseInt(raw string, fallback, min, max int) int {

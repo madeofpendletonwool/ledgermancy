@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   api,
@@ -8,6 +9,7 @@ import {
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
+import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 
 const PAGE_SIZE = 50
 
@@ -22,12 +24,44 @@ export function Transactions() {
   const today = new Date().toISOString().slice(0, 10)
   const yearAgo = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10)
 
-  const [from, setFrom] = useState(yearAgo)
-  const [to, setTo] = useState(today)
-  const [accountID, setAccountID] = useState('') // '' = all accounts
-  const [onlyUncat, setOnlyUncat] = useState(false)
-  const [page, setPage] = useState(0)
+  // Filters live in the URL so the Dashboard/Spending charts can deep-link into
+  // a filtered view (one day, one category) and the browser back button
+  // restores it. searchParams is the single source of truth; there is no
+  // duplicate local filter state to keep in sync.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const from = searchParams.get('from') || yearAgo
+  const to = searchParams.get('to') || today
+  const accountIDs = (searchParams.get('accounts') || '').split(',').filter(Boolean)
+  const categoryFilter = searchParams.get('category') || ''
+  const onlyUncat = searchParams.get('uncat') === '1'
+  const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
+
   const [modal, setModal] = useState<ModalState>(null)
+  const [importing, setImporting] = useState(false)
+
+  // patchParams writes filter changes back to the URL. Any change other than an
+  // explicit page move resets to page 0, so a new filter never lands you past
+  // the end of the (now shorter) result set.
+  const patchParams = (patch: Record<string, string | null>, keepPage = false) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === '') next.delete(k)
+          else next.set(k, v)
+        }
+        if (!keepPage) next.delete('page')
+        return next
+      },
+      { replace: true },
+    )
+  }
+  const setPage = (p: number) => patchParams({ page: p <= 0 ? null : String(p) }, true)
+  const toggleAccount = (id: string) => {
+    const set = new Set(accountIDs)
+    set.has(id) ? set.delete(id) : set.add(id)
+    patchParams({ accounts: [...set].join(',') || null })
+  }
 
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
   const categories = useQuery({ queryKey: ['categories'], queryFn: api.categories })
@@ -38,12 +72,13 @@ export function Transactions() {
   const spendCats = spendCategories(categories.data ?? [])
 
   const transactions = useQuery({
-    queryKey: ['transactions', from, to, accountID, onlyUncat, page],
+    queryKey: ['transactions', from, to, accountIDs.join(','), categoryFilter, onlyUncat, page],
     queryFn: () =>
       api.transactions({
         from,
         to,
-        account_id: accountID,
+        accounts: accountIDs,
+        category_id: categoryFilter || undefined,
         uncategorised: onlyUncat || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -65,12 +100,20 @@ export function Transactions() {
             Everything Ledgermancy has pulled in, newest first.
           </p>
         </div>
-        <button
-          className="btn-primary px-4 py-2 text-sm"
-          onClick={() => setModal({ mode: 'create' })}
-        >
-          Add transaction
-        </button>
+        <div className="flex gap-2">
+          <button
+            className="btn-ghost px-4 py-2 text-sm"
+            onClick={() => setImporting(true)}
+          >
+            Import CSV
+          </button>
+          <button
+            className="btn-primary px-4 py-2 text-sm"
+            onClick={() => setModal({ mode: 'create' })}
+          >
+            Add transaction
+          </button>
+        </div>
       </div>
 
       <div className="glass flex flex-wrap items-end gap-4 p-4">
@@ -83,10 +126,7 @@ export function Transactions() {
             type="date"
             className="field"
             value={from}
-            onChange={(e) => {
-              setFrom(e.target.value)
-              setPage(0)
-            }}
+            onChange={(e) => patchParams({ from: e.target.value })}
           />
         </div>
         <div>
@@ -98,35 +138,33 @@ export function Transactions() {
             type="date"
             className="field"
             value={to}
-            onChange={(e) => {
-              setTo(e.target.value)
-              setPage(0)
-            }}
+            onChange={(e) => patchParams({ to: e.target.value })}
           />
         </div>
         <div>
-          <label className="label" htmlFor="account">
-            Account
+          <span className="label">Accounts</span>
+          <AccountMultiSelect
+            accounts={accounts.data ?? []}
+            selected={accountIDs}
+            onToggle={toggleAccount}
+            onClear={() => patchParams({ accounts: null })}
+          />
+        </div>
+        <div>
+          <label className="label" htmlFor="category">
+            Category
           </label>
           <select
-            id="account"
+            id="category"
             className="field"
-            value={accountID}
-            onChange={(e) => {
-              setAccountID(e.target.value)
-              setPage(0)
-            }}
+            value={categoryFilter}
+            onChange={(e) => patchParams({ category: e.target.value || null })}
           >
-            <option value="">All accounts</option>
-            {groupByInstitution(accounts.data ?? []).map(([institution, accts]) => (
-              <optgroup key={institution} label={institution}>
-                {accts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                    {a.mask ? ` ••${a.mask}` : ''}
-                  </option>
-                ))}
-              </optgroup>
+            <option value="">All categories</option>
+            {(categories.data ?? []).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
             ))}
           </select>
         </div>
@@ -135,10 +173,7 @@ export function Transactions() {
           <input
             type="checkbox"
             checked={onlyUncat}
-            onChange={(e) => {
-              setOnlyUncat(e.target.checked)
-              setPage(0)
-            }}
+            onChange={(e) => patchParams({ uncat: e.target.checked ? '1' : null })}
           />
           Needs a category
         </label>
@@ -172,7 +207,7 @@ export function Transactions() {
         <button
           className="btn-ghost text-sm"
           disabled={page === 0}
-          onClick={() => setPage((p) => Math.max(0, p - 1))}
+          onClick={() => setPage(page - 1)}
         >
           ← Previous
         </button>
@@ -180,7 +215,7 @@ export function Transactions() {
         <button
           className="btn-ghost text-sm"
           disabled={isLastPage}
-          onClick={() => setPage((p) => p + 1)}
+          onClick={() => setPage(page + 1)}
         >
           Next →
         </button>
@@ -190,11 +225,81 @@ export function Transactions() {
         <ManualTransactionModal
           state={modal}
           accounts={accounts.data ?? []}
-          defaultAccountID={accountID}
+          defaultAccountID={accountIDs[0] ?? ''}
           onClose={() => setModal(null)}
         />
       )}
+
+      {importing && (
+        <ImportTransactionsModal
+          accounts={accounts.data ?? []}
+          onClose={() => setImporting(false)}
+        />
+      )}
     </div>
+  )
+}
+
+// AccountMultiSelect is a checkbox dropdown over the household's accounts. An
+// empty selection means "all accounts", so the common case needs no clicks. It
+// uses a native <details> for the popover — no outside-click plumbing, and it
+// closes on its own when another one opens is not needed here.
+function AccountMultiSelect({
+  accounts,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  accounts: Account[]
+  selected: string[]
+  onToggle: (id: string) => void
+  onClear: () => void
+}) {
+  const label =
+    selected.length === 0
+      ? 'All accounts'
+      : selected.length === 1
+        ? (accounts.find((a) => a.id === selected[0])?.name ?? '1 account')
+        : `${selected.length} accounts`
+
+  return (
+    <details className="relative">
+      <summary className="field flex w-56 cursor-pointer list-none items-center justify-between">
+        <span className="truncate">{label}</span>
+        <span className="ml-2 text-mist-500">▾</span>
+      </summary>
+      <div className="absolute z-30 mt-1 max-h-72 w-64 overflow-auto rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+        <button
+          className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+          onClick={onClear}
+        >
+          All accounts
+        </button>
+        {groupByInstitution(accounts).map(([institution, accts]) => (
+          <div key={institution} className="mt-1">
+            <p className="px-2 pt-1 text-[11px] uppercase tracking-wide text-mist-500">
+              {institution}
+            </p>
+            {accts.map((a) => (
+              <label
+                key={a.id}
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(a.id)}
+                  onChange={() => onToggle(a.id)}
+                />
+                <span className="truncate">
+                  {a.name}
+                  {a.mask ? ` ••${a.mask}` : ''}
+                </span>
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
   )
 }
 

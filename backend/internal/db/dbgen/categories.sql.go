@@ -85,8 +85,8 @@ func (q *Queries) ApplyMerchantCategoryRewritable(ctx context.Context, arg Apply
 }
 
 const createCategory = `-- name: CreateCategory :one
-INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fixed, sort_order)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fixed, is_income, is_transfer, sort_order)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING id, household_id, parent_id, name, slug, icon, color, is_fixed, is_income, is_transfer, sort_order, created_at, updated_at
 `
 
@@ -98,6 +98,8 @@ type CreateCategoryParams struct {
 	Icon        *string    `json:"icon"`
 	Color       *string    `json:"color"`
 	IsFixed     bool       `json:"is_fixed"`
+	IsIncome    bool       `json:"is_income"`
+	IsTransfer  bool       `json:"is_transfer"`
 	SortOrder   int32      `json:"sort_order"`
 }
 
@@ -110,6 +112,8 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 		arg.Icon,
 		arg.Color,
 		arg.IsFixed,
+		arg.IsIncome,
+		arg.IsTransfer,
 		arg.SortOrder,
 	)
 	var i Category
@@ -562,7 +566,7 @@ func (q *Queries) SetTransactionCategory(ctx context.Context, arg SetTransaction
 
 const updateCategory = `-- name: UpdateCategory :one
 UPDATE categories
-SET name = $3, color = $4, is_fixed = $5, updated_at = now()
+SET name = $3, color = $4, is_fixed = $5, is_income = $6, is_transfer = $7, updated_at = now()
 WHERE id = $1 AND household_id = $2
 RETURNING id, household_id, parent_id, name, slug, icon, color, is_fixed, is_income, is_transfer, sort_order, created_at, updated_at
 `
@@ -573,10 +577,15 @@ type UpdateCategoryParams struct {
 	Name        string     `json:"name"`
 	Color       *string    `json:"color"`
 	IsFixed     bool       `json:"is_fixed"`
+	IsIncome    bool       `json:"is_income"`
+	IsTransfer  bool       `json:"is_transfer"`
 }
 
 // Custom categories only: the household_id guard means a system default
 // (household_id NULL) never matches, so a shared default can't be edited.
+// is_income/is_transfer decide how the category counts (spending vs income vs a
+// transfer that is excluded from spending entirely), so editing them here is how
+// a user fixes a mis-typed custom category without re-tagging every transaction.
 func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error) {
 	row := q.db.QueryRow(ctx, updateCategory,
 		arg.ID,
@@ -584,6 +593,8 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		arg.Name,
 		arg.Color,
 		arg.IsFixed,
+		arg.IsIncome,
+		arg.IsTransfer,
 	)
 	var i Category
 	err := row.Scan(

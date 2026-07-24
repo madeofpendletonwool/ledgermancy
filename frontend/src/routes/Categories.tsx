@@ -11,14 +11,73 @@ const PALETTE = [
   '#e5a13a', '#c94f8f', '#6bbf59', '#4bb6c9',
 ]
 
+// How a category counts. A transfer (card payment, move to savings) is money
+// between your own accounts and is excluded from spending entirely — the fix
+// for a category that was wrongly inflating your spend.
+type CatType = 'spending' | 'income' | 'transfer'
+
+const catType = (c: { is_income: boolean; is_transfer: boolean }): CatType =>
+  c.is_income ? 'income' : c.is_transfer ? 'transfer' : 'spending'
+
+const typeFlags = (t: CatType) => ({
+  is_income: t === 'income',
+  is_transfer: t === 'transfer',
+})
+
+// A dropdown for choosing how a category counts. Shared by add + edit.
+function TypeSelect({
+  value,
+  onChange,
+  id,
+}: {
+  value: CatType
+  onChange: (t: CatType) => void
+  id?: string
+}) {
+  return (
+    <select
+      id={id}
+      className="field"
+      value={value}
+      onChange={(e) => onChange(e.target.value as CatType)}
+    >
+      <option value="spending">Spending</option>
+      <option value="income">Income</option>
+      <option value="transfer">Transfer (not spending)</option>
+    </select>
+  )
+}
+
+// A small pill describing a non-spending type or a fixed cost, for list rows.
+function TypeBadge({ category }: { category: Category }) {
+  const t = catType(category)
+  if (t === 'income')
+    return <Pill className="border-rune-500/40 text-rune-300">income</Pill>
+  if (t === 'transfer')
+    return <Pill className="border-arcane-500/40 text-arcane-300">transfer</Pill>
+  if (category.is_fixed)
+    return <Pill className="border-white/10 text-mist-500">fixed</Pill>
+  return null
+}
+
+function Pill({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <span className={`rounded border px-1.5 py-0.5 text-[10px] ${className ?? ''}`}>
+      {children}
+    </span>
+  )
+}
+
 export function Categories() {
   const categories = useQuery({ queryKey: ['categories'], queryFn: api.categories })
 
   const rows = categories.data ?? []
-  // Only spending categories are worth managing here; income/transfer are
-  // system-level accounting concerns, not user budgeting categories.
-  const custom = rows.filter((c) => !c.is_system && !c.is_income && !c.is_transfer)
-  const system = rows.filter((c) => c.is_system && !c.is_income && !c.is_transfer)
+  // All of the household's own categories are managed here, whatever their type
+  // — a custom transfer/income category needs to be visible so it can be fixed
+  // or removed. System defaults are shown (read-only) below so their built-in
+  // transfer categories are discoverable rather than accidentally duplicated.
+  const custom = rows.filter((c) => !c.is_system)
+  const system = rows.filter((c) => c.is_system)
 
   return (
     <div className="space-y-8">
@@ -64,11 +123,7 @@ export function Categories() {
             >
               <Dot color={c.color} />
               {c.name}
-              {c.is_fixed && (
-                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-mist-500">
-                  fixed
-                </span>
-              )}
+              <TypeBadge category={c} />
             </span>
           ))}
         </div>
@@ -81,14 +136,22 @@ function CreateCategory() {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [color, setColor] = useState<string>(PALETTE[0])
+  const [type, setType] = useState<CatType>('spending')
   const [isFixed, setIsFixed] = useState(false)
 
   const create = useMutation({
-    mutationFn: () => api.createCategory({ name: name.trim(), color, is_fixed: isFixed }),
+    mutationFn: () =>
+      api.createCategory({
+        name: name.trim(),
+        color,
+        is_fixed: type === 'spending' && isFixed,
+        ...typeFlags(type),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['categories'] })
       setName('')
       setColor(PALETTE[0])
+      setType('spending')
       setIsFixed(false)
     },
   })
@@ -99,7 +162,9 @@ function CreateCategory() {
     <section className="glass p-6">
       <h2 className="mb-1 text-lg font-medium">Add a category</h2>
       <p className="mb-5 text-sm text-mist-300">
-        e.g. “Childcare”. Fixed categories count toward your fixed-cost total.
+        e.g. “Childcare”. Set <em>Transfer</em> for money moving between your own
+        accounts (a card payment, a transfer to savings) so it never counts as
+        spending; <em>Income</em> for money coming in.
       </p>
 
       <div className="flex flex-wrap items-end gap-4">
@@ -118,18 +183,27 @@ function CreateCategory() {
         </div>
 
         <div>
+          <label className="label" htmlFor="cat-type">
+            Type
+          </label>
+          <TypeSelect id="cat-type" value={type} onChange={setType} />
+        </div>
+
+        <div>
           <span className="label">Color</span>
           <Swatches value={color} onChange={setColor} />
         </div>
 
-        <label className="flex items-center gap-2 pb-2 text-sm">
-          <input
-            type="checkbox"
-            checked={isFixed}
-            onChange={(e) => setIsFixed(e.target.checked)}
-          />
-          Fixed cost
-        </label>
+        {type === 'spending' && (
+          <label className="flex items-center gap-2 pb-2 text-sm">
+            <input
+              type="checkbox"
+              checked={isFixed}
+              onChange={(e) => setIsFixed(e.target.checked)}
+            />
+            Fixed cost
+          </label>
+        )}
 
         <button
           className="btn-primary px-4 py-2 text-sm"
@@ -154,6 +228,7 @@ function CategoryRow({ category }: { category: Category }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(category.name)
   const [color, setColor] = useState<string>(category.color ?? PALETTE[0])
+  const [type, setType] = useState<CatType>(catType(category))
   const [isFixed, setIsFixed] = useState(category.is_fixed)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -161,9 +236,16 @@ function CategoryRow({ category }: { category: Category }) {
 
   const save = useMutation({
     mutationFn: () =>
-      api.updateCategory(category.id, { name: name.trim(), color, is_fixed: isFixed }),
+      api.updateCategory(category.id, {
+        name: name.trim(),
+        color,
+        is_fixed: type === 'spending' && isFixed,
+        ...typeFlags(type),
+      }),
     onSuccess: () => {
-      invalidate()
+      // Changing a category's type re-classifies every transaction already on
+      // it, so spending/income figures refresh app-wide — invalidate broadly.
+      qc.invalidateQueries()
       setEditing(false)
     },
   })
@@ -189,17 +271,25 @@ function CategoryRow({ category }: { category: Category }) {
             />
           </div>
           <div>
+            <label className="label" htmlFor={`edit-type-${category.id}`}>
+              Type
+            </label>
+            <TypeSelect id={`edit-type-${category.id}`} value={type} onChange={setType} />
+          </div>
+          <div>
             <span className="label">Color</span>
             <Swatches value={color} onChange={setColor} />
           </div>
-          <label className="flex items-center gap-2 pb-2 text-sm">
-            <input
-              type="checkbox"
-              checked={isFixed}
-              onChange={(e) => setIsFixed(e.target.checked)}
-            />
-            Fixed cost
-          </label>
+          {type === 'spending' && (
+            <label className="flex items-center gap-2 pb-2 text-sm">
+              <input
+                type="checkbox"
+                checked={isFixed}
+                onChange={(e) => setIsFixed(e.target.checked)}
+              />
+              Fixed cost
+            </label>
+          )}
           <button
             className="btn-ghost px-3 py-1.5 text-sm"
             disabled={save.isPending || name.trim() === ''}
@@ -212,6 +302,7 @@ function CategoryRow({ category }: { category: Category }) {
             onClick={() => {
               setName(category.name)
               setColor(category.color ?? PALETTE[0])
+              setType(catType(category))
               setIsFixed(category.is_fixed)
               setEditing(false)
             }}
@@ -233,11 +324,7 @@ function CategoryRow({ category }: { category: Category }) {
       <span className="flex items-center gap-2 font-medium">
         <Dot color={category.color} />
         {category.name}
-        {category.is_fixed && (
-          <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-mist-500">
-            fixed
-          </span>
-        )}
+        <TypeBadge category={category} />
       </span>
 
       <div className="flex items-center gap-2">

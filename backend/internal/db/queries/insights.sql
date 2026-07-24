@@ -27,11 +27,22 @@ ON CONFLICT (household_id, dedupe_key) DO UPDATE SET
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: ListInsights :many
--- Feed order. With include_dismissed false (the unread feed) dismissed rows are
--- hidden; with it true (the "show dismissed" view) everything is returned.
+-- Feed order. The default feed shows non-dismissed insights that are still
+-- current: a period-scoped insight (e.g. "spending up this month") is hidden
+-- once its month has passed, so a July insight stops cluttering — and
+-- misleading with stale "this month" wording — the August feed. Insights with
+-- no period (event-anchored) are always current until dismissed. With
+-- include_dismissed true, everything is returned (the full history view),
+-- dismissed and past-period alike.
 SELECT * FROM insights
 WHERE household_id = $1
-  AND (dismissed_at IS NULL OR @include_dismissed::bool)
+  AND (
+    @include_dismissed::bool
+    OR (
+      dismissed_at IS NULL
+      AND (period IS NULL OR period >= date_trunc('month', now())::date)
+    )
+  )
 ORDER BY priority DESC, created_at DESC;
 
 -- name: MarkInsightRead :exec

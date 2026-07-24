@@ -172,6 +172,90 @@ func (q *Queries) DeleteTransactionByPlaidID(ctx context.Context, plaidTransacti
 	return result.RowsAffected(), nil
 }
 
+const getImportAccount = `-- name: GetImportAccount :one
+SELECT a.id, a.currency
+FROM accounts a
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE a.id = $1
+  AND u.household_id = $2
+  AND (i.user_id = $3 OR i.is_shared)
+  AND a.is_active
+`
+
+type GetImportAccountParams struct {
+	ID          uuid.UUID `json:"id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+}
+
+type GetImportAccountRow struct {
+	ID       uuid.UUID `json:"id"`
+	Currency string    `json:"currency"`
+}
+
+// Validates that an account belongs to the caller's household and is visible to
+// them, returning its currency for imported rows. No row means "not yours".
+func (q *Queries) GetImportAccount(ctx context.Context, arg GetImportAccountParams) (GetImportAccountRow, error) {
+	row := q.db.QueryRow(ctx, getImportAccount, arg.ID, arg.HouseholdID, arg.UserID)
+	var i GetImportAccountRow
+	err := row.Scan(&i.ID, &i.Currency)
+	return i, err
+}
+
+const insertImportedTransactionIfNew = `-- name: InsertImportedTransactionIfNew :one
+INSERT INTO transactions (
+    account_id, amount, currency, date, name, merchant_name, merchant_key,
+    category_id, category_source, source, pending
+)
+SELECT
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8,
+    $9, 'csv', false
+WHERE NOT EXISTS (
+    SELECT 1 FROM transactions d
+    WHERE d.account_id = $1
+      AND d.amount = $2
+      AND abs(d.date - $4) <= 4
+)
+RETURNING id
+`
+
+type InsertImportedTransactionIfNewParams struct {
+	AccountID      uuid.UUID       `json:"account_id"`
+	Amount         decimal.Decimal `json:"amount"`
+	Currency       string          `json:"currency"`
+	Date           stdtime.Time    `json:"date"`
+	Name           string          `json:"name"`
+	MerchantName   *string         `json:"merchant_name"`
+	MerchantKey    *string         `json:"merchant_key"`
+	CategoryID     *uuid.UUID      `json:"category_id"`
+	CategorySource *string         `json:"category_source"`
+}
+
+// Inserts one CSV-imported row unless a transaction on the same account already
+// matches its amount within a few days — the same window the ledger uses to
+// flag possible duplicates — so re-importing, or overlapping Plaid's synced
+// window, never double-counts. Returns the new id, or no rows when skipped as a
+// duplicate.
+func (q *Queries) InsertImportedTransactionIfNew(ctx context.Context, arg InsertImportedTransactionIfNewParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, insertImportedTransactionIfNew,
+		arg.AccountID,
+		arg.Amount,
+		arg.Currency,
+		arg.Date,
+		arg.Name,
+		arg.MerchantName,
+		arg.MerchantKey,
+		arg.CategoryID,
+		arg.CategorySource,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listFilteredTransactions = `-- name: ListFilteredTransactions :many
 SELECT
     t.date,
@@ -277,12 +361,20 @@ WHERE u.household_id = $1
   AND NOT t.excluded_from_reports
   AND t.date >= $3
   AND t.date <= $4
-  AND ($7::uuid IS NULL OR t.account_id = $7::uuid)
+  -- Optional multi-account filter: NULL/empty array passes everything, so "all
+  -- accounts" needs no special case. Anything else narrows to the listed ids.
+  AND (
+    $7::uuid[] IS NULL
+    OR cardinality($7::uuid[]) = 0
+    OR t.account_id = ANY($7::uuid[])
+  )
+  -- Optional category filter (a null narg passes everything).
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
   -- category. NULL/false narg passes everything.
   AND (
-    $8::bool IS NOT TRUE
+    $9::bool IS NOT TRUE
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
   )
@@ -297,7 +389,8 @@ type ListVisibleTransactionsParams struct {
 	Date_2        stdtime.Time `json:"date_2"`
 	Limit         int32        `json:"limit"`
 	Offset        int32        `json:"offset"`
-	AccountID     *uuid.UUID   `json:"account_id"`
+	AccountIds    []uuid.UUID  `json:"account_ids"`
+	CategoryID    *uuid.UUID   `json:"category_id"`
 	Uncategorised *bool        `json:"uncategorised"`
 }
 
@@ -338,7 +431,8 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.Date_2,
 		arg.Limit,
 		arg.Offset,
-		arg.AccountID,
+		arg.AccountIds,
+		arg.CategoryID,
 		arg.Uncategorised,
 	)
 	if err != nil {

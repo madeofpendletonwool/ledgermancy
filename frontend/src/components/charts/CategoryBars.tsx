@@ -13,7 +13,14 @@ const MAX_BARS = 8
  * from the axis label, not hue. Anything past the top few folds into "Other"
  * rather than growing the chart indefinitely.
  */
-export function CategoryBars({ data }: { data: CategorySpend[] }) {
+export function CategoryBars({
+  data,
+  onSelect,
+}: {
+  data: CategorySpend[]
+  /** Clicking a real category (not the folded "Other" row) calls this. */
+  onSelect?: (categoryId: string) => void
+}) {
   const [hovered, setHovered] = useState<string | null>(null)
 
   if (data.length === 0) {
@@ -31,13 +38,18 @@ export function CategoryBars({ data }: { data: CategorySpend[] }) {
         // otherwise produce NaN widths.
         const pct = max > 0 ? (value / max) * 100 : 0
         const isHovered = hovered === bar.slug
+        const clickable = onSelect !== undefined && bar.slug !== 'other'
 
         return (
           <div
             key={bar.slug}
-            className="group grid grid-cols-[10rem_1fr_6rem] items-center gap-3 text-sm"
+            className={`group grid grid-cols-[10rem_1fr_6rem] items-center gap-3 text-sm ${
+              clickable ? 'cursor-pointer' : ''
+            }`}
             onMouseEnter={() => setHovered(bar.slug)}
             onMouseLeave={() => setHovered(null)}
+            onClick={clickable ? () => onSelect(bar.category_id) : undefined}
+            title={clickable ? `See ${bar.name} transactions` : undefined}
           >
             <span className="truncate text-mist-300" title={bar.name}>
               {bar.name}

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, type DaySpend, type MerchantSpend, type Transaction } from '../lib/api'
 import { useSession } from '../lib/session'
@@ -12,6 +12,8 @@ import {
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
 import { InsightFeed } from '../components/InsightFeed'
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
 
 /**
  * The dashboard is the at-a-glance view: this month's spend and pace, where the
@@ -30,6 +32,15 @@ export function Dashboard() {
   const year = now.getFullYear()
   const month = now.getMonth() + 1 // 1-based
   const monthName = now.toLocaleDateString('en-US', { month: 'long' })
+  const navigate = useNavigate()
+
+  // Deep-links into the Transactions page, which reads these same params.
+  const openDay = (dom: number) => {
+    const date = `${year}-${pad2(month)}-${pad2(dom)}`
+    navigate(`/transactions?from=${date}&to=${date}`)
+  }
+  const openCategory = (categoryID: string) =>
+    navigate(`/transactions?category=${categoryID}`)
 
   // Previous calendar month, for the pace reference.
   const lm = new Date(year, now.getMonth() - 1, 1)
@@ -194,6 +205,7 @@ export function Dashboard() {
                   month={month}
                   days={byDayThis.data ?? []}
                   lastMonthAvgDaily={lastMonthAvgDaily}
+                  onSelect={openDay}
                 />
               )}
             </div>
@@ -230,7 +242,7 @@ export function Dashboard() {
             ) : (byCategory.data?.length ?? 0) === 0 ? (
               <Empty>No categorised spending yet this month.</Empty>
             ) : (
-              <CategoryBars data={byCategory.data ?? []} />
+              <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
             )}
           </section>
 
