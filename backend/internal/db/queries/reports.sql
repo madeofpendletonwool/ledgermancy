@@ -270,6 +270,30 @@ WHERE n >= 3
   AND (last_seen - first_seen) >= 45
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC;
 
+-- name: GetAverageSpendingTransaction :one
+-- The household's typical single spending transaction over a window — the
+-- baseline the "unusually large transaction" insight measures against. Same
+-- spend definition and visibility scoping as every other report. The producer
+-- compares individual charges (from GetLargestTransactions) to this in Go, so
+-- no arithmetic the model sees happens outside SQL/decimal.
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS avg_amount,
+    COUNT(*)::bigint                    AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.amount > 0
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.date >= $3;
+
 -- name: SuppressRecurringMerchant :exec
 -- Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
 -- already-suppressed merchant is a no-op (and does not disturb the label).

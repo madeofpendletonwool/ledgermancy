@@ -16,10 +16,15 @@ import (
 
 // Result records what became of one candidate after upserting. Inserted is true
 // only when the row was newly created (not a refresh of an existing one), which
-// is what a high-priority push seam keys off — a refresh should not re-notify.
+// is what the high-priority push keys off — a refresh should not re-notify.
+// Title/Body carry the final (AI-phrased or template) text so the caller can
+// build a push without re-reading the row; ID links a push back to the feed row.
 type Result struct {
+	ID        uuid.UUID
 	Kind      string
 	Priority  int
+	Title     string
+	Body      string
 	DedupeKey string
 	Inserted  bool
 }
@@ -94,21 +99,23 @@ func Generate(
 				continue
 			}
 			results = append(results, Result{
+				ID:        row.ID,
 				Kind:      row.Kind,
 				Priority:  int(row.Priority),
+				Title:     row.Title,
+				Body:      row.Body,
 				DedupeKey: row.DedupeKey,
 				Inserted:  row.Inserted,
 			})
 		}
 	}
 
-	// --- High-priority push seam (not yet wired) ----------------------------
-	// Insights currently surface in-app only. When insight push lands it should
-	// enqueue a NotifyArgs for newly-created insights above a priority threshold
-	// for each household member with a channel configured — mirroring how alert
-	// events push once their rule opts in (jobs.EvaluateAlertsWorker). Left as a
-	// clean seam: iterate `results` for Inserted && Priority >= threshold and
-	// hand them to the Notifier here.
+	// High-priority push: the engine only stores and reports results. The jobs
+	// layer (jobs.GenerateInsightsWorker) iterates these results for
+	// Inserted && Priority >= threshold and enqueues a NotifyArgs per household
+	// member with a channel configured — mirroring how alert events push once
+	// their rule opts in (jobs.EvaluateAlertsWorker). Delivery stays in jobs so
+	// this package keeps no dependency on the queue or the Notifier.
 
 	return results, nil
 }

@@ -156,6 +156,10 @@ const KIND_LABELS: Record<string, string> = {
   new_recurring: 'Recurring',
   budget_pace: 'Budget',
   low_leftover: 'Cash flow',
+  month_end_projection: 'Cash flow',
+  large_transaction: 'Large purchase',
+  income_change: 'Income',
+  savings_milestone: 'Milestone',
 }
 
 function kindLabel(kind: string): string {

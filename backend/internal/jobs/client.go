@@ -132,18 +132,6 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register security sweep worker: %w", err)
 	}
 
-	// Insight generation is deterministic and useful without a key — only the
-	// phrasing inside insights.Generate is AI-gated — so the per-household
-	// worker is registered unconditionally (unlike the LLM workers below). This
-	// is a deliberate deviation from the shared-contract's "AI-gated periodic
-	// jobs" list: literal AI-gating would leave the feed empty without a key,
-	// defeating the point of a deterministic feed. The AI client is still passed
-	// through; the engine no-ops the phrasing when it is disabled. The sweep
-	// that enqueues this worker needs the client and is registered afterwards.
-	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{Queries: queries, AI: aiClient}); err != nil {
-		return nil, fmt.Errorf("register insights worker: %w", err)
-	}
-
 	// The per-household categorise worker only needs the AI client and queries,
 	// so it is registered before construction. The sweep that enqueues it needs
 	// the client and is registered afterwards. SyncItemWorker is registered
@@ -281,6 +269,18 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Queries: queries, Client: client,
 	}); err != nil {
 		return nil, fmt.Errorf("register alerts sweep worker: %w", err)
+	}
+
+	// Insight generation is deterministic and useful without a key — only the
+	// phrasing inside insights.Generate is AI-gated — so the per-household worker
+	// is registered unconditionally (unlike the LLM workers). Literal AI-gating
+	// would leave the feed empty without a key, defeating a deterministic feed.
+	// It carries the client and app URL to push the highest-priority new insights,
+	// so it is registered after construction like the sweeps.
+	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{
+		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+	}); err != nil {
+		return nil, fmt.Errorf("register insights worker: %w", err)
 	}
 
 	// The insight sweep enqueues per-household jobs, so it needs the client and

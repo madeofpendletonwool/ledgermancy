@@ -112,6 +112,49 @@ func (q *Queries) ExportTransactions(ctx context.Context, arg ExportTransactions
 	return items, nil
 }
 
+const getAverageSpendingTransaction = `-- name: GetAverageSpendingTransaction :one
+SELECT
+    COALESCE(AVG(t.amount), 0)::numeric AS avg_amount,
+    COUNT(*)::bigint                    AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.amount > 0
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.date >= $3
+`
+
+type GetAverageSpendingTransactionParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+}
+
+type GetAverageSpendingTransactionRow struct {
+	AvgAmount        decimal.Decimal `json:"avg_amount"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// The household's typical single spending transaction over a window — the
+// baseline the "unusually large transaction" insight measures against. Same
+// spend definition and visibility scoping as every other report. The producer
+// compares individual charges (from GetLargestTransactions) to this in Go, so
+// no arithmetic the model sees happens outside SQL/decimal.
+func (q *Queries) GetAverageSpendingTransaction(ctx context.Context, arg GetAverageSpendingTransactionParams) (GetAverageSpendingTransactionRow, error) {
+	row := q.db.QueryRow(ctx, getAverageSpendingTransaction, arg.HouseholdID, arg.UserID, arg.Date)
+	var i GetAverageSpendingTransactionRow
+	err := row.Scan(&i.AvgAmount, &i.TransactionCount)
+	return i, err
+}
+
 const getBudgetProgress = `-- name: GetBudgetProgress :many
 
 SELECT

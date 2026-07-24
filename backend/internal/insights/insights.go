@@ -63,5 +63,10 @@ func DefaultProducers() []Producer {
 		forecastProducer{},
 		alertExplanationProducer{},
 		goalProducer{},
+		// Expansion producers (expansion.go).
+		monthEndProjectionProducer{},
+		largeTransactionProducer{},
+		incomeChangeProducer{},
+		savingsMilestoneProducer{},
 	}
 }
