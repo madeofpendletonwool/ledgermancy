@@ -350,7 +350,8 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 			return "", err
 		}
 		rows, err := s.Queries.GetBudgetProgress(ctx, dbgen.GetBudgetProgressParams{
-			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			WindowStart: from, WindowEnd: to, Ref: time.Now().UTC(),
 		})
 		if err != nil {
 			return "", err

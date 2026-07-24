@@ -68,5 +68,7 @@ func DefaultProducers() []Producer {
 		largeTransactionProducer{},
 		incomeChangeProducer{},
 		savingsMilestoneProducer{},
+		// Budget-vs-actual trend (budgettrend.go).
+		budgetTrendProducer{},
 	}
 }

@@ -391,13 +391,39 @@ HAVING COUNT(*) >= 4                                    -- two charges per half
 -- name: GetBudgetProgress :many
 -- Each budget alongside what has been spent against it this period, so the UI
 -- can show "$X of $Y left in this category".
+--
+-- For rollover (envelope) budgets it also returns the spend BEFORE this period,
+-- since the budget's start month, and that start month itself. The caller
+-- derives the carried balance from those in decimal (amount × prior months −
+-- prior spend), so the envelope math stays out of SQL but the inputs come from
+-- one query. rollover_start is effective_from's month, or the month the budget
+-- was created when effective_from is unset.
+-- The spend window is period-aware: a monthly budget measures against the
+-- selected month (@window_start/@window_end); a weekly or yearly budget always measures against
+-- the current week or year of the reference date @ref, since "this week"/"this
+-- year" only make sense relative to now. period_start/period_end are returned so
+-- the caller can label the window.
 SELECT
     b.id          AS budget_id,
     b.amount      AS budgeted,
+    b.period      AS period,
+    b.rollover    AS rollover,
     c.id          AS category_id,
     c.name        AS category_name,
     c.slug        AS category_slug,
     c.color       AS category_color,
+    (CASE b.period
+        WHEN 'weekly' THEN date_trunc('week', @ref::date)::date
+        WHEN 'yearly' THEN date_trunc('year', @ref::date)::date
+        ELSE @window_start::date
+     END)::date AS period_start,
+    (CASE b.period
+        WHEN 'weekly' THEN (date_trunc('week', @ref::date) + interval '6 days')::date
+        WHEN 'yearly' THEN (date_trunc('year', @ref::date) + interval '1 year' - interval '1 day')::date
+        ELSE @window_end::date
+     END)::date AS period_end,
+    COALESCE(date_trunc('month', b.effective_from)::date,
+             date_trunc('month', b.created_at)::date)::date AS rollover_start,
     COALESCE((
         SELECT SUM(t.amount)
         FROM transactions t
@@ -405,30 +431,70 @@ SELECT
         JOIN plaid_items i ON i.id = a.plaid_item_id
         JOIN users u       ON u.id = i.user_id
         WHERE u.household_id = b.household_id
-          AND (i.user_id = $2 OR i.is_shared)
+          AND (i.user_id = @user_id OR i.is_shared)
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
           AND t.amount > 0
-          AND t.date >= $3 AND t.date <= $4
-    ), 0)::numeric AS spent
+          AND t.date >= (CASE b.period
+                WHEN 'weekly' THEN date_trunc('week', @ref::date)::date
+                WHEN 'yearly' THEN date_trunc('year', @ref::date)::date
+                ELSE @window_start::date END)
+          AND t.date <= (CASE b.period
+                WHEN 'weekly' THEN (date_trunc('week', @ref::date) + interval '6 days')::date
+                WHEN 'yearly' THEN (date_trunc('year', @ref::date) + interval '1 year' - interval '1 day')::date
+                ELSE @window_end::date END)
+    ), 0)::numeric AS spent,
+    COALESCE((
+        SELECT SUM(t.amount)
+        FROM transactions t
+        JOIN accounts a    ON a.id = t.account_id
+        JOIN plaid_items i ON i.id = a.plaid_item_id
+        JOIN users u       ON u.id = i.user_id
+        WHERE u.household_id = b.household_id
+          AND (i.user_id = @user_id OR i.is_shared)
+          AND a.is_active
+          AND NOT t.excluded_from_reports
+          AND NOT t.pending
+          AND t.category_id = b.category_id
+          AND t.amount > 0
+          AND t.date >= COALESCE(date_trunc('month', b.effective_from)::date,
+                                 date_trunc('month', b.created_at)::date)
+          AND t.date < @window_start::date
+    ), 0)::numeric AS prior_spent
 FROM budgets b
 JOIN categories c ON c.id = b.category_id
-WHERE b.household_id = $1
+WHERE b.household_id = @household_id
 ORDER BY c.sort_order, c.name;
 
 -- name: UpsertBudget :one
--- One monthly budget per category per household; setting it again updates it.
-INSERT INTO budgets (household_id, category_id, amount, owner_scope, period)
-VALUES ($1, $2, $3, 'household', 'monthly')
-ON CONFLICT (household_id, category_id, owner_scope, period)
+-- One household budget per category; setting it again updates its amount,
+-- period, and rollover flag in place.
+INSERT INTO budgets (household_id, category_id, amount, owner_scope, period, rollover)
+VALUES (@household_id, @category_id, @amount, 'household', @period, @rollover)
+ON CONFLICT (household_id, category_id, owner_scope)
     WHERE user_id IS NULL
-DO UPDATE SET amount = EXCLUDED.amount
+DO UPDATE SET amount = EXCLUDED.amount, period = EXCLUDED.period,
+              rollover = EXCLUDED.rollover, updated_at = now()
 RETURNING *;
 
 -- name: DeleteBudget :exec
 DELETE FROM budgets WHERE id = $1 AND household_id = $2;
+
+-- name: SumHouseholdBudgets :one
+-- Total household monthly budget, split by whether the category is fixed. Feeds
+-- the "safe to spend" calculation, which counts fixed categories at their actual
+-- typical cost (not their budget) and discretionary categories at their budgeted
+-- envelope — so the split keeps those from being double-counted.
+SELECT
+    COALESCE(SUM(b.amount) FILTER (WHERE c.is_fixed), 0)::numeric      AS fixed_budgeted,
+    COALESCE(SUM(b.amount) FILTER (WHERE NOT c.is_fixed), 0)::numeric  AS discretionary_budgeted
+FROM budgets b
+JOIN categories c ON c.id = b.category_id
+WHERE b.household_id = $1
+  AND b.owner_scope = 'household'
+  AND b.period = 'monthly';
 
 -- name: ExportTransactions :many
 -- Every visible transaction in a window, flattened for CSV. Includes the

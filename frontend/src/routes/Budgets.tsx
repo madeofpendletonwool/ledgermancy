@@ -2,7 +2,12 @@ import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import type { BudgetProgress, BudgetProposal, Category } from '../lib/api'
+import type {
+  BudgetProgress,
+  BudgetProposal,
+  Category,
+  SafeToSpend,
+} from '../lib/api'
 import { formatMoney } from '../lib/money'
 import { STATUS } from '../components/charts/tokens'
 
@@ -51,8 +56,17 @@ export function Budgets() {
     qc.invalidateQueries({ queryKey: ['budgets', range.from, range.to] })
 
   const setBudget = useMutation({
-    mutationFn: ({ categoryID, amount }: { categoryID: string; amount: string }) =>
-      api.setBudget(categoryID, amount),
+    mutationFn: ({
+      categoryID,
+      amount,
+      period,
+      rollover,
+    }: {
+      categoryID: string
+      amount: string
+      period?: 'weekly' | 'monthly' | 'yearly'
+      rollover?: boolean
+    }) => api.setBudget(categoryID, amount, period ?? 'monthly', rollover ?? false),
     onSuccess: invalidate,
   })
   const deleteBudget = useMutation({
@@ -105,6 +119,8 @@ export function Budgets() {
         </div>
       </div>
 
+      <SafeToSpendCard />
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Tile label="Budgeted" value={formatMoney(totalBudgeted)} />
         <Tile label="Spent" value={formatMoney(totalSpent)} />
@@ -132,8 +148,13 @@ export function Budgets() {
               <BudgetRow
                 key={b.budget_id}
                 budget={b}
-                onSave={(amount) =>
-                  setBudget.mutate({ categoryID: b.category_id, amount })
+                onSave={(amount, period, rollover) =>
+                  setBudget.mutate({
+                    categoryID: b.category_id,
+                    amount,
+                    period,
+                    rollover,
+                  })
                 }
                 onDelete={() => deleteBudget.mutate(b.budget_id)}
                 saving={setBudget.isPending}
@@ -149,7 +170,9 @@ export function Budgets() {
       <AddBudget
         categories={budgetable}
         loading={categories.isPending}
-        onAdd={(categoryID, amount) => setBudget.mutate({ categoryID, amount })}
+        onAdd={(categoryID, amount, period, rollover) =>
+          setBudget.mutate({ categoryID, amount, period, rollover })
+        }
         saving={setBudget.isPending}
       />
 
@@ -162,6 +185,80 @@ export function Budgets() {
   )
 }
 
+// SafeToSpendCard shows the headline "free to spend this month" figure with its
+// full breakdown, so the number is legible rather than magic: typical income,
+// less fixed bills, less what's already budgeted, less goal savings. The figure
+// is household-level and based on typical income, so it does not track the month
+// selector above.
+function SafeToSpendCard() {
+  const q = useQuery({ queryKey: ['safe-to-spend'], queryFn: api.safeToSpend })
+
+  if (q.isPending) {
+    return (
+      <section className="glass p-6">
+        <Loading />
+      </section>
+    )
+  }
+  if (q.isError || !q.data) {
+    return null
+  }
+
+  const d: SafeToSpend = q.data
+  const safe = Number(d.safe_to_spend)
+  const tone = safe < 0 ? 'text-ember-400' : 'text-fern-300'
+
+  const parts: { label: string; value: string; sign: '−' | '' }[] = [
+    { label: 'Typical income', value: d.expected_income, sign: '' },
+    { label: 'Fixed bills', value: d.fixed_costs, sign: '−' },
+    { label: 'Budgeted', value: d.budgeted_discretionary, sign: '−' },
+    { label: 'Goal savings', value: d.goal_contributions, sign: '−' },
+  ]
+
+  return (
+    <section className="glass p-6">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-medium">Safe to spend</h2>
+          <p className="mt-1 text-sm text-mist-300">
+            What's free this month after bills, budgets, and goals.
+          </p>
+        </div>
+        <span className={`text-3xl font-semibold tabular ${tone}`}>
+          {formatMoney(d.safe_to_spend)}
+        </span>
+      </div>
+
+      <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+        {parts.map((p) => (
+          <span key={p.label} className="flex items-baseline gap-1.5">
+            <span className="text-mist-500">{p.label}</span>
+            <span className="tabular text-mist-200">
+              {p.sign}
+              {formatMoney(p.value)}
+            </span>
+          </span>
+        ))}
+      </div>
+
+      {safe > 0 && (
+        <p className="mt-3 text-xs text-mist-500">
+          Assign this to budgets or goals to reach a zero-based plan, where every
+          dollar has a job.
+        </p>
+      )}
+
+      {d.income_months < 3 && (
+        <p className="mt-3 text-xs text-mist-500">
+          Based on only {d.income_months}{' '}
+          {d.income_months === 1 ? 'month' : 'months'} of income history, so this
+          is a rough estimate.
+        </p>
+      )}
+    </section>
+  )
+}
+
 function BudgetRow({
   budget,
   onSave,
@@ -170,26 +267,45 @@ function BudgetRow({
   deleting,
 }: {
   budget: BudgetProgress
-  onSave: (amount: string) => void
+  onSave: (
+    amount: string,
+    period: 'weekly' | 'monthly' | 'yearly',
+    rollover: boolean,
+  ) => void
   onDelete: () => void
   saving: boolean
   deleting: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [amount, setAmount] = useState(budget.budgeted)
+  const [period, setPeriod] = useState(
+    budget.period as 'weekly' | 'monthly' | 'yearly',
+  )
+  const [rollover, setRollover] = useState(budget.rollover)
 
-  const budgetedNum = Number(budget.budgeted)
   const spentNum = Number(budget.spent)
-  // Display-only percentage: divide two server-exact figures for a bar width.
-  // Guard the zero-budget case so it never renders NaN.
-  const pct = budgetedNum > 0 ? (spentNum / budgetedNum) * 100 : 0
-  const over = spentNum > budgetedNum
+  // The ceiling this month is `available` (amount + any carried balance) for a
+  // rollover budget, or just the amount otherwise. Bar and remaining measure
+  // against that. Guard the zero/negative case so the width never renders NaN.
+  const ceilingNum = Number(budget.available)
+  const pct = ceilingNum > 0 ? (spentNum / ceilingNum) * 100 : spentNum > 0 ? 100 : 0
+  const over = spentNum > ceilingNum
   const fill = over ? STATUS.critical : STATUS.good
+  const carryNum = Number(budget.carryover)
 
   const save = () => {
-    onSave(amount)
+    // Rollover is a monthly-only concept; drop it when switching to another period.
+    onSave(amount, period, period === 'monthly' ? rollover : false)
     setEditing(false)
   }
+
+  // A short label for the budget's cadence, e.g. "weekly · $100".
+  const periodLabel =
+    budget.period === 'weekly'
+      ? 'weekly'
+      : budget.period === 'yearly'
+        ? 'yearly'
+        : 'monthly'
 
   return (
     <div className="rounded-xl border border-white/5 p-4">
@@ -200,10 +316,32 @@ function BudgetRow({
             style={{ backgroundColor: budget.color ?? STATUS.good }}
           />
           {budget.name}
+          {budget.period !== 'monthly' && (
+            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-mist-400">
+              {periodLabel}
+            </span>
+          )}
+          {budget.rollover && (
+            <span
+              className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-mist-400"
+              title="Unspent amount rolls into next month"
+            >
+              rollover
+            </span>
+          )}
+          {budget.rollover && carryNum !== 0 && (
+            <span
+              className="tabular text-[10px]"
+              style={{ color: carryNum < 0 ? STATUS.critical : STATUS.good }}
+            >
+              {carryNum < 0 ? '' : '+'}
+              {formatMoney(budget.carryover)} carried
+            </span>
+          )}
         </span>
 
         {editing ? (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               className="field w-28"
               type="number"
@@ -213,6 +351,28 @@ function BudgetRow({
               onChange={(e) => setAmount(e.target.value)}
               aria-label={`Budget amount for ${budget.name}`}
             />
+            <select
+              className="field"
+              value={period}
+              onChange={(e) =>
+                setPeriod(e.target.value as 'weekly' | 'monthly' | 'yearly')
+              }
+              aria-label={`Budget period for ${budget.name}`}
+            >
+              <option value="weekly">weekly</option>
+              <option value="monthly">monthly</option>
+              <option value="yearly">yearly</option>
+            </select>
+            {period === 'monthly' && (
+              <label className="flex items-center gap-1.5 text-sm text-mist-300">
+                <input
+                  type="checkbox"
+                  checked={rollover}
+                  onChange={(e) => setRollover(e.target.checked)}
+                />
+                Roll over
+              </label>
+            )}
             <button
               className="btn-ghost px-3 py-1.5 text-sm"
               disabled={saving}
@@ -224,6 +384,8 @@ function BudgetRow({
               className="btn-ghost px-3 py-1.5 text-sm text-mist-300"
               onClick={() => {
                 setAmount(budget.budgeted)
+                setPeriod(budget.period as 'weekly' | 'monthly' | 'yearly')
+                setRollover(budget.rollover)
                 setEditing(false)
               }}
             >
@@ -233,7 +395,7 @@ function BudgetRow({
         ) : (
           <div className="flex items-center gap-3">
             <span className="tabular text-sm text-mist-300">
-              {formatMoney(budget.spent)} of {formatMoney(budget.budgeted)}
+              {formatMoney(budget.spent)} of {formatMoney(budget.available)}
             </span>
             <button
               className="btn-ghost px-3 py-1.5 text-sm"
@@ -267,7 +429,7 @@ function BudgetRow({
           style={{ color: over ? STATUS.critical : undefined }}
         >
           {over
-            ? `${formatMoney(String(spentNum - budgetedNum))} over`
+            ? `${formatMoney(String(spentNum - ceilingNum))} over`
             : `${formatMoney(budget.remaining)} left`}
         </span>
       </div>
@@ -493,26 +655,54 @@ function AddBudget({
 }: {
   categories: Category[]
   loading: boolean
-  onAdd: (categoryID: string, amount: string) => void
+  onAdd: (
+    categoryID: string,
+    amount: string,
+    period: 'weekly' | 'monthly' | 'yearly',
+    rollover: boolean,
+  ) => void
   saving: boolean
 }) {
   const [categoryID, setCategoryID] = useState('')
   const [amount, setAmount] = useState('')
+  const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('monthly')
+  const [rollover, setRollover] = useState(false)
+  // Percentage mode lets you size a monthly budget as a share of typical income
+  // (the input convenience for percentage/zero-based budgeting); the stored value
+  // is still the resulting dollar amount.
+  const [percentMode, setPercentMode] = useState(false)
+  const [percent, setPercent] = useState('')
 
-  const canAdd = categoryID !== '' && amount !== '' && Number(amount) > 0
+  const income = useQuery({ queryKey: ['safe-to-spend'], queryFn: api.safeToSpend })
+  const monthlyIncome = Number(income.data?.expected_income ?? 0)
+
+  // The dollar amount that will be saved: the percent of income in percent mode,
+  // otherwise the typed amount.
+  const percentAmount =
+    monthlyIncome > 0 && Number(percent) > 0
+      ? ((monthlyIncome * Number(percent)) / 100).toFixed(2)
+      : ''
+  const effectiveAmount = percentMode ? percentAmount : amount
+  const usingPercent = percentMode && period === 'monthly'
+
+  const canAdd = categoryID !== '' && Number(effectiveAmount) > 0
 
   const submit = () => {
     if (!canAdd) return
-    onAdd(categoryID, amount)
+    onAdd(categoryID, effectiveAmount, period, period === 'monthly' ? rollover : false)
     setCategoryID('')
     setAmount('')
+    setPercent('')
+    setPercentMode(false)
+    setPeriod('monthly')
+    setRollover(false)
   }
 
   return (
     <section className="glass p-6">
       <h2 className="mb-1 text-lg font-medium">Add a budget</h2>
       <p className="mb-5 text-sm text-mist-300">
-        Set a monthly target for a spending category.
+        Set a weekly, monthly, or yearly target for a spending category.
       </p>
 
       {loading ? (
@@ -542,19 +732,78 @@ function AddBudget({
 
           <div>
             <label className="label" htmlFor="add-amount">
-              Monthly amount
+              {usingPercent ? '% of income' : 'Amount'}
             </label>
-            <input
-              id="add-amount"
-              className="field w-40"
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="450.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
+            {usingPercent ? (
+              <div className="flex items-center gap-1">
+                <input
+                  id="add-amount"
+                  className="field w-24"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  placeholder="15"
+                  value={percent}
+                  onChange={(e) => setPercent(e.target.value)}
+                />
+                <span className="text-sm text-mist-400">
+                  {percentAmount ? `= ${formatMoney(percentAmount)}` : '%'}
+                </span>
+              </div>
+            ) : (
+              <input
+                id="add-amount"
+                className="field w-40"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="450.00"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+            )}
+            {period === 'monthly' && (
+              <label className="mt-1 flex items-center gap-1.5 text-xs text-mist-500">
+                <input
+                  type="checkbox"
+                  checked={percentMode}
+                  onChange={(e) => setPercentMode(e.target.checked)}
+                  disabled={monthlyIncome <= 0}
+                />
+                as % of income
+              </label>
+            )}
           </div>
+
+          <div>
+            <label className="label" htmlFor="add-period">
+              Period
+            </label>
+            <select
+              id="add-period"
+              className="field"
+              value={period}
+              onChange={(e) =>
+                setPeriod(e.target.value as 'weekly' | 'monthly' | 'yearly')
+              }
+            >
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </div>
+
+          {period === 'monthly' && (
+            <label className="flex items-center gap-1.5 pb-2 text-sm text-mist-300">
+              <input
+                type="checkbox"
+                checked={rollover}
+                onChange={(e) => setRollover(e.target.checked)}
+              />
+              Roll over unspent
+            </label>
+          )}
 
           <button
             className="btn-primary px-4 py-2 text-sm"

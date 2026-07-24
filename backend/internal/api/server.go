@@ -247,6 +247,7 @@ func (s *Server) Routes() http.Handler {
 		r.Route("/budgets", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleBudgetProgress)
+			r.Get("/safe-to-spend", s.handleSafeToSpend)
 			r.Post("/", s.handleCreateBudget)
 			r.Post("/suggest", s.handleSuggestBudgets)
 			r.Delete("/{budgetID}", s.handleDeleteBudget)

@@ -71,6 +71,7 @@ type Budget struct {
 	EffectiveFrom *stdtime.Time   `json:"effective_from"`
 	CreatedAt     stdtime.Time    `json:"created_at"`
 	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	Rollover      bool            `json:"rollover"`
 }
 
 type Category struct {

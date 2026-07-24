@@ -288,8 +288,33 @@ export interface BudgetProgress {
   slug: string
   color: string | null
   budgeted: string
+  /** weekly | monthly | yearly. */
+  period: string
+  /** Inclusive window the spend is measured over (YYYY-MM-DD). */
+  period_start: string
+  period_end: string
+  /** Whether unspent amount rolls into next month (envelope budgeting; monthly only). */
+  rollover: boolean
+  /** Balance carried in from prior months; negative if the envelope was overspent. */
+  carryover: string
+  /** This month's amount plus carryover — the true ceiling this month. */
+  available: string
   spent: string
   remaining: string
+}
+
+/**
+ * "Safe to spend" and its parts. All amounts are decimal strings. safe_to_spend
+ * = expected_income − fixed_costs − budgeted_discretionary − goal_contributions.
+ */
+export interface SafeToSpend {
+  expected_income: string
+  fixed_costs: string
+  budgeted_discretionary: string
+  goal_contributions: string
+  safe_to_spend: string
+  /** Months the income average is based on; low values mean a thin history. */
+  income_months: number
 }
 
 export interface PeriodQuery {
@@ -828,13 +853,25 @@ export const api = {
   budgets: (params: PeriodQuery = {}) =>
     request<BudgetProgress[]>('GET', withQuery('/api/budgets', params)),
 
-  setBudget: (categoryID: string, amount: string) =>
+  setBudget: (
+    categoryID: string,
+    amount: string,
+    period: 'weekly' | 'monthly' | 'yearly' = 'monthly',
+    rollover = false,
+  ) =>
     request<{ id: string }>('POST', '/api/budgets', {
       category_id: categoryID,
       amount,
+      period,
+      rollover,
     }),
 
   deleteBudget: (id: string) => request<void>('DELETE', `/api/budgets/${id}`),
+
+  // How much is left to spend freely this month after fixed costs, discretionary
+  // budgets, and goal contributions — computed server-side from typical income.
+  safeToSpend: () =>
+    request<SafeToSpend>('GET', '/api/budgets/safe-to-spend'),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when

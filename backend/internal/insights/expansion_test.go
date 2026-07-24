@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/apex42group/ledgermancy/backend/internal/db"
 	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
@@ -207,3 +208,53 @@ func TestMonthEndProjectionProducer(t *testing.T) {
 // tests assert the new "urgent" producers actually clear it without importing
 // the jobs package.
 const insightPushMinPriorityForTest = 4
+
+// budget_trend: a monthly budget exceeded every one of the last three completed
+// months surfaces; a budget met in one of them does not.
+func TestBudgetTrendProducer(t *testing.T) {
+	ctx, pool := expansionPool(t)
+	f := newExpansionFixture(t, ctx, pool)
+
+	// A $100/mo budget on the discretionary category.
+	if _, err := f.q.UpsertBudget(ctx, dbgen.UpsertBudgetParams{
+		HouseholdID: f.householdID, CategoryID: f.spendCat, Amount: decimal.RequireFromString("100.00"),
+		Period: "monthly",
+	}); err != nil {
+		t.Fatalf("UpsertBudget: %v", err)
+	}
+
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	// Last three completed months (May, June, July) each well over $100.
+	f.spend("160.00", "2026-05-10", "Dining")
+	f.spend("140.00", "2026-06-10", "Dining")
+	f.spend("175.00", "2026-07-10", "Dining")
+
+	cands, err := budgetTrendProducer{}.Detect(ctx, f.q, f.householdID, now)
+	got := only(t, cands, err, "budget_trend")
+	if got.Data["category_slug"] != "general" {
+		t.Errorf("category_slug = %v, want general", got.Data["category_slug"])
+	}
+	// Overages: 60 + 40 + 75 = 175, average 58.33.
+	if got.Data["average_over"] != "58.33" {
+		t.Errorf("average_over = %v, want 58.33", got.Data["average_over"])
+	}
+
+	// If one month comes in under budget, the streak breaks and nothing fires.
+	f2 := newExpansionFixture(t, ctx, pool)
+	if _, err := f2.q.UpsertBudget(ctx, dbgen.UpsertBudgetParams{
+		HouseholdID: f2.householdID, CategoryID: f2.spendCat, Amount: decimal.RequireFromString("100.00"),
+		Period: "monthly",
+	}); err != nil {
+		t.Fatalf("UpsertBudget: %v", err)
+	}
+	f2.spend("160.00", "2026-05-10", "Dining")
+	f2.spend("40.00", "2026-06-10", "Dining") // under budget → breaks the streak
+	f2.spend("175.00", "2026-07-10", "Dining")
+	cands2, err := budgetTrendProducer{}.Detect(ctx, f2.q, f2.householdID, now)
+	if err != nil {
+		t.Fatalf("budget_trend detect (broken streak): %v", err)
+	}
+	if len(cands2) != 0 {
+		t.Errorf("expected no candidates when a month is under budget, got %d", len(cands2))
+	}
+}
