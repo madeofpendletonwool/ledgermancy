@@ -21,7 +21,7 @@ place.
 ![self-hosted](https://img.shields.io/badge/self--hosted-first--party-241f45)
 ![stack](https://img.shields.io/badge/Go-Postgres_17-blue)
 ![frontend](https://img.shields.io/badge/React-Vite_+_TS-61dafb)
-![license](https://img.shields.io/badge/license-MIT-4ade80)
+![license](https://img.shields.io/badge/license-GPL_v3-4ade80)
 
 </div>
 
@@ -175,4 +175,4 @@ docs for repo layout, build/test commands, and the load-bearing invariants.
 
 ## License
 
-MIT.
+GNU General Public License v3.0. See [LICENSE](LICENSE).
