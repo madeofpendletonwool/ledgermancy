@@ -27,3 +27,6 @@ tmp/
 # Local scratch
 *.local
 scratchpad/
+
+# Docs build output (MkDocs)
+site/

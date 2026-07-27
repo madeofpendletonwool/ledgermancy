@@ -1,0 +1,107 @@
+site_name: Ledgermancy
+site_description: A self-hosted, multi-user personal finance hub. Plaid-backed, Postgres-backed, and honest about the math.
+site_url: https://madeofpendletonwool.github.io/ledgermancy/
+repo_url: https://github.com/madeofpendletonwool/ledgermancy
+repo_name: madeofpendletonwool/ledgermancy
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.png
+  favicon: assets/favicon.ico
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.path
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+  # Dark-only, matching the app itself (BRAND.md: "The app is dark-only.")
+  palette:
+    scheme: slate
+    primary: deep purple
+    accent: amber
+  custom_dir: docs/overrides
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/madeofpendletonwool/ledgermancy
+  generator: false
+
+extra_css:
+  - assets/extra.css
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.snippets
+
+plugins:
+  - search
+  - tags
+  - git-revision-date-localized:
+      enable_creation_date: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Deployment: deployment.md
+  - Features:
+      - features/index.md
+      - Dashboard: features/dashboard.md
+      - Spending: features/spending.md
+      - Insights: features/insights.md
+      - Financial Summary: features/report.md
+      - Budgets: features/budgets.md
+      - Goals: features/goals.md
+      - Net worth: features/net-worth.md
+      - Transactions: features/transactions.md
+      - Categories: features/categories.md
+      - Accounts & Plaid: features/accounts.md
+      - Alerts: features/alerts.md
+      - Assistant: features/assistant.md
+      - Households: features/households.md
+  - Concepts: concepts.md
+  - Configuration: configuration.md
+  - Security: security.md
+  - API reference: api.md
+  - Development: development.md
+  - Roadmap: roadmap.md

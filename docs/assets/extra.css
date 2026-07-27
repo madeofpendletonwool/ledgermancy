@@ -1,0 +1,74 @@
+/*
+ * Ledgermancy docs — brand palette (from BRAND.md).
+ * The app is dark-only, so the docs run on Material's `slate` scheme and lean
+ * into the arcane-violet + rune-gold identity. Chart/brand colour *values* are
+ * safe to reuse here (this is UI, not a data visualisation); the dataviz
+ * palette rules in BRAND.md apply to the app's charts, not to docs chrome.
+ */
+
+:root {
+  --lm-arcane: #8b5cf6;
+  --lm-arcane-bright: #a78bfa;
+  --lm-rune: #e8b962;
+  --lm-rune-bright: #f2d492;
+  --lm-ink: #07060d;
+  --lm-ink-850: #12101f;
+}
+
+/* Primary -> arcane violet */
+:root,
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #7c3aed;
+  --md-primary-fg-color--light: #8b5cf6;
+  --md-primary-fg-color--dark: #6d28d9;
+  /* Foreground (text/icons) sitting ON the primary — light, not dark. */
+  --md-primary-bg-color: #e8e6f5;
+  --md-primary-bg-color--light: #b3aed0;
+  --md-default-bg-color: #07060d;
+
+  --md-accent-fg-color: #e8b962;
+  --md-accent-fg-color--transparent: rgba(232, 185, 98, 0.15);
+
+  --md-typeset-a-color: #a78bfa;
+
+  --md-code-bg-color: #12101f;
+  --md-code-fg-color: #e8e6f5;
+
+  /* Slightly lift cards/admonitions off the near-black ground. */
+  --md-default-fg-color--light: #b3aed0;
+}
+
+/* Top app bar + sticky tabs: brand ink-700 (#241f45) instead of the vivid
+   arcane primary. Keeps the site's purple identity — which shows in the content
+   accents, links, and h1 gradient — without a neon header burning overhead.
+   ink-700 is the brand's own deep-violet "borders on dark" token, so it ties
+   the docs chrome to the app's palette. */
+.md-header,
+.md-tabs {
+  background-color: #241f45;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Wordmark-style gradient on the in-page H1, echoing "mancy" in the logo. */
+.md-typeset h1 {
+  background: linear-gradient(to right, var(--lm-arcane-bright), var(--lm-rune));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Subtle rune-gold underline on section links on hover. */
+.md-typeset a:hover {
+  text-decoration-color: var(--lm-rune);
+}
+
+/* Logo in the header: keep it from being washed out on dark. */
+.md-header__button.md-logo img {
+  height: 1.6rem;
+}
+
+/* Screenshot captions (the <em> under a screenshot image). */
+.md-typeset p em:only-child {
+  color: #7b749c;
+  font-size: 0.8rem;
+}
