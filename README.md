@@ -6,10 +6,10 @@
 
 ### A self-hosted, multi-user personal finance hub.
 
-Pull your real accounts and transactions into your own Postgres, and turn them
+Pull your real accounts and transactions into your own Postgres database, and turn them
 into the numbers you actually need — monthly spend by category, income vs.
 outflow, savings rate, net worth over time, and a year-plus of history in one
-place.
+place. Transactions pulled via Plaid so there's practically zero manual entering finace data needed. 
 
 [**Docs**](https://madeofpendletonwool.github.io/ledgermancy/)
 &nbsp;·&nbsp;
