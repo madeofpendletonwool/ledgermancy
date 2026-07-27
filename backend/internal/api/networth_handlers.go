@@ -10,10 +10,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
 type netWorthResponse struct {

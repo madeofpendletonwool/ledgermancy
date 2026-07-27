@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apex42group/ledgermancy/backend/internal/db"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // TestSubscriptionProducer drives the producer against a real Postgres: a

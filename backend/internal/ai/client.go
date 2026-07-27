@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 )
 
 // anthropicVersion is the Messages API version header. GLM and other

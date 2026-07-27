@@ -10,10 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/categorize"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/categorize"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
 )
 
 // maxImportRows caps one upload. Capital One (and most banks) export at most a

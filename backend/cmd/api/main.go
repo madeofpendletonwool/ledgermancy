@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/apex42group/ledgermancy/backend/internal/api"
-	"github.com/apex42group/ledgermancy/backend/internal/config"
-	"github.com/apex42group/ledgermancy/backend/internal/crypto"
-	"github.com/apex42group/ledgermancy/backend/internal/db"
-	"github.com/apex42group/ledgermancy/backend/internal/jobs"
-	"github.com/apex42group/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/api"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/crypto"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
 func main() {

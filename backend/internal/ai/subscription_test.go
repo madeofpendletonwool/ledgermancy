@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 )
 
 func TestClassifySubscriptionsDisabled(t *testing.T) {

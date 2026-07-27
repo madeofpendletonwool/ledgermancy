@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // llmChunkSize is how many merchants go in one model call. Batching keeps the

@@ -7,8 +7,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/goals"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
 )
 
 // Safe-to-spend answers "after everything that's already spoken for, how much is

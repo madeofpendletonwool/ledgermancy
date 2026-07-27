@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
 type accountResponse struct {

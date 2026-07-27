@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/ratelimit"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ratelimit"
 )
 
 // totpIssuer is the label an authenticator app shows next to the account.

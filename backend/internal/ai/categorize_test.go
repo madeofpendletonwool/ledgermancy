@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 )
 
 func TestParseMerchantVerdicts(t *testing.T) {

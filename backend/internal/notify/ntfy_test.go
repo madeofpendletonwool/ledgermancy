@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
-	"github.com/apex42group/ledgermancy/backend/internal/db"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // TestNtfySend drives the notifier against a real Postgres (for the preference

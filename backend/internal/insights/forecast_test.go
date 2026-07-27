@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/db"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
 // TestForecastProducer confirms the producer raises exactly one forecast row and

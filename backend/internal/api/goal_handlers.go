@@ -11,10 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/goals"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
 // goalResponse is one goal plus its DERIVED standing. current_amount and the

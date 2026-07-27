@@ -1,4 +1,4 @@
-module github.com/apex42group/ledgermancy/backend
+module github.com/madeofpendletonwool/ledgermancy/backend
 
 go 1.26.4
 

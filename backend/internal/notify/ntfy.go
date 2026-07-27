@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // The reserved preference keys this notifier reads. They are owned by the

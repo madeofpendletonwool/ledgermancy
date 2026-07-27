@@ -20,15 +20,15 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
-	"github.com/apex42group/ledgermancy/backend/internal/alerts"
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/categorize"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/insights"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
-	"github.com/apex42group/ledgermancy/backend/internal/notify"
-	"github.com/apex42group/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/alerts"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/categorize"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/insights"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
 // QueueDefault is the single queue everything runs on. Volume for a household

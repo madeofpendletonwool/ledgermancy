@@ -13,10 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
-	"github.com/apex42group/ledgermancy/backend/internal/alerts"
-	"github.com/apex42group/ledgermancy/backend/internal/auth"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/alerts"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // defaultEventLimit caps how many events the list endpoint returns; the bell

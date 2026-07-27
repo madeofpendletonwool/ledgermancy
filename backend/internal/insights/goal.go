@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/goals"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
 // goal — coaching for a household savings goal that is behind schedule or newly

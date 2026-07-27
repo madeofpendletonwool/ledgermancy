@@ -14,10 +14,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/apex42group/ledgermancy/backend/internal/ai"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/notify"
-	"github.com/apex42group/ledgermancy/backend/internal/reporting"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
 // digestInsightLimit bounds how many top insights ride along in one digest.

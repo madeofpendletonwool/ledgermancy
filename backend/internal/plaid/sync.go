@@ -10,10 +10,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/apex42group/ledgermancy/backend/internal/categorize"
-	"github.com/apex42group/ledgermancy/backend/internal/crypto"
-	"github.com/apex42group/ledgermancy/backend/internal/db/dbgen"
-	"github.com/apex42group/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/categorize"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/crypto"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
 // maxBackfillPages bounds a single backfill run. Plaid offers up to ~24 months

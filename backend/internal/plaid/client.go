@@ -14,7 +14,7 @@ import (
 	plaidapi "github.com/plaid/plaid-go/v40/plaid"
 	"github.com/shopspring/decimal"
 
-	"github.com/apex42group/ledgermancy/backend/internal/config"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 )
 
 // maxTransactionHistoryDays is Plaid's maximum lookback (730 days / 2 years).
