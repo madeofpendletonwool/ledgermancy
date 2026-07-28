@@ -8,7 +8,7 @@ Waves 0–2 (docs 00–12) expanded Ledgermancy's AI beyond chat and are **shipp
 notification contracts work.
 
 Waves 3–6 (docs 13–29) cover **everything remaining in
-[TODO.md](../../TODO.md)**: all sixteen "Next major initiatives" plus the two
+[TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md)**: all sixteen "Next major initiatives" plus the two
 small known gaps. Wave 3 is the current cycle.
 
 Within waves 0–2, implement in order; later docs depend on earlier ones. Waves
@@ -76,7 +76,7 @@ and the chat tool layer (`backend/internal/api/chat_handlers.go`).
 ### Wave 3 — next major initiatives
 
 Docs 00–12 are shipped. Wave 3 is the current cycle, drawn from the "Next major
-initiatives" section of [TODO.md](../../TODO.md). Unlike waves 0–2 these are
+initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
 large and mostly independent — **13, 14, and 16 can run fully in parallel**;
 only 15 has a hard prerequisite.
 
