@@ -28,6 +28,11 @@ checked against the code:
   listing it as new work. Doc 22 scopes around it.
 - **Plaid reconnect / Link update mode** shipped mid-planning
   (`plaid.CreateUpdateLinkToken`); it never needed a doc.
+- **There is no `dividends` category**, despite doc 14 and TODO #4 both saying
+  one exists. Dividends are credited inside the brokerage account and never
+  reach the bank feed, so 14 sources them from `investment_transactions` by
+  subtype instead. Anything else planning to read a dividend category should do
+  the same.
 
 ## The one rule every doc honors
 
@@ -75,19 +80,30 @@ and the chat tool layer (`backend/internal/api/chat_handlers.go`).
 
 ### Wave 3 — next major initiatives
 
-Docs 00–12 are shipped. Wave 3 is the current cycle, drawn from the "Next major
-initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
+Docs 00–12 are shipped, and so are **13 and 14**. Wave 3 is the current cycle,
+drawn from the "Next major initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
 large and mostly independent — **13, 14, and 16 can run fully in parallel**;
-only 15 has a hard prerequisite.
+only 15 has a hard prerequisite, and as of 14 shipping that prerequisite is met.
 
 - **[13-bill-calendar.md](13-bill-calendar.md)** — recurring obligations
   (detected *and* manually entered), a Schedule page, day-by-day projected
   balances, safe-to-spend integration, a predicted-low-balance alert.
   *TODO #1.* No prerequisites.
-- **[14-investments-page.md](14-investments-page.md)** — a dedicated Investments
-  surface over already-ingested Plaid holdings: TWR/IRR, benchmarks, allocation
-  drift, fee drag, and the **account tax-treatment tagging 15 depends on**.
-  *TODO #4.* No prerequisites.
+- **[14-investments-page.md](14-investments-page.md)** — **shipped.** A
+  dedicated Investments surface: TWR/IRR, benchmarks, allocation, fee drag, and
+  the **account tax-treatment tagging 15 depends on** — `accounts.tax_treatment`
+  is live (migration `00020`) and `reporting.SuggestTaxTreatment` returns a
+  suggestion for confirmation, never a stored value. *TODO #4.*
+
+  Two things 15's implementer should know. First, the doc assumed
+  `investment_transactions` was populated; it was not — the table existed but
+  nothing wrote to it, so `plaid.GetInvestmentTransactions` was added and
+  `SyncInvestments` now stores them. Second, target allocation + drift and the
+  rebalance helper were **deferred**: both need a stored per-household target
+  that nothing else in the backlog wants yet, and the allocation view is honest
+  and useful without them. Fee drag ships as structure plus disclosure only —
+  Plaid supplies no expense ratio, so the endpoint reports full exclusion rather
+  than a number computed over part of a portfolio.
 - **[15-fire-projections.md](15-fire-projections.md)** — account-aware
   retirement projection and a withdrawal-rate lens, beside (not replacing) the
   linear model in `networth/project.go`. *TODO #5.* **Needs 14** for
@@ -167,8 +183,9 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
 - Throwaway Postgres for tests:
   `docker run -d --name lmtest-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=lmtest -p 55432:5432 postgres:17-alpine`
   then `TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test -p 1 ./...`
-- Migrations are numbered. **`00018_budget_periods.sql` is the latest on
-  `main`.** To avoid the collision class that already bit this repo once (two
+- Migrations are numbered. **`00020_investment_analysis.sql` is the latest on
+  `main`** (`00019` and `00020` are taken by docs 13 and 14, which have shipped).
+  To avoid the collision class that already bit this repo once (two
   `00007`s), each doc that needs a migration has a **reserved number**; use it,
   but re-check it's still free at implementation time and renumber (+ update
   dependents) if an out-of-order merge took it:

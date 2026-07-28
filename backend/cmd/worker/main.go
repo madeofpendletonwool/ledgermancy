@@ -79,7 +79,7 @@ func run() error {
 	// there is nothing to branch on here.
 	notifier := notify.New(cfg.NTFY, dbgen.New(pool))
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, cfg.FrontendOrigin)
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, cfg.FrontendOrigin, cfg.Benchmarks)
 	if err != nil {
 		return err
 	}

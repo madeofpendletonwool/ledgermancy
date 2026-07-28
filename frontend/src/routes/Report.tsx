@@ -67,6 +67,7 @@ export function Report() {
         <a className="btn-ghost" href="/api/export/transactions.csv">Transactions CSV</a>
         <a className="btn-ghost" href="/api/export/categories.csv">Categories CSV</a>
         <a className="btn-ghost" href="/api/export/net-worth.csv">Net worth CSV</a>
+        <a className="btn-ghost" href="/api/export/holdings.csv">Holdings CSV</a>
       </div>
 
       <article className="report-sheet space-y-8">

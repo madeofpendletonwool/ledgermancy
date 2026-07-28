@@ -122,7 +122,7 @@ func (s *Server) handleItemReconnected(w http.ResponseWriter, r *http.Request) {
 
 	item.Status = "active"
 	item.ErrorCode = nil
-	writeJSON(w, http.StatusOK, toItemResponse(item))
+	writeJSON(w, http.StatusOK, toItemResponse(item, identity.UserID))
 }
 
 type exchangeRequest struct {
@@ -130,11 +130,15 @@ type exchangeRequest struct {
 }
 
 type itemResponse struct {
-	ID               uuid.UUID  `json:"id"`
-	InstitutionName  string     `json:"institution_name"`
-	Status           string     `json:"status"`
-	Products         []string   `json:"products"`
-	IsShared         bool       `json:"is_shared"`
+	ID              uuid.UUID `json:"id"`
+	InstitutionName string    `json:"institution_name"`
+	Status          string    `json:"status"`
+	Products        []string  `json:"products"`
+	IsShared        bool      `json:"is_shared"`
+	// IsOwn distinguishes two cards for the same institution when both spouses
+	// link it — otherwise the page shows "Capital One" twice with no clue which
+	// connection is whose.
+	IsOwn            bool       `json:"is_own"`
 	BackfillComplete bool       `json:"backfill_complete"`
 	LastSyncedAt     *time.Time `json:"last_synced_at"`
 	ErrorCode        *string    `json:"error_code"`
@@ -251,7 +255,7 @@ func (s *Server) handleExchangePublicToken(w http.ResponseWriter, r *http.Reques
 	// Kick off the first sync, which performs the full historical backfill.
 	s.enqueueSync(item.ID)
 
-	writeJSON(w, http.StatusCreated, toItemResponse(item))
+	writeJSON(w, http.StatusCreated, toItemResponse(item, identity.UserID))
 }
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
@@ -274,7 +278,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]itemResponse, 0, len(items))
 	for _, item := range items {
-		resp := toItemResponse(item)
+		resp := toItemResponse(item, identity.UserID)
 		if span, ok := spans[item.ID]; ok && span.earliest != nil && span.latest != nil {
 			resp.EarliestTransaction = span.earliest
 			resp.LatestTransaction = span.latest
@@ -368,7 +372,7 @@ func (s *Server) handleSetItemSharing(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "set item sharing", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toItemResponse(item))
+	writeJSON(w, http.StatusOK, toItemResponse(item, identity.UserID))
 }
 
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
@@ -418,7 +422,7 @@ func (s *Server) ownedItem(w http.ResponseWriter, r *http.Request, userID, itemI
 	return item, true
 }
 
-func toItemResponse(item dbgen.PlaidItem) itemResponse {
+func toItemResponse(item dbgen.PlaidItem, callerID uuid.UUID) itemResponse {
 	name := ""
 	if item.InstitutionName != nil {
 		name = *item.InstitutionName
@@ -429,6 +433,7 @@ func toItemResponse(item dbgen.PlaidItem) itemResponse {
 		Status:           item.Status,
 		Products:         item.Products,
 		IsShared:         item.IsShared,
+		IsOwn:            item.UserID == callerID,
 		BackfillComplete: item.BackfillComplete,
 		LastSyncedAt:     item.LastSyncedAt,
 		ErrorCode:        item.ErrorCode,

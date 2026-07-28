@@ -14,7 +14,7 @@ import (
 )
 
 const getAccountByPlaidID = `-- name: GetAccountByPlaidID :one
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at FROM accounts WHERE plaid_account_id = $1
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed FROM accounts WHERE plaid_account_id = $1
 `
 
 func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID string) (Account, error) {
@@ -36,12 +36,14 @@ func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID string
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TaxTreatment,
+		&i.IsManaged,
 	)
 	return i, err
 }
 
 const listAccountsForItem = `-- name: ListAccountsForItem :many
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at FROM accounts WHERE plaid_item_id = $1 ORDER BY name
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed FROM accounts WHERE plaid_item_id = $1 ORDER BY name
 `
 
 func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID) ([]Account, error) {
@@ -69,6 +71,8 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TaxTreatment,
+			&i.IsManaged,
 		); err != nil {
 			return nil, err
 		}
@@ -81,7 +85,7 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID
 }
 
 const listVisibleAccounts = `-- name: ListVisibleAccounts :many
-SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, i.institution_name, i.user_id AS owner_id
+SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, i.institution_name, i.user_id AS owner_id
 FROM accounts a
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
@@ -112,6 +116,8 @@ type ListVisibleAccountsRow struct {
 	IsActive         bool                `json:"is_active"`
 	CreatedAt        stdtime.Time        `json:"created_at"`
 	UpdatedAt        stdtime.Time        `json:"updated_at"`
+	TaxTreatment     *string             `json:"tax_treatment"`
+	IsManaged        *bool               `json:"is_managed"`
 	InstitutionName  *string             `json:"institution_name"`
 	OwnerID          uuid.UUID           `json:"owner_id"`
 }
@@ -142,6 +148,8 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TaxTreatment,
+			&i.IsManaged,
 			&i.InstitutionName,
 			&i.OwnerID,
 		); err != nil {
@@ -156,7 +164,7 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 }
 
 const setAccountActive = `-- name: SetAccountActive :one
-UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at
+UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed
 `
 
 type SetAccountActiveParams struct {
@@ -183,6 +191,8 @@ func (q *Queries) SetAccountActive(ctx context.Context, arg SetAccountActivePara
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TaxTreatment,
+		&i.IsManaged,
 	)
 	return i, err
 }
@@ -202,7 +212,7 @@ ON CONFLICT (plaid_account_id) DO UPDATE SET
     available_balance = EXCLUDED.available_balance,
     credit_limit      = EXCLUDED.credit_limit,
     currency          = EXCLUDED.currency
-RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at
+RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed
 `
 
 type UpsertAccountParams struct {
@@ -254,6 +264,8 @@ func (q *Queries) UpsertAccount(ctx context.Context, arg UpsertAccountParams) (A
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TaxTreatment,
+		&i.IsManaged,
 	)
 	return i, err
 }

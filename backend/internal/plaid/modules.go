@@ -30,10 +30,23 @@ func HasProduct(products []string, product string) bool {
 
 // ModuleResult reports what an optional module did.
 type ModuleResult struct {
-	Holdings    int
-	Securities  int
-	Liabilities int
+	Holdings               int
+	Securities             int
+	InvestmentTransactions int
+	Liabilities            int
 }
+
+// investmentTransactionLookback is how far back investment transactions are
+// fetched on every sync.
+//
+// Two years matches the transactions module's maximum history window, and
+// re-fetching the whole window each time is deliberate: the upsert is keyed on
+// Plaid's transaction id, so a re-fetch corrects an amount an institution
+// restated rather than leaving a stale row behind. The volume is trivial — a
+// household portfolio produces a few hundred of these a year, not the tens of
+// thousands the ordinary transaction feed does, which is why this does not need
+// the cursor machinery /transactions/sync has.
+const investmentTransactionLookback = 730 * 24 * time.Hour
 
 // SyncInvestments refreshes holdings for one item. A no-op unless the item is
 // authorized for the Investments product.
@@ -112,7 +125,85 @@ func (s *Syncer) SyncInvestments(ctx context.Context, item dbgen.PlaidItem, acce
 		}
 	}
 
+	// Transactions are what let a return figure separate market movement from
+	// the user's own deposits. Failing to get them must not lose the holdings
+	// that were just written, so the error is logged and the module still
+	// reports success — the next sync retries.
+	n, err := s.syncInvestmentTransactions(ctx, accessToken, accountIDs, securityIDs, today)
+	if err != nil {
+		slog.Warn("sync investment transactions", "error", err, "item_id", item.ID)
+	}
+	result.InvestmentTransactions = n
+
 	return result, nil
+}
+
+// syncInvestmentTransactions fetches and stores the item's investment
+// transactions for the lookback window.
+//
+// securityIDs comes from the holdings pass above, but a transaction can
+// reference a security no longer held (a position sold last year), so a security
+// this map does not know is stored with a NULL security_id rather than dropped:
+// the *cash flow* is what the return maths needs, and it is correct with or
+// without the instrument attached.
+func (s *Syncer) syncInvestmentTransactions(
+	ctx context.Context,
+	accessToken string,
+	accountIDs map[string]uuid.UUID,
+	securityIDs map[string]uuid.UUID,
+	now time.Time,
+) (int, error) {
+	txns, err := s.Client.GetInvestmentTransactions(
+		ctx, accessToken, now.Add(-investmentTransactionLookback), now)
+	if err != nil {
+		return 0, err
+	}
+
+	stored := 0
+	for _, t := range txns {
+		accountID, ok := accountIDs[t.PlaidAccountID]
+		if !ok {
+			slog.Warn("investment transaction for unknown account",
+				"plaid_account_id", t.PlaidAccountID)
+			continue
+		}
+		// An unparseable date leaves the zero value, which would sort before
+		// every real flow and silently distort the return series. Dropping it is
+		// the honest outcome.
+		if t.Date.IsZero() {
+			slog.Warn("investment transaction with unreadable date",
+				"plaid_investment_transaction_id", t.PlaidInvestmentTransactionID)
+			continue
+		}
+
+		var securityID *uuid.UUID
+		if t.PlaidSecurityID != nil {
+			if id, ok := securityIDs[*t.PlaidSecurityID]; ok {
+				securityID = &id
+			}
+		}
+
+		if err := s.Queries.UpsertInvestmentTransaction(ctx, dbgen.UpsertInvestmentTransactionParams{
+			AccountID:                    accountID,
+			SecurityID:                   securityID,
+			PlaidInvestmentTransactionID: t.PlaidInvestmentTransactionID,
+			Type:                         t.Type,
+			Subtype:                      optionalString(t.Subtype),
+			Amount:                       t.Amount,
+			Quantity:                     t.Quantity,
+			Price:                        t.Price,
+			Fees:                         t.Fees,
+			Date:                         t.Date,
+			Name:                         t.Name,
+			Currency:                     t.Currency,
+			Raw:                          t.Raw,
+		}); err != nil {
+			return stored, fmt.Errorf("upsert investment transaction: %w", err)
+		}
+		stored++
+	}
+
+	return stored, nil
 }
 
 // SyncLiabilities refreshes debt terms for one item. A no-op unless the item is

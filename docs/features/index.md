@@ -25,6 +25,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
     - [:material-swap-horizontal: Transactions](transactions.md) — search, filter, recategorise, CSV import
     - [:material-tag-multiple: Categories](categories.md) — typing, rules, colours
     - [:material-chart-line: Net worth](net-worth.md) — trend, holdings, debt, projections
+    - [:material-finance: Investments](investments.md) — returns, allocation, holdings, dividends
 
 - **Watch**
 

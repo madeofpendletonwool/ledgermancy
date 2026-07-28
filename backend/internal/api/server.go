@@ -289,6 +289,21 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/", s.handleListHoldings)
 		})
 
+		// The Investments surface. Every read is scoped the same way as the
+		// other reporting endpoints; the one write is the tax-treatment
+		// confirmation, which is a user decision and never inferred.
+		r.Route("/investments", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleInvestmentOverview)
+			r.Get("/performance", s.handleInvestmentPerformance)
+			r.Get("/benchmarks", s.handleInvestmentBenchmarks)
+			r.Get("/allocation", s.handleInvestmentAllocation)
+			r.Get("/holdings", s.handleInvestmentHoldings)
+			r.Get("/fees", s.handleInvestmentFees)
+			r.Get("/dividends", s.handleInvestmentDividends)
+			r.Patch("/accounts/{accountID}/tax-treatment", s.handleSetAccountTaxTreatment)
+		})
+
 		r.Route("/liabilities", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListLiabilities)
@@ -306,6 +321,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/transactions.csv", s.handleExportTransactions)
 			r.Get("/categories.csv", s.handleExportCategorySummary)
 			r.Get("/net-worth.csv", s.handleExportNetWorth)
+			r.Get("/holdings.csv", s.handleExportHoldings)
 		})
 
 		r.Route("/reports", func(r chi.Router) {

@@ -10,6 +10,7 @@ import { Categories } from './routes/Categories'
 import { Dashboard } from './routes/Dashboard'
 import { Goals } from './routes/Goals'
 import { Insights } from './routes/Insights'
+import { Investments } from './routes/Investments'
 import { Transactions } from './routes/Transactions'
 import { Login } from './routes/Login'
 import { NetWorth } from './routes/NetWorth'
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="/schedule" element={<Schedule />} />
         <Route path="/goals" element={<Goals />} />
         <Route path="/net-worth" element={<NetWorth />} />
+        <Route path="/investments" element={<Investments />} />
         <Route path="/report" element={<Report />} />
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/categories" element={<Categories />} />

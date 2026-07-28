@@ -14,6 +14,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
@@ -44,6 +45,11 @@ const refreshInterval = 4 * time.Hour
 // what the trend chart shows; running more often simply overwrites the day's
 // row, which is harmless but pointless.
 const snapshotInterval = 12 * time.Hour
+
+// benchmarkInterval is how often end-of-day benchmark closes are fetched. Once
+// a day is the natural cadence for a series that only gains one point a day,
+// and it keeps the request count at a free third-party host trivially low.
+const benchmarkInterval = 24 * time.Hour
 
 // llmSweepInterval is how often every household is swept for uncategorised
 // merchants. Cheap when there is nothing to do — a swept household with no new
@@ -99,7 +105,7 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // notifier is likewise always passed and always registered — it is not
 // AI-gated; delivery is gated per-user inside the notifier. appURL is the
 // frontend origin used to build notification deep links.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string) (*river.Client[pgx.Tx], error) {
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
@@ -109,6 +115,25 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	// enough to make a net-worth figure worth recording.
 	if err := river.AddWorkerSafely(workers, &SnapshotNetWorthWorker{Queries: queries}); err != nil {
 		return nil, fmt.Errorf("register net worth worker: %w", err)
+	}
+
+	// Investment value snapshots, for the same reason and on the same schedule:
+	// Plaid keeps no history of what a portfolio was worth, so a day not
+	// recorded is a day that can never be recovered. Registered unconditionally
+	// — it reads stored holdings and balances, not Plaid.
+	if err := river.AddWorkerSafely(workers, &SnapshotInvestmentsWorker{Queries: queries}); err != nil {
+		return nil, fmt.Errorf("register investment snapshot worker: %w", err)
+	}
+
+	// Benchmark prices are opt-in: this is the only outbound call to a host that
+	// is neither Plaid nor the AI provider. Not registered at all when off, so
+	// an enqueued job cannot run by accident.
+	if benchmarks.Enabled && len(benchmarks.Tickers) > 0 {
+		if err := river.AddWorkerSafely(workers, &FetchBenchmarksWorker{
+			Queries: queries, Tickers: benchmarks.Tickers,
+		}); err != nil {
+			return nil, fmt.Errorf("register benchmark worker: %w", err)
+		}
 	}
 
 	// Alert evaluation is deterministic and AI-independent, so it always runs.
@@ -162,6 +187,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
+		// Rides the same interval as the net-worth snapshot: both record a
+		// point-in-time balance that cannot be reconstructed later, and keeping
+		// them on one cadence means the two trends never disagree about which
+		// days exist.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(snapshotInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SnapshotInvestmentsArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
 		river.NewPeriodicJob(
 			river.PeriodicInterval(alertSweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
@@ -196,6 +232,19 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			nil,
 		),
+	}
+
+	// Benchmark closes only change once a day, after the market settles. Not
+	// RunOnStart: a restart loop must not turn into a burst of requests at a
+	// third-party host that is doing us a favour by being free.
+	if benchmarks.Enabled && len(benchmarks.Tickers) > 0 {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(benchmarkInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return FetchBenchmarksArgs{}, nil
+			},
+			nil,
+		))
 	}
 
 	if syncer != nil {

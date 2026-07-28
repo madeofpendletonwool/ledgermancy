@@ -799,18 +799,29 @@ function AddBudget({
                 onChange={(e) => setAmount(e.target.value)}
               />
             )}
-            {period === 'monthly' && (
-              <label className="mt-1 flex items-center gap-1.5 text-xs text-mist-500">
-                <input
-                  type="checkbox"
-                  checked={percentMode}
-                  onChange={(e) => setPercentMode(e.target.checked)}
-                  disabled={monthlyIncome <= 0}
-                />
-                as % of income
-              </label>
-            )}
           </div>
+
+          {/* A sibling of the amount field rather than a child of it: stacked
+              under the input it added height below the baseline, and the row's
+              `items-end` then pushed the amount box above every other field. */}
+          {period === 'monthly' && (
+            <label
+              className="flex items-center gap-1.5 pb-2 text-sm text-mist-300"
+              title={
+                monthlyIncome <= 0
+                  ? 'Needs some income history before a share of income can be worked out'
+                  : undefined
+              }
+            >
+              <input
+                type="checkbox"
+                checked={percentMode}
+                onChange={(e) => setPercentMode(e.target.checked)}
+                disabled={monthlyIncome <= 0}
+              />
+              as % of income
+            </label>
+          )}
 
           <div>
             <label className="label" htmlFor="add-period">

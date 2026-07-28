@@ -40,6 +40,7 @@ type SyncResult struct {
 	Categorised      int
 	Holdings         int
 	Securities       int
+	InvestmentTxns   int
 	Liabilities      int
 	BackfillComplete bool
 	Earliest         *time.Time
@@ -83,6 +84,7 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 		slog.Error("investments sync", "error", err, "item_id", item.ID)
 	} else {
 		result.Holdings, result.Securities = mod.Holdings, mod.Securities
+		result.InvestmentTxns = mod.InvestmentTransactions
 	}
 	if mod, err := s.SyncLiabilities(ctx, item, accessToken, accountIDs); err != nil {
 		slog.Error("liabilities sync", "error", err, "item_id", item.ID)

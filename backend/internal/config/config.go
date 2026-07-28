@@ -33,9 +33,23 @@ type Config struct {
 	EncryptionKey []byte
 	SessionSecret []byte
 
-	Plaid PlaidConfig
-	AI    AIConfig
-	NTFY  NTFYConfig
+	Plaid      PlaidConfig
+	AI         AIConfig
+	NTFY       NTFYConfig
+	Benchmarks BenchmarkConfig
+}
+
+// BenchmarkConfig controls the daily end-of-day price fetch that backs the
+// Investments page's benchmark comparison.
+//
+// Off by default, and that default is the point. This is the only outbound call
+// the app makes to a host that is neither Plaid nor the configured AI provider,
+// and the README promises exactly that. Leaving it off keeps the promise true
+// for anyone who has not read this far; turning it on is a decision the operator
+// makes knowingly.
+type BenchmarkConfig struct {
+	Enabled bool
+	Tickers []string
 }
 
 // PlaidConfig holds Plaid API credentials and the set of enabled products.
@@ -103,6 +117,10 @@ func Load() (Config, error) {
 		NTFY: NTFYConfig{
 			BaseURL: env("NTFY_BASE_URL", "https://ntfy.sh"),
 			Token:   os.Getenv("NTFY_TOKEN"),
+		},
+		Benchmarks: BenchmarkConfig{
+			Enabled: envBool("BENCHMARK_PRICES_ENABLED", false),
+			Tickers: splitList(env("BENCHMARK_TICKERS", "SPY,VTI,BND,QQQ")),
 		},
 	}
 

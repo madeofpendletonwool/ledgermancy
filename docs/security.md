@@ -95,6 +95,9 @@ open sign-up form on the public internet. See [Households](features/households.m
   Make it non-world-readable (`chmod 600 .env`) — it holds the database password
   and both encryption keys.
 - The app **sends no email** and phones home to nothing but Plaid and
-  (optionally) your AI provider.
+  (optionally) your AI provider. One opt-in exception: setting
+  `BENCHMARK_PRICES_ENABLED=true` lets a daily job fetch end-of-day index closes
+  from Stooq for the Investments benchmark chart. It is off by default, sends
+  only a ticker symbol, and carries no account data.
 - **Back up the database** — it's the only record of net-worth history. See
   [Deployment](deployment.md#back-up-the-database).

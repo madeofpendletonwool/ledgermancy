@@ -55,11 +55,25 @@ the **CSRF token** echoed in an `X-CSRF-Token` header.
 | GET | `/api/export/transactions.csv` | ✓ | Financial Summary transactions export |
 | GET | `/api/export/categories.csv` | ✓ | Category summary export |
 | GET | `/api/export/net-worth.csv` | ✓ | Net-worth history export |
+| GET | `/api/export/holdings.csv` | ✓ | Investment holdings export |
 
 Plus reporting endpoints consumed by the frontend (summary, by-category,
 by-day, trend, averages, merchants, recurring, net-worth + history + projection,
 holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
 preferences/capabilities).
+
+### Investments
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/investments/` | ✓ | Accounts, total value, unrealised gain with its coverage, days of recorded history |
+| GET | `/api/investments/performance` | ✓ | `period` = `ytd`\|`1y`\|`3y`\|`5y`\|`inception`. Returns are **fractions** (`0.0734` = 7.34%); `computable: false` with a `caveat` when history is too thin, and a null `mwr` carries an `mwr_note` |
+| GET | `/api/investments/benchmarks` | ✓ | Growth rebased to 100, deposits removed. `enabled: false` when benchmark fetching is off |
+| GET | `/api/investments/allocation` | ✓ | By asset class and by tax treatment; unclassified value is its own slice, never redistributed |
+| GET | `/api/investments/holdings` | ✓ | Per-position detail with gain in dollars and percent |
+| GET | `/api/investments/fees` | ✓ | Fund expense drag, always with its coverage disclosed |
+| GET | `/api/investments/dividends` | ✓ | Dividends by month, from investment transactions |
+| PATCH | `/api/investments/accounts/{id}/tax-treatment` | ✓ | Confirms a classification. `null` clears it back to untagged |
 
 ## CSRF
 

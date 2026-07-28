@@ -82,3 +82,23 @@ their private topic in the UI (**Settings → Notifications**).
 | --- | --- | --- |
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Self-host ntfy → point at your instance. Otherwise defaults to the public ntfy.sh. |
 | `NTFY_TOKEN` | _(empty)_ | Optional Bearer token for a protected / self-hosted ntfy server |
+
+## Benchmark prices (Investments page)
+
+Off by default. This is the **only** outbound request Ledgermancy makes to a host
+that is neither Plaid nor your AI provider, so it is opt-in rather than something
+you have to notice and disable. Enabling it lets a daily job fetch end-of-day
+index closes from [Stooq](https://stooq.com) so the Investments page can plot
+your portfolio's growth against the market. Only a ticker symbol is sent — no
+account, balance or transaction data leaves the host.
+
+With it off, the Investments page works exactly as before; the benchmark chart
+simply shows your own line with nothing to compare it against, and says so.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `BENCHMARK_PRICES_ENABLED` | `false` | Set `true` to allow the daily price fetch |
+| `BENCHMARK_TICKERS` | `SPY,VTI,BND,QQQ` | US symbols, comma-separated. Queried at Stooq as e.g. `spy.us` |
+
+A failed fetch degrades to a missing series: the job logs a warning, stores what
+it did get, and never fails or retry-storms over a chart decoration.

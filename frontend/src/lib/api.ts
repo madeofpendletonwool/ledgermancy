@@ -106,6 +106,8 @@ export interface PlaidItem {
   status: string
   products: string[]
   is_shared: boolean
+  /** False when a household member linked it, not you. */
+  is_own: boolean
   backfill_complete: boolean
   last_synced_at: string | null
   error_code: string | null
@@ -128,6 +130,9 @@ export interface SyncResult {
 
 export interface Account {
   id: string
+  /** The linked institution this belongs to. Group by this, never by
+   *  `institution_name` — two household members can link the same bank. */
+  item_id: string
   name: string
   mask: string | null
   /** depository | credit | loan | investment | other */
@@ -527,6 +532,148 @@ export interface ManualAsset {
   is_liability: boolean
   as_of: string
   notes: string | null
+}
+
+// --- Investments ----------------------------------------------------------
+
+/** The nine tax treatments the backend's CHECK constraint allows. */
+export type TaxTreatment =
+  | 'taxable'
+  | 'trad_401k'
+  | 'roth_401k'
+  | 'trad_ira'
+  | 'roth_ira'
+  | '529'
+  | 'hsa'
+  | 'trust'
+  | 'other'
+
+export interface InvestmentAccount {
+  id: string
+  name: string
+  mask: string | null
+  subtype: string | null
+  institution_name: string | null
+  balance: string | null
+  currency: string
+  /** Null until the user confirms one. Never inferred on their behalf. */
+  tax_treatment: TaxTreatment | null
+  /**
+   * Inferred from the Plaid subtype for display beside the picker. Empty when
+   * the subtype cannot distinguish — a 401(k) is reported identically whether
+   * it is traditional or Roth, and guessing changes every retirement number.
+   */
+  suggested_tax_treatment: TaxTreatment | ''
+  is_managed: boolean | null
+}
+
+export interface InvestmentOverview {
+  total_value: string
+  cost_basis: string
+  /** Null when no holding reports a cost basis. */
+  unrealised_gain: string | null
+  unrealised_gain_pct: string | null
+  /** Market value the gain figures actually cover, and what they exclude. */
+  basis_coverage_value: string
+  basis_excluded_holdings: number
+  accounts: InvestmentAccount[]
+  untagged_accounts: number
+  /** Days of recorded value history. Zero means performance has nothing yet. */
+  history_days: number
+}
+
+export type InvestmentPeriod = 'ytd' | '1y' | '3y' | '5y' | 'inception'
+
+export interface InvestmentPerformance {
+  period: InvestmentPeriod
+  /** False when history is too thin for any figure; `caveat` says why. */
+  computable: boolean
+  caveat: string
+  start: string
+  end: string
+  days: number
+  start_value: string
+  end_value: string
+  net_flows: string
+  gain: string
+  /** Fractions, not percentages: "0.0734" is 7.34%. */
+  twr: string | null
+  annualised: string | null
+  /** Null when the IRR solve found no root — a legitimate answer, not an error. */
+  mwr: string | null
+  /** Non-empty exactly when `mwr` is null. */
+  mwr_note: string
+}
+
+export interface SeriesPoint {
+  date: string
+  value: string
+}
+
+export interface BenchmarkSeries {
+  label: string
+  points: SeriesPoint[]
+}
+
+export interface BenchmarkComparison {
+  period: InvestmentPeriod
+  /** False when the operator has not opted into outbound price fetching. */
+  enabled: boolean
+  series: BenchmarkSeries[]
+  basis: string
+}
+
+export interface AllocationSlice {
+  label: string
+  value: string
+  /** 0–100. */
+  percent: string
+}
+
+export interface InvestmentAllocation {
+  by_asset_class: AllocationSlice[]
+  by_tax_treatment: AllocationSlice[]
+  note: string
+}
+
+export interface DetailedHolding {
+  id: string
+  account_id: string
+  account_name: string
+  institution_name: string | null
+  security_name: string | null
+  ticker: string | null
+  security_type: string | null
+  quantity: string
+  cost_basis: string | null
+  value: string | null
+  last_price: string | null
+  last_price_as_of: string | null
+  gain: string | null
+  gain_pct: string | null
+  is_cash_equivalent: boolean
+  tax_treatment: TaxTreatment | null
+}
+
+export interface FeeDrag {
+  annual_cost: string
+  covered_value: string
+  uncovered_value: string
+  covered_holdings: number
+  excluded_holdings: number
+  /** Coverage disclosure. Always shown — a partial fee total is misinformation. */
+  note: string
+}
+
+export interface DividendMonth {
+  month: string
+  total: string
+}
+
+export interface DividendIncome {
+  months: DividendMonth[]
+  total: string
+  basis: string
 }
 
 export interface ProjectionPoint {
@@ -1078,6 +1225,45 @@ export const api = {
 
   deleteManualAsset: (id: string) =>
     request<void>('DELETE', `/api/manual-assets/${id}`),
+
+  // --- Investments --------------------------------------------------------
+  investments: () => request<InvestmentOverview>('GET', '/api/investments/'),
+
+  investmentPerformance: (period: InvestmentPeriod) =>
+    request<InvestmentPerformance>(
+      'GET',
+      withQuery('/api/investments/performance', { period }),
+    ),
+
+  investmentBenchmarks: (period: InvestmentPeriod) =>
+    request<BenchmarkComparison>(
+      'GET',
+      withQuery('/api/investments/benchmarks', { period }),
+    ),
+
+  investmentAllocation: () =>
+    request<InvestmentAllocation>('GET', '/api/investments/allocation'),
+
+  investmentHoldings: () =>
+    request<DetailedHolding[]>('GET', '/api/investments/holdings'),
+
+  investmentFees: () => request<FeeDrag>('GET', '/api/investments/fees'),
+
+  investmentDividends: () =>
+    request<DividendIncome>('GET', '/api/investments/dividends'),
+
+  // Confirms a classification. Passing null clears it back to untagged, which
+  // is a legitimate action — "I do not know" beats a wrong tag.
+  setAccountTaxTreatment: (
+    accountID: string,
+    input: { tax_treatment: TaxTreatment | null; is_managed: boolean | null },
+  ) =>
+    request<{
+      id: string
+      name: string
+      tax_treatment: TaxTreatment | null
+      is_managed: boolean | null
+    }>('PATCH', `/api/investments/accounts/${accountID}/tax-treatment`, input),
 
   // --- Alerts -------------------------------------------------------------
   alerts: () => request<Alert[]>('GET', '/api/alerts/'),

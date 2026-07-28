@@ -26,6 +26,8 @@ type Account struct {
 	IsActive         bool                `json:"is_active"`
 	CreatedAt        stdtime.Time        `json:"created_at"`
 	UpdatedAt        stdtime.Time        `json:"updated_at"`
+	TaxTreatment     *string             `json:"tax_treatment"`
+	IsManaged        *bool               `json:"is_managed"`
 }
 
 type Alert struct {
@@ -47,6 +49,14 @@ type AlertEvent struct {
 	Payload       []byte        `json:"payload"`
 	ReadAt        *stdtime.Time `json:"read_at"`
 	NotifiedAt    *stdtime.Time `json:"notified_at"`
+}
+
+type AssetPrice struct {
+	ID        uuid.UUID       `json:"id"`
+	Ticker    string          `json:"ticker"`
+	AsOf      stdtime.Time    `json:"as_of"`
+	Close     decimal.Decimal `json:"close"`
+	CreatedAt stdtime.Time    `json:"created_at"`
 }
 
 type AuthEvent struct {
@@ -169,6 +179,15 @@ type Insight struct {
 	CreatedAt   stdtime.Time  `json:"created_at"`
 	ReadAt      *stdtime.Time `json:"read_at"`
 	DismissedAt *stdtime.Time `json:"dismissed_at"`
+}
+
+type InvestmentSnapshot struct {
+	ID          uuid.UUID           `json:"id"`
+	AccountID   uuid.UUID           `json:"account_id"`
+	AsOf        stdtime.Time        `json:"as_of"`
+	MarketValue decimal.Decimal     `json:"market_value"`
+	CostBasis   decimal.NullDecimal `json:"cost_basis"`
+	CreatedAt   stdtime.Time        `json:"created_at"`
 }
 
 type InvestmentTransaction struct {

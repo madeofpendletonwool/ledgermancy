@@ -39,6 +39,37 @@ not bugs:
 
 ### Recently shipped
 
+- **Dedicated Investments page** — a fourth top-level data surface
+  (`/investments`) over holdings that were being ingested and then shown as a
+  single line in Net Worth. Time-weighted and money-weighted (IRR) returns, both
+  computed in exact decimal in `reporting/returns.go`; a rebased growth chart
+  with the household's own deposits stripped out, against optional benchmarks;
+  allocation by asset class and by tax treatment; a sortable, CSV-exportable
+  holdings table; and dividend income.
+
+  Three deliberate refusals, because this is where a finance app most easily
+  lies. The IRR solver **returns "not computable" rather than a number** when
+  the cash flows do not bracket a root. A return is **never annualised below a
+  year** of history. And the fee-drag endpoint reports **full exclusion** — no
+  expense-ratio source exists, and a fee number computed over part of a
+  portfolio and presented as the total is worse than none.
+
+  Two supporting pieces landed with it. `investment_transactions` was a table
+  nothing ever wrote to; `plaid.GetInvestmentTransactions` now populates it,
+  which is what lets a return separate market movement from money the user paid
+  in. And `accounts.tax_treatment` (migration `00020`) is the user-confirmed
+  classification the FIRE projections need — nullable on purpose, suggested from
+  the Plaid subtype only where that subtype is unambiguous, and never written
+  without an explicit choice. Plaid reports a Roth 401(k) and a traditional one
+  identically, and a wrong tag there silently changes every retirement figure
+  built on it.
+
+  Two pieces of the original scope stayed out: **target allocation + drift and
+  the rebalance helper** (they need a stored per-household target nothing else
+  wants yet, and the allocation view is honest without them), and **daily
+  benchmark prices are opt-in** — `BENCHMARK_PRICES_ENABLED`, default off, since
+  this is the app's only outbound call to a host that is neither Plaid nor the
+  AI provider.
 - **Bill calendar + cash-flow forecast** — a `recurring_obligations` table
   (migration `00019`) that persists what is *due next*, from two sources: rows
   promoted from the recurring detector (`obligations.Promote`, idempotent, and
@@ -258,7 +289,13 @@ FI-age math), goals and budgets.
 
 ### Investments & retirement
 
-#### 4. Dedicated Investments page + performance analysis
+#### 4. Dedicated Investments page + performance analysis — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed, what was
+deliberately left out, and the two corrections to the description here: there is
+no `dividends` category (dividends come from `investment_transactions` by
+subtype), and `investment_transactions` was not actually being populated until
+this work added the Plaid ingest for it.
 
 **Problem.** Plaid investment holdings are ingested (`backend/internal/plaid/investments.go`)
 and shown as a line item in Net Worth, but there is no dedicated investments

@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/transactions', label: 'Transactions' },
       { to: '/categories', label: 'Categories' },
       { to: '/net-worth', label: 'Net worth' },
+      { to: '/investments', label: 'Investments' },
     ],
   },
 ]
@@ -98,7 +99,12 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-ink-950/70 backdrop-blur-xl">
+      {/* z-40 keeps the bar — and the nav dropdowns, which live inside the
+          stacking context it creates — above every page layer. Page content
+          lifts itself as high as z-20 (the transactions filter bar), so a
+          matching z-20 here lost the tie to whatever came later in the DOM.
+          Modals are fixed at z-50 and still cover it. */}
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-ink-950/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-4 sm:px-6">
           <NavLink to="/" aria-label="Ledgermancy home" className="rounded-lg">
             <Wordmark />

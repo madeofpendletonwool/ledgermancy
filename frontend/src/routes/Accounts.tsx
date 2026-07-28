@@ -8,7 +8,7 @@ export function Accounts() {
   const items = useQuery({ queryKey: ['items'], queryFn: api.items })
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
 
-  const grouped = groupByInstitution(accounts.data ?? [])
+  const grouped = groupByItem(accounts.data ?? [])
 
   return (
     <div className="space-y-8">
@@ -39,7 +39,7 @@ export function Accounts() {
         <InstitutionCard
           key={item.id}
           item={item}
-          accounts={grouped.get(item.institution_name) ?? []}
+          accounts={grouped.get(item.id) ?? []}
         />
       ))}
     </div>
@@ -78,7 +78,16 @@ function InstitutionCard({
     <section className="glass overflow-hidden">
       <header className="flex flex-wrap items-center gap-4 border-b border-white/5 px-6 py-4">
         <div>
-          <h2 className="font-medium">{item.institution_name || 'Institution'}</h2>
+          <h2 className="font-medium">
+            {item.institution_name || 'Institution'}
+            {/* Both spouses linking the same bank yields two cards with the
+                same name; say which one is not yours. */}
+            {!item.is_own && (
+              <span className="ml-2 text-xs font-normal text-mist-500">
+                linked by household member
+              </span>
+            )}
+          </h2>
           <p className="mt-0.5 text-xs text-mist-500">
             synced {formatRelative(item.last_synced_at)}
             {!item.backfill_complete && ' · importing history…'}
@@ -204,13 +213,15 @@ function InstitutionCard({
   )
 }
 
-function groupByInstitution(accounts: Account[]): Map<string, Account[]> {
+// Keyed by item, not by institution name. Two members of a household can each
+// link the same bank — grouping by name gave both "Capital One" cards the union
+// of everyone's Capital One accounts, so every account appeared on both.
+function groupByItem(accounts: Account[]): Map<string, Account[]> {
   const map = new Map<string, Account[]>()
   for (const a of accounts) {
-    const key = a.institution_name ?? ''
-    const list = map.get(key)
+    const list = map.get(a.item_id)
     if (list) list.push(a)
-    else map.set(key, [a])
+    else map.set(a.item_id, [a])
   }
   return map
 }

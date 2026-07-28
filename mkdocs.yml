@@ -93,6 +93,7 @@ nav:
       - Budgets: features/budgets.md
       - Goals: features/goals.md
       - Net worth: features/net-worth.md
+      - Investments: features/investments.md
       - Transactions: features/transactions.md
       - Categories: features/categories.md
       - Accounts & Plaid: features/accounts.md

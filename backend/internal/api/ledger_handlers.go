@@ -18,7 +18,11 @@ import (
 )
 
 type accountResponse struct {
-	ID               uuid.UUID        `json:"id"`
+	ID uuid.UUID `json:"id"`
+	// ItemID is what the accounts page groups by. Institution *name* is not a
+	// key: two household members can each link the same bank, and grouping by
+	// name merges their accounts into every one of those institutions' cards.
+	ItemID           uuid.UUID        `json:"item_id"`
 	Name             string           `json:"name"`
 	Mask             *string          `json:"mask"`
 	Type             string           `json:"type"`
@@ -46,6 +50,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	for _, a := range rows {
 		out = append(out, accountResponse{
 			ID:               a.ID,
+			ItemID:           a.PlaidItemID,
 			Name:             a.Name,
 			Mask:             a.Mask,
 			Type:             a.Type,
@@ -61,25 +66,25 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type transactionResponse struct {
-	ID           uuid.UUID       `json:"id"`
-	Date         time.Time       `json:"date"`
-	Name         string          `json:"name"`
-	MerchantName *string         `json:"merchant_name"`
+	ID           uuid.UUID `json:"id"`
+	Date         time.Time `json:"date"`
+	Name         string    `json:"name"`
+	MerchantName *string   `json:"merchant_name"`
 	// MerchantKey is the normalized key the app caches categories by. Present
 	// even when MerchantName is null (it falls back to the raw name), and empty
 	// when the description carried too little signal to key on. The UI shows the
 	// "apply to all from this merchant" option exactly when this is set.
-	MerchantKey *string `json:"merchant_key"`
-	Amount       decimal.Decimal `json:"amount"`
-	Currency     string          `json:"currency"`
-	Pending      bool            `json:"pending"`
-	AccountID    uuid.UUID       `json:"account_id"`
-	AccountName  string          `json:"account_name"`
-	Institution  *string         `json:"institution_name"`
-	PFCPrimary   *string         `json:"plaid_category_primary"`
-	PFCDetailed  *string         `json:"plaid_category_detailed"`
-	CategoryID   *uuid.UUID      `json:"category_id"`
-	Notes        *string         `json:"notes"`
+	MerchantKey *string         `json:"merchant_key"`
+	Amount      decimal.Decimal `json:"amount"`
+	Currency    string          `json:"currency"`
+	Pending     bool            `json:"pending"`
+	AccountID   uuid.UUID       `json:"account_id"`
+	AccountName string          `json:"account_name"`
+	Institution *string         `json:"institution_name"`
+	PFCPrimary  *string         `json:"plaid_category_primary"`
+	PFCDetailed *string         `json:"plaid_category_detailed"`
+	CategoryID  *uuid.UUID      `json:"category_id"`
+	Notes       *string         `json:"notes"`
 	// Source distinguishes hand-entered rows from aggregator feeds. The UI shows
 	// edit/delete only on 'manual' rows; Plaid rows stay read-only except for
 	// category, which has its own PATCH path.

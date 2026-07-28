@@ -70,6 +70,11 @@ math. Ledgermancy is neither.
 :   Daily-snapshotted trend, asset & liability breakdown, holdings with gains,
     debt with rates, and manual assets Plaid can't see.
 
+[:material-finance: Investments](features/investments.md)
+:   Time- and money-weighted returns computed in exact decimal, growth against
+    the market with your own deposits stripped out, allocation, and dividends —
+    with every figure it can't honestly compute saying so.
+
 [:material-swap-horizontal: Transactions](features/transactions.md)
 :   Multi-account + category filtering, CSV import, inline recategorise with
     "apply to all from this merchant".
