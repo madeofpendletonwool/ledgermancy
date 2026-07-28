@@ -13,6 +13,128 @@ import (
 	stdtime "time"
 )
 
+const breakdownTransactions = `-- name: BreakdownTransactions :many
+WITH base AS (
+    SELECT
+        (CASE $5::text
+            WHEN 'category' THEN COALESCE(c.name, 'Uncategorised')
+            WHEN 'merchant' THEN COALESCE(t.merchant_name, t.name)
+            WHEN 'account'  THEN a.name
+            WHEN 'month'    THEN to_char(date_trunc('month', t.date), 'YYYY-MM')
+            WHEN 'day'      THEN to_char(t.date, 'YYYY-MM-DD')
+            WHEN 'pfc'      THEN COALESCE(t.plaid_pfc_detailed, 'Unknown')
+            ELSE COALESCE(c.name, 'Uncategorised')
+        END) AS grp,
+        t.amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+      AND (
+        $6::text = 'all'
+        OR ($6::text = 'income'    AND COALESCE(c.is_income, false))
+        OR ($6::text = 'transfers' AND COALESCE(c.is_transfer, false))
+        OR ($6::text = 'spending'
+              AND NOT COALESCE(c.is_income, false)
+              AND NOT COALESCE(c.is_transfer, false)
+              AND t.amount > 0)
+      )
+      AND ($7::text IS NULL
+           OR c.slug = lower($7::text)
+           OR c.name ILIKE '%' || $7::text || '%')
+      AND ($8::text IS NULL
+           OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $8::text || '%')
+      AND ($9::uuid[] IS NULL
+           OR cardinality($9::uuid[]) = 0
+           OR t.account_id = ANY($9::uuid[]))
+      AND ($10::numeric IS NULL OR abs(t.amount) >= $10::numeric)
+      AND ($11::numeric IS NULL OR abs(t.amount) <= $11::numeric)
+      AND ($12::text IS NULL OR t.source = $12::text)
+)
+SELECT
+    grp                                                          AS group_label,
+    COUNT(*)::bigint                                             AS transaction_count,
+    COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)::numeric AS total_in,
+    COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::numeric AS total_out
+FROM base
+GROUP BY grp
+ORDER BY (COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)
+          + COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0)) DESC
+`
+
+type BreakdownTransactionsParams struct {
+	HouseholdID uuid.UUID           `json:"household_id"`
+	UserID      uuid.UUID           `json:"user_id"`
+	Date        stdtime.Time        `json:"date"`
+	Date_2      stdtime.Time        `json:"date_2"`
+	GroupBy     string              `json:"group_by"`
+	Flow        string              `json:"flow"`
+	Category    *string             `json:"category"`
+	Merchant    *string             `json:"merchant"`
+	AccountIds  []uuid.UUID         `json:"account_ids"`
+	MinAmount   decimal.NullDecimal `json:"min_amount"`
+	MaxAmount   decimal.NullDecimal `json:"max_amount"`
+	Source      *string             `json:"source"`
+}
+
+type BreakdownTransactionsRow struct {
+	GroupLabel       interface{}     `json:"group_label"`
+	TransactionCount int64           `json:"transaction_count"`
+	TotalIn          decimal.Decimal `json:"total_in"`
+	TotalOut         decimal.Decimal `json:"total_out"`
+}
+
+// Group transactions along one dimension and return per-group split totals — the
+// flexible aggregation tool. Generalises GetSpendingByCategory/GetTopMerchants/
+// GetSpendingByDay to any flow and any of several group_by dimensions. The group
+// label is chosen in SQL by sqlc.arg('group_by'); totals are split by direction
+// and positive, exactly as in SumQueriedTransactions. Same filters and visibility
+// scoping. Ordered by combined magnitude so the largest groups come first.
+func (q *Queries) BreakdownTransactions(ctx context.Context, arg BreakdownTransactionsParams) ([]BreakdownTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, breakdownTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.GroupBy,
+		arg.Flow,
+		arg.Category,
+		arg.Merchant,
+		arg.AccountIds,
+		arg.MinAmount,
+		arg.MaxAmount,
+		arg.Source,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BreakdownTransactionsRow{}
+	for rows.Next() {
+		var i BreakdownTransactionsRow
+		if err := rows.Scan(
+			&i.GroupLabel,
+			&i.TransactionCount,
+			&i.TotalIn,
+			&i.TotalOut,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countTransactionsForItem = `-- name: CountTransactionsForItem :one
 SELECT count(*)
 FROM transactions t
@@ -338,6 +460,130 @@ func (q *Queries) ListFilteredTransactions(ctx context.Context, arg ListFiltered
 	return items, nil
 }
 
+const listQueriedTransactions = `-- name: ListQueriedTransactions :many
+SELECT
+    t.date,
+    COALESCE(t.merchant_name, t.name)                    AS merchant,
+    abs(t.amount)::numeric                               AS amount,
+    (CASE WHEN t.amount < 0 THEN 'in' ELSE 'out' END)    AS direction,
+    COALESCE(c.name, 'Uncategorised')                    AS category_name,
+    a.name                                               AS account_name,
+    COALESCE(c.is_income, false)                         AS is_income,
+    COALESCE(c.is_transfer, false)                       AS is_transfer,
+    t.plaid_pfc_detailed,
+    t.source
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND (
+    $5::text = 'all'
+    OR ($5::text = 'income'    AND COALESCE(c.is_income, false))
+    OR ($5::text = 'transfers' AND COALESCE(c.is_transfer, false))
+    OR ($5::text = 'spending'
+          AND NOT COALESCE(c.is_income, false)
+          AND NOT COALESCE(c.is_transfer, false)
+          AND t.amount > 0)
+  )
+  AND ($6::text IS NULL
+       OR c.slug = lower($6::text)
+       OR c.name ILIKE '%' || $6::text || '%')
+  AND ($7::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $7::text || '%')
+  AND ($8::uuid[] IS NULL
+       OR cardinality($8::uuid[]) = 0
+       OR t.account_id = ANY($8::uuid[]))
+  AND ($9::numeric IS NULL OR abs(t.amount) >= $9::numeric)
+  AND ($10::numeric IS NULL OR abs(t.amount) <= $10::numeric)
+  AND ($11::text IS NULL OR t.source = $11::text)
+ORDER BY t.date DESC, abs(t.amount) DESC
+LIMIT $12
+`
+
+type ListQueriedTransactionsParams struct {
+	HouseholdID uuid.UUID           `json:"household_id"`
+	UserID      uuid.UUID           `json:"user_id"`
+	Date        stdtime.Time        `json:"date"`
+	Date_2      stdtime.Time        `json:"date_2"`
+	Flow        string              `json:"flow"`
+	Category    *string             `json:"category"`
+	Merchant    *string             `json:"merchant"`
+	AccountIds  []uuid.UUID         `json:"account_ids"`
+	MinAmount   decimal.NullDecimal `json:"min_amount"`
+	MaxAmount   decimal.NullDecimal `json:"max_amount"`
+	Source      *string             `json:"source"`
+	Lim         int32               `json:"lim"`
+}
+
+type ListQueriedTransactionsRow struct {
+	Date             stdtime.Time    `json:"date"`
+	Merchant         string          `json:"merchant"`
+	Amount           decimal.Decimal `json:"amount"`
+	Direction        string          `json:"direction"`
+	CategoryName     string          `json:"category_name"`
+	AccountName      string          `json:"account_name"`
+	IsIncome         bool            `json:"is_income"`
+	IsTransfer       bool            `json:"is_transfer"`
+	PlaidPfcDetailed *string         `json:"plaid_pfc_detailed"`
+	Source           string          `json:"source"`
+}
+
+// The per-row list behind the flexible assistant query tool. Same filters and
+// visibility scoping as SumQueriedTransactions; the list may be capped by the
+// limit while that sum stays exact over every match. Amount is reported as a
+// positive magnitude with a direction ('in'/'out') so income and spending read
+// consistently without the model doing sign arithmetic.
+func (q *Queries) ListQueriedTransactions(ctx context.Context, arg ListQueriedTransactionsParams) ([]ListQueriedTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listQueriedTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Flow,
+		arg.Category,
+		arg.Merchant,
+		arg.AccountIds,
+		arg.MinAmount,
+		arg.MaxAmount,
+		arg.Source,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListQueriedTransactionsRow{}
+	for rows.Next() {
+		var i ListQueriedTransactionsRow
+		if err := rows.Scan(
+			&i.Date,
+			&i.Merchant,
+			&i.Amount,
+			&i.Direction,
+			&i.CategoryName,
+			&i.AccountName,
+			&i.IsIncome,
+			&i.IsTransfer,
+			&i.PlaidPfcDetailed,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
 SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
@@ -538,6 +784,94 @@ func (q *Queries) SumFilteredTransactions(ctx context.Context, arg SumFilteredTr
 	)
 	var i SumFilteredTransactionsRow
 	err := row.Scan(&i.TransactionCount, &i.Total)
+	return i, err
+}
+
+const sumQueriedTransactions = `-- name: SumQueriedTransactions :one
+SELECT
+    COUNT(*)::bigint AS transaction_count,
+    COALESCE(SUM(-t.amount) FILTER (WHERE t.amount < 0), 0)::numeric AS total_in,
+    COALESCE(SUM(t.amount)  FILTER (WHERE t.amount > 0), 0)::numeric AS total_out
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND (
+    $5::text = 'all'
+    OR ($5::text = 'income'    AND COALESCE(c.is_income, false))
+    OR ($5::text = 'transfers' AND COALESCE(c.is_transfer, false))
+    OR ($5::text = 'spending'
+          AND NOT COALESCE(c.is_income, false)
+          AND NOT COALESCE(c.is_transfer, false)
+          AND t.amount > 0)
+  )
+  AND ($6::text IS NULL
+       OR c.slug = lower($6::text)
+       OR c.name ILIKE '%' || $6::text || '%')
+  AND ($7::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $7::text || '%')
+  AND ($8::uuid[] IS NULL
+       OR cardinality($8::uuid[]) = 0
+       OR t.account_id = ANY($8::uuid[]))
+  AND ($9::numeric IS NULL OR abs(t.amount) >= $9::numeric)
+  AND ($10::numeric IS NULL OR abs(t.amount) <= $10::numeric)
+  AND ($11::text IS NULL OR t.source = $11::text)
+`
+
+type SumQueriedTransactionsParams struct {
+	HouseholdID uuid.UUID           `json:"household_id"`
+	UserID      uuid.UUID           `json:"user_id"`
+	Date        stdtime.Time        `json:"date"`
+	Date_2      stdtime.Time        `json:"date_2"`
+	Flow        string              `json:"flow"`
+	Category    *string             `json:"category"`
+	Merchant    *string             `json:"merchant"`
+	AccountIds  []uuid.UUID         `json:"account_ids"`
+	MinAmount   decimal.NullDecimal `json:"min_amount"`
+	MaxAmount   decimal.NullDecimal `json:"max_amount"`
+	Source      *string             `json:"source"`
+}
+
+type SumQueriedTransactionsRow struct {
+	TransactionCount int64           `json:"transaction_count"`
+	TotalIn          decimal.Decimal `json:"total_in"`
+	TotalOut         decimal.Decimal `json:"total_out"`
+}
+
+// Exact count and split totals for the flexible assistant query tool. Unlike
+// SumFilteredTransactions (spending only), this spans any flow — spending,
+// income, transfers, or all — selected by sqlc.arg('flow'), with a set of
+// optional filters. Totals are split by direction and always positive:
+//   - total_in  = money IN  = SUM(-amount) over inflow rows  (amount < 0)
+//   - total_out = money OUT = SUM(amount)  over outflow rows (amount > 0)
+//
+// which matches how the app reports income and spending (both positive) and
+// stays meaningful for a mixed flow='all' result. All arithmetic is in NUMERIC
+// here, never in the application. LEFT JOIN categories so uncategorised rows are
+// not silently dropped. Same visibility scoping as every report.
+func (q *Queries) SumQueriedTransactions(ctx context.Context, arg SumQueriedTransactionsParams) (SumQueriedTransactionsRow, error) {
+	row := q.db.QueryRow(ctx, sumQueriedTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Flow,
+		arg.Category,
+		arg.Merchant,
+		arg.AccountIds,
+		arg.MinAmount,
+		arg.MaxAmount,
+		arg.Source,
+	)
+	var i SumQueriedTransactionsRow
+	err := row.Scan(&i.TransactionCount, &i.TotalIn, &i.TotalOut)
 	return i, err
 }
 

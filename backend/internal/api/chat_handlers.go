@@ -38,6 +38,9 @@ Numbers:
 - For a breakdown or "list every…", call list_transactions and present its transactions. Its count and total are computed over ALL matches; the list may be truncated (see the "truncated" flag) — say so if it is, and still quote the full count/total.
 - To filter by category, first learn the exact category names from spend_by_category, then pass one to list_transactions.
 - For "vs last month", "trend", or "on average", use monthly_trend or category_averages.
+- query_transactions and breakdown are the flexible tools — reach for them for any detailed, unusual, or income question the narrow tools can't answer. They span income, spending, and transfers (set "flow"), filter by month or a start/end date range plus category, merchant, amount, or source, and breakdown groups by category, merchant, account, month, day, or Plaid category ("pfc").
+- Income is NOT covered by the spending tools (spend_by_category, top_merchants, list_transactions all exclude it). To see where income came from, list individual paychecks/deposits, or compare income across months, use breakdown with flow:"income" (e.g. group_by:"merchant") or query_transactions with flow:"income".
+- query_transactions and breakdown return totals split into total_in (money in) and total_out (money out), both positive and computed in SQL. Quote those directly — for income use total_in, for spending use total_out — and never sum the rows yourself.
 
 Conventions:
 - Amounts are US dollars; months are "YYYY-MM". If no month is given, assume the current month.
@@ -234,6 +237,16 @@ func chatToolDefs() []ai.Tool {
 			Name:        "list_transactions",
 			Description: "Individual transactions for a month, optionally filtered to a category and/or merchant. Returns an exact count and total plus the matching transactions — use this for breakdowns and \"list every…\" questions. The count and total are computed over ALL matches; the transactions list may be capped by limit.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"month":{"type":"string","description":"Month as YYYY-MM; omit for the current month"},"category":{"type":"string","description":"Category name or slug to filter by, e.g. \"Food & Drink\". Learn exact names from spend_by_category first."},"merchant":{"type":"string","description":"Merchant name substring to filter by"},"limit":{"type":"integer","description":"Max transactions to list, 1-100 (default 50)"}}}`),
+		},
+		{
+			Name:        "query_transactions",
+			Description: "The flexible transaction lister — covers INCOME, spending, and transfers (unlike list_transactions, which is spending only). Lists individual transactions matching any combination of filters, and returns an exact count plus totals split into total_in (money in) and total_out (money out) over ALL matches; the listed rows may be capped by limit. Use flow:\"income\" to list paychecks/deposits. Each row has amount (a positive magnitude), direction (\"in\"/\"out\"), category, account, and source.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"flow":{"type":"string","enum":["spending","income","transfers","all"],"description":"Which money to include: spending (money out, the default), income, transfers, or all"},"month":{"type":"string","description":"Month as YYYY-MM. Omit for the current month."},"start":{"type":"string","description":"Range start date YYYY-MM-DD (use start+end instead of month for a custom range)"},"end":{"type":"string","description":"Range end date YYYY-MM-DD"},"category":{"type":"string","description":"Category name or slug to filter by"},"merchant":{"type":"string","description":"Merchant/payee name substring to filter by"},"source":{"type":"string","enum":["plaid","csv","manual"],"description":"Only transactions imported from this source"},"min_amount":{"type":"number","description":"Only transactions at least this large (absolute dollars)"},"max_amount":{"type":"number","description":"Only transactions at most this large (absolute dollars)"},"limit":{"type":"integer","description":"Max transactions to list, 1-100 (default 50)"}}}`),
+		},
+		{
+			Name:        "breakdown",
+			Description: "The flexible aggregator — group transactions along one dimension and get per-group totals. Covers income, spending, and transfers (set flow). Answers \"where did my income come from\" (flow:\"income\", group_by:\"merchant\"), \"spending by category\", \"income by month\", etc. Returns per group: count, total_in (money in) and total_out (money out), largest first, all computed in SQL.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"group_by":{"type":"string","enum":["category","merchant","account","month","day","pfc"],"description":"Dimension to group by (pfc = Plaid's detailed category). Required."},"flow":{"type":"string","enum":["spending","income","transfers","all"],"description":"Which money to include (default spending). Use \"income\" to see where income came from."},"month":{"type":"string","description":"A single month YYYY-MM"},"months":{"type":"integer","description":"Trailing N months, 1-24. Pair with group_by:\"month\" for a trend."},"start":{"type":"string","description":"Range start date YYYY-MM-DD"},"end":{"type":"string","description":"Range end date YYYY-MM-DD"},"category":{"type":"string","description":"Category name or slug to filter by"},"merchant":{"type":"string","description":"Merchant/payee name substring to filter by"},"source":{"type":"string","enum":["plaid","csv","manual"],"description":"Only transactions imported from this source"},"min_amount":{"type":"number","description":"Only transactions at least this large (absolute dollars)"},"max_amount":{"type":"number","description":"Only transactions at most this large (absolute dollars)"}},"required":["group_by"]}`),
 		},
 		{
 			Name:        "monthly_trend",
@@ -479,6 +492,147 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		}
 		return marshalTool(result)
 
+	case "query_transactions":
+		var in struct {
+			Flow      string      `json:"flow"`
+			Month     string      `json:"month"`
+			Start     string      `json:"start"`
+			End       string      `json:"end"`
+			Category  string      `json:"category"`
+			Merchant  string      `json:"merchant"`
+			Source    string      `json:"source"`
+			MinAmount json.Number `json:"min_amount"`
+			MaxAmount json.Number `json:"max_amount"`
+			Limit     int         `json:"limit"`
+		}
+		_ = json.Unmarshal(input, &in)
+		flow, err := normalizeFlow(in.Flow)
+		if err != nil {
+			return "", err
+		}
+		from, to, err := toolDateRange(in.Month, in.Start, in.End, 0)
+		if err != nil {
+			return "", err
+		}
+		minAmt, err := toolDecimal(in.MinAmount)
+		if err != nil {
+			return "", err
+		}
+		maxAmt, err := toolDecimal(in.MaxAmount)
+		if err != nil {
+			return "", err
+		}
+		limit := in.Limit
+		if limit < 1 || limit > 100 {
+			limit = 50
+		}
+
+		// The sum is exact over every match; the list is capped by limit. Both
+		// share the same filters, so their figures reconcile.
+		sum, err := s.Queries.SumQueriedTransactions(ctx, dbgen.SumQueriedTransactionsParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: from, Date_2: to, Flow: flow,
+			Category: optStr(in.Category), Merchant: optStr(in.Merchant), Source: optStr(in.Source),
+			MinAmount: minAmt, MaxAmount: maxAmt,
+		})
+		if err != nil {
+			return "", err
+		}
+		rows, err := s.Queries.ListQueriedTransactions(ctx, dbgen.ListQueriedTransactionsParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: from, Date_2: to, Flow: flow,
+			Category: optStr(in.Category), Merchant: optStr(in.Merchant), Source: optStr(in.Source),
+			MinAmount: minAmt, MaxAmount: maxAmt, Lim: int32(limit),
+		})
+		if err != nil {
+			return "", err
+		}
+		txns := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			t := map[string]any{
+				"date":      r.Date.Format("2006-01-02"),
+				"merchant":  r.Merchant,
+				"amount":    r.Amount.StringFixed(2),
+				"direction": r.Direction,
+				"category":  r.CategoryName,
+				"account":   r.AccountName,
+				"source":    r.Source,
+			}
+			if r.IsIncome {
+				t["is_income"] = true
+			}
+			if r.IsTransfer {
+				t["is_transfer"] = true
+			}
+			if r.PlaidPfcDetailed != nil && *r.PlaidPfcDetailed != "" {
+				t["plaid_category"] = *r.PlaidPfcDetailed
+			}
+			txns = append(txns, t)
+		}
+		return marshalTool(map[string]any{
+			"count":        sum.TransactionCount,
+			"total_in":     sum.TotalIn.StringFixed(2),
+			"total_out":    sum.TotalOut.StringFixed(2),
+			"listed":       len(txns),
+			"truncated":    int64(len(txns)) < sum.TransactionCount,
+			"transactions": txns,
+		})
+
+	case "breakdown":
+		var in struct {
+			GroupBy   string      `json:"group_by"`
+			Flow      string      `json:"flow"`
+			Month     string      `json:"month"`
+			Months    int         `json:"months"`
+			Start     string      `json:"start"`
+			End       string      `json:"end"`
+			Category  string      `json:"category"`
+			Merchant  string      `json:"merchant"`
+			Source    string      `json:"source"`
+			MinAmount json.Number `json:"min_amount"`
+			MaxAmount json.Number `json:"max_amount"`
+		}
+		_ = json.Unmarshal(input, &in)
+		groupBy, err := normalizeGroupBy(in.GroupBy)
+		if err != nil {
+			return "", err
+		}
+		flow, err := normalizeFlow(in.Flow)
+		if err != nil {
+			return "", err
+		}
+		from, to, err := toolDateRange(in.Month, in.Start, in.End, in.Months)
+		if err != nil {
+			return "", err
+		}
+		minAmt, err := toolDecimal(in.MinAmount)
+		if err != nil {
+			return "", err
+		}
+		maxAmt, err := toolDecimal(in.MaxAmount)
+		if err != nil {
+			return "", err
+		}
+		rows, err := s.Queries.BreakdownTransactions(ctx, dbgen.BreakdownTransactionsParams{
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: from, Date_2: to, GroupBy: groupBy, Flow: flow,
+			Category: optStr(in.Category), Merchant: optStr(in.Merchant), Source: optStr(in.Source),
+			MinAmount: minAmt, MaxAmount: maxAmt,
+		})
+		if err != nil {
+			return "", err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, map[string]any{
+				"group":     labelString(r.GroupLabel),
+				"count":     r.TransactionCount,
+				"total_in":  r.TotalIn.StringFixed(2),
+				"total_out": r.TotalOut.StringFixed(2),
+			})
+		}
+		return marshalTool(out)
+
 	case "monthly_trend":
 		from, to := trailingMonthsRange(toolMonths(input))
 		rows, err := s.Queries.GetMonthlyTrend(ctx, dbgen.GetMonthlyTrendParams{
@@ -579,6 +733,107 @@ func trailingMonthsRange(months int) (from, to time.Time) {
 	from = firstOfThis.AddDate(0, -(months - 1), 0)
 	to = firstOfThis.AddDate(0, 1, -1)
 	return from, to
+}
+
+// optStr trims s and returns a pointer to it, or nil when empty — the shape the
+// generated queries expect for an absent optional text filter (a nil narg passes
+// everything).
+func optStr(s string) *string {
+	if v := strings.TrimSpace(s); v != "" {
+		return &v
+	}
+	return nil
+}
+
+// toolDecimal reads an optional JSON-number amount into a NullDecimal (invalid =
+// absent, so the query skips the filter). Parsing from the literal keeps money in
+// decimal rather than routing it through a float.
+func toolDecimal(n json.Number) (decimal.NullDecimal, error) {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return decimal.NullDecimal{}, nil
+	}
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		return decimal.NullDecimal{}, fmt.Errorf("invalid amount %q", s)
+	}
+	return decimal.NullDecimal{Decimal: d, Valid: true}, nil
+}
+
+// toolDateRange resolves the flexible tools' date window. Precedence: an explicit
+// start+end range, then a single month, then a trailing N-month window, then the
+// current month as the default. months out of 1-24 is clamped to that band.
+func toolDateRange(month, start, end string, months int) (from, to time.Time, err error) {
+	start = strings.TrimSpace(start)
+	end = strings.TrimSpace(end)
+	if start != "" || end != "" {
+		if start == "" || end == "" {
+			return from, to, fmt.Errorf("both start and end are required for a custom date range")
+		}
+		if from, err = time.Parse("2006-01-02", start); err != nil {
+			return from, to, fmt.Errorf("invalid start date %q (use YYYY-MM-DD)", start)
+		}
+		if to, err = time.Parse("2006-01-02", end); err != nil {
+			return from, to, fmt.Errorf("invalid end date %q (use YYYY-MM-DD)", end)
+		}
+		if to.Before(from) {
+			from, to = to, from
+		}
+		return from, to, nil
+	}
+	if strings.TrimSpace(month) != "" {
+		return monthRange(month)
+	}
+	if months >= 1 {
+		if months > 24 {
+			months = 24
+		}
+		from, to = trailingMonthsRange(months)
+		return from, to, nil
+	}
+	return monthRange("")
+}
+
+// normalizeFlow validates the flow filter and defaults an empty value to
+// "spending", matching the app's convention that a bare figure means money out.
+func normalizeFlow(flow string) (string, error) {
+	switch flow = strings.ToLower(strings.TrimSpace(flow)); flow {
+	case "":
+		return "spending", nil
+	case "spending", "income", "transfers", "all":
+		return flow, nil
+	default:
+		return "", fmt.Errorf("unknown flow %q (use spending, income, transfers, or all)", flow)
+	}
+}
+
+// normalizeGroupBy validates the breakdown dimension. It is required — there is no
+// sensible default grouping.
+func normalizeGroupBy(g string) (string, error) {
+	switch g = strings.ToLower(strings.TrimSpace(g)); g {
+	case "category", "merchant", "account", "month", "day", "pfc":
+		return g, nil
+	case "":
+		return "", fmt.Errorf("group_by is required (category, merchant, account, month, day, or pfc)")
+	default:
+		return "", fmt.Errorf("unknown group_by %q (use category, merchant, account, month, day, or pfc)", g)
+	}
+}
+
+// labelString renders a breakdown group label. sqlc types the CASE expression as
+// interface{}; pgx decodes the text column as a string, but the []byte and
+// fallback arms keep it robust.
+func labelString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprint(x)
+	}
 }
 
 func marshalTool(v any) (string, error) {

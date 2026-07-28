@@ -190,6 +190,165 @@ WHERE u.household_id = $1
 ORDER BY t.date DESC, t.amount DESC
 LIMIT sqlc.arg('lim');
 
+-- name: SumQueriedTransactions :one
+-- Exact count and split totals for the flexible assistant query tool. Unlike
+-- SumFilteredTransactions (spending only), this spans any flow — spending,
+-- income, transfers, or all — selected by sqlc.arg('flow'), with a set of
+-- optional filters. Totals are split by direction and always positive:
+--   * total_in  = money IN  = SUM(-amount) over inflow rows  (amount < 0)
+--   * total_out = money OUT = SUM(amount)  over outflow rows (amount > 0)
+-- which matches how the app reports income and spending (both positive) and
+-- stays meaningful for a mixed flow='all' result. All arithmetic is in NUMERIC
+-- here, never in the application. LEFT JOIN categories so uncategorised rows are
+-- not silently dropped. Same visibility scoping as every report.
+SELECT
+    COUNT(*)::bigint AS transaction_count,
+    COALESCE(SUM(-t.amount) FILTER (WHERE t.amount < 0), 0)::numeric AS total_in,
+    COALESCE(SUM(t.amount)  FILTER (WHERE t.amount > 0), 0)::numeric AS total_out
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND (
+    sqlc.arg('flow')::text = 'all'
+    OR (sqlc.arg('flow')::text = 'income'    AND COALESCE(c.is_income, false))
+    OR (sqlc.arg('flow')::text = 'transfers' AND COALESCE(c.is_transfer, false))
+    OR (sqlc.arg('flow')::text = 'spending'
+          AND NOT COALESCE(c.is_income, false)
+          AND NOT COALESCE(c.is_transfer, false)
+          AND t.amount > 0)
+  )
+  AND (sqlc.narg('category')::text IS NULL
+       OR c.slug = lower(sqlc.narg('category')::text)
+       OR c.name ILIKE '%' || sqlc.narg('category')::text || '%')
+  AND (sqlc.narg('merchant')::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('merchant')::text || '%')
+  AND (sqlc.narg('account_ids')::uuid[] IS NULL
+       OR cardinality(sqlc.narg('account_ids')::uuid[]) = 0
+       OR t.account_id = ANY(sqlc.narg('account_ids')::uuid[]))
+  AND (sqlc.narg('min_amount')::numeric IS NULL OR abs(t.amount) >= sqlc.narg('min_amount')::numeric)
+  AND (sqlc.narg('max_amount')::numeric IS NULL OR abs(t.amount) <= sqlc.narg('max_amount')::numeric)
+  AND (sqlc.narg('source')::text IS NULL OR t.source = sqlc.narg('source')::text);
+
+-- name: ListQueriedTransactions :many
+-- The per-row list behind the flexible assistant query tool. Same filters and
+-- visibility scoping as SumQueriedTransactions; the list may be capped by the
+-- limit while that sum stays exact over every match. Amount is reported as a
+-- positive magnitude with a direction ('in'/'out') so income and spending read
+-- consistently without the model doing sign arithmetic.
+SELECT
+    t.date,
+    COALESCE(t.merchant_name, t.name)                    AS merchant,
+    abs(t.amount)::numeric                               AS amount,
+    (CASE WHEN t.amount < 0 THEN 'in' ELSE 'out' END)    AS direction,
+    COALESCE(c.name, 'Uncategorised')                    AS category_name,
+    a.name                                               AS account_name,
+    COALESCE(c.is_income, false)                         AS is_income,
+    COALESCE(c.is_transfer, false)                       AS is_transfer,
+    t.plaid_pfc_detailed,
+    t.source
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND (
+    sqlc.arg('flow')::text = 'all'
+    OR (sqlc.arg('flow')::text = 'income'    AND COALESCE(c.is_income, false))
+    OR (sqlc.arg('flow')::text = 'transfers' AND COALESCE(c.is_transfer, false))
+    OR (sqlc.arg('flow')::text = 'spending'
+          AND NOT COALESCE(c.is_income, false)
+          AND NOT COALESCE(c.is_transfer, false)
+          AND t.amount > 0)
+  )
+  AND (sqlc.narg('category')::text IS NULL
+       OR c.slug = lower(sqlc.narg('category')::text)
+       OR c.name ILIKE '%' || sqlc.narg('category')::text || '%')
+  AND (sqlc.narg('merchant')::text IS NULL
+       OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('merchant')::text || '%')
+  AND (sqlc.narg('account_ids')::uuid[] IS NULL
+       OR cardinality(sqlc.narg('account_ids')::uuid[]) = 0
+       OR t.account_id = ANY(sqlc.narg('account_ids')::uuid[]))
+  AND (sqlc.narg('min_amount')::numeric IS NULL OR abs(t.amount) >= sqlc.narg('min_amount')::numeric)
+  AND (sqlc.narg('max_amount')::numeric IS NULL OR abs(t.amount) <= sqlc.narg('max_amount')::numeric)
+  AND (sqlc.narg('source')::text IS NULL OR t.source = sqlc.narg('source')::text)
+ORDER BY t.date DESC, abs(t.amount) DESC
+LIMIT sqlc.arg('lim');
+
+-- name: BreakdownTransactions :many
+-- Group transactions along one dimension and return per-group split totals — the
+-- flexible aggregation tool. Generalises GetSpendingByCategory/GetTopMerchants/
+-- GetSpendingByDay to any flow and any of several group_by dimensions. The group
+-- label is chosen in SQL by sqlc.arg('group_by'); totals are split by direction
+-- and positive, exactly as in SumQueriedTransactions. Same filters and visibility
+-- scoping. Ordered by combined magnitude so the largest groups come first.
+WITH base AS (
+    SELECT
+        (CASE sqlc.arg('group_by')::text
+            WHEN 'category' THEN COALESCE(c.name, 'Uncategorised')
+            WHEN 'merchant' THEN COALESCE(t.merchant_name, t.name)
+            WHEN 'account'  THEN a.name
+            WHEN 'month'    THEN to_char(date_trunc('month', t.date), 'YYYY-MM')
+            WHEN 'day'      THEN to_char(t.date, 'YYYY-MM-DD')
+            WHEN 'pfc'      THEN COALESCE(t.plaid_pfc_detailed, 'Unknown')
+            ELSE COALESCE(c.name, 'Uncategorised')
+        END) AS grp,
+        t.amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+      AND (
+        sqlc.arg('flow')::text = 'all'
+        OR (sqlc.arg('flow')::text = 'income'    AND COALESCE(c.is_income, false))
+        OR (sqlc.arg('flow')::text = 'transfers' AND COALESCE(c.is_transfer, false))
+        OR (sqlc.arg('flow')::text = 'spending'
+              AND NOT COALESCE(c.is_income, false)
+              AND NOT COALESCE(c.is_transfer, false)
+              AND t.amount > 0)
+      )
+      AND (sqlc.narg('category')::text IS NULL
+           OR c.slug = lower(sqlc.narg('category')::text)
+           OR c.name ILIKE '%' || sqlc.narg('category')::text || '%')
+      AND (sqlc.narg('merchant')::text IS NULL
+           OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('merchant')::text || '%')
+      AND (sqlc.narg('account_ids')::uuid[] IS NULL
+           OR cardinality(sqlc.narg('account_ids')::uuid[]) = 0
+           OR t.account_id = ANY(sqlc.narg('account_ids')::uuid[]))
+      AND (sqlc.narg('min_amount')::numeric IS NULL OR abs(t.amount) >= sqlc.narg('min_amount')::numeric)
+      AND (sqlc.narg('max_amount')::numeric IS NULL OR abs(t.amount) <= sqlc.narg('max_amount')::numeric)
+      AND (sqlc.narg('source')::text IS NULL OR t.source = sqlc.narg('source')::text)
+)
+SELECT
+    grp                                                          AS group_label,
+    COUNT(*)::bigint                                             AS transaction_count,
+    COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)::numeric AS total_in,
+    COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::numeric AS total_out
+FROM base
+GROUP BY grp
+ORDER BY (COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)
+          + COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0)) DESC;
+
 -- name: CreateManualTransaction :one
 -- Inserts a hand-entered transaction. Household scoping is enforced in the
 -- SELECT: the row is created only when the target account belongs to the
