@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Account, type PlaidItem } from '../lib/api'
 import { formatMoney, formatRelative, isLiability } from '../lib/money'
 import { ConnectAccount } from '../components/ConnectAccount'
+import { ReconnectAccount } from '../components/ReconnectAccount'
 
 export function Accounts() {
   const items = useQuery({ queryKey: ['items'], queryFn: api.items })
@@ -68,6 +69,10 @@ function InstitutionCard({
   const unlink = useMutation({ mutationFn: () => api.deleteItem(item.id), onSuccess: refreshAll })
 
   const needsAttention = item.status !== 'active'
+  // Only a credential problem is fixable through Link. 'error' is a generic
+  // failure — reconnecting would not address it, so it stays a plain warning.
+  const canReconnect =
+    item.status === 'login_required' || item.status === 'revoked'
 
   return (
     <section className="glass overflow-hidden">
@@ -100,7 +105,9 @@ function InstitutionCard({
           <span className="rounded-full border border-ember-400/30 bg-ember-400/10 px-3 py-1 text-xs text-ember-400">
             {item.status === 'login_required'
               ? 'Reconnect required'
-              : item.status}
+              : item.status === 'revoked'
+                ? 'Access revoked'
+                : item.status}
           </span>
         )}
 
@@ -143,6 +150,15 @@ function InstitutionCard({
           </button>
         </div>
       </header>
+
+      {canReconnect && (
+        <div className="border-b border-white/5 bg-ember-400/5 px-6 py-4">
+          <ReconnectAccount
+            itemId={item.id}
+            institutionName={item.institution_name}
+          />
+        </div>
+      )}
 
       {sync.isSuccess && (
         <p className="border-b border-white/5 bg-verdant-400/5 px-6 py-2 text-xs text-verdant-400">

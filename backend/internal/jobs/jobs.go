@@ -28,6 +28,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/insights"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
@@ -645,7 +646,24 @@ type GenerateInsightsWorker struct {
 }
 
 func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[GenerateInsightsArgs]) error {
-	results, err := insights.Generate(ctx, w.Queries, w.AI, job.Args.HouseholdID, time.Now())
+	now := time.Now()
+
+	// Promotion runs BEFORE detection, not after: the upcoming-bill producer
+	// reads recurring_obligations, so a merchant detected this pass should reach
+	// the calendar in the same pass rather than a sync later. It is idempotent
+	// and never overwrites a user-edited row, so re-running costs nothing.
+	//
+	// A promotion failure must not sink the feed — the rest of the producers are
+	// unrelated to it — so it is logged rather than returned.
+	if promoted, err := obligations.Promote(ctx, w.Queries, job.Args.HouseholdID, now); err != nil {
+		slog.Warn("promote recurring obligations",
+			"error", err, "household_id", job.Args.HouseholdID)
+	} else if promoted > 0 {
+		slog.Info("recurring obligations promoted",
+			"household_id", job.Args.HouseholdID, "count", promoted)
+	}
+
+	results, err := insights.Generate(ctx, w.Queries, w.AI, job.Args.HouseholdID, now)
 	if err != nil {
 		return fmt.Errorf("generate insights for household %s: %w", job.Args.HouseholdID, err)
 	}

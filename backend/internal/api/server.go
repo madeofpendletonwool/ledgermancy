@@ -217,6 +217,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/exchange", s.handleExchangePublicToken)
 			r.Get("/items", s.handleListItems)
 			r.Post("/items/{itemID}/sync", s.handleSyncItem)
+			r.Post("/items/{itemID}/reconnected", s.handleItemReconnected)
 			r.Patch("/items/{itemID}/sharing", s.handleSetItemSharing)
 			r.Delete("/items/{itemID}", s.handleDeleteItem)
 		})
@@ -251,6 +252,19 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/", s.handleCreateBudget)
 			r.Post("/suggest", s.handleSuggestBudgets)
 			r.Delete("/{budgetID}", s.handleDeleteBudget)
+		})
+
+		// The bill calendar. /upcoming expands cadences into occurrences and
+		// /projection carries balances forward through them; both are derived,
+		// so neither is a second source of truth for what is due.
+		r.Route("/obligations", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListObligations)
+			r.Post("/", s.handleCreateObligation)
+			r.Get("/upcoming", s.handleUpcomingObligations)
+			r.Get("/projection", s.handleObligationProjection)
+			r.Put("/{obligationID}", s.handleUpdateObligation)
+			r.Delete("/{obligationID}", s.handleDeleteObligation)
 		})
 
 		r.Route("/goals", func(r chi.Router) {

@@ -44,7 +44,8 @@ export function ConnectAccount() {
   })
 
   const startLink = useMutation({
-    mutationFn: api.createLinkToken,
+    // No item id: create mode, a brand new institution.
+    mutationFn: () => api.createLinkToken(),
     onSuccess: (res) => setLinkToken(res.link_token),
     onError: (err: Error) => setError(err.message),
   })

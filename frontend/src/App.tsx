@@ -16,6 +16,7 @@ import { NetWorth } from './routes/NetWorth'
 import { Spending } from './routes/Spending'
 import { Register } from './routes/Register'
 import { Report } from './routes/Report'
+import { Schedule } from './routes/Schedule'
 import { Settings } from './routes/Settings'
 import { useSession } from './lib/session'
 
@@ -51,6 +52,7 @@ export default function App() {
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/spending" element={<Spending />} />
         <Route path="/budgets" element={<Budgets />} />
+        <Route path="/schedule" element={<Schedule />} />
         <Route path="/goals" element={<Goals />} />
         <Route path="/net-worth" element={<NetWorth />} />
         <Route path="/report" element={<Report />} />

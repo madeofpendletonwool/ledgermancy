@@ -25,6 +25,12 @@ func TestValidateConfig(t *testing.T) {
 		{"low_leftover ok", TypeLowLeftover, `{"floor":"500.00"}`, false},
 		{"low_leftover zero ok", TypeLowLeftover, `{"floor":"0"}`, false},
 		{"low_leftover negative", TypeLowLeftover, `{"floor":"-1"}`, true},
+		{"predicted_low_balance ok", TypePredictedLowBalance, `{"floor":"250.00","days":14}`, false},
+		// An omitted floor means "warn me before I go overdrawn", and an omitted
+		// window takes the default — both are sensible rules, not broken ones.
+		{"predicted_low_balance defaults ok", TypePredictedLowBalance, `{}`, false},
+		{"predicted_low_balance negative floor", TypePredictedLowBalance, `{"floor":"-1"}`, true},
+		{"predicted_low_balance beyond horizon", TypePredictedLowBalance, `{"days":900}`, true},
 		{"unknown type", "nonsense", `{}`, true},
 	}
 	for _, tc := range cases {

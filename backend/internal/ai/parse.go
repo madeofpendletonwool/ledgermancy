@@ -40,6 +40,7 @@ Alert types (kind "alert"), with their config fields:
 - budget_threshold: {"percent": <integer 1-1000>} — warns when a category's spending reaches that percent of its monthly budget.
 - unusual_merchant: {"recent_days": <integer>, "min_amount": "<decimal string>"} — flags a newly-appearing merchant's charge.
 - low_leftover: {"floor": "<decimal string>"} — warns when money left this month drops below the floor.
+- predicted_low_balance: {"floor": "<decimal string>", "days": <integer>} — looks FORWARD: warns when the cash balance is projected to fall below the floor within that many days, once known upcoming bills clear. Use this, not low_leftover, when the request is about running out of money before a bill or a payday.
 
 Budget intent (kind "budget"): {"category": "<a category from the provided list>", "amount": "<decimal string>"} — a monthly spending budget for one category.
 
@@ -56,7 +57,7 @@ var proposeRuleTool = Tool{
 		"type": "object",
 		"properties": {
 			"kind": {"type": "string", "enum": ["alert", "budget", "unsupported"]},
-			"alert_type": {"type": "string", "enum": ["big_spend", "budget_threshold", "unusual_merchant", "low_leftover"], "description": "Set when kind is alert"},
+			"alert_type": {"type": "string", "enum": ["big_spend", "budget_threshold", "unusual_merchant", "low_leftover", "predicted_low_balance"], "description": "Set when kind is alert"},
 			"config": {"type": "object", "description": "Set when kind is alert: the type-specific config fields"},
 			"category": {"type": "string", "description": "Set when kind is budget: a category name or slug from the provided list"},
 			"amount": {"type": "string", "description": "Set when kind is budget: monthly amount as a decimal string"},

@@ -315,6 +315,126 @@ export interface SafeToSpend {
   safe_to_spend: string
   /** Months the income average is based on; low values mean a thin history. */
   income_months: number
+
+  /**
+   * The bill-aware view, added ALONGSIDE safe_to_spend — the original field
+   * keeps its meaning. `fixed_costs` is a trailing six-month average of what was
+   * actually paid; these fields replace that per category with the bills the
+   * calendar knows are still to come, so no bill is subtracted twice.
+   */
+  upcoming_obligations: string
+  fixed_costs_after_bills: string
+  safe_to_spend_after_bills: string
+  /**
+   * How many fixed categories have a known obligation behind them. 0 means the
+   * after-bills figure carries no new information and should not be shown as if
+   * it did.
+   */
+  obligation_coverage: number
+}
+
+/**
+ * A recurring obligation: a bill the app knows is coming. `next_due` and
+ * `monthly_estimate` are DERIVED server-side, never stored — a stored next-due
+ * date is a cache that goes stale the moment the calendar rolls over.
+ *
+ * `source` is 'detected' for rows promoted from the recurring-charge detector
+ * and 'manual' for ones a member entered. Manual entry is the only way an annual
+ * premium or anything paid by cheque can ever be known.
+ */
+export interface Obligation {
+  id: string
+  label: string
+  amount: string
+  category_id: string | null
+  account_id: string | null
+  interval_count: number
+  interval_unit: ObligationUnit
+  /** Human phrasing of the cadence, e.g. "every 2 weeks". Decided server-side. */
+  cadence: string
+  anchor_date: string
+  end_date: string | null
+  next_due: string | null
+  days_until_due: number | null
+  monthly_estimate: string
+  source: 'manual' | 'detected'
+  merchant_key: string | null
+  is_shared: boolean
+  is_active: boolean
+  /** True once a human has edited it; re-detection then leaves it alone. */
+  user_edited: boolean
+  is_personal: boolean
+}
+
+export type ObligationUnit = 'day' | 'week' | 'month' | 'year'
+
+/** Fields to create or update an obligation. Amounts and dates are strings. */
+export interface ObligationInput {
+  label: string
+  amount: string
+  category_id?: string | null
+  account_id?: string | null
+  interval_count: number
+  interval_unit: ObligationUnit
+  anchor_date: string
+  end_date?: string
+  personal?: boolean
+  is_active?: boolean
+}
+
+/** One obligation on one date. Several rows can share obligation_id. */
+export interface UpcomingObligation {
+  obligation_id: string
+  label: string
+  amount: string
+  category_id: string | null
+  account_id: string | null
+  cadence: string
+  source: 'manual' | 'detected'
+  due_date: string
+  days_until_due: number
+}
+
+export interface UpcomingObligations {
+  from: string
+  to: string
+  total: string
+  items: UpcomingObligation[]
+}
+
+export interface ProjectionPoint {
+  date: string
+  balance: string
+  /** What falls due on this day — zero on most of them. */
+  due: string
+}
+
+export interface AccountProjection {
+  /** Null on the combined series, which is every cash account together. */
+  account_id: string | null
+  name: string
+  mask: string | null
+  institution_name: string | null
+  current_balance: string
+  lowest_balance: string
+  lowest_date: string
+  goes_negative: boolean
+  points: ProjectionPoint[]
+}
+
+/**
+ * Balances carried forward through KNOWN obligations only. It is not a
+ * prediction of discretionary spending and must not be presented as one.
+ * `unassigned_total` is the money the per-account lines cannot show because no
+ * account was named on those bills.
+ */
+export interface BalanceProjection {
+  from: string
+  to: string
+  combined: AccountProjection
+  accounts: AccountProjection[]
+  unassigned_total: string
+  total_due: string
 }
 
 export interface PeriodQuery {
@@ -448,6 +568,7 @@ export type AlertType =
   | 'budget_threshold'
   | 'unusual_merchant'
   | 'low_leftover'
+  | 'predicted_low_balance'
 
 /** A configured alert rule. config is the type-specific threshold object. */
 export interface Alert {
@@ -765,8 +886,17 @@ export const api = {
     request<void>('DELETE', `/api/household/invites/${id}`),
 
   // --- Plaid -------------------------------------------------------------
-  createLinkToken: () =>
-    request<{ link_token: string }>('POST', '/api/plaid/link-token'),
+  /**
+   * Mints a Link token. Pass an item id to open Link in *update mode*, which
+   * re-authenticates that institution in place and keeps its history, rather
+   * than linking a new one.
+   */
+  createLinkToken: (itemId?: string) =>
+    request<{ link_token: string }>(
+      'POST',
+      '/api/plaid/link-token',
+      itemId ? { item_id: itemId } : undefined,
+    ),
 
   exchangePublicToken: (publicToken: string) =>
     request<PlaidItem>('POST', '/api/plaid/exchange', {
@@ -777,6 +907,10 @@ export const api = {
 
   syncItem: (id: string) =>
     request<SyncResult>('POST', `/api/plaid/items/${id}/sync`),
+
+  /** Clears an item's error state after Link update mode succeeds. */
+  itemReconnected: (id: string) =>
+    request<PlaidItem>('POST', `/api/plaid/items/${id}/reconnected`),
 
   setItemSharing: (id: string, isShared: boolean) =>
     request<PlaidItem>('PATCH', `/api/plaid/items/${id}/sharing`, {
@@ -878,6 +1012,30 @@ export const api = {
   // off); ai_tailored says which. Approval is a loop of setBudget, unchanged.
   suggestBudgets: () =>
     request<BudgetSuggestions>('POST', '/api/budgets/suggest'),
+
+  // --- Bill calendar -------------------------------------------------------
+  // Obligations are the stored rules; /upcoming expands them into dated
+  // occurrences and /projection carries balances forward through those. Both
+  // derived views come from one server-side expansion, so they cannot disagree
+  // about when a bill is due.
+  obligations: () => request<Obligation[]>('GET', '/api/obligations'),
+
+  createObligation: (input: ObligationInput) =>
+    request<Obligation>('POST', '/api/obligations', input),
+
+  updateObligation: (id: string, input: ObligationInput) =>
+    request<Obligation>('PUT', `/api/obligations/${id}`, input),
+
+  // Deletes a manual obligation; deactivates a detected one, which would
+  // otherwise be recreated by the next detection pass.
+  deleteObligation: (id: string) =>
+    request<void>('DELETE', `/api/obligations/${id}`),
+
+  upcomingObligations: (days = 30) =>
+    request<UpcomingObligations>('GET', withQuery('/api/obligations/upcoming', { days })),
+
+  obligationProjection: (days = 30) =>
+    request<BalanceProjection>('GET', withQuery('/api/obligations/projection', { days })),
 
   // --- Goals --------------------------------------------------------------
   goals: () => request<Goal[]>('GET', '/api/goals'),

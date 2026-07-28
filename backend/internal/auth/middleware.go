@@ -67,8 +67,15 @@ func (m Middleware) Authenticate(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey, identity)))
+		next.ServeHTTP(w, r.WithContext(ContextWithIdentity(r.Context(), identity)))
 	})
+}
+
+// ContextWithIdentity attaches an authenticated caller to a context, the way
+// Authenticate does. Handler tests use it to exercise a handler directly
+// without minting a real session.
+func ContextWithIdentity(ctx context.Context, identity Identity) context.Context {
+	return context.WithValue(ctx, identityKey, identity)
 }
 
 // identify looks up the caller, returning an error if the cookie is missing,

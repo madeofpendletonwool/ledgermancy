@@ -22,14 +22,36 @@ type linkTokenResponse struct {
 	LinkToken string `json:"link_token"`
 }
 
+// linkTokenRequest optionally names an existing item to repair. The body may be
+// omitted entirely, which means "link a new institution".
+type linkTokenRequest struct {
+	ItemID *uuid.UUID `json:"item_id"`
+}
+
 // handleCreateLinkToken issues the short-lived token the frontend hands to
-// Plaid Link to open the bank-selection flow.
+// Plaid Link.
+//
+// With no item id it opens the bank-selection flow for a new institution. With
+// one it opens Link in *update mode*, which re-authenticates the existing item
+// in place — keeping its transactions and its history window, both of which a
+// delete-and-relink would throw away.
 func (s *Server) handleCreateLinkToken(w http.ResponseWriter, r *http.Request) {
 	if s.Plaid == nil {
 		writeError(w, http.StatusServiceUnavailable, errPlaidDisabled)
 		return
 	}
 	identity := auth.MustFromContext(r.Context())
+
+	var req linkTokenRequest
+	if err := decodeJSONOptional(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.ItemID != nil {
+		s.createUpdateLinkToken(w, r, identity, *req.ItemID)
+		return
+	}
 
 	token, err := s.Plaid.CreateLinkToken(r.Context(),
 		identity.UserID.String(), identity.DisplayName)
@@ -38,6 +60,69 @@ func (s *Server) handleCreateLinkToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, linkTokenResponse{LinkToken: token})
+}
+
+// createUpdateLinkToken mints an update-mode token for an item the caller owns.
+//
+// This mints a credential against a live bank connection, so ownership is
+// verified before the access token is ever decrypted.
+func (s *Server) createUpdateLinkToken(w http.ResponseWriter, r *http.Request, identity auth.Identity, itemID uuid.UUID) {
+	item, ok := s.ownedItem(w, r, identity.UserID, itemID)
+	if !ok {
+		return
+	}
+
+	accessToken, err := s.Cipher.OpenString(item.AccessTokenEncrypted)
+	if err != nil {
+		s.internalError(w, "decrypt access token", err)
+		return
+	}
+
+	token, err := s.Plaid.CreateUpdateLinkToken(r.Context(),
+		identity.UserID.String(), identity.DisplayName, accessToken)
+	if err != nil {
+		s.internalError(w, "create update link token", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, linkTokenResponse{LinkToken: token})
+}
+
+// handleItemReconnected clears an item's error state after the user completes
+// Link in update mode.
+//
+// Update mode produces no public token worth exchanging — Link's onSuccess
+// fires with the item already repaired — so the frontend calls this instead.
+// Clearing optimistically is safe: if the credentials were not actually fixed,
+// the next sync fails and Plaid re-fires ITEM_LOGIN_REQUIRED, putting the item
+// straight back into the state it was in. Nothing else may clear the status;
+// this is the one explicit success callback.
+func (s *Server) handleItemReconnected(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	itemID, err := uuid.Parse(chi.URLParam(r, "itemID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid item id")
+		return
+	}
+	item, ok := s.ownedItem(w, r, identity.UserID, itemID)
+	if !ok {
+		return
+	}
+
+	if err := s.Queries.SetItemStatus(r.Context(), dbgen.SetItemStatusParams{
+		ID: item.ID, Status: "active", ErrorCode: nil,
+	}); err != nil {
+		s.internalError(w, "clear item error", err)
+		return
+	}
+
+	// Pull fresh data now rather than waiting for the next scheduled sync — the
+	// item has been stalled for as long as it was broken.
+	s.enqueueSync(item.ID)
+
+	item.Status = "active"
+	item.ErrorCode = nil
+	writeJSON(w, http.StatusOK, toItemResponse(item))
 }
 
 type exchangeRequest struct {
@@ -308,22 +393,29 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 // userOwnsItem reports whether the caller owns the item, writing the error
 // response itself when they do not.
 func (s *Server) userOwnsItem(w http.ResponseWriter, r *http.Request, userID, itemID uuid.UUID) bool {
+	_, ok := s.ownedItem(w, r, userID, itemID)
+	return ok
+}
+
+// ownedItem loads an item the caller owns, writing the error response itself
+// when they do not own it or it does not exist.
+func (s *Server) ownedItem(w http.ResponseWriter, r *http.Request, userID, itemID uuid.UUID) (dbgen.PlaidItem, bool) {
 	item, err := s.Queries.GetPlaidItem(r.Context(), itemID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "item not found")
-			return false
+			return dbgen.PlaidItem{}, false
 		}
 		s.internalError(w, "load item", err)
-		return false
+		return dbgen.PlaidItem{}, false
 	}
 	if item.UserID != userID {
 		// 404 rather than 403: a caller who does not own the item should not
 		// learn that it exists.
 		writeError(w, http.StatusNotFound, "item not found")
-		return false
+		return dbgen.PlaidItem{}, false
 	}
-	return true
+	return item, true
 }
 
 func toItemResponse(item dbgen.PlaidItem) itemResponse {

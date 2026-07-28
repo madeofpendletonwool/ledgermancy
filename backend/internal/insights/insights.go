@@ -70,5 +70,7 @@ func DefaultProducers() []Producer {
 		savingsMilestoneProducer{},
 		// Budget-vs-actual trend (budgettrend.go).
 		budgetTrendProducer{},
+		// Bill calendar (upcomingbill.go).
+		upcomingBillProducer{},
 	}
 }

@@ -1,7 +1,13 @@
 import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, type DaySpend, type MerchantSpend, type Transaction } from '../lib/api'
+import {
+  api,
+  type DaySpend,
+  type MerchantSpend,
+  type Transaction,
+  type UpcomingObligation,
+} from '../lib/api'
 import { useSession } from '../lib/session'
 import {
   formatMoney,
@@ -67,6 +73,21 @@ export function Dashboard() {
     queryFn: () => api.transactions({ limit: 5 }),
   })
 
+  // Known bills, on two horizons: the next week for the strip near the top, and
+  // the rest of this month so the pace verdict is not blind to a mortgage that
+  // has not landed yet. Both totals are summed server-side.
+  const daysLeftInMonth = new Date(year, month, 0).getDate() - now.getDate()
+  const billsThisWeek = useQuery({
+    queryKey: ['obligations-upcoming', 7],
+    queryFn: () => api.upcomingObligations(7),
+  })
+  const billsThisMonth = useQuery({
+    queryKey: ['obligations-upcoming', daysLeftInMonth],
+    queryFn: () => api.upcomingObligations(daysLeftInMonth),
+    enabled: daysLeftInMonth > 0,
+  })
+  const stillDue = Number(billsThisMonth.data?.total ?? 0)
+
   const rows = accounts.data ?? []
   const hasData = rows.length > 0
 
@@ -118,6 +139,8 @@ export function Dashboard() {
       {/* Proactive feed — the app noticing things. Renders nothing when there
           is nothing to flag, so it never leaves an empty box at the top. */}
       <InsightFeed variant="card" limit={3} />
+
+      <BillsDueStrip bills={billsThisWeek.data?.items ?? []} total={billsThisWeek.data?.total} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
@@ -192,6 +215,14 @@ export function Dashboard() {
                       'month to date'
                     )}
                   </p>
+                  {/* Spend-to-date is only half the month's story while a
+                      mortgage is still to clear. */}
+                  {stillDue > 0 && (
+                    <p className="mt-0.5 text-xs text-mist-400">
+                      plus {formatMoney(billsThisMonth.data?.total)} of known
+                      bills still to come
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -308,6 +339,61 @@ function sumDaily(days: DaySpend[], throughDom?: number): number {
     if (throughDom !== undefined && dom > throughDom) return total
     return total + Number(d.spending)
   }, 0)
+}
+
+/**
+ * Bills falling due in the next week.
+ *
+ * Renders nothing when there are none, so it never leaves an empty box on a
+ * dashboard that is otherwise about what already happened. A surprise autopay is
+ * the most common way a household ends up overdrawn, and this is the cheapest
+ * possible place to prevent it.
+ */
+function BillsDueStrip({
+  bills,
+  total,
+}: {
+  bills: UpcomingObligation[]
+  total: string | undefined
+}) {
+  if (bills.length === 0) return null
+
+  return (
+    <section className="glass p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-medium">Due this week</h2>
+        <div className="flex items-baseline gap-3">
+          <span className="tabular text-lg font-semibold">{formatMoney(total)}</span>
+          <Link to="/schedule" className="text-sm text-rune-300 hover:underline">
+            See the schedule →
+          </Link>
+        </div>
+      </div>
+      <ul className="mt-3 flex flex-wrap gap-2">
+        {bills.slice(0, 6).map((b) => (
+          <li
+            key={`${b.obligation_id}-${b.due_date}`}
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm"
+          >
+            <span className="text-mist-200">{b.label}</span>
+            <span className="tabular ml-2 text-mist-100">{formatMoney(b.amount)}</span>
+            <span className="ml-2 text-xs text-mist-500">
+              {b.days_until_due === 0
+                ? 'today'
+                : b.days_until_due === 1
+                  ? 'tomorrow'
+                  : formatDate(b.due_date)}
+            </span>
+          </li>
+        ))}
+        {bills.length > 6 && (
+          <li className="px-2 py-1.5 text-sm text-mist-500">
+            +{bills.length - 6} more
+          </li>
+        )}
+      </ul>
+    </section>
+  )
 }
 
 function StatTile({

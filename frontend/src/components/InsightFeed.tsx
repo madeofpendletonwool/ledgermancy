@@ -161,6 +161,7 @@ const KIND_LABELS: Record<string, string> = {
   income_change: 'Income',
   savings_milestone: 'Milestone',
   budget_trend: 'Budget',
+  upcoming_bill: 'Bill due',
 }
 
 function kindLabel(kind: string): string {

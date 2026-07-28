@@ -19,24 +19,30 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 // Alert type identifiers, matching the strings stored in alerts.type and the
 // options the frontend offers.
 const (
-	TypeBigSpend        = "big_spend"
-	TypeBudgetThreshold = "budget_threshold"
-	TypeUnusualMerchant = "unusual_merchant"
-	TypeLowLeftover     = "low_leftover"
+	TypeBigSpend            = "big_spend"
+	TypeBudgetThreshold     = "budget_threshold"
+	TypeUnusualMerchant     = "unusual_merchant"
+	TypeLowLeftover         = "low_leftover"
+	TypePredictedLowBalance = "predicted_low_balance"
 )
 
 // Types lists every alert type the engine understands, for the config UI.
-var Types = []string{TypeBigSpend, TypeBudgetThreshold, TypeUnusualMerchant, TypeLowLeftover}
+var Types = []string{
+	TypeBigSpend, TypeBudgetThreshold, TypeUnusualMerchant,
+	TypeLowLeftover, TypePredictedLowBalance,
+}
 
 // IsValidType reports whether t is an alert type the engine can evaluate.
 func IsValidType(t string) bool {
 	switch t {
-	case TypeBigSpend, TypeBudgetThreshold, TypeUnusualMerchant, TypeLowLeftover:
+	case TypeBigSpend, TypeBudgetThreshold, TypeUnusualMerchant,
+		TypeLowLeftover, TypePredictedLowBalance:
 		return true
 	default:
 		return false
@@ -81,6 +87,17 @@ func ValidateConfig(alertType string, raw []byte) error {
 		if c.Floor.IsNegative() {
 			return fmt.Errorf("floor must not be negative")
 		}
+	case TypePredictedLowBalance:
+		var c predictedLowBalanceConfig
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return err
+		}
+		if c.Floor.IsNegative() {
+			return fmt.Errorf("floor must not be negative")
+		}
+		if c.Days < 0 || c.Days > predictedBalanceMaxDays {
+			return fmt.Errorf("days must be between 1 and %d", predictedBalanceMaxDays)
+		}
 	default:
 		return fmt.Errorf("unknown alert type %q", alertType)
 	}
@@ -121,6 +138,8 @@ func Evaluate(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now 
 			n, err = evalUnusualMerchant(ctx, q, a, now)
 		case TypeLowLeftover:
 			n, err = evalLowLeftover(ctx, q, a, now)
+		case TypePredictedLowBalance:
+			n, err = evalPredictedLowBalance(ctx, q, a, now)
 		default:
 			continue // an unknown type is ignored, not an error
 		}
@@ -330,6 +349,82 @@ func evalLowLeftover(ctx context.Context, q *dbgen.Queries, a dbgen.Alert, now t
 		"spending": row.Spending.StringFixed(2),
 		"leftover": leftover.StringFixed(2),
 		"floor":    cfg.Floor.StringFixed(2),
+	})
+	if _, err := q.InsertAlertEvent(ctx, dbgen.InsertAlertEventParams{
+		AlertID: a.ID, TransactionID: nil, Payload: payload,
+	}); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+// predicted_low_balance is the only forward-looking alert. Everything else here
+// reacts to money that has already moved; this one fires while there is still
+// time to do something about it.
+//
+// It is a projection from KNOWN obligations only — the bill calendar's
+// occurrences subtracted from today's depository balances. It does not model
+// discretionary spending, so it under-predicts rather than over-predicts, and
+// the payload says which day and which bills drive the dip so the user can check
+// the arithmetic instead of trusting it.
+type predictedLowBalanceConfig struct {
+	// Floor is the balance to stay above. Zero means "warn me before I go
+	// overdrawn", which is the setting most people want.
+	Floor decimal.Decimal `json:"floor"`
+	// Days is how far ahead to look. Defaults to two weeks — far enough to move
+	// money, near enough that the obligations are the whole story.
+	Days int `json:"days"`
+}
+
+const (
+	defaultPredictedBalanceDays = 14
+	predictedBalanceMaxDays     = obligations.MaxHorizonDays
+)
+
+func evalPredictedLowBalance(ctx context.Context, q *dbgen.Queries, a dbgen.Alert, now time.Time) (int, error) {
+	var cfg predictedLowBalanceConfig
+	if err := json.Unmarshal(a.Config, &cfg); err != nil {
+		return 0, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.Days <= 0 {
+		cfg.Days = defaultPredictedBalanceDays
+	}
+
+	// Household-shared scope, like every other aggregate alert.
+	proj, err := obligations.Project(ctx, q, a.HouseholdID, uuid.Nil, now, cfg.Days)
+	if err != nil {
+		return 0, err
+	}
+	// No cash accounts, or nothing due: there is no dip to predict.
+	if len(proj.Accounts) == 0 || !proj.TotalDue.IsPositive() {
+		return 0, nil
+	}
+	if !proj.Combined.LowestBalance.LessThan(cfg.Floor) {
+		return 0, nil
+	}
+
+	// Keyed on the date the dip is predicted for, not the calendar month: if the
+	// dip moves to a different day the user needs telling again, and if it stays
+	// put they should not be told twice.
+	period := proj.Combined.LowestDate.Format(time.DateOnly)
+	exists, err := q.AlertEventExistsForPeriod(ctx, dbgen.AlertEventExistsForPeriodParams{
+		AlertID: a.ID, Period: period, CategorySlug: "",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if exists {
+		return 0, nil
+	}
+
+	payload := mustJSON(map[string]string{
+		"period":           period,
+		"projected_date":   period,
+		"projected_amount": proj.Combined.LowestBalance.StringFixed(2),
+		"current_balance":  proj.Combined.CurrentBalance.StringFixed(2),
+		"bills_total":      proj.TotalDue.StringFixed(2),
+		"floor":            cfg.Floor.StringFixed(2),
+		"days":             fmt.Sprintf("%d", cfg.Days),
 	})
 	if _, err := q.InsertAlertEvent(ctx, dbgen.InsertAlertEventParams{
 		AlertID: a.ID, TransactionID: nil, Payload: payload,

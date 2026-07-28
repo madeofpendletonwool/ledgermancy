@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type {
@@ -208,6 +209,12 @@ function SafeToSpendCard() {
   const safe = Number(d.safe_to_spend)
   const tone = safe < 0 ? 'text-ember-400' : 'text-fern-300'
 
+  // The bill-aware figure is only worth showing once the calendar actually knows
+  // something. With no obligations behind any fixed category it is the same
+  // number by construction, and presenting it twice would imply otherwise.
+  const showAfterBills = d.obligation_coverage > 0 || Number(d.upcoming_obligations) > 0
+  const afterBills = Number(d.safe_to_spend_after_bills)
+
   const parts: { label: string; value: string; sign: '−' | '' }[] = [
     { label: 'Typical income', value: d.expected_income, sign: '' },
     { label: 'Fixed bills', value: d.fixed_costs, sign: '−' },
@@ -240,6 +247,35 @@ function SafeToSpendCard() {
           </span>
         ))}
       </div>
+
+      {showAfterBills && (
+        <div className="mt-5 border-t border-white/5 pt-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-medium text-mist-100">
+                Counting the bills on your schedule
+              </h3>
+              <p className="mt-1 text-sm text-mist-300">
+                The figure above uses your typical fixed costs. This one swaps in{' '}
+                {formatMoney(d.upcoming_obligations)} of bills actually still due
+                this month — a bill is counted once either way, never twice.
+              </p>
+            </div>
+            <span
+              className={`tabular text-2xl font-semibold ${
+                afterBills < 0 ? 'text-ember-400' : 'text-mist-100'
+              }`}
+            >
+              {formatMoney(d.safe_to_spend_after_bills)}
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-mist-500">
+            <Link to="/schedule" className="text-rune-300 hover:underline">
+              See what's due →
+            </Link>
+          </p>
+        </div>
+      )}
 
       {safe > 0 && (
         <p className="mt-3 text-xs text-mist-500">

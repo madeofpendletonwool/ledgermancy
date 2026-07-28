@@ -452,6 +452,16 @@ type safeToSpendResponse struct {
 	GoalContributions     decimal.Decimal `json:"goal_contributions"`
 	SafeToSpend           decimal.Decimal `json:"safe_to_spend"`
 	IncomeMonths          int             `json:"income_months"`
+
+	// The bill-aware view, added alongside rather than replacing safe_to_spend.
+	// The original field keeps its meaning for every existing consumer.
+	UpcomingObligations   decimal.Decimal `json:"upcoming_obligations"`
+	FixedCostsAfterBills  decimal.Decimal `json:"fixed_costs_after_bills"`
+	SafeToSpendAfterBills decimal.Decimal `json:"safe_to_spend_after_bills"`
+	// 0 means no fixed category has a known obligation behind it, so the
+	// after-bills figure carries no new information and the UI should not
+	// present it as if it did.
+	ObligationCoverage int `json:"obligation_coverage"`
 }
 
 // handleSafeToSpend returns the household's "safe to spend" figure and its parts:
@@ -472,6 +482,11 @@ func (s *Server) handleSafeToSpend(w http.ResponseWriter, r *http.Request) {
 		GoalContributions:     sts.GoalContributions,
 		SafeToSpend:           sts.Amount,
 		IncomeMonths:          sts.IncomeMonths,
+
+		UpcomingObligations:   sts.UpcomingObligations,
+		FixedCostsAfterBills:  sts.FixedCostsAfterBills,
+		SafeToSpendAfterBills: sts.AmountAfterBills,
+		ObligationCoverage:    sts.ObligationCoverage,
 	})
 }
 

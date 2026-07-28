@@ -23,41 +23,15 @@ tool-calling chatbot (7).
 The app is feature-complete for daily use; these are known, deliberate gaps —
 not bugs:
 
-- **Insights don't push in real time.** The proactive insight feed (spending
-  spikes, new recurring charges, subscriptions, forecasts) surfaces in-app and
-  rides along in the scheduled digest, but the high-priority push seam in
-  `backend/internal/insights/engine.go` is not wired — an insight never pings
-  your notification channel the moment it's detected the way an **alert** does.
-  Alerts are the real-time push path (opt in per rule on the Alerts page);
-  insights are pull + digest only. Wiring it would mirror the alert dispatch:
-  enqueue a notify job for newly-created insights above a priority threshold.
 - **Debt-payoff goals are schema-only.** The `goals.kind` column allows
   `debt_payoff`, but the feasibility maths (`backend/internal/goals`), the
   natural-language parser (`backend/internal/ai/parse.go`), and the Goals UI all
   handle `savings` only. Creating or tracking a payoff goal isn't possible yet.
-- **Disconnected Plaid items cannot be reconnected from the UI.** When Plaid
-  fires `ITEM_LOGIN_REQUIRED` (credentials changed, MFA re-challenge, session
-  expired) the webhook handler and the syncer both correctly mark the item
-  `login_required` in `plaid_items.status`
-  (`backend/internal/api/webhook_handlers.go:64-75`,
-  `backend/internal/plaid/sync.go:351`), and the Accounts page surfaces that
-  state — but there is no button to put the item back through Plaid Link in
-  update mode. Today the only recovery paths are (a) deleting the item and
-  re-linking from scratch, which **destroys the transaction history tied to
-  that item** (per the README's one-way-door note: a fresh link can request
-  the 730-day window going forward, but everything already tied to the old
-  `plaid_item_id` is orphaned), or (b) shelling out to the Plaid dashboard.
-  Fix: extend `handleCreateLinkToken` (`backend/internal/api/plaid_handlers.go`)
-  to accept an optional item ID; when supplied, decrypt that item's access
-  token via the existing Cipher (`backend/internal/crypto/crypto.go`) and pass
-  it to Plaid's `/link/token/create` in **update mode**. Add a "Reconnect"
-  button on the Accounts page for any item in `login_required` (or `revoked`)
-  state that opens Plaid Link with the resulting token. On success, clear the
-  item's status back to `active` and enqueue a sync. The data model already
-  supports this — `plaid_items.access_token_encrypted` is the encrypted token
-  and the status CHECK constraint already allows the recoverable states
-  (`backend/internal/db/migrations/00001_core_schema.sql:92`) — it is purely
-  the missing update-mode link path and the UI affordance.
+- **An item's transaction history window cannot be widened after linking.**
+  Plaid fixes it at link time; update mode preserves it but cannot raise it, and
+  relinking orphans the history already tied to the old `plaid_item_id`. Where
+  an institution caps what it shares (Capital One's 90 days, for example), the
+  CSV importer is the only way to backfill further.
 
 ---
 
@@ -65,6 +39,26 @@ not bugs:
 
 ### Recently shipped
 
+- **Bill calendar + cash-flow forecast** — a `recurring_obligations` table
+  (migration `00019`) that persists what is *due next*, from two sources: rows
+  promoted from the recurring detector (`obligations.Promote`, idempotent, and
+  it never overwrites a row a user has edited) and manually-entered bills, which
+  are the only way an annual premium or anything paid by cheque can be known.
+  Occurrences are derived, never stored: one SQL expansion
+  (`ListUpcomingObligations`) backs the calendar, the list, the balance
+  projection, safe-to-spend and the insight, so they cannot disagree about a due
+  date. Cadence arithmetic is in Postgres because its interval addition clamps
+  month ends and Go's `time.AddDate` does not. New `/schedule` page (month grid,
+  30/60/90-day list, per-account projected-balance chart with a visible zero
+  line), a "due this week" strip on the Dashboard, a `safe_to_spend_after_bills`
+  figure that splits the fixed component per category so no bill is counted
+  twice, an `upcoming_bill` insight, and a forward-looking
+  `predicted_low_balance` alert type.
+- **Reconnect a disconnected institution** without losing its history — a
+  `login_required` / `revoked` item opens Plaid Link in **update mode**, which
+  repairs the item in place and keeps its transactions and its history window
+  (`plaid.CreateUpdateLinkToken`, `POST /api/plaid/items/{id}/reconnected`,
+  `frontend/src/components/ReconnectAccount.tsx`).
 - Custom categories can be typed **spending / income / transfer** (a transfer is
   excluded from spending, which fixes card payments and self-transfers inflating
   spend).
@@ -80,23 +74,35 @@ not bugs:
   separate debit/credit) that de-duplicates against synced data and runs imports
   through the same categoriser — for backfilling history older than Plaid's
   window.
+- **Monthly recap overhaul** — the model is fed a real breakdown (per-category
+  vs. typical, biggest transactions, savings rate) rather than raw totals, writes
+  in the present tense for an in-progress month and the past tense once the month
+  closes, and the in-progress recap refreshes weekly (`ai/summary.go`,
+  `jobs/summary.go`).
+- **Smarter recurring detection** — a per-merchant **"not recurring"** override
+  enforced inside `GetRecurringMerchants` itself, so the Spending table, the
+  insight producers, the recap, and the chat tool all honour it at once
+  (migration `00016`); a recency gate (`activeCutoff`) that drops paid-off items;
+  and a cadence gate (gap stddev + a 45-day minimum span) so a coincidental
+  cluster isn't flagged.
+- **Insight expansion** — projected month-end cash flow, unusually-large single
+  transaction, income-change detection, savings-rate milestones, goal-progress
+  nudges (`insights/expansion.go`, `forecast.go`, `goal.go`), **plus real-time
+  insight push**: `GenerateInsightsWorker.dispatchInsightPushes`
+  (`jobs/jobs.go`) enqueues a notify job per newly-inserted insight above a
+  priority threshold, mirroring the alert dispatch.
+- **Budget expansion** — a **"safe to spend"** figure
+  (`reporting/safetospend.go`), **rollover / envelope** budgets (migration
+  `00017`), non-monthly periods — weekly and annual (migration `00018`),
+  percentage / zero-based allocation (`Budgets.tsx`), and a budget-vs-actual
+  trend (`insights/budgettrend.go`).
 
 ### Still planned
 
-- **Monthly recap overhaul** — format money as `$1,234.56`; feed the model a real
-  breakdown (per-category vs. typical, biggest transactions, savings rate)
-  instead of raw category totals; present tense for the in-progress month;
-  auto-generate weekly, with a final past-tense recap when the month closes.
-- **Smarter recurring detection** — a recency gate so paid-off items drop off the
-  Spending "Recurring" table promptly; a per-merchant **"not recurring"**
-  override; and better cadence detection so coincidental clustering isn't
-  flagged.
-- **Insight expansion** — projected month-end cash flow, unusually-large single
-  transaction, income-change detection, savings-rate milestones, goal-progress
-  nudges; plus real-time insight push (see Known gaps above).
-- **Budget expansion** — a **"safe to spend"** figure (income − fixed − budgeted
-  − goal contributions); **rollover / envelope** budgets; non-monthly periods
-  (weekly, annual); percentage / zero-based allocation; budget-vs-actual trend.
+- **Thousands separators in generated prose.** `money()` in
+  `backend/internal/insights/producers.go` is `"$" + StringFixed(2)`, so a
+  four-figure amount renders `$1234.56` rather than `$1,234.56` everywhere an
+  insight, recap, or alert body quotes a number. One helper, many call sites.
 
 ---
 
@@ -116,9 +122,26 @@ merchant canonicalization — the first two because they are the most visible
 gaps versus competitor products, the third because it makes every existing
 feature better as a side effect.
 
+> **Every item below now has an execution-ready plan doc** in
+> [`docs/plans/`](docs/plans/) (docs 13–29), each scoped so one agent can pick it
+> up cold: data model, reserved migration number, backend/frontend work,
+> verification, and out-of-scope. See [`docs/plans/README.md`](docs/plans/README.md)
+> for the wave order, the dependency graph, and the migration reservation table.
+> Where a plan doc's Context section contradicts the description below, **the
+> plan doc is right** — it was checked against the code, and a few of the
+> descriptions here predate work that has since shipped.
+
 ### Forward-looking money intelligence
 
-#### 1. Bill calendar + cash-flow forecast
+#### 1. Bill calendar + cash-flow forecast — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed and where.
+Two pieces of the original scope stayed out on purpose: the projection covers
+depository accounts only (running it over a credit card would subtract that
+card's own bills from the balance they make up), and it models known obligations
+only — a discretionary-spending forecast would be a guess wearing a number's
+clothes. Merchant canonicalization (#6) would improve promotion accuracy and is
+still its own item.
 
 **Problem.** The app looks backward well and forward poorly. Recurring
 transactions and subscriptions are detected (`backend/internal/insights/subscription.go`)

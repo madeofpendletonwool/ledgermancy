@@ -26,6 +26,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Plan',
     items: [
       { to: '/budgets', label: 'Budgets' },
+      { to: '/schedule', label: 'Schedule' },
       { to: '/goals', label: 'Goals' },
     ],
   },

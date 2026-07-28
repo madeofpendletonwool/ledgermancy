@@ -382,6 +382,14 @@ func (s *Server) handleSuppressRecurring(w http.ResponseWriter, r *http.Request)
 		s.internalError(w, "suppress recurring merchant", err)
 		return
 	}
+
+	// Suppression has to reach the bill calendar in the same breath. The
+	// promotion pass retires suppressed rows too, but waiting for it would leave
+	// a merchant the user just dismissed still sitting on next week's calendar.
+	if _, err := s.Queries.DeactivateSuppressedObligations(r.Context(), identity.HouseholdID); err != nil {
+		s.internalError(w, "retire suppressed obligations", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

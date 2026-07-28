@@ -302,6 +302,27 @@ type Preference struct {
 	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
+type RecurringObligation struct {
+	ID            uuid.UUID       `json:"id"`
+	HouseholdID   uuid.UUID       `json:"household_id"`
+	UserID        *uuid.UUID      `json:"user_id"`
+	IsShared      bool            `json:"is_shared"`
+	Label         string          `json:"label"`
+	Amount        decimal.Decimal `json:"amount"`
+	CategoryID    *uuid.UUID      `json:"category_id"`
+	AccountID     *uuid.UUID      `json:"account_id"`
+	IntervalCount int32           `json:"interval_count"`
+	IntervalUnit  string          `json:"interval_unit"`
+	AnchorDate    stdtime.Time    `json:"anchor_date"`
+	EndDate       *stdtime.Time   `json:"end_date"`
+	Source        string          `json:"source"`
+	MerchantKey   *string         `json:"merchant_key"`
+	UserEdited    bool            `json:"user_edited"`
+	IsActive      bool            `json:"is_active"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
+	UpdatedAt     stdtime.Time    `json:"updated_at"`
+}
+
 type RecurringOverride struct {
 	ID            uuid.UUID    `json:"id"`
 	HouseholdID   uuid.UUID    `json:"household_id"`

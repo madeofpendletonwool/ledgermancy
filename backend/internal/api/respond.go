@@ -39,10 +39,23 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // uploads, so a small ceiling costs nothing and removes a trivial DoS.
 const maxRequestBody = 1 << 20 // 1 MiB
 
+// errEmptyBody reports a request that carried no JSON at all, which some
+// endpoints treat as a valid "use the defaults" call rather than an error.
+var errEmptyBody = errors.New("request body is empty")
+
 // decodeJSON reads a JSON request body into dst, rejecting unknown fields so
 // a typo in a client payload fails loudly instead of being silently ignored.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return decodeJSONLimit(w, r, dst, maxRequestBody)
+}
+
+// decodeJSONOptional is decodeJSON for endpoints where the body is optional:
+// an absent body leaves dst untouched, while a malformed one is still an error.
+func decodeJSONOptional(w http.ResponseWriter, r *http.Request, dst any) error {
+	if err := decodeJSON(w, r, dst); err != nil && !errors.Is(err, errEmptyBody) {
+		return err
+	}
+	return nil
 }
 
 // decodeJSONLimit is decodeJSON with a caller-chosen body ceiling, for the few
@@ -63,7 +76,7 @@ func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int6
 		case errors.As(err, &typeErr):
 			return fmt.Errorf("field %q has the wrong type", typeErr.Field)
 		case errors.Is(err, io.EOF):
-			return errors.New("request body is empty")
+			return errEmptyBody
 		default:
 			return fmt.Errorf("invalid request body: %w", err)
 		}

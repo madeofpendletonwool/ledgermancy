@@ -106,6 +106,18 @@ func (alertExplanationProducer) Detect(ctx context.Context, q *dbgen.Queries, ho
 				"You spent $%s against $%s of income, leaving $%s.",
 				payload["spending"], payload["income"], payload["leftover"])
 
+		case alerts.TypePredictedLowBalance:
+			data["projected_date"] = payload["projected_date"]
+			data["projected_amount"] = payload["projected_amount"]
+			data["current_balance"] = payload["current_balance"]
+			data["bills_total"] = payload["bills_total"]
+			priority = 5
+			title = "Projected shortfall ahead"
+			body = fmt.Sprintf(
+				"Your cash balance of $%s is projected to reach $%s on %s once $%s of known bills clear.",
+				payload["current_balance"], payload["projected_amount"],
+				payload["projected_date"], payload["bills_total"])
+
 		default:
 			continue // an unknown alert type is skipped, not an error
 		}

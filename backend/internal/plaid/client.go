@@ -99,8 +99,9 @@ func (c *Client) Products() []string {
 	return out
 }
 
-// CreateLinkToken returns a short-lived token used to open Plaid Link.
-func (c *Client) CreateLinkToken(ctx context.Context, userID, displayName string) (string, error) {
+// baseLinkTokenRequest builds the parts every Link flow shares, regardless of
+// whether Link will run in create or update mode.
+func (c *Client) baseLinkTokenRequest(userID, displayName string) *plaidapi.LinkTokenCreateRequest {
 	req := plaidapi.NewLinkTokenCreateRequest(
 		"Ledgermancy",
 		"en",
@@ -112,6 +113,17 @@ func (c *Client) CreateLinkToken(ctx context.Context, userID, displayName string
 		user.SetLegalName(displayName)
 	}
 	req.SetUser(user)
+
+	// Only set a webhook when one is configured; Plaid rejects an empty string.
+	if c.webhook != "" {
+		req.SetWebhook(c.webhook)
+	}
+	return req
+}
+
+// newLinkTokenRequest builds a create-mode request: a brand new Item.
+func (c *Client) newLinkTokenRequest(userID, displayName string) *plaidapi.LinkTokenCreateRequest {
+	req := c.baseLinkTokenRequest(userID, displayName)
 	req.SetProducts(c.products)
 
 	// Ask for the maximum history Plaid will give.
@@ -130,14 +142,51 @@ func (c *Client) CreateLinkToken(ctx context.Context, userID, displayName string
 		transactions.SetDaysRequested(maxTransactionHistoryDays)
 		req.SetTransactions(*transactions)
 	}
-	// Only set a webhook when one is configured; Plaid rejects an empty string.
-	if c.webhook != "" {
-		req.SetWebhook(c.webhook)
-	}
+	return req
+}
+
+// newUpdateLinkTokenRequest builds an update-mode request: repair an existing
+// Item in place.
+//
+// The three differences from create mode are all load-bearing:
+//
+//   - access_token is what puts Link in update mode at all.
+//   - products must be omitted. Plaid rejects a request carrying both an access
+//     token and a product list; update mode inherits the Item's products.
+//   - transactions.days_requested must be omitted. The history window is fixed
+//     at original link time and cannot be widened by an update, so setting it is
+//     at best ignored and at worst an error. Preserving the window the Item
+//     already has is the entire point of reconnecting rather than relinking.
+func (c *Client) newUpdateLinkTokenRequest(userID, displayName, accessToken string) *plaidapi.LinkTokenCreateRequest {
+	req := c.baseLinkTokenRequest(userID, displayName)
+	req.SetAccessToken(accessToken)
+	return req
+}
+
+// CreateLinkToken returns a short-lived token used to open Plaid Link.
+func (c *Client) CreateLinkToken(ctx context.Context, userID, displayName string) (string, error) {
+	req := c.newLinkTokenRequest(userID, displayName)
 
 	resp, _, err := c.api.LinkTokenCreate(ctx).LinkTokenCreateRequest(*req).Execute()
 	if err != nil {
 		return "", wrapErr("create link token", err)
+	}
+	return resp.GetLinkToken(), nil
+}
+
+// CreateUpdateLinkToken mints a Link token that repairs an existing Item in
+// place rather than creating a new one.
+//
+// This is the recovery path out of login_required / revoked: the user
+// re-authenticates with their institution and the Item keeps its id, its
+// accounts, its transactions, and its history window. Relinking from scratch
+// would orphan all of it.
+func (c *Client) CreateUpdateLinkToken(ctx context.Context, userID, displayName, accessToken string) (string, error) {
+	req := c.newUpdateLinkTokenRequest(userID, displayName, accessToken)
+
+	resp, _, err := c.api.LinkTokenCreate(ctx).LinkTokenCreateRequest(*req).Execute()
+	if err != nil {
+		return "", wrapErr("create update link token", err)
 	}
 	return resp.GetLinkToken(), nil
 }

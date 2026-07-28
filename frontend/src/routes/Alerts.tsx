@@ -58,6 +58,19 @@ const TYPE_META: Record<AlertType, TypeMeta> = {
     defaults: { floor: '500.00' },
     fields: [{ key: 'floor', label: 'When money left drops below', kind: 'money' }],
   },
+  // The only rule that looks forward. It watches the bill calendar rather than
+  // what has already been spent, so it can warn while there is still time to
+  // move money.
+  predicted_low_balance: {
+    label: 'Projected shortfall',
+    description:
+      'Warn when your cash balance is projected to fall below a floor once known upcoming bills clear.',
+    defaults: { floor: '0.00', days: 14 },
+    fields: [
+      { key: 'floor', label: 'When the projected balance drops below', kind: 'money' },
+      { key: 'days', label: 'Looking ahead (days)', kind: 'int' },
+    ],
+  },
 }
 
 const ORDER: AlertType[] = [
@@ -65,6 +78,7 @@ const ORDER: AlertType[] = [
   'budget_threshold',
   'unusual_merchant',
   'low_leftover',
+  'predicted_low_balance',
 ]
 
 export function Alerts() {
@@ -625,6 +639,11 @@ function describeEvent(e: AlertEvent): { title: string; detail: string } {
       return {
         title: `Low leftover for ${p.period}`,
         detail: `${formatMoney(p.leftover)} left (below ${formatMoney(p.floor)})`,
+      }
+    case 'predicted_low_balance':
+      return {
+        title: `Projected shortfall on ${p.projected_date}`,
+        detail: `${formatMoney(p.projected_amount)} projected after ${formatMoney(p.bills_total)} of bills (floor ${formatMoney(p.floor)})`,
       }
     default:
       return { title: 'Alert', detail: '' }
