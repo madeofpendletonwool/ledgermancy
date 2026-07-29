@@ -75,6 +75,30 @@ preferences/capabilities).
 | GET | `/api/investments/dividends` | ✓ | Dividends by month, from investment transactions |
 | PATCH | `/api/investments/accounts/{id}/tax-treatment` | ✓ | Confirms a classification. `null` clears it back to untagged |
 
+### Documents
+
+The encrypted vault. Every route is scoped to the caller's household **and**
+user — including the download, so a document id alone is never sufficient to
+fetch a blob. Misses return **404 rather than 403**, so a response cannot be
+used to probe whether an id exists in another household. All routes report
+`503` when no document storage is configured.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/documents/` | ✓ | Filters: `doc_type`, `search`, `from`, `to`, `expiring_before`, `linked` (tri-state — omit for all) |
+| POST | `/api/documents/` | ✓ | `multipart/form-data`: `file`, plus `title`, `doc_type`, `document_date`, `expires_at`, `notes`, `is_shared`, and optional `link_kind`/`link_id`. `413` over the per-file cap or the household quota |
+| GET | `/api/documents/storage` | ✓ | Bytes used, quota, per-file cap, backend, whether OCR is available |
+| GET | `/api/documents/attached` | ✓ | Exactly one of `transaction_id`, `manual_asset_id`, `account_id`, `goal_id` |
+| GET | `/api/documents/counts` | ✓ | Repeated `transaction_id` params → `{id: count}`, for paperclip badges |
+| GET | `/api/documents/{id}` | ✓ | Metadata plus links |
+| PUT | `/api/documents/{id}` | ✓ | Metadata only. `retain_until` is recomputed from the type, never accepted from a client |
+| DELETE | `/api/documents/{id}` | ✓ | Removes the row, then the blob |
+| GET | `/api/documents/{id}/download` | ✓ | Decrypted bytes. Content type is **sniffed** against a small allowlist, never echoed from the upload; always `Content-Disposition: attachment` + `nosniff`. `422` when decryption or the integrity check fails, `410` when the blob is missing from storage |
+| POST | `/api/documents/{id}/links` | ✓ | `target_kind` ∈ `transaction`\|`manual_asset`\|`account`\|`goal`. A target outside the household is refused without saying why |
+| DELETE | `/api/documents/{id}/links/{linkId}` | ✓ | Detach |
+| POST | `/api/documents/{id}/extract` | ✓ | Receipt OCR. **Suggestions only** — returns fields plus candidate transactions and writes no ledger data. `403` unless `DOCUMENTS_OCR_ENABLED`, **and `403` for any `doc_type` other than `receipt`**, checked before the file is decrypted. `415` for a non-image. The reading is cached on the document, so call this once per receipt |
+| GET | `/api/documents/{id}/matches` | ✓ | Re-runs the transaction match against the cached reading. **No decryption, no upload, no model call** — this is what finds the charge for a receipt scanned before it posted. Empty list when the receipt has not been read |
+
 ## CSRF
 
 Every state-changing request needs the CSRF token echoed in an `X-CSRF-Token`

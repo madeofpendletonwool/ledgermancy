@@ -96,13 +96,20 @@ ORDER BY l.balance DESC NULLS LAST;
 SELECT * FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC;
 
 -- name: CreateManualAsset :one
-INSERT INTO manual_assets (household_id, created_by, name, kind, value, is_liability, as_of, notes)
-VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('as_of')::date, CURRENT_DATE), $7)
+-- person_id attributes the asset to the person it is held for — savings bonds
+-- in a child's name are the case this exists for. NULL for household assets,
+-- which is most of them.
+INSERT INTO manual_assets (
+    household_id, created_by, name, kind, value, is_liability, as_of, notes, person_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('as_of')::date, CURRENT_DATE), $7,
+        sqlc.narg('person_id'))
 RETURNING *;
 
 -- name: UpdateManualAsset :one
 UPDATE manual_assets
-SET name = $3, kind = $4, value = $5, is_liability = $6, notes = $7, as_of = CURRENT_DATE
+SET name = $3, kind = $4, value = $5, is_liability = $6, notes = $7,
+    person_id = sqlc.narg('person_id'), as_of = CURRENT_DATE
 WHERE id = $1 AND household_id = $2
 RETURNING *;
 
@@ -163,3 +170,20 @@ SELECT * FROM net_worth_snapshots
 WHERE household_id = $1
 ORDER BY as_of DESC
 LIMIT 1;
+
+-- name: SumManualAssetsByPerson :many
+-- Manual assets attributed to a person: savings bonds in a child's name, cash
+-- in a birthday envelope. Liabilities are netted off, matching the sign
+-- convention ComputeNetWorth uses, so a person's manual total is what they own
+-- minus what they owe rather than a gross figure.
+-- The whole expression carries one explicit ::numeric cast. Casting each
+-- COALESCE separately and subtracting leaves sqlc unable to infer the result
+-- type, and it silently emits int32 — which would truncate every asset value
+-- to a whole dollar.
+SELECT
+    m.person_id,
+    (COALESCE(SUM(m.value) FILTER (WHERE NOT m.is_liability), 0)
+   - COALESCE(SUM(m.value) FILTER (WHERE m.is_liability), 0))::numeric AS total
+FROM manual_assets m
+WHERE m.household_id = $1 AND m.person_id IS NOT NULL
+GROUP BY m.person_id;

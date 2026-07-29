@@ -72,5 +72,8 @@ func DefaultProducers() []Producer {
 		budgetTrendProducer{},
 		// Bill calendar (upcomingbill.go).
 		upcomingBillProducer{},
+		// Document vault (documentexpiry.go, receiptmatch.go).
+		documentExpiryProducer{},
+		receiptMatchProducer{},
 	}
 }

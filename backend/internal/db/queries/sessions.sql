@@ -9,6 +9,11 @@ RETURNING *;
 -- window where a stale session authenticates a request:
 --   expires_at   — the absolute cap, set at login (30 days)
 --   last_used_at — the idle cap, so an abandoned session dies sooner
+-- role and person_id ride along because every authorization decision needs the
+-- role and most person-scoped reads need the id, and re-fetching either on each
+-- request would add a round trip to the hottest path in the app. The LEFT JOIN
+-- is deliberate: a login whose person row was somehow removed still
+-- authenticates, it simply has no person-scoped data.
 SELECT
     s.id           AS session_id,
     s.expires_at   AS session_expires_at,
@@ -16,9 +21,12 @@ SELECT
     u.id           AS user_id,
     u.household_id,
     u.email,
-    u.display_name
+    u.display_name,
+    u.role,
+    p.id           AS person_id
 FROM sessions s
 JOIN users u ON u.id = s.user_id
+LEFT JOIN household_people p ON p.user_id = u.id
 WHERE s.token_hash = $1
   AND s.expires_at > now()
   AND s.last_used_at > now() - sqlc.arg(idle_ttl)::interval;

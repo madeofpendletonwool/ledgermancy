@@ -683,25 +683,37 @@ func (q *Queries) SharedMonthCashflow(ctx context.Context, arg SharedMonthCashfl
 
 const unusualMerchantCandidates = `-- name: UnusualMerchantCandidates :many
 WITH firsts AS (
-    SELECT t.merchant_key, MIN(t.date) AS first_seen
+    SELECT
+        COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
+        MIN(t.date) AS first_seen
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
     JOIN users u       ON u.id = i.user_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
     WHERE u.household_id = $1
       AND t.merchant_key IS NOT NULL
       AND NOT t.pending
-    GROUP BY t.merchant_key
+    GROUP BY COALESCE(ma.entity_id::text, t.merchant_key)
     HAVING MIN(t.date) >= $2
 )
-SELECT DISTINCT ON (t.merchant_key)
-       t.id, t.amount, t.date, t.merchant_key,
-       COALESCE(t.merchant_name, t.name) AS merchant
+SELECT DISTINCT ON (COALESCE(ma.entity_id::text, t.merchant_key))
+       t.id, t.amount, t.date,
+       COALESCE(ma.entity_id::text, t.merchant_key)::text AS merchant_key,
+       COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
-JOIN firsts f      ON f.merchant_key = t.merchant_key
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+JOIN firsts f ON f.merchant_key = COALESCE(ma.entity_id::text, t.merchant_key)
 LEFT JOIN categories c ON c.id = t.category_id
 WHERE u.household_id = $1
   AND a.is_active
@@ -712,9 +724,10 @@ WHERE u.household_id = $1
   AND NOT COALESCE(c.is_transfer, FALSE)
   AND NOT EXISTS (
       SELECT 1 FROM alert_events e
-      WHERE e.alert_id = $4 AND e.payload->>'merchant_key' = t.merchant_key
+      WHERE e.alert_id = $4
+        AND e.payload->>'merchant_key' = COALESCE(ma.entity_id::text, t.merchant_key)
   )
-ORDER BY t.merchant_key, t.date DESC
+ORDER BY COALESCE(ma.entity_id::text, t.merchant_key), t.date DESC
 `
 
 type UnusualMerchantCandidatesParams struct {
@@ -728,7 +741,7 @@ type UnusualMerchantCandidatesRow struct {
 	ID          uuid.UUID       `json:"id"`
 	Amount      decimal.Decimal `json:"amount"`
 	Date        stdtime.Time    `json:"date"`
-	MerchantKey *string         `json:"merchant_key"`
+	MerchantKey string          `json:"merchant_key"`
 	Merchant    string          `json:"merchant"`
 }
 
@@ -738,6 +751,11 @@ type UnusualMerchantCandidatesRow struct {
 // to a real transaction. A merchant this alert already flagged is skipped via
 // the payload merchant_key, so a merchant is announced once, not once per new
 // charge.
+//
+// "First-ever" is judged on the RESOLVED merchant (merchants.sql), not the raw
+// descriptor. Without that, the second descriptor of a merchant the household
+// has been using for years reads as brand new and fires a false alert — the
+// most user-visible way fragmented descriptors degrade this feature.
 func (q *Queries) UnusualMerchantCandidates(ctx context.Context, arg UnusualMerchantCandidatesParams) ([]UnusualMerchantCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, unusualMerchantCandidates,
 		arg.HouseholdID,

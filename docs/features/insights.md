@@ -14,11 +14,22 @@ configured.
 ## What kinds of insights exist
 
 - **Spending spikes** — a category notably higher than its recent typical.
-- **Budget pace** — how you're tracking against your [budgets](budgets.md).
+- **Budget pace** — how you're tracking against your [budgets](budgets.md), plus a
+  budget-vs-actual trend.
 - **New recurring charges** — a merchant that just started appearing on a
   cadence.
 - **Subscriptions & price creep** — a subscription whose charge has risen.
-- **Forecasts** — projected month-end position.
+- **Upcoming bill** — a known [obligation](schedule.md) about to fall due. This
+  is the one insight that can prevent an overdraft rather than explain it
+  afterwards; a large one is high enough priority to push.
+- **Forecasts** — projected month-end cash position.
+- **Large transaction** — a single charge that stands out for its context.
+- **Income change** — your income shifting noticeably.
+- **Savings milestones** — savings-rate thresholds crossed.
+- **Goal progress** — a nudge where a [goal](goals.md) needs attention.
+- **Document expiry** — a [warranty or policy](documents.md) about to run out.
+- **Receipt match** — a scanned receipt whose charge has now posted
+  ([Documents](documents.md)).
 - **Alert explanations** *(AI)* — a plain-English note on why an
   [alert](alerts.md) fired.
 
@@ -32,9 +43,12 @@ stays about the present rather than accumulating history.
 
 ## Push and digests
 
-Insights surface in-app and in the digest, but they do **not** push in real time
-the way an [alert](alerts.md) does. That seam is a known gap — see
-[Roadmap](../roadmap.md).
+Insights surface in-app and in the digest, and the high-priority ones **push to
+your notification channel in real time** the moment they are detected — the same
+dispatch path an [alert](alerts.md) uses. Not every insight does: only a
+newly-created one above a priority threshold pushes (a large upcoming bill should
+reach your phone; a small budget-pace nudge should not). Lower-priority insights
+are pull + digest.
 
 ### Digests
 

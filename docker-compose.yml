@@ -33,6 +33,15 @@ services:
     environment:
       # Override the .env value so it points at the compose service, not localhost.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      # The document vault. Only the api reads or writes it — uploads and
+      # downloads are request-time work, and no job touches a blob.
+      #
+      # This volume is NOT covered by pg_dump. A backup that captures only the
+      # database captures every document's title, type and expiry and none of
+      # its contents, so it has to be backed up alongside the dump. See
+      # DEPLOYING.md.
+      - documents-data:/var/lib/ledgermancy/documents
     ports:
       # Loopback only, and only for local development: the vite dev server
       # proxies /api to 127.0.0.1:8080. In production the api has NO host port
@@ -51,6 +60,38 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      # Backups live here: the nightly pg_dump, the document archive, and the
+      # portable JSON export. The worker owns them because it owns every other
+      # scheduled job — there is no separate backup container to keep running,
+      # forget to upgrade, or discover has been dead for a month.
+      #
+      # This volume is the one thing on the host you cannot rebuild from the
+      # others. Everything else here is either code (git) or state that the
+      # backups themselves restore.
+      - backup-data:/var/lib/ledgermancy/backups
+      # Read-only: the vault archive reads every document blob, and a backup
+      # process has no business being able to write to the thing it is copying.
+      - documents-data:/var/lib/ledgermancy/documents:ro
+      #
+      # Two notes on where backups actually land.
+      #
+      # First: backup-data above is a Docker volume, which lives on this host.
+      # If that is not what you want, bind mount somewhere else over the same
+      # path — a NAS share works fine as the primary destination, and then the
+      # backups are off-host without anything further.
+      #
+      # Second: to keep a SECOND independent copy, mount another directory and
+      # set BACKUP_MIRROR_DIR in .env to match. Every artefact is copied there
+      # after it is written, with its own retention, so losing one location is
+      # not losing every backup.
+      #
+      #   - /mnt/nas/ledgermancy:/mnt/backup-mirror
+      #
+      # then in .env:  BACKUP_MIRROR_DIR=/mnt/backup-mirror
+      #
+      # Treat any of these directories as being exactly as sensitive as the
+      # database, because they contain it.
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,3 +121,5 @@ services:
 
 volumes:
   postgres-data:
+  documents-data:
+  backup-data:

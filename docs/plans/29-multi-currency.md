@@ -46,7 +46,7 @@ None technically. Practically: land after waves 3–5, per above.
 
 ## Data model
 
-**Reserved migration: `00032_multi_currency.sql`.**
+**Reserved migration: `00042_multi_currency.sql`.**
 
 ```sql
 -- Household base currency: the unit every rollup is expressed in.

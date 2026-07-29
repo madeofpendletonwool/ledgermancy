@@ -165,8 +165,12 @@ GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
 
 -- name: GetTopMerchants :many
+-- Grouped by canonical merchant: fragments of one business that the household
+-- has merged (see merchants.sql) collapse into a single row under the entity's
+-- name. With no aliases the COALESCE falls straight through to the descriptor
+-- and the result is identical to what it was before canonicalisation existed.
 SELECT
-    COALESCE(t.merchant_name, t.name) AS merchant,
+    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
     SUM(t.amount)::numeric            AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
@@ -174,6 +178,11 @@ JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
 LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
@@ -202,10 +211,19 @@ LIMIT $5;
 -- A merchant the household has explicitly marked "not recurring" is excluded
 -- outright via recurring_overrides, so every consumer of this query (report
 -- table, insight producers, recap, chat) honours the suppression at once.
+--
+-- Charges are grouped by RESOLVED merchant (merchants.sql), which is the whole
+-- point of canonicalisation: a subscription billing under two descriptors never
+-- reached the n >= 3 threshold before, and now does. The returned merchant_key
+-- is likewise the resolved key — an entity UUID for a merged merchant, the raw
+-- key otherwise — so a caller that stores it (a suppression, a promoted
+-- obligation) gets an identifier that survives further aliases joining the
+-- entity. Suppressions are matched on the resolved key at both ends, so an
+-- override recorded against one raw descriptor silences the whole merchant.
 WITH tx AS (
     SELECT
-        t.merchant_key,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
+        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
         t.amount
     FROM transactions t
@@ -213,6 +231,11 @@ WITH tx AS (
     JOIN plaid_items i ON i.id = a.plaid_item_id
     JOIN users u       ON u.id = i.user_id
     LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    LEFT JOIN merchant_entities me ON me.id = ma.entity_id
     WHERE u.household_id = $1
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
@@ -225,8 +248,13 @@ WITH tx AS (
       AND t.date >= $3
       AND NOT EXISTS (
           SELECT 1 FROM recurring_overrides ro
+          LEFT JOIN merchant_aliases roa
+                 ON roa.household_id = ro.household_id
+                AND roa.merchant_key = ro.merchant_key
+                AND roa.source <> 'suggested'
           WHERE ro.household_id = $1
-            AND ro.merchant_key = t.merchant_key
+            AND COALESCE(roa.entity_id::text, ro.merchant_key)
+                = COALESCE(ma.entity_id::text, t.merchant_key)
       )
 ),
 gaps AS (
@@ -252,7 +280,7 @@ agg AS (
     GROUP BY merchant_key
 )
 SELECT
-    merchant_key,
+    merchant_key::text AS merchant_key,
     merchant,
     n::bigint                       AS occurrences,
     COALESCE(avg_amount, 0)::numeric AS average_amount,
@@ -297,14 +325,43 @@ WHERE u.household_id = $1
 -- name: SuppressRecurringMerchant :exec
 -- Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
 -- already-suppressed merchant is a no-op (and does not disturb the label).
+--
+-- The key is stored resolved (merchants.sql), so suppressing a merged merchant
+-- records one row against the entity rather than one per descriptor. Resolution
+-- is idempotent, so a caller may pass either a raw or an already-resolved key.
 INSERT INTO recurring_overrides (household_id, merchant_key, merchant_label)
-VALUES ($1, $2, $3)
+VALUES (
+    @household_id,
+    COALESCE(
+        (SELECT ma.entity_id::text FROM merchant_aliases ma
+          WHERE ma.household_id = @household_id
+            AND ma.merchant_key = @merchant_key::text
+            AND ma.source <> 'suggested'),
+        @merchant_key::text
+    ),
+    @merchant_label
+)
 ON CONFLICT (household_id, merchant_key) DO NOTHING;
 
 -- name: UnsuppressRecurringMerchant :exec
--- Restore a merchant to the recurring detector.
-DELETE FROM recurring_overrides
-WHERE household_id = $1 AND merchant_key = $2;
+-- Restore a merchant to the recurring detector. Clears every override that
+-- resolves to the same merchant, so undoing a suppression on a merged merchant
+-- also clears any per-descriptor rows recorded before the merge.
+DELETE FROM recurring_overrides ro
+WHERE ro.household_id = @household_id
+  AND COALESCE(
+        (SELECT a2.entity_id::text FROM merchant_aliases a2
+          WHERE a2.household_id = ro.household_id
+            AND a2.merchant_key = ro.merchant_key
+            AND a2.source <> 'suggested'),
+        ro.merchant_key
+      ) = COALESCE(
+        (SELECT a3.entity_id::text FROM merchant_aliases a3
+          WHERE a3.household_id = @household_id
+            AND a3.merchant_key = @merchant_key::text
+            AND a3.source <> 'suggested'),
+        @merchant_key::text
+      );
 
 -- name: ListRecurringOverrides :many
 -- The household's suppressed merchants, for the "restore" UI.
@@ -318,6 +375,10 @@ ORDER BY merchant_label, merchant_key;
 -- transaction, so "you normally spend ~$X" is a real prior rather than one
 -- skewed by the charge that triggered the alert. All arithmetic stays in SQL;
 -- the model only quotes the result. Same visibility scoping as every report.
+--
+-- Both sides of the key comparison are resolved (merchants.sql), so the prior
+-- spans every descriptor of a merged merchant and the caller may pass a raw key
+-- straight off a transaction.
 SELECT
     COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
     COUNT(*)::bigint                    AS visit_count,
@@ -327,12 +388,22 @@ FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = @household_id
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
 WHERE u.household_id = @household_id
   AND (i.user_id = @user_id OR i.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
-  AND t.merchant_key = @merchant_key::text
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = COALESCE(
+        (SELECT a2.entity_id::text FROM merchant_aliases a2
+          WHERE a2.household_id = @household_id
+            AND a2.merchant_key = @merchant_key::text
+            AND a2.source <> 'suggested'),
+        @merchant_key::text
+      )
   AND t.id <> @exclude_tx::uuid
   AND t.amount > 0;
 
@@ -340,12 +411,13 @@ WHERE u.household_id = @household_id
 -- Price-creep detection for recurring merchants: split each merchant's charges
 -- into an older half and a newer half by date and compare the averages. The
 -- split and the difference are computed here in SQL; the caller only formats and
--- explains, never subtracts. Same tx CTE (visibility + spend filters) as
--- GetRecurringMerchants so both agree on what counts as a charge.
+-- explains, never subtracts. Same tx CTE (visibility + spend filters, and the
+-- same resolved grouping) as GetRecurringMerchants so both agree on what counts
+-- as a charge and key their rows the same way — the caller joins the two by key.
 WITH tx AS (
     SELECT
-        t.merchant_key,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
+        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
         t.amount
     FROM transactions t
@@ -353,6 +425,11 @@ WITH tx AS (
     JOIN plaid_items i ON i.id = a.plaid_item_id
     JOIN users u       ON u.id = i.user_id
     LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    LEFT JOIN merchant_entities me ON me.id = ma.entity_id
     WHERE u.household_id = $1
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
@@ -373,7 +450,7 @@ ranked AS (
     FROM tx
 )
 SELECT
-    merchant_key,
+    merchant_key::text AS merchant_key,
     COALESCE(MAX(merchant), '')::text                                      AS merchant,
     COALESCE(AVG(amount) FILTER (WHERE half = 1), 0)::numeric              AS early_avg,
     COALESCE(AVG(amount) FILTER (WHERE half = 2), 0)::numeric              AS recent_avg,

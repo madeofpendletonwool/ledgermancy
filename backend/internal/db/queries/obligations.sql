@@ -188,6 +188,10 @@ RETURNING *;
 -- A merchant the household marked "not recurring" must never show up as a bill.
 -- GetRecurringMerchants already excludes suppressed merchants, so promotion will
 -- not re-create these; this retires rows promoted before the suppression.
+--
+-- Both keys are resolved (merchants.sql) rather than compared literally, so an
+-- obligation promoted under a raw descriptor is still retired by a suppression
+-- recorded against the merged merchant, and vice versa.
 UPDATE recurring_obligations o
 SET is_active = FALSE, updated_at = now()
 FROM recurring_overrides ro
@@ -195,7 +199,19 @@ WHERE o.household_id = $1
   AND o.source = 'detected'
   AND o.is_active
   AND ro.household_id = o.household_id
-  AND ro.merchant_key = o.merchant_key;
+  AND COALESCE(
+        (SELECT a1.entity_id::text FROM merchant_aliases a1
+          WHERE a1.household_id = ro.household_id
+            AND a1.merchant_key = ro.merchant_key
+            AND a1.source <> 'suggested'),
+        ro.merchant_key
+      ) = COALESCE(
+        (SELECT a2.entity_id::text FROM merchant_aliases a2
+          WHERE a2.household_id = o.household_id
+            AND a2.merchant_key = o.merchant_key
+            AND a2.source <> 'suggested'),
+        o.merchant_key
+      );
 
 -- name: GetMerchantDominantCategories :many
 -- The category each recurring merchant is usually filed under, so a promoted
@@ -205,14 +221,20 @@ WHERE o.household_id = $1
 -- discretionary budget envelope. Without a category every promoted bill would
 -- have to be assumed uncovered, and fixed costs would be counted twice.
 --
--- Same spend definition and visibility scoping as GetRecurringMerchants.
+-- Same spend definition, visibility scoping, and resolved merchant grouping as
+-- GetRecurringMerchants — the caller looks these rows up by the key that query
+-- returned, so the two must agree on the key space.
 SELECT
-    t.merchant_key,
+    COALESCE(ma.entity_id::text, t.merchant_key)::text   AS merchant_key,
     (mode() WITHIN GROUP (ORDER BY t.category_id))::uuid AS category_id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
@@ -222,4 +244,4 @@ WHERE u.household_id = $1
   AND t.category_id IS NOT NULL
   AND t.amount > 0
   AND t.date >= $3
-GROUP BY t.merchant_key;
+GROUP BY COALESCE(ma.entity_id::text, t.merchant_key);

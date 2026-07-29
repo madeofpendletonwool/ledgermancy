@@ -7,7 +7,6 @@ package reporting
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
 )
 
 const (
@@ -45,28 +45,10 @@ const (
 // formatUSD renders a decimal as a display-ready dollar figure with a leading
 // "$" and thousands separators — "$20,256.87", "-$1,240.00". The AI layer quotes
 // these verbatim, so the model never sees a bare "20256.87" to mangle.
-func formatUSD(d decimal.Decimal) string {
-	neg := d.IsNegative()
-	s := d.Abs().StringFixed(2)
-
-	dot := strings.IndexByte(s, '.')
-	intPart, frac := s[:dot], s[dot:]
-
-	var grouped strings.Builder
-	n := len(intPart)
-	for i := 0; i < n; i++ {
-		if i > 0 && (n-i)%3 == 0 {
-			grouped.WriteByte(',')
-		}
-		grouped.WriteByte(intPart[i])
-	}
-
-	out := "$" + grouped.String() + frac
-	if neg {
-		out = "-" + out
-	}
-	return out
-}
+//
+// The grouping itself lives in moneyfmt, shared with the insight bodies; this is
+// the package-local name the recap assembly reads with.
+func formatUSD(d decimal.Decimal) string { return moneyfmt.USD(d) }
 
 // BuildMonthlySummaryInput assembles one month's figures for the AI recap. It is
 // request-free so both the on-demand handler and the scheduled digest job call

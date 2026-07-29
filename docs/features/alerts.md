@@ -22,6 +22,14 @@ notification bell shows the unread count.
 | **Budget threshold** | Spending nears a category budget for the month (% of budget) |
 | **New merchant** | A merchant has only just started appearing (first seen within N days, over a minimum amount) |
 | **Low leftover** | Money left this month (income − spending) drops below a floor |
+| **Predicted low balance** | A cash balance is **projected** to fall below a floor within N days, once known [bills](schedule.md) clear |
+
+The last one is the only **forward-looking** rule — the others look at what has
+already happened. It reads the same projected balance the
+[Schedule](schedule.md) page draws, so "will this account go negative before the
+next paycheck" is an alert rather than something you have to remember to check.
+Use it, not *Low leftover*, when the worry is running out of money before a bill
+or a payday.
 
 Each rule has its own configurable fields (money / percent / int), rendered
 from data rather than duplicated forms.
@@ -61,6 +69,7 @@ If your request is actually a **budget**, the parser says so and routes it to
 the [Budgets](budgets.md) page rather than silently misfiling it.
 
 !!! note "Alerts vs. insights"
-    Alerts are the opt-in, real-time, configurable path. Insights are the
-    automatic, in-app, digest path. They overlap in spirit but are distinct
-    systems — see [Insights → Push and digests](insights.md#push-and-digests).
+    Alerts are the opt-in, real-time, configurable path — every rule pushes only
+    because you turned that on. Insights are the automatic path: in-app and in the
+    digest, with the high-priority ones pushing too. They overlap in spirit but
+    are distinct systems — see [Insights → Push and digests](insights.md#push-and-digests).

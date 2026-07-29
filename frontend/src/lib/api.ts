@@ -10,13 +10,48 @@
  *     bootstrapped from GET /api/auth/csrf on first use. The backend also
  *     rotates the token on login, so it is always read fresh from the cookie
  *     rather than cached in module state.
+ *
+ * Offline, a GET may be answered from the service worker's cache rather than
+ * the server; every response is reported to `offline.ts` so the UI can say so.
+ * Writes are refused outright rather than failing obscurely — see
+ * `assertOnline`.
  */
+
+import { noteResponseOrigin } from './offline'
 
 export interface User {
   id: string
   household_id: string
   email: string
   display_name: string
+  /**
+   * owner | member | child.
+   *
+   * Drives which navigation renders. It is NOT the enforcement — every
+   * restricted route is guarded server-side, because a client-side role check
+   * is decoration that a devtools console removes in one line.
+   */
+  role: Role
+  /** The household_people row this login belongs to. */
+  person_id: string | null
+}
+
+export type Role = 'owner' | 'member' | 'child'
+
+/** An owner or a full member: everyone who is not a reduced child login. */
+export function isAdult(user: Pick<User, 'role'> | null | undefined): boolean {
+  return user?.role === 'owner' || user?.role === 'member'
+}
+
+/**
+ * The household owner. Gates the operator surface (Settings -> Continuity),
+ * which describes the instance rather than the household.
+ *
+ * Like isAdult this only decides what renders. The /api/admin routes are
+ * guarded by auth.RequireOwner server-side.
+ */
+export function isOwner(user: Pick<User, 'role'> | null | undefined): boolean {
+  return user?.role === 'owner'
 }
 
 /**
@@ -83,14 +118,192 @@ export interface Member {
   id: string
   email: string
   display_name: string
+  role: Role
   created_at: string
+}
+
+/**
+ * Someone the household's money can be ABOUT, whether or not they can sign in.
+ *
+ * Distinct from Member, which is a login. A six-year-old with a 529 is a
+ * Person with no Member — that distinction is the whole point of the feature.
+ */
+export interface Person {
+  id: string
+  display_name: string
+  /** YYYY-MM-DD, or null when not given. Never defaulted. */
+  birthdate: string | null
+  /** Derived server-side from the birthdate. Null when there is none. */
+  age: number | null
+  is_dependent: boolean
+  user_id: string | null
+  email: string | null
+  role: Role | null
+  has_login: boolean
+  created_at: string
+}
+
+export interface PersonInput {
+  display_name: string
+  birthdate: string | null
+  is_dependent: boolean
+}
+
+export interface Allowance {
+  person_id: string
+  amount: string | null
+  cadence: 'weekly' | 'biweekly' | 'monthly' | null
+  monthly_limit: string | null
+  auto_post: boolean
+  /** Derived by summing the ledger. Never stored. */
+  balance: string
+  spent_this_month: string
+  /** Null when no limit is set — different from a remaining balance of zero. */
+  limit_remaining: string | null
+}
+
+export type AllowanceKind = 'allowance' | 'chore' | 'gift' | 'spend' | 'correction'
+
+export interface AllowanceEntry {
+  id: string
+  person_id: string
+  kind: AllowanceKind
+  /**
+   * POSITIVE for money INTO the balance, NEGATIVE for money out — the opposite
+   * of a transaction amount. This table is a balance, not a spend feed.
+   */
+  amount: string
+  occurred_on: string
+  note: string | null
+  created_at: string
+}
+
+export interface AllowanceEntryInput {
+  kind: AllowanceKind
+  /** Always positive; the server derives the sign from the kind. */
+  amount: string
+  occurred_on?: string
+  note?: string | null
 }
 
 export interface Invite {
   id: string
   email: string
+  role: Role
+  person_id: string | null
+  person_name: string | null
   expires_at: string
   created_at: string
+}
+
+export interface CreateInviteInput {
+  email: string
+  role?: Role
+  /** Attaches the new login to an existing person instead of making a new one. */
+  person_id?: string | null
+}
+
+/** One person's share of a split transaction. */
+export interface SplitShare {
+  id: string
+  person_id: string
+  person_name: string
+  amount: string
+  settled_at: string | null
+}
+
+export interface TransactionSplits {
+  transaction_id: string
+  transaction_name: string
+  transaction_amount: string
+  date: string
+  shares: SplitShare[]
+}
+
+export interface SplitTransaction {
+  transaction_id: string
+  name: string
+  date: string
+  amount: string
+  payer_name: string | null
+  split_count: number
+  unsettled_count: number
+  fully_settled: boolean
+}
+
+/** One direction of "who owes whom", already netted. */
+export interface LedgerEntry {
+  debtor_id: string
+  debtor_name: string
+  creditor_id: string
+  creditor_name: string
+  amount: string
+}
+
+export interface GoalContribution {
+  id: string
+  goal_id: string
+  person_id: string
+  person_name: string
+  amount: string
+  occurred_on: string
+  note: string | null
+  created_at: string
+}
+
+export interface ContributorTotal {
+  person_id: string
+  person_name: string
+  total: string
+  share_pct: string
+}
+
+export interface GoalContributions {
+  goal_id: string
+  /**
+   * Sum of logged contributions. This is ATTRIBUTION, not the goal's progress:
+   * an account-linked goal still derives progress from the account balance.
+   * Render it as "funded by", never as the progress bar.
+   */
+  total: string
+  contributors: ContributorTotal[]
+  history: GoalContribution[]
+}
+
+/** An account held FOR the signed-in person. */
+export interface MyAccount {
+  id: string
+  name: string
+  institution_name: string | null
+  type: string
+  subtype: string | null
+  tax_treatment: string | null
+  balance: string | null
+  /** 529, UTMA/UGMA, Coverdell, custodial Roth or Trump account. */
+  is_custodial: boolean
+}
+
+export interface PersonNetWorth {
+  person_id: string
+  person_name: string
+  is_dependent: boolean
+  age: number | null
+  account_total: string
+  custodial_total: string
+  manual_total: string
+  total: string
+}
+
+/**
+ * A BREAKDOWN of household assets by the person they are held for — never a
+ * new total. `assigned + unassigned === total`, which is what the UI shows so
+ * the two obviously reconcile.
+ */
+export interface NetWorthByPerson {
+  people: PersonNetWorth[]
+  assigned: string
+  unassigned: string
+  total: string
 }
 
 export interface CreatedInvite extends Invite {
@@ -513,6 +726,9 @@ export interface Holding {
 
 export interface Liability {
   id: string
+  /** The account this debt belongs to — the key to filter accounts by when a
+   *  picker must only offer debts (a payoff goal's linked account). */
+  account_id: string
   kind: string
   account_name: string
   mask: string | null
@@ -543,6 +759,13 @@ export type TaxTreatment =
   | 'roth_401k'
   | 'trad_ira'
   | 'roth_ira'
+  // Custodial treatments. Money held for a dependent: excluded from the
+  // household's retirement nest egg, because it is not the household's to
+  // retire on. A UTMA is irrevocably the child's property.
+  | 'utma_ugma'
+  | 'coverdell'
+  | 'custodial_roth'
+  | 'trump'
   | '529'
   | 'hsa'
   | 'trust'
@@ -558,6 +781,8 @@ export interface InvestmentAccount {
   currency: string
   /** Null until the user confirms one. Never inferred on their behalf. */
   tax_treatment: TaxTreatment | null
+  /** The person this account is held FOR (a 529's beneficiary, a UTMA's minor). */
+  beneficiary_person_id?: string | null
   /**
    * Inferred from the Plaid subtype for display beside the picker. Empty when
    * the subtype cannot distinguish — a 401(k) is reported identically whether
@@ -710,6 +935,164 @@ export interface ProjectionQuery {
   annual_debt_paydown?: string
 }
 
+// --- Retirement -----------------------------------------------------------
+//
+// A separate surface from the Net Worth projection above, not a replacement.
+// That one compounds a single pooled balance and has no withdrawal phase; this
+// one is account-aware and answers "when can I stop, and does it last".
+//
+// Every rate here is a fraction ("0.05" is 5%) and REAL — already net of
+// inflation — so every dollar figure is in today's dollars.
+
+export interface RetirementAssumptions {
+  real_return_rate: string
+  inflation_rate: string
+  withdrawal_rate: string
+  /** Null means "not decided", which is a real answer and not a zero. */
+  target_retirement_age: number | null
+  current_age: number | null
+  annual_ss_income: string | null
+  ss_start_age: number | null
+  /**
+   * What the user set. When null the projection uses `defaulted_spending` —
+   * the household's own trailing-twelve-month spend — and says so.
+   */
+  target_annual_spending: string | null
+  defaulted_spending: string
+  spending_is_defaulted: boolean
+  basis: string
+}
+
+export interface AccountPoint {
+  balance: string
+  /** The employee's own money. The employer's match is kept separate. */
+  contributed: string
+  employer: string
+  growth: string
+}
+
+export interface RetirementPoint {
+  month: string
+  age: number
+  /** The nest egg: every projected account except education accounts. */
+  retirement: string
+  /** 529 balances, tracked apart and never counted as retirement money. */
+  education: string
+  contributed: string
+  growth: string
+  employer_contributed: string
+  /** Withdrawal rate on the nest egg, plus Social Security once it starts. */
+  supported_spending: string
+  by_account: Record<string, AccountPoint>
+}
+
+/** A contribution the projection had to reduce to stay inside an IRS limit. */
+export interface CapNote {
+  group: string
+  planned_annual: string
+  allowed_annual: string
+}
+
+export interface RetirementProjection {
+  points: RetirementPoint[]
+  limits_year: number
+  /** False when that year is missing: contributions were NOT capped. */
+  limits_configured: boolean
+  cap_notes: CapNote[]
+  nest_egg_at_target: string | null
+  supported_at_target: string | null
+  /** Null when FI is not reached inside the horizon — an answer, not a gap. */
+  fi_age: number | null
+  fi_month: string | null
+  already_fi: boolean
+  /** Accounts with no confirmed tax treatment, excluded and named. */
+  excluded_accounts: string[]
+  excluded_value: string
+}
+
+export interface SavingsRateSolve {
+  reachable: boolean
+  required_monthly: string | null
+  /** Null when income is unknown — a rate with no denominator is not a rate. */
+  required_rate: string | null
+  note: string
+}
+
+export interface MonteCarloResult {
+  runs: number
+  survived: number
+  years: number
+  /** A fraction over the MODELLED SEQUENCES, never a real-world probability. */
+  survival_rate: string
+  median_ending_balance: string
+  /** Reported so a result can be reproduced exactly. */
+  seed: number
+  /** Rendered verbatim. Never show the survival rate without it. */
+  basis: string
+}
+
+export interface RetirementResponse {
+  /** Travels with every projection so a curve is never rendered inputless. */
+  assumptions: RetirementAssumptions
+  projection: RetirementProjection
+  required_savings?: SavingsRateSolve
+  monte_carlo?: MonteCarloResult
+  monte_carlo_enabled: boolean
+  estimate: boolean
+  basis: string
+  /** What this model deliberately does not do. Always shown. */
+  omissions: string[]
+}
+
+export interface ContributionAccount {
+  id: string
+  name: string
+  mask: string | null
+  subtype: string | null
+  institution_name: string | null
+  balance: string | null
+  tax_treatment: TaxTreatment | null
+  monthly_contribution: string
+  employer_match_pct: string | null
+  annual_salary: string | null
+  employer_match_limit: string | null
+  beneficiary_current_age: number | null
+  beneficiary_target_age: number | null
+  /** The IRS cap this kind is subject to; null when none applies or the year is unconfigured. */
+  annual_limit: string | null
+  /** True when that cap covers more than this account (all 401ks share one). */
+  limit_shared: boolean
+  planned_annual: string
+}
+
+export interface ContributionsResponse {
+  accounts: ContributionAccount[]
+  limits_year: number
+  limits_configured: boolean
+  limits_note: string
+  untagged_accounts: number
+}
+
+export interface AssumptionsInput {
+  real_return_rate: string
+  inflation_rate: string
+  withdrawal_rate: string
+  target_retirement_age: number | null
+  current_age: number | null
+  annual_ss_income: string | null
+  ss_start_age: number | null
+  target_annual_spending: string | null
+}
+
+export interface ContributionInput {
+  monthly_contribution: string
+  employer_match_pct: string | null
+  annual_salary: string | null
+  employer_match_limit: string | null
+  beneficiary_current_age: number | null
+  beneficiary_target_age: number | null
+}
+
 export type AlertType =
   | 'big_spend'
   | 'budget_threshold'
@@ -740,15 +1123,57 @@ export interface AlertEvent {
   read: boolean
 }
 
+/** The two kinds of goal: put money aside, or clear a debt. */
+export type GoalKind = 'savings' | 'debt_payoff'
+
 /**
- * A savings goal plus its DERIVED standing. `current_amount`, `required_monthly`
- * and the on-track/shortfall figures are computed server-side (never stored, so
- * they can't drift). All money fields are decimal strings — never summed here.
+ * The amortization detail behind a debt_payoff goal. Every figure is computed
+ * server-side in exact decimal — interest is never approximated in the browser.
+ */
+export interface GoalPayoff {
+  /** False when there's no schedule to show; `reason` says why. */
+  available: boolean
+  reason: string
+  /** What's owed now — the account's current balance. */
+  balance: string
+  apr: string
+  monthly_payment: string
+  monthly_interest: string
+  /**
+   * The headline case: the payment is at or below the interest, so the balance
+   * never falls. `months`, `total_interest` and `payoff_date` are then empty —
+   * there is no schedule.
+   */
+  never_pays_off: boolean
+  months: number
+  total_interest: string
+  payoff_date: string | null
+  /** Smallest payment that clears the balance by the target date. */
+  required_monthly: string
+  target_reachable: boolean
+}
+
+/**
+ * A goal plus its DERIVED standing. `current_amount`, `required_monthly` and the
+ * on-track/shortfall figures are computed server-side (never stored, so they
+ * can't drift). All money fields are decimal strings — never summed here.
+ *
+ * The standing fields mean the same thing for both kinds but are computed
+ * differently: savings goals accumulate toward the target, payoff goals amortize
+ * a debt down to nothing, so a payoff goal's `required_monthly` accounts for
+ * interest and is larger than remaining ÷ months.
+ *
+ * For a payoff goal `target_amount` is THE BALANCE TO ELIMINATE, captured from
+ * the account when the goal was created — not zero. `current_amount` is
+ * therefore the debt retired so far, and the progress bar reads the same way for
+ * both kinds.
  */
 export interface Goal {
   id: string
-  scope: 'household' | 'user'
-  kind: string
+  scope: 'household' | 'user' | 'person'
+  /** Set iff scope === 'person': the household member the goal belongs to. */
+  person_id: string | null
+  kind: GoalKind
   name: string
   target_amount: string
   target_date: string | null
@@ -763,14 +1188,23 @@ export interface Goal {
   open_ended: boolean
   achieved: boolean
   created_at: string
+  /** Present only on a debt_payoff goal. */
+  payoff?: GoalPayoff
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
 export interface GoalInput {
   name: string
-  target_amount: string
+  /** Omit only on a debt_payoff *create*, where the server captures the linked
+   *  account's current balance as the amount to eliminate. Every other call —
+   *  savings creates and all updates — must supply it. */
+  target_amount?: string
   target_date?: string
-  scope?: 'household' | 'user'
+  /** Defaults to 'savings'. A 'debt_payoff' goal must set `account_id`. */
+  kind?: GoalKind
+  scope?: 'household' | 'user' | 'person'
+  /** Required when scope is 'person'. */
+  person_id?: string | null
   account_id?: string | null
   category_id?: string | null
 }
@@ -778,9 +1212,14 @@ export interface GoalInput {
 /** A parsed goal proposal from POST /api/goals/parse (never auto-saved). */
 export interface GoalProposal {
   name: string
+  /** Empty on a debt_payoff proposal — the balance comes from the account. */
   target_amount: string
   target_date: string | null
-  kind: string
+  kind: GoalKind
+  /** Set on a debt_payoff proposal: the debt the sentence named, resolved
+   *  server-side to a real account. */
+  account_id: string | null
+  account_name: string
 }
 
 /** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */
@@ -825,6 +1264,62 @@ export interface RecurringMerchant {
   /** Charge normalised to a per-month figure, computed server-side. */
   monthly_estimate: string
   last_seen: string
+}
+
+/**
+ * One raw bank descriptor mapped to a canonical merchant.
+ *
+ * The evidence fields are not decoration: nobody can judge "are these the same
+ * business?" from two strings, but the spend, the count and the date range make
+ * it obvious most of the time.
+ */
+export interface MerchantAlias {
+  merchant_key: string
+  /** The most recent raw descriptor, before normalisation stripped it down. */
+  sample_name: string
+  /** manual | fuzzy | llm | suggested. 'suggested' rows affect no report. */
+  source: string
+  /** The suggester's own 0–1 rating; null for a merge made by hand. */
+  confidence: number | null
+  transaction_count: number
+  total_amount: string
+  first_seen: string | null
+  last_seen: string | null
+}
+
+/** A canonical merchant: the descriptors merged into it, plus pending proposals. */
+export interface Merchant {
+  id: string
+  canonical_name: string
+  default_category_id: string | null
+  /** Confirmed descriptors. Only these count toward the totals below. */
+  members: MerchantAlias[]
+  /** Proposed descriptors awaiting review. Inert until confirmed. */
+  suggested: MerchantAlias[]
+  transaction_count: number
+  total_amount: string
+}
+
+/** A raw descriptor in the household, with its current mapping. */
+export interface MerchantKeyStat {
+  merchant_key: string
+  sample_name: string
+  transaction_count: number
+  total_amount: string
+  first_seen: string
+  last_seen: string
+  entity_id: string | null
+  alias_source: string
+}
+
+/** What a merge did to the descriptors' cached categories. */
+export interface MergeResult {
+  entity_id: string
+  /** Two descriptors carried different MANUAL categories; nothing was changed. */
+  category_conflict: boolean
+  category_applied: string | null
+  /** The surviving category was a manual choice, and the merge kept it. */
+  category_from_manual: boolean
 }
 
 /** A merchant the household has marked "not recurring". */
@@ -885,6 +1380,218 @@ export interface PreferenceWrite {
   value: unknown
 }
 
+// --- Continuity ------------------------------------------------------------
+
+/**
+ * The kinds of thing the backup subsystem does, in the order the panel lists
+ * them. `restore_test` is first deliberately: it is the one that says whether
+ * any of the others are worth anything.
+ */
+export type ContinuityKind =
+  | 'restore_test'
+  | 'db_dump'
+  | 'documents_archive'
+  | 'export'
+  | 'mirror_push'
+  | 'key_ack'
+
+/**
+ * `off` means deliberately not configured; `never` means configured and has
+ * never produced a result. They look similar and mean opposite things, so the
+ * panel styles them differently.
+ */
+export type ContinuityHealth = 'good' | 'warn' | 'bad' | 'off' | 'never'
+
+export interface ContinuityRun {
+  kind: ContinuityKind
+  health: ContinuityHealth
+  status?: 'success' | 'failure'
+  at?: string
+  age?: string
+  /** A sentence naming the consequence, written server-side. Rendered verbatim. */
+  headline: string
+  detail?: string
+  size_bytes?: number
+  artifact_path?: string
+}
+
+export interface Continuity {
+  enabled: boolean
+  settings: {
+    dir: string
+    mirror_dir: string
+    interval: string
+    restore_test_interval: string
+    include_documents: boolean
+    keep_daily: number
+    keep_weekly: number
+    keep_monthly: number
+  }
+  runs: ContinuityRun[]
+  coverage: {
+    in_export: number
+    dump_only: number
+    derived: number
+    ephemeral: number
+    blob_stores: { name: string; why: string }[]
+  }
+}
+
+// --- Document vault --------------------------------------------------------
+
+export const DOCUMENT_TYPES = [
+  'receipt',
+  'tax',
+  'warranty',
+  'insurance',
+  'contract',
+  'statement',
+  'other',
+] as const
+
+export type DocumentType = (typeof DOCUMENT_TYPES)[number]
+
+/** The ledger records a document can be attached to. */
+export type DocumentTargetKind =
+  | 'transaction'
+  | 'manual_asset'
+  | 'account'
+  | 'goal'
+
+export interface DocumentTarget {
+  kind: DocumentTargetKind
+  id: string
+}
+
+export interface DocumentLink {
+  id: string
+  document_id: string
+  target_kind: DocumentTargetKind
+  target_id: string
+  label: string
+  /** Present for transaction links. */
+  date: string | null
+  amount: string | null
+}
+
+export interface VaultDocument {
+  id: string
+  title: string
+  doc_type: DocumentType
+  filename: string
+  mime_type: string
+  size_bytes: number
+  /** False when another household member uploaded it. */
+  is_shared: boolean
+  uploaded_by: string | null
+  is_own: boolean
+  content_hash: string
+
+  document_date: string | null
+  expires_at: string | null
+  /** Advisory keep-until, computed from the type. Nothing is ever auto-deleted. */
+  retain_until: string | null
+  notes: string | null
+
+  /**
+   * Non-empty when the bytes may be rendered inline, e.g. "image/png". Only
+   * ever pass this to `api.documentPreviewURL` — never `mime_type`, which is
+   * whatever the uploader claimed.
+   */
+  preview_type: string
+
+  link_count: number
+  links: DocumentLink[]
+
+  /** Cached OCR result, or null if this receipt has never been read. */
+  extraction: StoredExtraction | null
+
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentFilters {
+  doc_type?: DocumentType | ''
+  search?: string
+  from?: string
+  to?: string
+  expiring_before?: string
+  /** Omit for everything; true = attached to something, false = standalone. */
+  linked?: boolean
+}
+
+export interface DocumentStorage {
+  bytes_used: number
+  /** 0 means unlimited. */
+  quota_bytes: number
+  max_file_bytes: number
+  document_count: number
+  /** Where ciphertext lands, e.g. "local:/var/lib/ledgermancy/documents". */
+  backend: string
+  ocr_enabled: boolean
+}
+
+export interface DocumentMetadata {
+  title: string
+  doc_type: DocumentType
+  is_shared: boolean
+  document_date: string | null
+  expires_at: string | null
+  notes: string | null
+}
+
+export interface DocumentUpload extends DocumentMetadata {
+  file: File
+  link?: DocumentTarget
+}
+
+/** A transaction a receipt's amount and date could belong to. */
+export interface ReceiptMatch {
+  transaction_id: string
+  /** When the charge posted. */
+  date: string
+  /**
+   * When the card was actually swiped, where the institution reports it. This
+   * is what the date printed on a receipt corresponds to, and it explains a
+   * match whose posted date looks days off.
+   */
+  authorized_date: string | null
+  amount: string
+  label: string
+}
+
+/**
+ * What OCR last read off a receipt, cached on the document.
+ *
+ * Its existence is why re-opening a receipt is free: the fields are already
+ * here, so nothing is sent to the AI provider a second time. Null when the
+ * receipt has never been read.
+ */
+export interface StoredExtraction {
+  extracted_at: string
+  merchant: string
+  /** Empty when the model declined to guess rather than misread it. */
+  total: string
+  date: string
+  confidence: number
+  notes: string
+}
+
+/**
+ * Fields read off a receipt image. Every one is a *suggestion* awaiting
+ * confirmation — nothing has been written, and a blank field means the model
+ * declined to guess rather than that the receipt was empty.
+ */
+export interface ReceiptExtraction {
+  merchant: string
+  total: string
+  date: string
+  currency: string
+  confidence: number
+  notes: string
+  matches: ReceiptMatch[]
+}
+
 /** One turn in a chatbot conversation. */
 export interface ChatTurn {
   role: 'user' | 'assistant'
@@ -930,6 +1637,28 @@ async function ensureCsrfToken(): Promise<string> {
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
+/**
+ * Refuses a write the browser knows it cannot deliver.
+ *
+ * The UI disables the obvious write controls when offline, but "obvious" is
+ * doing a lot of work in that sentence — there are dozens of them and more
+ * arrive with every feature. This is the backstop that turns the ones nobody
+ * remembered into a sentence the user can act on, instead of a bare "Failed to
+ * fetch" from somewhere in TanStack Query.
+ *
+ * Nothing is queued for replay. Replaying a recategorisation against data that
+ * moved while the phone was in a tunnel is a correctness problem, not a
+ * plumbing one, and a half-built version of it is worse than none.
+ */
+function assertOnline(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new ApiError(
+      503,
+      "You're offline, so this change can't be saved. It has not been queued — try again once you reconnect.",
+    )
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -937,7 +1666,10 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  if (UNSAFE.has(method)) headers['X-CSRF-Token'] = await ensureCsrfToken()
+  if (UNSAFE.has(method)) {
+    assertOnline()
+    headers['X-CSRF-Token'] = await ensureCsrfToken()
+  }
 
   const res = await fetch(path, {
     method,
@@ -945,6 +1677,9 @@ async function request<T>(
     credentials: 'include',
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+
+  // Tells the offline banner whether this came off the network or off disk.
+  noteResponseOrigin(res)
 
   if (res.status === 204) return undefined as T
 
@@ -1024,13 +1759,135 @@ export const api = {
 
   members: () => request<Member[]>('GET', '/api/household/members'),
 
+  setMemberRole: (userId: string, role: Role) =>
+    request<Member>('PUT', `/api/household/members/${userId}/role`, { role }),
+
   invites: () => request<Invite[]>('GET', '/api/household/invites'),
 
-  createInvite: (email: string) =>
-    request<CreatedInvite>('POST', '/api/household/invites', { email }),
+  createInvite: (input: CreateInviteInput) =>
+    request<CreatedInvite>('POST', '/api/household/invites', input),
 
   deleteInvite: (id: string) =>
     request<void>('DELETE', `/api/household/invites/${id}`),
+
+  // --- People ------------------------------------------------------------
+  people: () => request<Person[]>('GET', '/api/household/people'),
+
+  createPerson: (input: PersonInput) =>
+    request<Person>('POST', '/api/household/people', input),
+
+  updatePerson: (id: string, input: PersonInput) =>
+    request<Person>('PUT', `/api/household/people/${id}`, input),
+
+  deletePerson: (id: string) =>
+    request<void>('DELETE', `/api/household/people/${id}`),
+
+  // --- Allowance ---------------------------------------------------------
+  allowance: (personId: string) =>
+    request<Allowance>('GET', `/api/household/people/${personId}/allowance`),
+
+  saveAllowance: (
+    personId: string,
+    input: {
+      amount: string | null
+      cadence: string | null
+      monthly_limit: string | null
+      auto_post: boolean
+    },
+  ) => request<Allowance>('PUT', `/api/household/people/${personId}/allowance`, input),
+
+  allowanceEntries: (personId: string) =>
+    request<AllowanceEntry[]>(
+      'GET',
+      `/api/household/people/${personId}/allowance/entries`,
+    ),
+
+  addAllowanceEntry: (personId: string, input: AllowanceEntryInput) =>
+    request<AllowanceEntry>(
+      'POST',
+      `/api/household/people/${personId}/allowance/entries`,
+      input,
+    ),
+
+  deleteAllowanceEntry: (entryId: string) =>
+    request<void>('DELETE', `/api/household/allowance/entries/${entryId}`),
+
+  // --- The signed-in person's own surface --------------------------------
+  // Everything under /me is scoped to the caller and is the only data a child
+  // login can reach.
+  myPerson: () => request<Person>('GET', '/api/me/person'),
+
+  updateMyPerson: (input: PersonInput) =>
+    request<Person>('PUT', '/api/me/person', input),
+
+  myAllowance: () => request<Allowance>('GET', '/api/me/allowance'),
+
+  myAllowanceEntries: () =>
+    request<AllowanceEntry[]>('GET', '/api/me/allowance/entries'),
+
+  /** A child records their own spending. Credits are a parent's action. */
+  recordMySpend: (amount: string, note?: string) =>
+    request<AllowanceEntry>('POST', '/api/me/allowance/entries', {
+      kind: 'spend',
+      amount,
+      note: note ?? null,
+    }),
+
+  myAccounts: () => request<MyAccount[]>('GET', '/api/me/accounts'),
+
+  myGoals: () => request<Goal[]>('GET', '/api/me/goals'),
+
+  // --- Bill split --------------------------------------------------------
+  splitTransactions: () => request<SplitTransaction[]>('GET', '/api/splits/'),
+
+  householdLedger: () => request<LedgerEntry[]>('GET', '/api/splits/ledger'),
+
+  transactionSplits: (transactionId: string) =>
+    request<TransactionSplits>('GET', `/api/splits/transactions/${transactionId}`),
+
+  /**
+   * Replaces the whole split set. Send `equal` to divide evenly (the server
+   * resolves the remainder), or `shares` with exact amounts. The server refuses
+   * the write unless the shares sum to the transaction exactly.
+   */
+  setTransactionSplits: (
+    transactionId: string,
+    input:
+      | { equal: string[] }
+      | { shares: { person_id: string; amount: string }[] },
+  ) => request<TransactionSplits>('PUT', `/api/splits/transactions/${transactionId}`, input),
+
+  clearTransactionSplits: (transactionId: string) =>
+    request<void>('DELETE', `/api/splits/transactions/${transactionId}`),
+
+  settleSplit: (splitId: string) =>
+    request<void>('POST', `/api/splits/${splitId}/settle`),
+
+  unsettleSplit: (splitId: string) =>
+    request<void>('DELETE', `/api/splits/${splitId}/settle`),
+
+  // --- Goal contributions ------------------------------------------------
+  goalContributions: (goalId: string) =>
+    request<GoalContributions>('GET', `/api/goals/${goalId}/contributions`),
+
+  addGoalContribution: (
+    goalId: string,
+    input: { person_id?: string; amount: string; occurred_on?: string; note?: string },
+  ) => request<GoalContribution>('POST', `/api/goals/${goalId}/contributions`, input),
+
+  deleteGoalContribution: (contributionId: string) =>
+    request<void>('DELETE', `/api/goals/contributions/${contributionId}`),
+
+  // --- Whose money is it -------------------------------------------------
+  /** Tags an account with the person it is held for. Null clears it. */
+  setAccountBeneficiary: (accountId: string, personId: string | null) =>
+    request<{ id: string; name: string; beneficiary_person_id: string | null }>(
+      'PATCH',
+      `/api/investments/accounts/${accountId}/beneficiary`,
+      { person_id: personId },
+    ),
+
+  netWorthByPerson: () => request<NetWorthByPerson>('GET', '/api/networth/by-person'),
 
   // --- Plaid -------------------------------------------------------------
   /**
@@ -1110,6 +1967,43 @@ export const api = {
 
   deleteCategory: (id: string) =>
     request<void>('DELETE', `/api/categories/${id}`),
+
+  // --- Merchants ----------------------------------------------------------
+  // Canonical merchants and the review queue for proposed merges. Everything
+  // the suggestion job writes is inert until confirmed here, so nothing on this
+  // page can change a number elsewhere without an explicit action.
+  merchantGroups: () => request<Merchant[]>('GET', '/api/merchants'),
+
+  /** Every raw descriptor, for the manual merge picker. */
+  merchantKeys: () => request<MerchantKeyStat[]>('GET', '/api/merchants/keys'),
+
+  /**
+   * Merge descriptors into one merchant. Pass entityId to confirm a suggestion
+   * or extend an existing merchant; omit it to create a new one.
+   */
+  mergeMerchants: (input: {
+    merchant_keys: string[]
+    entity_id?: string
+    canonical_name?: string
+  }) => request<MergeResult>('POST', '/api/merchants/merge', input),
+
+  /** Dismiss proposed descriptors and remember the refusal. */
+  rejectMerchantSuggestion: (merchantId: string, merchantKeys: string[]) =>
+    request<void>('POST', `/api/merchants/${merchantId}/reject`, {
+      merchant_keys: merchantKeys,
+    }),
+
+  /** Detach a descriptor from its merchant, undoing an over-eager merge. */
+  splitMerchant: (merchantKey: string) =>
+    request<void>('POST', '/api/merchants/split', { merchant_key: merchantKey }),
+
+  renameMerchant: (merchantId: string, canonicalName: string) =>
+    request<Merchant>('PATCH', `/api/merchants/${merchantId}`, {
+      canonical_name: canonicalName,
+    }),
+
+  /** Run a suggestion pass now instead of waiting for the daily sweep. */
+  scanMerchants: () => request<void>('POST', '/api/merchants/scan'),
 
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>
@@ -1265,6 +2159,37 @@ export const api = {
       is_managed: boolean | null
     }>('PATCH', `/api/investments/accounts/${accountID}/tax-treatment`, input),
 
+  // --- Retirement ---------------------------------------------------------
+  retirementAssumptions: () =>
+    request<RetirementAssumptions>('GET', '/api/projections/assumptions'),
+
+  // Every field is sent on every save: the form is the whole state, so clearing
+  // an age genuinely clears it rather than leaving a stale value behind.
+  saveRetirementAssumptions: (input: AssumptionsInput) =>
+    request<RetirementAssumptions>('PUT', '/api/projections/assumptions', input),
+
+  retirementContributions: () =>
+    request<ContributionsResponse>('GET', '/api/projections/contributions'),
+
+  // Returns the refreshed list, so headroom updates without a second round trip.
+  saveContribution: (accountID: string, input: ContributionInput) =>
+    request<ContributionsResponse>(
+      'PUT',
+      `/api/projections/contributions/${accountID}`,
+      input,
+    ),
+
+  // Clears a plan rather than storing zeroes, so "no plan set" and "planning to
+  // contribute nothing" stay distinguishable.
+  deleteContribution: (accountID: string) =>
+    request<void>('DELETE', `/api/projections/contributions/${accountID}`),
+
+  retirementProjection: (params: { months?: number; volatility?: string } = {}) =>
+    request<RetirementResponse>(
+      'GET',
+      withQuery('/api/projections/retirement', params),
+    ),
+
   // --- Alerts -------------------------------------------------------------
   alerts: () => request<Alert[]>('GET', '/api/alerts/'),
 
@@ -1318,6 +2243,18 @@ export const api = {
   // — resolves once queued; the push itself arrives shortly after.
   sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
 
+  // --- Continuity (owner-only operator surface) ---------------------------
+  continuity: () => request<Continuity>('GET', '/api/admin/continuity'),
+
+  // Records that the operator has stored ENCRYPTION_KEY somewhere safe. The
+  // app cannot verify this; asking is the point.
+  acknowledgeKeyBackup: () =>
+    request<void>('POST', '/api/admin/continuity/key-ack'),
+
+  // Queues a backup cycle or a restore test now. Resolves once queued.
+  runContinuityJob: (kind: 'backup' | 'restore_test') =>
+    request<{ status: string }>('POST', '/api/admin/continuity/run', { kind }),
+
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
 
@@ -1368,11 +2305,151 @@ export const api = {
       withQuery('/api/reports/monthly-summary', { month }),
     ),
 
+  // --- Document vault ------------------------------------------------------
+  documents: (filters: DocumentFilters = {}) =>
+    request<VaultDocument[]>('GET', withQuery('/api/documents/', filters)),
+
+  document: (id: string) => request<VaultDocument>('GET', `/api/documents/${id}`),
+
+  /** Storage used against the quota, plus the limits the UI states up front. */
+  documentStorage: () =>
+    request<DocumentStorage>('GET', '/api/documents/storage'),
+
+  /** The documents attached to one ledger record — what a paperclip expands into. */
+  attachedDocuments: (target: DocumentTarget) =>
+    request<VaultDocument[]>(
+      'GET',
+      withQuery('/api/documents/attached', targetQuery(target)),
+    ),
+
+  /**
+   * Attachment counts for a page of transactions, keyed by transaction id.
+   * One request per page rather than one per row.
+   */
+  documentCounts: (transactionIds: string[]) =>
+    request<Record<string, number>>(
+      'GET',
+      `/api/documents/counts?${transactionIds
+        .map((id) => `transaction_id=${encodeURIComponent(id)}`)
+        .join('&')}`,
+    ),
+
+  uploadDocument: (input: DocumentUpload) => uploadDocument(input),
+
+  updateDocument: (id: string, input: DocumentMetadata) =>
+    request<VaultDocument>('PUT', `/api/documents/${id}`, input),
+
+  deleteDocument: (id: string) =>
+    request<void>('DELETE', `/api/documents/${id}`),
+
+  linkDocument: (id: string, target: DocumentTarget) =>
+    request<DocumentLink>('POST', `/api/documents/${id}/links`, {
+      target_kind: target.kind,
+      target_id: target.id,
+    }),
+
+  unlinkDocument: (documentId: string, linkId: string) =>
+    request<void>('DELETE', `/api/documents/${documentId}/links/${linkId}`),
+
+  /**
+   * Reads the fields off a receipt image. Returns *suggestions only* — nothing
+   * is written until the user confirms them, by design.
+   *
+   * This is the only call that sends the image to the AI provider, so it is
+   * never made automatically. The reading it produces is cached on the
+   * document, and `documentMatches` re-checks against it for free — call this
+   * once per receipt and re-read only when the user explicitly asks.
+   */
+  extractReceipt: (id: string) =>
+    request<ReceiptExtraction>('POST', `/api/documents/${id}/extract`),
+
+  /**
+   * Re-runs the transaction match against a receipt's already-read fields.
+   *
+   * Costs nothing: no decryption, no upload, no model call. This is what finds
+   * the charge for a receipt that was scanned before it posted.
+   */
+  documentMatches: (id: string) =>
+    request<ReceiptMatch[]>('GET', `/api/documents/${id}/matches`),
+
+  /**
+   * Fetches a document's bytes as an object URL for inline preview.
+   *
+   * The blob's type is forced to the caller-supplied `previewType`, which the
+   * server derived from a short allowlist (images and PDF). That matters:
+   * blob: URLs inherit this origin, so a document that got to choose its own
+   * type could render as HTML here. Callers must pass a non-empty
+   * `preview_type` from the document, never the raw `mime_type`.
+   */
+  documentPreviewURL: (id: string, previewType: string) =>
+    documentObjectURL(id, previewType),
+
   // The chat endpoint streams its answer as Server-Sent Events: one
   // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
   // onDelta is called as text arrives so the UI can render it live.
   chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
     streamChat(messages, onDelta),
+}
+
+/**
+ * Uploads a document as multipart/form-data.
+ *
+ * It bypasses `request` because the body is a FormData, not JSON: setting a
+ * Content-Type by hand would omit the multipart boundary the browser
+ * generates. The CSRF header is still required, so it is attached explicitly.
+ */
+async function uploadDocument(input: DocumentUpload): Promise<VaultDocument> {
+  const form = new FormData()
+  form.set('file', input.file)
+  form.set('title', input.title)
+  form.set('doc_type', input.doc_type)
+  form.set('is_shared', String(input.is_shared))
+  if (input.document_date) form.set('document_date', input.document_date)
+  if (input.expires_at) form.set('expires_at', input.expires_at)
+  if (input.notes) form.set('notes', input.notes)
+  if (input.link) {
+    form.set('link_kind', input.link.kind)
+    form.set('link_id', input.link.id)
+  }
+
+  assertOnline()
+
+  const res = await fetch('/api/documents/', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+    credentials: 'include',
+    body: form,
+  })
+
+  if (!res.ok) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+  return (await res.json()) as VaultDocument
+}
+
+/** See api.documentPreviewURL for why the type is forced rather than inherited. */
+async function documentObjectURL(
+  id: string,
+  previewType: string,
+): Promise<string> {
+  const res = await fetch(`/api/documents/${id}/download`, {
+    credentials: 'include',
+  })
+  if (!res.ok) throw new ApiError(res.status, 'could not load the document')
+
+  const bytes = await res.arrayBuffer()
+  return URL.createObjectURL(new Blob([bytes], { type: previewType }))
+}
+
+function targetQuery(target: DocumentTarget): Record<string, string> {
+  return { [`${target.kind}_id`]: target.id }
 }
 
 // streamChat POSTs the transcript and reads the SSE body, invoking onDelta for
@@ -1382,6 +2459,8 @@ async function streamChat(
   messages: ChatTurn[],
   onDelta: (text: string) => void,
 ): Promise<void> {
+  assertOnline()
+
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: {

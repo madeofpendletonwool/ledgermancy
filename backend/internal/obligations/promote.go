@@ -68,10 +68,13 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 	if err != nil {
 		return 0, fmt.Errorf("merchant categories: %w", err)
 	}
+	// Both sides are keyed by the RESOLVED merchant key, so a merchant the
+	// household has merged is looked up once under its entity rather than once
+	// per descriptor.
 	categories := make(map[string]uuid.UUID, len(catRows))
 	for _, c := range catRows {
-		if c.MerchantKey != nil {
-			categories[*c.MerchantKey] = c.CategoryID
+		if c.MerchantKey != "" {
+			categories[c.MerchantKey] = c.CategoryID
 		}
 	}
 
@@ -80,7 +83,7 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 	for _, m := range merchants {
 		// Suppression is keyed by merchant_key, so an unkeyed row could never be
 		// acted on — and a gone-quiet merchant is a cancelled charge, not a bill.
-		if m.MerchantKey == nil || dateOnly(m.LastSeen).Before(activeCutoff) {
+		if m.MerchantKey == "" || dateOnly(m.LastSeen).Before(activeCutoff) {
 			continue
 		}
 		cadence, ok := CadenceForGapDays(m.AvgGapDays)
@@ -89,13 +92,13 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 		}
 
 		var categoryID *uuid.UUID
-		if id, found := categories[*m.MerchantKey]; found {
+		if id, found := categories[m.MerchantKey]; found {
 			categoryID = &id
 		}
 
 		label := m.Merchant
 		if label == "" {
-			label = *m.MerchantKey
+			label = m.MerchantKey
 		}
 
 		// The anchor is the last observed charge, so the first derived occurrence
@@ -108,7 +111,7 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 			IntervalCount: cadence.Count,
 			IntervalUnit:  cadence.Unit,
 			AnchorDate:    dateOnly(m.LastSeen),
-			MerchantKey:   m.MerchantKey,
+			MerchantKey:   &m.MerchantKey,
 		})
 		if err != nil {
 			// A user-edited row makes the DO UPDATE match nothing, which sqlc's
@@ -117,7 +120,7 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 			if isNoRows(err) {
 				continue
 			}
-			return promoted, fmt.Errorf("promote merchant %s: %w", *m.MerchantKey, err)
+			return promoted, fmt.Errorf("promote merchant %s: %w", m.MerchantKey, err)
 		}
 		promoted++
 	}

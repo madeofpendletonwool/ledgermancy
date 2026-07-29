@@ -92,14 +92,20 @@ nav:
       - Financial Summary: features/report.md
       - Budgets: features/budgets.md
       - Goals: features/goals.md
+      - Schedule: features/schedule.md
       - Net worth: features/net-worth.md
       - Investments: features/investments.md
+      - Retirement: features/retirement.md
       - Transactions: features/transactions.md
       - Categories: features/categories.md
+      - Merchants: features/merchants.md
+      - Documents: features/documents.md
       - Accounts & Plaid: features/accounts.md
       - Alerts: features/alerts.md
       - Assistant: features/assistant.md
       - Households: features/households.md
+      - Continuity & backups: features/continuity.md
+      - Install & offline: features/install.md
   - Concepts: concepts.md
   - Configuration: configuration.md
   - Security: security.md

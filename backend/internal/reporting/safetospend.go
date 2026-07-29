@@ -277,10 +277,17 @@ func firstOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// goalContributions sums the monthly amount each active household goal needs to
-// stay on schedule (goals.Compute's RequiredMonthly). Open-ended goals (no target
-// date) require nothing per month and contribute zero. The surplus argument only
-// affects on-track/shortfall, not RequiredMonthly, so it is passed as zero.
+// goalContributions sums the monthly amount each active household savings goal
+// needs to stay on schedule (goals.Compute's RequiredMonthly). Open-ended goals
+// (no target date) require nothing per month and contribute zero. The surplus
+// argument only affects on-track/shortfall, not RequiredMonthly, so it is passed
+// as zero.
+//
+// Debt-payoff goals are deliberately excluded, for two reasons. Their arithmetic
+// is amortization, not accumulation — goals.Compute would read the debt's
+// balance as progress and return a meaningless figure. And their monthly payment
+// is already a bill in the cashflow this function is reserving against, so
+// counting it again would take the same dollars out twice.
 func goalContributions(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) (decimal.Decimal, error) {
 	rows, err := q.ListActiveHouseholdGoals(ctx, householdID)
 	if err != nil {
@@ -288,6 +295,10 @@ func goalContributions(ctx context.Context, q *dbgen.Queries, householdID uuid.U
 	}
 	total := decimal.Zero
 	for _, g := range rows {
+		if g.Kind != "savings" {
+			continue
+		}
+
 		current, err := goalCurrentProgress(ctx, q, g, now)
 		if err != nil {
 			return decimal.Zero, err

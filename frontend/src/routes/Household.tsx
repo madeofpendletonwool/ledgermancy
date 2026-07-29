@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type CreatedInvite } from '../lib/api'
+import { api, type CreatedInvite, type Role } from '../lib/api'
+import { PeopleSection } from '../components/PeopleSection'
 
 export function Household() {
   const qc = useQueryClient()
@@ -9,12 +10,13 @@ export function Household() {
   const invites = useQuery({ queryKey: ['invites'], queryFn: api.invites })
 
   const [email, setEmail] = useState('')
+  const [role, setRole] = useState<Role>('member')
   // The invite token comes back exactly once, so it is held here to be copied.
   // It is deliberately not refetched or cached anywhere else.
   const [issued, setIssued] = useState<CreatedInvite | null>(null)
 
   const createInvite = useMutation({
-    mutationFn: api.createInvite,
+    mutationFn: () => api.createInvite({ email, role }),
     onSuccess: (invite) => {
       setIssued(invite)
       setEmail('')
@@ -29,7 +31,7 @@ export function Household() {
 
   function onInvite(e: FormEvent) {
     e.preventDefault()
-    createInvite.mutate(email)
+    createInvite.mutate()
   }
 
   const inviteLink = issued
@@ -45,8 +47,13 @@ export function Household() {
         </p>
       </div>
 
+      <PeopleSection />
+
       <section className="glass p-6">
-        <h2 className="text-lg font-medium">Members</h2>
+        <h2 className="text-lg font-medium">Logins</h2>
+        <p className="mt-1 text-sm text-mist-300">
+          The people above who can sign in. Not everyone needs to.
+        </p>
         <ul className="mt-4 divide-y divide-white/5">
           {members.isPending && <li className="py-3 text-sm text-mist-500">Loading…</li>}
           {members.data?.map((m) => (
@@ -58,7 +65,10 @@ export function Household() {
                 <p className="truncate font-medium">{m.display_name}</p>
                 <p className="truncate text-sm text-mist-500">{m.email}</p>
               </div>
-              <span className="ml-auto text-xs text-mist-500">
+              <span className="ml-auto shrink-0 rounded-full bg-white/5 px-2 py-0.5 text-xs capitalize text-mist-300">
+                {m.role}
+              </span>
+              <span className="shrink-0 text-xs text-mist-500">
                 joined {new Date(m.created_at).toLocaleDateString()}
               </span>
             </li>
@@ -81,10 +91,23 @@ export function Household() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
+          <select
+            className="field sm:w-40"
+            value={role}
+            onChange={(e) => setRole(e.target.value as Role)}
+          >
+            <option value="member">Member</option>
+            <option value="child">Child</option>
+          </select>
           <button type="submit" className="btn-primary" disabled={createInvite.isPending}>
             {createInvite.isPending ? 'Sealing…' : 'Create invite'}
           </button>
         </form>
+        <p className="mt-2 text-xs text-mist-500">
+          To give an existing person a login — a child who already has a 529 or a
+          goal here — use “Enable login” on their row above instead, so their
+          records follow them.
+        </p>
 
         {createInvite.isError && (
           <p
@@ -125,6 +148,9 @@ export function Household() {
               {invites.data.map((inv) => (
                 <li key={inv.id} className="flex items-center gap-4 py-2.5 text-sm">
                   <span className="truncate">{inv.email}</span>
+                  <span className="shrink-0 rounded-full bg-white/5 px-2 py-0.5 text-xs capitalize text-mist-300">
+                    {inv.person_name ? `${inv.role} · ${inv.person_name}` : inv.role}
+                  </span>
                   <span className="ml-auto shrink-0 text-xs text-mist-500">
                     expires {new Date(inv.expires_at).toLocaleDateString()}
                   </span>

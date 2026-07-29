@@ -35,7 +35,10 @@ type memberResponse struct {
 	ID          uuid.UUID `json:"id"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"display_name"`
-	CreatedAt   time.Time `json:"created_at"`
+	// Role is the login's permission level: owner | member | child. It is
+	// about what this login may do, not about who the person is.
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +58,7 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			ID:          row.ID,
 			Email:       row.Email,
 			DisplayName: row.DisplayName,
+			Role:        row.Role,
 			CreatedAt:   row.CreatedAt,
 		})
 	}
@@ -63,12 +67,22 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 
 type createInviteRequest struct {
 	Email string `json:"email"`
+	// Role the invite grants. Empty means 'member', which is what an invite
+	// meant before roles existed.
+	Role string `json:"role"`
+	// PersonID attaches the new login to an EXISTING person instead of
+	// creating a second one. This is how "enable a login for Ellie" works;
+	// without it, accepting the invite would produce a duplicate Ellie with
+	// none of the first one's accounts, goals or allowance attached.
+	PersonID *uuid.UUID `json:"person_id"`
 }
 
 type createInviteResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        uuid.UUID  `json:"id"`
+	Email     string     `json:"email"`
+	Role      string     `json:"role"`
+	PersonID  *uuid.UUID `json:"person_id"`
+	ExpiresAt time.Time  `json:"expires_at"`
 	// Token is returned exactly once, at creation. Only its hash is stored,
 	// so it cannot be recovered later — the inviter must pass it along now.
 	Token string `json:"token"`
@@ -76,6 +90,7 @@ type createInviteResponse struct {
 
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
+	ctx := r.Context()
 
 	var req createInviteRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -84,9 +99,54 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	// A real, deliverable address is required even for a child's login.
+	//
+	// The tempting alternative — letting a parent invent `ellie@household.local`
+	// so they can just set a password — would break password reset and every
+	// security notification silently, and the failure surfaces at the worst
+	// possible moment. A parent giving a young child a login uses a
+	// plus-address they control (parent+ellie@gmail.com), which is a real
+	// mailbox. The UI says so rather than leaving them to find out.
 	if _, err := mail.ParseAddress(req.Email); err != nil {
 		writeError(w, http.StatusBadRequest, "a valid email address is required")
 		return
+	}
+
+	role := req.Role
+	if role == "" {
+		role = auth.RoleMember
+	}
+	switch role {
+	case auth.RoleMember, auth.RoleChild:
+	case auth.RoleOwner:
+		// A household has exactly one owner and it is not granted by invite.
+		writeError(w, http.StatusBadRequest,
+			"an invite cannot grant ownership; transfer it after they join")
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "role must be one of: member, child")
+		return
+	}
+
+	// Resolve the person through the household guard, and refuse one that
+	// already has a login — otherwise accepting this invite would silently
+	// fail to link and leave a second, detached person behind.
+	if req.PersonID != nil {
+		person, err := s.Queries.GetPerson(ctx, dbgen.GetPersonParams{
+			ID: *req.PersonID, HouseholdID: identity.HouseholdID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		if err != nil {
+			s.internalError(w, "get person for invite", err)
+			return
+		}
+		if person.UserID != nil {
+			writeError(w, http.StatusConflict, "that person already has a login")
+			return
+		}
 	}
 
 	token, err := auth.NewToken()
@@ -95,12 +155,14 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	invite, err := s.Queries.CreateInvite(r.Context(), dbgen.CreateInviteParams{
+	invite, err := s.Queries.CreateInvite(ctx, dbgen.CreateInviteParams{
 		HouseholdID: identity.HouseholdID,
 		Email:       req.Email,
 		TokenHash:   auth.HashToken(s.Config.SessionSecret, token),
 		InvitedBy:   &identity.UserID,
 		ExpiresAt:   time.Now().Add(inviteTTL),
+		Role:        role,
+		PersonID:    req.PersonID,
 	})
 	if err != nil {
 		s.internalError(w, "create invite", err)
@@ -110,16 +172,21 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createInviteResponse{
 		ID:        invite.ID,
 		Email:     invite.Email,
+		Role:      invite.Role,
+		PersonID:  invite.PersonID,
 		ExpiresAt: invite.ExpiresAt,
 		Token:     token,
 	})
 }
 
 type inviteResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         uuid.UUID  `json:"id"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"`
+	PersonID   *uuid.UUID `json:"person_id"`
+	PersonName *string    `json:"person_name"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 func (s *Server) handleListInvites(w http.ResponseWriter, r *http.Request) {
@@ -134,10 +201,13 @@ func (s *Server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 	invites := make([]inviteResponse, 0, len(rows))
 	for _, row := range rows {
 		invites = append(invites, inviteResponse{
-			ID:        row.ID,
-			Email:     row.Email,
-			ExpiresAt: row.ExpiresAt,
-			CreatedAt: row.CreatedAt,
+			ID:         row.ID,
+			Email:      row.Email,
+			Role:       row.Role,
+			PersonID:   row.PersonID,
+			PersonName: row.PersonName,
+			ExpiresAt:  row.ExpiresAt,
+			CreatedAt:  row.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, invites)

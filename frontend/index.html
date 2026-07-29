@@ -7,9 +7,16 @@
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <!-- iOS ignores the manifest's icons entirely and reads this instead. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="manifest" href="/site.webmanifest" />
+    <!-- The manifest link is injected by vite-plugin-pwa; it is generated from
+         the `manifest` block in vite.config.ts so the icon list and the brand
+         colours have exactly one source. -->
     <meta name="theme-color" content="#07060d" />
+    <!-- Standalone on iOS, matching the manifest's display mode. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Ledgermancy" />
     <meta name="description" content="A self-hosted hub for your household's finances." />
   </head>
   <body>

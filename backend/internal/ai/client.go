@@ -86,13 +86,17 @@ type Message struct {
 //
 // Kinds used here:
 //   - "text":        Text
-//   - "tool_use":    ID, Name, Input   (from the model)
+//   - "image":       Source                        (from us, receipt OCR)
+//   - "tool_use":    ID, Name, Input               (from the model)
 //   - "tool_result": ToolUseID, Content, IsError   (from us, answering a call)
 type Block struct {
 	Type string `json:"type"`
 
 	// text
 	Text string `json:"text,omitempty"`
+
+	// image
+	Source *ImageSource `json:"source,omitempty"`
 
 	// tool_use
 	ID    string          `json:"id,omitempty"`
@@ -105,8 +109,24 @@ type Block struct {
 	IsError   bool   `json:"is_error,omitempty"`
 }
 
+// ImageSource carries an image inline as base64. The Messages API also accepts
+// a URL source; this app deliberately has no use for one, since every image it
+// sends comes out of its own encrypted vault and has no public address.
+type ImageSource struct {
+	Type      string `json:"type"`       // always "base64"
+	MediaType string `json:"media_type"` // image/png, image/jpeg, image/gif, image/webp
+	Data      string `json:"data"`       // standard base64, no data: prefix
+}
+
 // TextBlock builds a plain text content block.
 func TextBlock(text string) Block { return Block{Type: "text", Text: text} }
+
+// ImageBlock builds an inline image block.
+func ImageBlock(mediaType string, base64Data string) Block {
+	return Block{Type: "image", Source: &ImageSource{
+		Type: "base64", MediaType: mediaType, Data: base64Data,
+	}}
+}
 
 // ToolResultBlock answers a tool_use with the query result (or an error string
 // so the model can recover rather than the whole turn failing).

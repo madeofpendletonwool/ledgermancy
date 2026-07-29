@@ -40,7 +40,7 @@ net worth, and insights, which is already worth shipping.
 
 ## Data model
 
-**Reserved migration: `00028_digest_entries.sql`.**
+**Reserved migration: `00038_digest_entries.sql`.**
 
 ```sql
 -- A rendered digest, kept so it can be read in-app and browsed historically.

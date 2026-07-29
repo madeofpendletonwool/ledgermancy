@@ -33,13 +33,27 @@ None. Fully parallel with 13, 14, and 15 — it touches ops surfaces
 (`docker-compose.prod.yml`, `DEPLOYING.md`, a new sidecar) and a Settings panel,
 none of which those docs go near.
 
-Note it *will* need updating once TODO #7 (document vault) lands, since documents
-become a second thing that must be backed up. Write the runbook so that is an
-addition, not a rewrite.
+**The document vault (doc 18) has since shipped, so this is no longer a "will
+need updating" — it is scope.** Documents are a second thing that must be backed
+up, and they are *not* in `pg_dump`: the database holds every title, type and
+expiry and none of the contents. Concretely, this doc now owes:
+
+- The `documents-data` volume (compose) or the configured S3 bucket in the
+  backup sidecar, not just the dump.
+- A restore test that verifies a **document downloads**, not only that the
+  database restores. All three of dump, volume and `ENCRYPTION_KEY` have to
+  agree, and a two-of-three restore is exactly the failure that looks fine
+  until someone opens a tax return.
+- A line in the continuity panel for document storage — size, backend, and when
+  it was last captured.
+
+`DEPLOYING.md` already carries the manual version of this ("The document volume
+is not in the dump"); the sidecar should automate what is written there rather
+than inventing a second procedure.
 
 ## Data model
 
-**Reserved migration: `00022_backup_status.sql`.**
+**Reserved migration: `00035_backup_status.sql`.**
 
 ```sql
 -- One row per backup or restore-test attempt. This table exists so the app can

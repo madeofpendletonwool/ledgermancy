@@ -46,7 +46,7 @@ Rides the existing insight spine from
 
 ## Data model
 
-**Reserved migration: `00026_merchant_baselines.sql`.**
+**Reserved migration: `00036_merchant_baselines.sql`.**
 
 ```sql
 -- Rolling per-merchant statistics. A cache, not a source of truth: it is

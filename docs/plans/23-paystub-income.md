@@ -37,6 +37,42 @@ auto-applied. Same discipline as `categorize/llm.go` and doc 17. A model
 misreading a YTD figure that then flows into a tax summary is exactly the failure
 this rule exists to prevent.
 
+**But read the next section before assuming AI is how the extraction happens at
+all.** This doc was written before doc 18 shipped, and 18's OCR gate deliberately
+refuses everything except receipts. Sending a paystub to a third party is a
+materially different act from sending a grocery receipt, and "add `paystub` to
+the allowlist" is the wrong instinct.
+
+### Extraction without an upload — prefer this
+
+A paystub and a W-2 are **fixed-layout documents**, and that changes the problem
+entirely. Commercial tax software has peeled the fields off a W-2 for years
+without a vision model, because a W-2 has numbered boxes in known positions and
+a payroll provider's stub template does not change between pay periods. That is
+a parsing problem, not a perception one.
+
+Three routes, in order of preference:
+
+1. **Text-layer extraction.** A paystub PDF from ADP, Gusto, Paychex or UKG is
+   generated, not scanned — the text is *already in the file* as text. Pulling
+   it out is a local PDF text extraction, no model and no network. Combined
+   with per-provider label patterns ("Gross Pay", "Federal Income Tax",
+   "401(k)"), this handles the majority of real paystubs on the host.
+2. **Local OCR** for genuinely scanned stubs — Tesseract in a sidecar, opt-in.
+   Adds an image to the deploy, but nothing leaves the machine.
+3. **The AI provider**, last, and only with per-document consent at the point of
+   upload rather than a deployment-wide switch. If this path is built, it needs
+   its own config flag; it must **not** inherit `DOCUMENTS_OCR_ENABLED`, which
+   an operator turned on to read receipts.
+
+Route 1 is also simply more accurate: transcribing a known field from a text
+layer cannot misread a digit, whereas a vision model can, and the whole reason
+this doc insists on a review queue is that a misread YTD figure is expensive.
+
+Redaction is worth considering regardless — a paystub's SSN is never needed by
+any figure this doc computes, so stripping it before storage (not merely before
+extraction) would lower the sensitivity ceiling of the entire database.
+
 ## Prerequisites
 
 - **[18-document-vault.md](18-document-vault.md)** — hard dependency for path 2
@@ -50,7 +86,7 @@ contribution tracking) but does not block on it.
 
 ## Data model
 
-**Reserved migration: `00027_paystubs.sql`.**
+**Reserved migration: `00037_paystubs.sql`.**
 
 ```sql
 CREATE TABLE employers (
@@ -112,9 +148,13 @@ by default and require an explicit opt-in to share with the household — follow
 the `plaid_items.is_shared` precedent rather than defaulting open.
 
 **EIN and gross salary raise the sensitivity ceiling of the whole database.**
-Note it in `docs/security.md`. If OCR is used, the paystub image goes to the
-configured AI provider — that must be stated plainly in the UI at the point of
-upload, not buried.
+Note it in `docs/security.md`. If an AI extraction path is built at all, the
+paystub goes to the configured provider — that must be stated plainly in the UI
+at the point of upload, not buried, and consent belongs on the individual
+document rather than on a deployment-wide flag. Doc 18 established the pattern
+of gating on `doc_type` before decrypting; whatever this doc does must be at
+least as strict, because a paystub is more sensitive than the tax documents 18
+already refuses to send.
 
 **`confirmed_at` gates everything.** An unconfirmed paystub is inert: excluded
 from savings rate, tax summary, contribution tracking, and doc 15's projections.
@@ -130,8 +170,13 @@ New package `backend/internal/payroll/`.
    UKG). Extends `plaid/client.go`; the Income product needs separate Plaid
    enablement, so gate it on the configured products the way
    `HasProduct(c.Products(), ProductTransactions)` already gates transactions.
-2. **PDF OCR** via the configured AI provider, storing the PDF through doc 18.
-   Structured output, then the review queue.
+2. **PDF extraction**, storing the PDF through doc 18's `documents.Vault`.
+   Structured output, then the review queue. Prefer local text-layer extraction
+   over an AI upload — see "Extraction without an upload" above, which is the
+   part of this doc most worth re-reading before writing any code. Doc 18's
+   `ocrEligibleTypes` allowlist refuses everything but receipts today, and
+   widening it is a decision to make deliberately, not a line to change in
+   passing.
 3. **Manual entry** — the universal fallback and the one that must work first.
    The line taxonomy above is the form schema, so a paper stub or an unsupported
    employer is fully capturable.

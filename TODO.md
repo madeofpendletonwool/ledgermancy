@@ -23,10 +23,11 @@ tool-calling chatbot (7).
 The app is feature-complete for daily use; these are known, deliberate gaps —
 not bugs:
 
-- **Debt-payoff goals are schema-only.** The `goals.kind` column allows
-  `debt_payoff`, but the feasibility maths (`backend/internal/goals`), the
-  natural-language parser (`backend/internal/ai/parse.go`), and the Goals UI all
-  handle `savings` only. Creating or tracking a payoff goal isn't possible yet.
+- **Debt payoff is single-debt only.** Payoff goals themselves now work end to
+  end (`goals.ComputePayoff`, the parser, the Goals UI). What is still missing is
+  strategy *across* debts — snowball vs. avalanche ordering, and modelling extra
+  one-off payments. That belongs with the proactive advisor, which already ranks
+  "pay down card Z (19% APR)" as an option.
 - **An item's transaction history window cannot be widened after linking.**
   Plaid fixes it at link time; update mode preserves it but cannot raise it, and
   relinking orphans the history already tied to the old `plaid_item_id`. Where
@@ -38,6 +39,136 @@ not bugs:
 ## Roadmap
 
 ### Recently shipped
+
+- **Installable PWA with read-only offline** — a manifest, a maskable icon, and
+  a service worker that precaches the app shell and keeps the most recent
+  read-only API responses, so the app installs to a home screen and still opens
+  and renders in a tunnel. Frontend only; no backend change.
+
+  The interesting decisions are all about honesty rather than plumbing. API
+  caching is network-first and never cache-first, so a saved figure only ever
+  appears when the request genuinely failed; every stored response is stamped
+  with the time it was stored, and a banner under the header quotes that time
+  back rather than showing a tasteful cloud icon. The cacheable set is an
+  allowlist, so a route added later gets no offline copy until someone decides
+  it should — the failure mode of forgetting is an empty screen, not data on
+  disk that should never have been there. `/api/documents/*` is excluded
+  outright: the vault decrypts on read, and caching the plaintext would undo
+  the feature. Writes are refused with a sentence the user can act on and are
+  explicitly **not** queued — replaying a stale recategorisation against a
+  changed ledger is a correctness problem, and half of it is worse than none.
+
+  Two things that only show up in the real deployment: sign-out clears the
+  worker's caches as well as the query cache, or a shared device leaks the last
+  user's balances to whoever pulls the plug next; and nginx serves `/sw.js` and
+  the manifest `no-cache`, without which installed clients pin themselves to an
+  old build forever.
+
+- **Encrypted document vault** — a `/documents` surface storing receipts, tax
+  returns, warranties, policies and contracts sealed with the existing AES-GCM
+  cipher, linked to transactions, manual assets, accounts and goals, with an
+  insight that fires before a warranty or policy expires. Storage is an
+  interface: a mounted volume by default, or any S3-compatible bucket (SigV4
+  signed directly — three verbs did not justify an SDK).
+
+  The security work is where the substance is, and each piece closes a named
+  hole rather than being defence in depth. Storage keys are generated UUIDs, so
+  a filename of `../../etc/passwd` was never a path in the first place. Every
+  route including the download resolves the row scoped to household *and* user,
+  and misses return 404 rather than 403 — a 403 would confirm an id exists in
+  someone else's vault. Downloads sniff the decrypted bytes against a
+  five-entry allowlist instead of echoing the uploader's MIME type, always with
+  an attachment disposition and `nosniff`, so an HTML file filed as a "receipt"
+  downloads rather than executing on the app's origin. And reads verify a
+  SHA-256 of the plaintext, which catches the one failure GCM cannot: a storage
+  mixup serving the wrong, perfectly intact blob.
+
+  Two limits are load-bearing rather than tuneable. Sealing is whole-buffer, so
+  the per-file cap is what turns "too big" into a 413 instead of an OOM; values
+  above 100 MB are refused at startup. The per-household quota counts private
+  uploads too, because what is being rationed is the operator's disk.
+
+  Receipt OCR ships behind its own switch, separate from `AI_API_KEY`, and is
+  suggestion-only: there is no code path from a model reading a receipt to a
+  written row. It offers the fields and the transactions the amount and date
+  could match, with one click to attach the receipt to the one you pick.
+
+  Crucially it is gated on `doc_type` as well as on the switch: **only
+  documents filed as `receipt` can be sent**, refused server-side before the
+  file is decrypted. Tax documents, policies, contracts, statements and the
+  `other` bucket are ineligible whatever format they are in — a W-2 scanned to
+  a PNG is as refused as a PDF of one. It is an allowlist of one entry rather
+  than a blocklist, so a doc type added by a later migration is ineligible by
+  default rather than sendable until somebody remembers it.
+
+  The reading is **cached on the document** (migration `00033`), which is what
+  makes the feature usable rather than a demo. A receipt is scanned at the
+  register and the card charge posts days later, so a match run only at scan
+  time finds nothing — and the first cut had no way to look again without
+  re-uploading the image. Now the fields are stored, matching is free
+  deterministic SQL that re-runs whenever the receipt is opened and in an hourly
+  producer, and the charge surfaces in the feed when it lands. Matching also
+  reads `authorized_date` — the swipe date, which is what the receipt prints —
+  so a late posting lines up exactly rather than leaning on the ±5 day window.
+  Pending rows are excluded because they are deleted when they post, which
+  would silently take the attachment with them.
+
+  Nothing is ever auto-deleted. Retention is an advisory "keep until" date per
+  type, surfaced in the UI, permanently. And the document volume is **not** in
+  `pg_dump` — DEPLOYING.md now carries the three-part restore (dump, volume,
+  key) that this creates.
+
+- **Smart merchant canonicalization** — a `/merchants` surface over
+  `merchant_entities` / `merchant_aliases`, layered on top of
+  `plaid.MerchantKey` rather than replacing it. Every reporting query that
+  groups by merchant now groups by the *resolved* merchant, so a subscription
+  billing under two descriptors is detected as recurring for the first time, and
+  a second descriptor of a years-old merchant stops firing a false
+  "new merchant" alert.
+
+  The design turns on one rule: **a suggestion is inert.** Both passes — the
+  deterministic one (token overlap, prefix containment, and vowel-dropped
+  abbreviation, all pure string work) and the AI one that sees only the residue
+  — write aliases with `source='suggested'`, and every reporting query excludes
+  those. A pass therefore cannot move a number; it can only fill a review queue.
+  That is what makes it safe to run unattended and is asserted directly: a test
+  seeds a suggested alias and checks the reports are unchanged.
+
+  Three places it refuses to be clever. Rejections are remembered, and because
+  transitivity could otherwise re-form a merge through a third descriptor, a
+  whole component containing a rejected pair is dropped rather than proposed.
+  Merging reconciles the fragments' cached categories, but two *different*
+  manual categories are reported as a conflict and nothing is touched — the
+  "manual is sticky" rule outranks any merge. And splitting is a first-class
+  action, because an over-eager merge will happen and one nobody can undo is
+  worse than one that never happened.
+
+- **Retirement & FIRE projections** — a `/retirement` surface built on an
+  account-aware engine (`networth/retirement.go`) that sits *beside*
+  `networth/project.go` rather than replacing it. Each account compounds on its
+  own terms at a **real** return rate, so every figure is in today's dollars;
+  contributions are held at their IRS limit, pooled across accounts that share
+  one (two 401(k)s do not each get $24,500); an employer match is a percentage
+  of salary bounded by both the plan's annual cap and what was actually
+  deferred; and a 529 runs to its beneficiary's college horizon and is never
+  counted as retirement money. FI age is found by scanning the projected series,
+  and the required-savings-rate solve is a **bounded** bisection that answers
+  "not reachable" instead of printing an absurd rate.
+
+  Four places it refuses to flatter. Untagged accounts are **excluded and
+  named**, with the value they hold, because silently omitting an account
+  produces a confidently wrong number. An unconfigured tax year reports itself
+  and projects uncapped rather than applying a stale limit. Every response
+  carries the assumptions that produced it, so a client cannot render a curve
+  without its inputs. And what the model does not do — tax on withdrawals, RMDs,
+  return variability — is listed on the page rather than left to be discovered.
+
+  The withdrawal-phase simulation is behind `RETIREMENT_MONTE_CARLO_ENABLED`,
+  default off. Its sequences are drawn around the user's own stated return and
+  volatility, not a historical backtest: bundling a market history would mean
+  either an outbound fetch the README promises not to make or a table of numbers
+  transcribed into source. Seeds are derived from the inputs, so the same
+  scenario always gives the same answer.
 
 - **Dedicated Investments page** — a fourth top-level data surface
   (`/investments`) over holdings that were being ingested and then shown as a
@@ -130,10 +261,9 @@ not bugs:
 
 ### Still planned
 
-- **Thousands separators in generated prose.** `money()` in
-  `backend/internal/insights/producers.go` is `"$" + StringFixed(2)`, so a
-  four-figure amount renders `$1234.56` rather than `$1,234.56` everywhere an
-  insight, recap, or alert body quotes a number. One helper, many call sites.
+_(Nothing outstanding here — thousands separators in generated prose now come
+from the shared `backend/internal/moneyfmt` helper, which every insight, recap
+and alert body routes through.)_
 
 ---
 
@@ -337,7 +467,14 @@ machinery to investment accounts), `reporting/`, a new `asset_prices` table
 and a new daily job in `backend/internal/jobs/`. Frontend gets a fourth
 top-level data surface alongside Spending, Net Worth, and Report.
 
-#### 5. Retirement & FIRE projections, including 529s
+#### 5. Retirement & FIRE projections, including 529s — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed and what
+stayed out. Two notes on the description: the withdrawal-phase simulation ships
+**behind a flag, default off** (`RETIREMENT_MONTE_CARLO_ENABLED`) because no
+historical return series is bundled to run it against, and tax drag on
+withdrawals is explicitly not modelled — it is stated as an omission in the UI
+rather than approximated, and it wants #8's paystub data to do properly.
 
 **Problem.** `backend/internal/networth/project.go` does a linear net-worth
 extrapolation. That is fine as a sanity check but actively misleading as a
@@ -373,7 +510,11 @@ retire" via tool calls over these projections).
 
 ### Data quality
 
-#### 6. Smart merchant canonicalization
+#### 6. Smart merchant canonicalization — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed. One note
+on the description: entity logos stayed out deliberately — they are an outbound
+dependency the app otherwise does not have.
 
 **Problem.** Every finance app suffers from merchant-string fragmentation:
 `AMAZON.COM AMZN.COM/BILL WA`, `AMZ*ORDER 1234`, `AMAZON.COM*ABCD1` are all
@@ -406,7 +547,12 @@ near-universal side-effect win.
 
 ### Ownership & documents
 
-#### 7. Encrypted document vault
+#### 7. Encrypted document vault — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed. Two notes
+on the description. Full-text search *inside* documents stayed out — it wants an
+index and OCR over everything, which is separate work — and the OCR that did
+ship is suggestion-only, with no path from a model's reading to a written row.
 
 **Problem.** Self-hosters chose self-hosting because they want to own their
 data. Today the app owns transaction data but nothing else — receipts, tax
@@ -538,7 +684,9 @@ everything," not "file for you."
   users should trust the numbers because they came from their own paystubs
   and transactions, not from an LLM guessing at tax law.
 
-**Ties into.** Document vault (#7, for paystub PDF storage and OCR),
+**Ties into.** Document vault (#7 — **shipped**, so `documents.Vault` is
+available for paystub PDF storage and `ai.ExtractReceipt`'s image support for
+OCR),
 Investments (#4, for 401k / IRA contribution cash flow into retirement
 accounts and for capital-gains reporting that feeds the tax summary),
 Retirement projections (#5, which become genuinely useful once savings rate
@@ -614,7 +762,13 @@ makes the app feel alive on a Sunday-morning check-in.
 double as dashboard widgets), #1 (upcoming bills in the digest), #3 (advisor
 suggestions in the digest).
 
-#### 11. PWA install + offline read
+#### 11. PWA install + offline read — **shipped**
+
+Delivered as the read-only MVP the plan called for. Queue-and-replay for writes
+stayed out on purpose and is not merely deferred: writes are refused outright
+with an explanation, because a queue that silently replays a stale edit against
+a ledger that moved is worse than no queue. Background sync is out for the same
+reason. Browser push remains out of scope — ntfy is the notification path.
 
 **Problem.** Self-hosters check their finances on their phones constantly, and
 the current SPA works in a mobile browser but is not installable and does not

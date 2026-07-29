@@ -111,6 +111,18 @@ func (s *Server) handleUpsertPreferences(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		case "household":
+			// A household preference is a household setting. A child login may
+			// set its own user-scoped preferences (theme and the like) but must
+			// not change something that applies to everyone.
+			//
+			// This is the one place a per-handler role check is right rather
+			// than a route guard: the route serves both scopes by design, so
+			// the split is in the resource, not in the URL.
+			if !identity.IsAdult() {
+				writeError(w, http.StatusForbidden,
+					"only an adult can change household preferences")
+				return
+			}
 			_, err := s.Queries.UpsertHouseholdPreference(r.Context(), dbgen.UpsertHouseholdPreferenceParams{
 				HouseholdID: &identity.HouseholdID,
 				Key:         item.Key,

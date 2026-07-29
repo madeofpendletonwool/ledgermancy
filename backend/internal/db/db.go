@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"time"
 
 	pgxdecimal "github.com/jackc/pgx-shopspring-decimal"
@@ -16,6 +17,16 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// Migrations exposes the embedded migration files read-only.
+//
+// It exists for the continuity coverage guard, which parses every migration's
+// `-- +goose Up` half to discover the set of tables that exist and fails the
+// build when one of them has not been classified for backup. Reading the
+// embedded files rather than a live database is what lets that guard run on a
+// laptop with no Postgres, so it fires on the pull request that adds the table
+// instead of in CI or, much later, in a restore.
+func Migrations() fs.FS { return migrationsFS }
 
 // Connect opens a pooled connection to Postgres and verifies it is reachable.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
@@ -55,6 +66,12 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 // Migrate applies any outstanding migrations. Goose needs a database/sql
 // handle, so the pgx pool is adapted rather than opening a second connection.
+//
+// Ordering is strict on purpose: a new migration must be numbered ABOVE every
+// version already applied, or an instance that has run the higher one refuses
+// to start. See the reservation table in docs/plans/README.md — a reserved
+// number is only valid until something above it lands, and the implementer
+// renumbers rather than reaching for goose.WithAllowMissing().
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()

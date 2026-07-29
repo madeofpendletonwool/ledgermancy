@@ -9,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
 )
 
 // sharedUser is the "representative user" passed to the reporting queries.
@@ -24,8 +25,9 @@ import (
 var sharedUser = uuid.Nil
 
 // money formats a finished decimal for a narrative sentence. The number is
-// never computed here — only decorated.
-func money(d decimal.Decimal) string { return "$" + d.StringFixed(2) }
+// never computed here — only decorated. The grouping lives in moneyfmt, shared
+// with the monthly recap, so "$1,234.56" reads the same in both surfaces.
+func money(d decimal.Decimal) string { return moneyfmt.USD(d) }
 
 func monthStart(t time.Time) time.Time {
 	t = t.UTC()
@@ -144,7 +146,7 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 
 	var out []Candidate
 	for _, m := range rows {
-		if m.MerchantKey == nil || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
 			continue
 		}
 
@@ -162,14 +164,14 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 				m.Merchant, money(avg), money(monthly)),
 			Data: map[string]any{
 				"merchant":         m.Merchant,
-				"merchant_key":     *m.MerchantKey,
+				"merchant_key":     m.MerchantKey,
 				"average_amount":   avg.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
 				"cadence":          cadenceLabel(m.AvgGapDays),
 				"occurrences":      m.Occurrences,
 				"last_seen":        m.LastSeen.Format(time.DateOnly),
 			},
-			DedupeKey: "new_recurring:" + *m.MerchantKey,
+			DedupeKey: "new_recurring:" + m.MerchantKey,
 		})
 	}
 	return out, nil

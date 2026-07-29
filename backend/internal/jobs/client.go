@@ -61,6 +61,12 @@ const llmSweepInterval = 15 * time.Minute
 // quiet household still surfaces. Evaluation is cheap deterministic SQL.
 const alertSweepInterval = 30 * time.Minute
 
+// allowancePostInterval is how often scheduled allowances are checked. Hourly
+// is not a payment cadence — the cadence lives on each allowance row. This is
+// only how often the app asks "is anybody due?", and running it often is what
+// lets a server that was off overnight still pay on the right day.
+const allowancePostInterval = time.Hour
+
 // insightInterval is how often every household's proactive feed is regenerated
 // independently of syncs, so a quiet household still surfaces a budget crossing
 // the calendar rolls into. Detection is cheap deterministic SQL; phrasing (when
@@ -84,6 +90,13 @@ const securitySweepInterval = 6 * time.Hour
 // catch month rollover promptly rather than to regenerate anything daily.
 const summaryRefreshInterval = 24 * time.Hour
 
+// merchantSuggestInterval is how often every household is swept for merchant
+// merge candidates. Daily, because the descriptor space barely moves — a new
+// merchant is rare next to a sync — and because the pass compares every key
+// against every other, so a tighter cadence would re-do identical work to
+// produce an identical review queue.
+const merchantSuggestInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -105,7 +118,9 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // notifier is likewise always passed and always registered — it is not
 // AI-gated; delivery is gated per-user inside the notifier. appURL is the
 // frontend origin used to build notification deep links.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig) (*river.Client[pgx.Tx], error) {
+// backup carries the continuity dependencies, which the worker builds because
+// they need a cipher and a document store the api has already constructed.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
@@ -167,6 +182,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		}
 	}
 
+	// Merchant canonicalisation is registered unconditionally: its first pass is
+	// pure string work and is the valuable half, with the model only ever seeing
+	// the residue. Gating the whole thing on a key would deny a keyless
+	// deployment the merges it can compute for free.
+	if err := river.AddWorkerSafely(workers, &SuggestMerchantsWorker{
+		Queries: queries, AI: aiClient,
+	}); err != nil {
+		return nil, fmt.Errorf("register merchant suggestion worker: %w", err)
+	}
+
 	config := &river.Config{
 		Queues: map[string]river.QueueConfig{
 			// A household has a handful of institutions; more concurrency
@@ -177,6 +202,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		JobTimeout:  10 * time.Minute,
 		MaxAttempts: 5,
 		Logger:      slog.Default(),
+	}
+
+	// Scheduled allowance credits. Registered unconditionally: it needs neither
+	// Plaid nor an AI key, and a household using the allowance ledger without
+	// either is a perfectly ordinary way to run this app.
+	if err := river.AddWorkerSafely(workers, &PostAllowancesWorker{Queries: queries}); err != nil {
+		return nil, fmt.Errorf("register allowance worker: %w", err)
 	}
 
 	config.PeriodicJobs = []*river.PeriodicJob{
@@ -195,6 +227,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(snapshotInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SnapshotInvestmentsArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Hourly rather than daily. The period boundary in allowances is the
+		// idempotency key, so running often costs nothing and means a household
+		// whose server was asleep at midnight still gets paid.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(allowancePostInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return PostAllowancesArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
@@ -232,6 +274,24 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			nil,
 		),
+		// Merchant merge suggestions. Deterministic first pass, so like the
+		// insight sweep it runs with or without a key. RunOnStart: the queue it
+		// fills is inert, so warming it on deploy costs nothing and means a fresh
+		// install has something to review immediately.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(merchantSuggestInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SuggestMerchantsAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+	}
+
+	// Continuity: the scheduled dump, vault archive, portable export and the
+	// restore test. Registered before the client is built because none of these
+	// workers enqueues another job.
+	if err := registerBackupJobs(workers, &config.PeriodicJobs, backup); err != nil {
+		return nil, err
 	}
 
 	// Benchmark closes only change once a day, after the market settles. Not
@@ -340,6 +400,14 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register insights sweep worker: %w", err)
 	}
 
+	// The merchant sweep enqueues per-household passes, so it needs the client
+	// and is registered after construction.
+	if err := river.AddWorkerSafely(workers, &SuggestMerchantsAllWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register merchant suggestion sweep worker: %w", err)
+	}
+
 	// Digest sweep + per-user worker. Both enqueue other jobs (the sweep enqueues
 	// DigestArgs; the worker enqueues NotifyArgs), so they need the client and are
 	// registered after construction. Registered unconditionally — the deterministic
@@ -414,6 +482,23 @@ func EnqueueLLMCategorise(ctx context.Context, client *river.Client[pgx.Tx], hou
 	if _, err := client.Insert(ctx, LLMCategoriseArgs{HouseholdID: householdID}, nil); err != nil {
 		slog.Error("enqueue llm categorise", "error", err, "household_id", householdID)
 	}
+}
+
+// EnqueueSuggestMerchants runs a merchant canonicalisation pass for a household
+// now, rather than waiting for the daily sweep — the "scan for merges" button.
+// It returns the error so the button can say when the request did not take;
+// unlike a digest, the user is standing in front of the result.
+//
+// SuggestMerchantsArgs.InsertOpts collapses repeats to one pass per hour, so a
+// user leaning on the button costs nothing.
+func EnqueueSuggestMerchants(ctx context.Context, client *river.Client[pgx.Tx], householdID uuid.UUID) error {
+	if client == nil {
+		return fmt.Errorf("background jobs are not available")
+	}
+	if _, err := client.Insert(ctx, SuggestMerchantsArgs{HouseholdID: householdID}, nil); err != nil {
+		return fmt.Errorf("enqueue merchant suggestions: %w", err)
+	}
+	return nil
 }
 
 // EnqueueDigestNow queues a one-off "send now" digest for a single user,

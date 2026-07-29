@@ -44,17 +44,49 @@ Each institution card shows:
     want the history gone. There is no undo. See
     [Deployment → What happens after 730 days](../deployment.md#what-happens-after-730-days).
 
-## Per-institution products
+### Reconnect without losing history
 
-`PLAID_PRODUCTS` sets what *new* links request; each item stores its own list,
-and the Investments and Liabilities sync modules are no-ops for items not linked
-with them. So an institution connected for transactions alone is completely
-unaffected by either module.
+When an item's status is `login_required` or `revoked` (credentials changed, MFA
+re-prompt, the institution revoked access), **Reconnect** opens Plaid Link in
+**update mode**. Update mode repairs the *existing* item in place rather than
+creating a new one, so its accounts, its transactions, and the 730-day history
+window it was linked with all stay put.
 
-!!! tip "Keep `PLAID_PRODUCTS=transactions` unless you specifically want more"
-    Plaid narrows the institution list to banks supporting *every* requested
-    product, so asking for all three hides banks that would otherwise work. Add
-    `investments` and `liabilities` only when you actually want them.
+This is the right action whenever an item needs attention — relinking from
+scratch instead would orphan the history tied to the old `plaid_item_id`, and
+*cannot* re-widen the history window (Plaid fixes that at link time). See
+[Deployment → What happens after 730 days](../deployment.md#what-happens-after-730-days).
+
+## Products
+
+Two settings, and the difference between them matters.
+
+| Setting | Meaning |
+| --- | --- |
+| `PLAID_PRODUCTS` | Products an institution **must** support to appear in Link at all |
+| `PLAID_OPTIONAL_PRODUCTS` | Products pulled **where supported**, ignored where not |
+
+!!! danger "Never add `investments` or `liabilities` to `PLAID_PRODUCTS`"
+    Plaid narrows the institution list to banks supporting *every* required
+    product. Asking for `liabilities` there hides every bank without loan
+    products from a user who only wanted their chequing account. Keep
+    `PLAID_PRODUCTS=transactions` and put the rest in
+    `PLAID_OPTIONAL_PRODUCTS`, which never filters the institution list.
+
+### Enabling a product on accounts you already linked
+
+`PLAID_OPTIONAL_PRODUCTS` is also the switch that turns the Investments and
+Liabilities sync modules on, and it applies to **existing** connections. Add a
+product, restart, and the next sync pulls it — no relink, no lost history.
+
+This is deliberate. An access token serves whatever the institution supports,
+regardless of what was requested when the item was linked, so there is no reason
+to make you relink. Relinking would orphan the transaction history tied to the
+old item and cannot re-widen the 730-day window.
+
+Each sync module additionally skips any item with no accounts it applies to, so
+a chequing-only bank is never asked about its mortgages, and Plaid never bills
+for a product that doesn't apply.
 
 ## Sandbox credentials
 

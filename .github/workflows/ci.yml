@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel a superseded run on the same ref so re-pushes to a PR don't queue.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (build / vet / test)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: lmtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        # -p 1 is mandatory: the DB-gated tests share one throwaway Postgres
+        # and cannot tolerate parallel packages. Without it, packages collide
+        # on the same schema. Tests skip themselves when TEST_DATABASE_URL is
+        # unset, so the service container above is what makes them actually run.
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/lmtest?sslmode=disable
+        run: go test -p 1 ./...
+
+  frontend:
+    name: Frontend (lint / build)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        # `npm run build` runs `tsc -b && vite build`. The project-references
+        # build catches things `tsc --noEmit` misses — see docs/development.md.
+        run: npm run build

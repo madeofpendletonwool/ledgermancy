@@ -17,6 +17,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
@@ -756,8 +757,8 @@ func acceptableTarget(target, avg decimal.Decimal) bool {
 
 // templateRationale is the AI-off (and guardrail-substitute) reason line.
 func templateRationale(name string, avg, target decimal.Decimal) string {
-	return "You've averaged $" + avg.StringFixed(2) + "/mo on " + name +
-		" — $" + target.StringFixed(2) + " is a round target just above that."
+	return "You've averaged " + moneyfmt.USD(avg) + "/mo on " + name +
+		" — " + moneyfmt.USD(target) + " is a round target just above that."
 }
 
 // trimRationale bounds a model rationale so a runaway response cannot bloat the

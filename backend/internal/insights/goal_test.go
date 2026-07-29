@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,6 +121,15 @@ func TestGoalProducerCoachesBehind(t *testing.T) {
 	}
 	if got.Title == "" || got.Body == "" {
 		t.Errorf("expected template title/body with AI off, got title=%q body=%q", got.Title, got.Body)
+	}
+	// Money in a finished insight body carries thousands separators. Asserted
+	// here rather than only on the formatter because this is where it renders:
+	// a four-figure target used to reach the feed as "$12000.00".
+	if !strings.Contains(got.Body, "$12,000.00") {
+		t.Errorf("body should quote the target as $12,000.00, got %q", got.Body)
+	}
+	if strings.Contains(got.Body, "$12000") || strings.Contains(got.Body, "$1000.00") {
+		t.Errorf("body contains an ungrouped four-figure amount: %q", got.Body)
 	}
 
 	// The behind goal is not yet achieved, so achieved_at must remain unset.

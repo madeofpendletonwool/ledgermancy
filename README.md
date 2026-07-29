@@ -53,12 +53,19 @@ you do all the math. Ledgermancy is neither.
   categorisation fallback, a proactive insight feed, a natural-language budget
   & alert parser, a monthly recap, and a chat assistant that answers questions
   by querying your real data — not by guessing.
+- **Your paperwork lives here too.** An encrypted **document vault** for
+  receipts, tax returns, warranties, policies and contracts — sealed with your
+  own key, attached to the transactions, assets and goals they explain, and
+  nudging you before a warranty or a policy runs out. The thing a cloud
+  competitor structurally cannot offer.
 - **It's private by design.** Optional TOTP two-factor, server-side sessions,
-  encrypted-at-rest credentials, rate limiting, a security audit log, and
-  invite-only registration. The app sends no email and phones home to nothing
-  but Plaid and (optionally) your AI provider — plus, only if you switch it on,
-  a daily index-price fetch for the Investments page's benchmark chart
-  (`BENCHMARK_PRICES_ENABLED`, off by default).
+  encrypted-at-rest credentials and documents, rate limiting, a security audit
+  log, and invite-only registration. The app sends no email and phones home to
+  nothing but Plaid and (optionally) your AI provider — plus, only if you switch
+  them on, a daily index-price fetch for the Investments page's benchmark chart
+  (`BENCHMARK_PRICES_ENABLED`), receipt OCR through your AI provider
+  (`DOCUMENTS_OCR_ENABLED`), and an S3 bucket you nominate for document storage.
+  All three are off by default.
 
 ## Features
 
@@ -76,15 +83,30 @@ you do all the math. Ledgermancy is neither.
     <td width="50%" align="center"><img src="docs/screenshots/assistant.png" alt="Assistant"><br><b>Assistant</b><br>Ask about your money in plain English. Every figure comes from your own data via tool calls — auditable, not hallucinated.</td>
   </tr>
   <tr>
-    <td width="50%" align="center"><img src="docs/screenshots/budget-goals.png" alt="Budgets and Goals"><br><b>Budgets & Goals</b><br>Weekly / monthly / yearly budgets with rollover, a "safe to spend" figure, suggested budgets from your history, and savings goals that track to a target date.</td>
+    <td width="50%" align="center"><img src="docs/screenshots/budget-goals.png" alt="Budgets and Goals"><br><b>Budgets & Goals</b><br>Weekly / monthly / yearly budgets with rollover, a "safe to spend" figure, suggested budgets from your history, savings goals that track to a target date, and debt-payoff goals that amortize a balance to zero.</td>
     <td width="50%" align="center"><img src="docs/screenshots/alerts.png" alt="Alerts"><br><b>Alerts</b><br>Rules that watch for you: big purchases, budget thresholds, new merchants, low leftover. Opt in to push per rule.</td>
   </tr>
 </table>
 
 Plus **Accounts** (Plaid linking, per-institution history spans, sharing, sync),
 **Transactions** (multi-account + category filtering, CSV import, inline
-recategorise with "apply to all from this merchant"), and **Categories**
-(spending / income / transfer typing, fixed-cost flags, custom colours).
+recategorise with "apply to all from this merchant"), **Categories**
+(spending / income / transfer typing, fixed-cost flags, custom colours), and
+**Documents** (an encrypted vault for receipts, tax returns, warranties and
+policies, attachable to any transaction, asset or goal, with expiry reminders).
+
+And three forward-looking surfaces: **Schedule** (recurring obligations, a bill
+calendar, day-by-day projected balances), **Investments** (time- and
+money-weighted returns, allocation, dividends, holdings), and **Retirement** —
+account-aware projections where a 401(k), a Roth and a 529 each compound on
+their own terms, with contribution limits applied, an FI age, and the
+assumptions that produced every figure kept on screen beside it.
+
+It also **installs to your phone**. Ledgermancy is a PWA: add it to a home
+screen and it runs standalone, opens without a network, and re-renders the last
+figures it fetched — always under a banner stating the time they were saved,
+and always read-only, because a stale balance shown as a live one is worse than
+an error.
 
 Full, per-feature walkthroughs live in the
 [docs](https://madeofpendletonwool.github.io/ledgermancy/).

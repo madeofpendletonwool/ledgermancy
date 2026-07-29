@@ -9,6 +9,7 @@ import type {
   Category,
   SafeToSpend,
 } from '../lib/api'
+import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { formatMoney } from '../lib/money'
 import { STATUS } from '../components/charts/tokens'
 
@@ -313,6 +314,7 @@ function BudgetRow({
   deleting: boolean
 }) {
   const [editing, setEditing] = useState(false)
+  const online = useOnline()
   const [amount, setAmount] = useState(budget.budgeted)
   const [period, setPeriod] = useState(
     budget.period as 'weekly' | 'monthly' | 'yearly',
@@ -411,7 +413,8 @@ function BudgetRow({
             )}
             <button
               className="btn-ghost px-3 py-1.5 text-sm"
-              disabled={saving}
+              disabled={saving || !online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onClick={save}
             >
               Save
@@ -435,13 +438,16 @@ function BudgetRow({
             </span>
             <button
               className="btn-ghost px-3 py-1.5 text-sm"
+              disabled={!online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onClick={() => setEditing(true)}
             >
               Edit
             </button>
             <button
               className="btn-ghost px-3 py-1.5 text-sm text-ember-400"
-              disabled={deleting}
+              disabled={deleting || !online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onClick={onDelete}
             >
               Delete
@@ -699,6 +705,7 @@ function AddBudget({
   ) => void
   saving: boolean
 }) {
+  const online = useOnline()
   const [categoryID, setCategoryID] = useState('')
   const [amount, setAmount] = useState('')
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('monthly')
@@ -854,7 +861,8 @@ function AddBudget({
 
           <button
             className="btn-primary px-4 py-2 text-sm"
-            disabled={!canAdd || saving}
+            disabled={!canAdd || saving || !online}
+            title={online ? undefined : OFFLINE_WRITE_HINT}
             onClick={submit}
           >
             Add budget

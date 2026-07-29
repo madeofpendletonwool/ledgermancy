@@ -1,18 +1,24 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, isAdult, isOwner } from '../lib/api'
 import type { PreferenceWrite } from '../lib/api'
+import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
+import { Continuity } from './Continuity'
 
-type Tab = 'security' | 'notifications' | 'digest' | 'household'
+type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'household' | 'continuity'
 
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
+  { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'digest', label: 'Digest' },
-  { id: 'household', label: 'Household' },
+  { id: 'notifications', label: 'Notifications', adultOnly: true },
+  { id: 'digest', label: 'Digest', adultOnly: true },
+  { id: 'household', label: 'Household', adultOnly: true },
+  // Operator surface: the instance's recovery posture, not the household's
+  // data. Owner-only, and enforced server-side by auth.RequireOwner.
+  { id: 'continuity', label: 'Continuity', adultOnly: true, ownerOnly: true },
 ]
 
 const isTab = (v: string | null): v is Tab =>
@@ -21,8 +27,17 @@ const isTab = (v: string | null): v is Tab =>
 export function Settings() {
   // Deep links (e.g. the /household redirect) land on a specific tab via ?tab=.
   const [searchParams] = useSearchParams()
+  const { data: user } = useSession()
   const initialTab = searchParams.get('tab')
-  const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : 'security')
+  const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : 'profile')
+
+  // A child sees only the tabs that are theirs, and only the owner sees the
+  // operator surface. Every tab hidden here is also refused server-side; this
+  // just avoids offering a door that does not open.
+  const tabs = TABS.filter(
+    (t) => (!t.adultOnly || isAdult(user)) && (!t.ownerOnly || isOwner(user)),
+  )
+  const activeTab = tabs.some((t) => t.id === tab) ? tab : 'profile'
 
   return (
     <div className="space-y-8">
@@ -34,12 +49,12 @@ export function Settings() {
       </div>
 
       <div className="flex gap-1 border-b border-white/10">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`-mb-px border-b-2 px-4 py-2 text-sm transition ${
-              tab === t.id
+              activeTab === t.id
                 ? 'border-arcane-500 text-mist-100'
                 : 'border-transparent text-mist-300 hover:text-mist-100'
             }`}
@@ -49,11 +64,124 @@ export function Settings() {
         ))}
       </div>
 
-      {tab === 'security' && <Security />}
-      {tab === 'notifications' && <NotificationsSection />}
-      {tab === 'digest' && <DigestSection />}
-      {tab === 'household' && <Household />}
+      {activeTab === 'profile' && <ProfileSection />}
+      {activeTab === 'security' && <Security />}
+      {activeTab === 'notifications' && <NotificationsSection />}
+      {activeTab === 'digest' && <DigestSection />}
+      {activeTab === 'household' && <Household />}
+      {activeTab === 'continuity' && <Continuity />}
     </div>
+  )
+}
+
+/**
+ * Your own name and birthdate.
+ *
+ * This is the self-service half of the People list: an adult who never opens
+ * the Household page can still fill in their own birthdate, which is what keeps
+ * every age-based projection correct without anybody re-typing an age each
+ * year.
+ */
+function ProfileSection() {
+  const qc = useQueryClient()
+  const person = useQuery({ queryKey: ['my-person'], queryFn: api.myPerson })
+
+  const [name, setName] = useState('')
+  const [birthdate, setBirthdate] = useState('')
+  const [dirty, setDirty] = useState(false)
+
+  // Seed the form once the person arrives, without clobbering edits in progress.
+  useEffect(() => {
+    if (person.data && !dirty) {
+      setName(person.data.display_name)
+      setBirthdate(person.data.birthdate ?? '')
+    }
+  }, [person.data, dirty])
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.updateMyPerson({
+        display_name: name,
+        birthdate: birthdate || null,
+        is_dependent: person.data?.is_dependent ?? false,
+      }),
+    onSuccess: () => {
+      setDirty(false)
+      qc.invalidateQueries({ queryKey: ['my-person'] })
+      qc.invalidateQueries({ queryKey: ['people'] })
+      // The retirement projection reads the birthdate, so it is stale now.
+      qc.invalidateQueries({ queryKey: ['retirement'] })
+    },
+  })
+
+  return (
+    <section className="glass p-6">
+      <h2 className="text-lg font-medium">Profile</h2>
+      <p className="mt-1 text-sm text-mist-300">
+        How you appear to the rest of the household.
+      </p>
+
+      <form
+        className="mt-4 max-w-md space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          save.mutate()
+        }}
+      >
+        <label className="block">
+          <span className="text-sm text-mist-300">Name</span>
+          <input
+            required
+            className="field mt-1"
+            value={name}
+            onChange={(e) => {
+              setDirty(true)
+              setName(e.target.value)
+            }}
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-sm text-mist-300">Birthdate</span>
+          <input
+            type="date"
+            className="field mt-1"
+            value={birthdate}
+            onChange={(e) => {
+              setDirty(true)
+              setBirthdate(e.target.value)
+            }}
+          />
+        </label>
+
+        {/* Why it is worth entering, stated once rather than assumed. */}
+        {!person.data?.birthdate && (
+          <p className="rounded-xl border border-rune-400/25 bg-rune-400/5 px-4 py-3 text-xs text-mist-300">
+            Setting your birthdate lets the app work out your age itself. Catch-up
+            contribution limits, a 529's college horizon and every "at 67" figure
+            stop needing an age you'd otherwise have to retype every year — and
+            an age typed once is wrong within twelve months.
+          </p>
+        )}
+
+        {person.data?.age !== null && person.data?.age !== undefined && (
+          <p className="text-xs text-mist-500">
+            You are {person.data.age}. Every projection uses this rather than a
+            stored number.
+          </p>
+        )}
+
+        {save.isError && (
+          <p role="alert" className="text-sm text-ember-400">
+            {save.error.message}
+          </p>
+        )}
+
+        <button className="btn-primary" disabled={save.isPending}>
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+    </section>
   )
 }
 
