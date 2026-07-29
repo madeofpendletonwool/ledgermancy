@@ -80,6 +80,37 @@ func NewStorage(cfg config.DocumentsConfig) (Storage, error) {
 	}
 }
 
+// NewReadOnlyStorage builds a backend for a process that only reads blobs.
+//
+// The backup worker is the only caller. It mounts the document volume
+// read-only — a process whose job is to copy the vault has no business being
+// able to write to it — which means the startup writability probe in
+// NewLocalStorage would fail it at boot for doing exactly the right thing.
+//
+// The returned Storage refuses Put and Delete rather than merely not calling
+// them, so a future caller that reaches for a write gets a clear error instead
+// of a permission-denied from the filesystem three layers down.
+func NewReadOnlyStorage(cfg config.DocumentsConfig) (Storage, error) {
+	switch cfg.Backend {
+	case "local":
+		abs, err := filepath.Abs(cfg.LocalRoot)
+		if err != nil {
+			return nil, fmt.Errorf("resolve document root: %w", err)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return nil, fmt.Errorf("document root %s is not readable: %w", abs, err)
+		}
+		return &LocalStorage{root: abs, readOnly: true}, nil
+	case "s3":
+		return NewS3Storage(cfg.S3)
+	default:
+		return nil, fmt.Errorf("unknown document backend %q", cfg.Backend)
+	}
+}
+
+// errReadOnly is returned by a Storage opened for reading only.
+var errReadOnly = errors.New("this document store was opened read-only")
+
 // --------------------------------------------------------------------------
 // Local filesystem
 // --------------------------------------------------------------------------
@@ -92,6 +123,8 @@ func NewStorage(cfg config.DocumentsConfig) (Storage, error) {
 // captures every document's title, type and expiry and none of its contents.
 type LocalStorage struct {
 	root string
+	// readOnly is set by NewReadOnlyStorage. See the note there.
+	readOnly bool
 }
 
 func NewLocalStorage(root string) (*LocalStorage, error) {
@@ -135,6 +168,9 @@ func (l *LocalStorage) path(key string) (string, error) {
 }
 
 func (l *LocalStorage) Put(_ context.Context, key string, sealed []byte) error {
+	if l.readOnly {
+		return errReadOnly
+	}
 	path, err := l.path(key)
 	if err != nil {
 		return err
@@ -190,6 +226,9 @@ func (l *LocalStorage) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (l *LocalStorage) Delete(_ context.Context, key string) error {
+	if l.readOnly {
+		return errReadOnly
+	}
 	path, err := l.path(key)
 	if err != nil {
 		return err
@@ -200,4 +239,9 @@ func (l *LocalStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (l *LocalStorage) Describe() string { return "local:" + l.root }
+func (l *LocalStorage) Describe() string {
+	if l.readOnly {
+		return "local:" + l.root + " (read-only)"
+	}
+	return "local:" + l.root
+}

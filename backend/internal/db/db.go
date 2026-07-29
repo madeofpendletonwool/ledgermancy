@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"time"
 
 	pgxdecimal "github.com/jackc/pgx-shopspring-decimal"
@@ -16,6 +17,16 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// Migrations exposes the embedded migration files read-only.
+//
+// It exists for the continuity coverage guard, which parses every migration's
+// `-- +goose Up` half to discover the set of tables that exist and fails the
+// build when one of them has not been classified for backup. Reading the
+// embedded files rather than a live database is what lets that guard run on a
+// laptop with no Postgres, so it fires on the pull request that adds the table
+// instead of in CI or, much later, in a restore.
+func Migrations() fs.FS { return migrationsFS }
 
 // Connect opens a pooled connection to Postgres and verifies it is reachable.
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {

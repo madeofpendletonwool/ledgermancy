@@ -38,6 +38,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
 - **Settings**
 
     - [:material-account-group: Households](households.md) — members, invites, sharing
+    - [:material-shield-check: Continuity & backups](continuity.md) — what is backed up, and proof it restores *(owner only)*
 
 - **On your phone**
 

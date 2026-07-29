@@ -94,7 +94,8 @@ Plaid access tokens at rest, and — since the document vault shipped — every
 document you file as well. Losing it costs you two very different things: the
 bank connections, which you can relink, and the vault, which you cannot. A
 tax return whose key is gone is gone. Back the key up somewhere other than the
-server it runs on.
+server it runs on — [section 7](#7-continuity-backups-and-proving-they-work)
+covers where, and why no backup this app takes can help you here.
 
 Fill in the rest of `.env`:
 
@@ -307,47 +308,199 @@ Three things can still remove data, so they are worth knowing:
 
 Which makes the next section the important one.
 
-## 7. Back up the database
+## 7. Continuity: backups, and proving they work
 
-This becomes the only record of your net-worth history — Plaid keeps no balance
-history, so a lost database cannot be reconstructed by re-syncing.
+This is the only section here whose failure mode is permanent. Everything else
+can be fixed by trying again.
 
-```bash
-docker compose exec -T postgres pg_dump -U ledgermancy ledgermancy \
-  | gzip > ledgermancy-$(date +%F).sql.gz
+The database becomes the only record of your net-worth history — Plaid keeps no
+balance history, so a lost database cannot be reconstructed by re-syncing at any
+price — and the document vault is the only copy of whatever you uploaded to it.
+
+**Backups are on by default.** You do not have to configure anything for the
+rest of this section to already be happening. Every other optional feature in
+this app defaults off; this one defaults on, because an operator who has to opt
+in to backups is an operator who finds out they never did on the day the disk
+fails.
+
+### What runs by itself
+
+Once a day, the worker:
+
+1. **Dumps the database** with `pg_dump` in custom format.
+2. **Archives the document vault** to a `tar.gz`. The bytes are already
+   encrypted, so the archive is no more sensitive than the volume — and just as
+   useless without your key.
+3. **Writes a portable export**: plain, documented JSON that needs no Postgres
+   and no Ledgermancy to read. See [the continuity
+   docs](https://madeofpendletonwool.github.io/ledgermancy/features/continuity/).
+
+Once a week it does the thing almost nobody does by hand:
+
+4. **Restores the latest dump into a scratch database and checks it.** Row
+   counts are compared table by table against the live database, the schema
+   version is checked, and one document is pulled out of the archive, decrypted
+   with your key, and verified against its recorded hash. Then the scratch
+   database is dropped.
+
+That last step is the point of the whole feature. An untested backup is not a
+backup, it is a belief about a backup.
+
+Old backups are pruned on a 7 daily / 4 weekly / 6 monthly schedule, applied to
+what exists rather than to the calendar — a server that was switched off for a
+month comes back and keeps what it has.
+
+Status for all of it is in the app, under **Settings → Continuity** (owner
+only). Check it once. If it is green, you are in better shape than most
+self-hosted deployments; if it is red, it says exactly why.
+
+### Get the backups off this host
+
+By default the backups sit on a Docker volume on the same machine as the
+database they protect. If that machine is lost, stolen, or its disk dies, they
+are lost with it — which is most of the reason people lose data.
+
+Mount a second location into the worker and point `BACKUP_MIRROR_DIR` at it. A
+NAS share, an external disk, a synced folder — anything the container can write
+to:
+
+```yaml
+# docker-compose.yml, under the worker service
+    volumes:
+      - backup-data:/var/lib/ledgermancy/backups
+      - documents-data:/var/lib/ledgermancy/documents:ro
+      - /mnt/nas/ledgermancy:/mnt/backup-mirror   # <- add this
 ```
 
-Back up `.env` too, separately and securely: without `ENCRYPTION_KEY` a database
-restore cannot decrypt its own Plaid tokens — or a single document in the vault.
+```bash
+# .env
+BACKUP_MIRROR_DIR=/mnt/backup-mirror
+```
 
-### The document volume is not in the dump
+Every artefact is copied there as it is written, with its own retention.
 
-`pg_dump` captures document *metadata* — every title, type, date and expiry —
-and none of the contents. The bytes live on the `documents-data` volume (or in
-your S3 bucket, if you configured one), so a restore needs **three** things in
-agreement:
+**Treat that directory as being exactly as sensitive as the database, because it
+contains it.** The dump holds your entire financial history in restorable form.
+Plaid tokens and document contents inside it stay encrypted under
+`ENCRYPTION_KEY`, but everything else — every transaction, balance, and merchant
+— is in the clear. Do not point this at anything you would not point the
+database itself at.
 
-1. the database dump,
-2. the document volume,
-3. the `ENCRYPTION_KEY` both were written under.
+### The four things a restore needs
 
-Any two of the three is a partial restore. Back the volume up alongside the
-dump:
+Miss any one and the restore fails:
+
+| | Where it lives | What happens without it |
+| --- | --- | --- |
+| **Code** | git, or the published image | Nothing to run |
+| **`.env`** | your password manager | No `ENCRYPTION_KEY` — see below |
+| **Database dump** | `backup-data`, and your mirror | No ledger, no history |
+| **Document archive** | same | Every document listed, none openable |
+
+`.env` is the one people forget, because it is not in the repository and not in
+any backup this app takes — deliberately, since a key stored beside the data it
+protects is not protecting it.
+
+### `ENCRYPTION_KEY` — read this twice
+
+`ENCRYPTION_KEY` encrypts every Plaid access token and every document in the
+vault. Nothing in this system can recover it, and neither can anyone else:
+
+- **Without it, a perfect database restore is unusable.** The rows are all
+  there. The Plaid tokens will not decrypt, so every institution needs
+  relinking. No document in the vault will open, ever.
+- **It is not in the dump, not in the archive, and not on the mirror.**
+- **There is no reset.** There is no company to call. That is the arrangement
+  you chose when you self-hosted, and it is a good one right up until this
+  moment.
+
+Put it in a password manager **and** keep one copy somewhere that does not
+depend on this machine or that password manager being reachable — a printed
+sheet in a drawer is not a joke, it is a valid second copy.
+
+The Continuity panel asks you to confirm you have done this, and shows red until
+you do. It cannot check, and does not pretend to. Asking is the point.
+
+### Restoring, step by step
+
+This procedure was run start to finish before it was written down. It assumes
+you have the four things above and a machine with Docker.
 
 ```bash
+# 0. Get the code and your .env back in place.
+git clone https://github.com/madeofpendletonwool/ledgermancy.git
+cd ledgermancy
+# ...restore .env from your password manager. Check ENCRYPTION_KEY is present.
+
+# 1. Bring up ONLY the database. Not the whole stack: the api runs migrations
+#    on boot, and you want the dump's schema, not a freshly migrated one.
+docker compose up -d postgres
+
+# 2. Restore the dump into the empty database.
+docker compose cp ledgermancy-db_dump-<stamp>.dump postgres:/tmp/db.dump
+docker compose exec -T postgres pg_restore \
+  --username=ledgermancy --dbname=ledgermancy \
+  --no-owner --no-privileges --exit-on-error \
+  /tmp/db.dump
+
+# 3. Check it landed before going further.
+docker compose exec -T postgres psql -U ledgermancy -d ledgermancy \
+  -c "SELECT count(*) FROM transactions;" \
+  -c "SELECT max(version_id) FROM goose_db_version;"
+
+# 4. Restore the document vault. The archive's paths are exactly where the
+#    restored database expects to find each file, so it extracts straight in.
+docker compose up -d api
+docker compose cp ledgermancy-documents_archive-<stamp>.tar.gz api:/tmp/docs.tar.gz
+docker compose exec -T api tar xzf /tmp/docs.tar.gz -C /var/lib/ledgermancy/documents
+docker compose exec -T api rm /tmp/docs.tar.gz
+
+# 5. Start everything.
+docker compose up -d
+```
+
+Then **verify by opening a document in the UI**, not just by logging in. Logging
+in proves the database restored. Opening a document proves the database, the
+archive, and your key all agree — and a restore where two of those three work
+looks completely fine until the day you need the third.
+
+If step 2 fails with `input file does not appear to be a valid archive`, the
+dump is truncated or corrupt; use an older one. This is precisely what the
+weekly restore test exists to tell you *before* you are standing here.
+
+Note the `--exit-on-error` in step 2. Without it `pg_restore` restores what it
+can and exits successfully, which would give you a partial database that reports
+success — the worst available outcome.
+
+### Doing it by hand
+
+The automated backup is the same operation, so a manual one is only useful for
+an ad-hoc copy before something risky:
+
+```bash
+docker compose exec -T postgres pg_dump -U ledgermancy -Fc ledgermancy \
+  > ledgermancy-$(date +%F).dump
+
 docker run --rm \
   -v ledgermancy_documents-data:/data:ro \
   -v "$PWD":/backup alpine \
   tar czf /backup/ledgermancy-documents-$(date +%F).tar.gz -C /data .
 ```
 
-The archive contains ciphertext, so it is no more sensitive than the volume
-itself — but it is also useless without the key, which is the point. Verify a
-restore the same way you verify the database one: extract into a scratch volume
-and download a document.
+Use `-Fc` (custom format) to match what the restore procedure above expects.
 
-If you use the S3 backend instead, the bucket is your document backup; make
+If you use the S3 document backend, the bucket is your document storage; make
 sure its lifecycle rules do not expire objects the database still references.
+The scheduled archive still runs and still pulls every blob, so you get a second
+copy either way.
+
+### If you turn backups off
+
+`BACKUP_ENABLED=false` is a supported choice — you may already back up the whole
+host at the VM or ZFS layer, which is a perfectly good answer. If you do, make
+sure whatever you use captures the Postgres volume in a consistent state, and
+test restoring from it. And keep the `ENCRYPTION_KEY` advice above regardless;
+it applies to every backup strategy, including yours.
 
 ---
 

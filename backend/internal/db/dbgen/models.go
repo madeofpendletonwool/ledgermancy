@@ -107,6 +107,19 @@ type AuthEvent struct {
 	CreatedAt      stdtime.Time `json:"created_at"`
 }
 
+type BackupRun struct {
+	ID           uuid.UUID    `json:"id"`
+	Kind         string       `json:"kind"`
+	Status       string       `json:"status"`
+	StartedAt    stdtime.Time `json:"started_at"`
+	FinishedAt   stdtime.Time `json:"finished_at"`
+	SizeBytes    *int64       `json:"size_bytes"`
+	Destination  *string      `json:"destination"`
+	ArtifactPath *string      `json:"artifact_path"`
+	Detail       *string      `json:"detail"`
+	CreatedAt    stdtime.Time `json:"created_at"`
+}
+
 type Budget struct {
 	ID            uuid.UUID       `json:"id"`
 	HouseholdID   uuid.UUID       `json:"household_id"`

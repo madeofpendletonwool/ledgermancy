@@ -45,6 +45,13 @@ var childRoutes = []struct{ method, path string }{
 	{"DELETE", "/api/household/allowance/entries/" + uuid.Nil.String()},
 	{"PUT", "/api/household/members/" + uuid.Nil.String() + "/role"},
 
+	// The operator surface. Continuity describes the instance's recovery
+	// posture — host paths, backup state — and can trigger a database dump.
+	{"GET", "/api/admin/continuity"},
+	{"POST", "/api/admin/continuity/key-ack"},
+	{"POST", "/api/admin/continuity/run"},
+	{"GET", "/api/admin/continuity/export"},
+
 	// Delivery.
 	{"POST", "/api/notifications/test"},
 	{"POST", "/api/digest/test"},
@@ -151,6 +158,28 @@ var childAllowedRoutes = []struct{ method, path string }{
 	{"GET", "/api/preferences/"},
 }
 
+// ownerOnlyRoutes is the subset of childRoutes that a plain member is also
+// refused. Kept as its own list, rather than recognised by a path suffix,
+// because the suffix trick only worked while every owner-only route ended in
+// "/role" — the operator surface does not, and a test that silently stops
+// checking is worse than one that fails.
+var ownerOnlyRoutes = []struct{ method, path string }{
+	{"PUT", "/api/household/members/" + uuid.Nil.String() + "/role"},
+	{"GET", "/api/admin/continuity"},
+	{"POST", "/api/admin/continuity/key-ack"},
+	{"POST", "/api/admin/continuity/run"},
+	{"GET", "/api/admin/continuity/export"},
+}
+
+func isOwnerOnly(method, path string) bool {
+	for _, r := range ownerOnlyRoutes {
+		if r.method == method && r.path == path {
+			return true
+		}
+	}
+	return false
+}
+
 // newRoleTestServer builds a router whose auth middleware is replaced by a stub
 // that injects a fixed identity.
 //
@@ -231,9 +260,9 @@ func TestAdultReachesEveryRestrictedRoute(t *testing.T) {
 			rec := doRequest(h, route.method, route.path)
 
 			// The handler runs and fails on the nil database, which is fine —
-			// what matters is that the ROLE guard let it through. Only the
-			// owner-only route legitimately refuses a plain member.
-			if strings.HasSuffix(route.path, "/role") {
+			// what matters is that the ROLE guard let it through. Owner-only
+			// routes legitimately refuse a plain member.
+			if isOwnerOnly(route.method, route.path) {
 				if rec.Code != http.StatusForbidden {
 					t.Errorf("member got %d on an owner-only route, want 403", rec.Code)
 				}
@@ -268,14 +297,10 @@ func TestChildReachesTheirOwnSurface(t *testing.T) {
 
 // TestOwnerOnlyRoutes: role management belongs to the owner alone.
 func TestOwnerOnlyRoutes(t *testing.T) {
-	ownerOnly := []struct{ method, path string }{
-		{"PUT", "/api/household/members/" + uuid.Nil.String() + "/role"},
-	}
-
 	owner := newRoleTestServer(t, auth.RoleOwner)
 	member := newRoleTestServer(t, auth.RoleMember)
 
-	for _, route := range ownerOnly {
+	for _, route := range ownerOnlyRoutes {
 		if rec := doRequest(member, route.method, route.path); rec.Code != http.StatusForbidden {
 			t.Errorf("%s %s: member got %d, want 403", route.method, route.path, rec.Code)
 		}

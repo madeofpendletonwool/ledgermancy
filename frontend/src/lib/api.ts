@@ -44,6 +44,17 @@ export function isAdult(user: Pick<User, 'role'> | null | undefined): boolean {
 }
 
 /**
+ * The household owner. Gates the operator surface (Settings -> Continuity),
+ * which describes the instance rather than the household.
+ *
+ * Like isAdult this only decides what renders. The /api/admin routes are
+ * guarded by auth.RequireOwner server-side.
+ */
+export function isOwner(user: Pick<User, 'role'> | null | undefined): boolean {
+  return user?.role === 'owner'
+}
+
+/**
  * Login stopped at the second factor. Deliberately carries no user detail —
  * nothing about the account is readable until both factors are satisfied.
  */
@@ -1369,6 +1380,63 @@ export interface PreferenceWrite {
   value: unknown
 }
 
+// --- Continuity ------------------------------------------------------------
+
+/**
+ * The kinds of thing the backup subsystem does, in the order the panel lists
+ * them. `restore_test` is first deliberately: it is the one that says whether
+ * any of the others are worth anything.
+ */
+export type ContinuityKind =
+  | 'restore_test'
+  | 'db_dump'
+  | 'documents_archive'
+  | 'export'
+  | 'mirror_push'
+  | 'key_ack'
+
+/**
+ * `off` means deliberately not configured; `never` means configured and has
+ * never produced a result. They look similar and mean opposite things, so the
+ * panel styles them differently.
+ */
+export type ContinuityHealth = 'good' | 'warn' | 'bad' | 'off' | 'never'
+
+export interface ContinuityRun {
+  kind: ContinuityKind
+  health: ContinuityHealth
+  status?: 'success' | 'failure'
+  at?: string
+  age?: string
+  /** A sentence naming the consequence, written server-side. Rendered verbatim. */
+  headline: string
+  detail?: string
+  size_bytes?: number
+  artifact_path?: string
+}
+
+export interface Continuity {
+  enabled: boolean
+  settings: {
+    dir: string
+    mirror_dir: string
+    interval: string
+    restore_test_interval: string
+    include_documents: boolean
+    keep_daily: number
+    keep_weekly: number
+    keep_monthly: number
+  }
+  runs: ContinuityRun[]
+  coverage: {
+    in_export: number
+    dump_only: number
+    derived: number
+    ephemeral: number
+    blob_stores: { name: string; why: string }[]
+  }
+}
+
 // --- Document vault --------------------------------------------------------
 
 export const DOCUMENT_TYPES = [
@@ -2174,6 +2242,18 @@ export const api = {
   // Queues a one-off digest for the caller now, bypassing cadence/dedupe. Async
   // — resolves once queued; the push itself arrives shortly after.
   sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
+
+  // --- Continuity (owner-only operator surface) ---------------------------
+  continuity: () => request<Continuity>('GET', '/api/admin/continuity'),
+
+  // Records that the operator has stored ENCRYPTION_KEY somewhere safe. The
+  // app cannot verify this; asking is the point.
+  acknowledgeKeyBackup: () =>
+    request<void>('POST', '/api/admin/continuity/key-ack'),
+
+  // Queues a backup cycle or a restore test now. Resolves once queued.
+  runContinuityJob: (kind: 'backup' | 'restore_test') =>
+    request<{ status: string }>('POST', '/api/admin/continuity/run', { kind }),
 
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),

@@ -9,7 +9,7 @@ notification contracts work.
 
 Waves 3–6 (docs 13–29) cover **everything remaining in
 [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md)**: all sixteen "Next major initiatives" plus the two
-small known gaps. Wave 3 is the current cycle.
+small known gaps. **Waves 3 and 4 are complete; wave 5 is the current cycle.**
 
 Within waves 0–2, implement in order; later docs depend on earlier ones. Waves
 3+ are mostly parallel — most docs have no prerequisites at all. Read the
@@ -80,10 +80,9 @@ and the chat tool layer (`backend/internal/api/chat_handlers.go`).
 
 ### Wave 3 — next major initiatives
 
-Docs 00–12 are shipped, and so are **13, 14 and 15**. Drawn from the "Next major
-initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
-large and mostly independent. **Only 16 remains in this wave**; it has no
-prerequisites and was consciously skipped to start wave 4, so pick it up next.
+Docs 00–12 are shipped, and so are **13, 14, 15 and 16**. Drawn from the "Next
+major initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
+large and mostly independent. **This wave is complete.**
 
 - **[13-bill-calendar.md](13-bill-calendar.md)** — recurring obligations
   (detected *and* manually entered), a Schedule page, day-by-day projected
@@ -130,17 +129,48 @@ prerequisites and was consciously skipped to start wave 4, so pick it up next.
   in every response, and is gated behind `RETIREMENT_MONTE_CARLO_ENABLED`
   (default off). Tax drag on withdrawals and RMDs are likewise **not modelled**;
   they are listed as omissions in the UI and want doc 23's income data.
-- **[16-continuity-and-backups.md](16-continuity-and-backups.md)** — automated
-  `pg_dump` + a **verified restore test**, portable export, optional encrypted
-  off-host push, a continuity panel, and a tested restore runbook. *TODO #15;
-  resolves the open HIGH audit finding.* No prerequisites.
+- **[16-continuity-and-backups.md](16-continuity-and-backups.md)** — **shipped.**
+  Automated `pg_dump`, document-vault archive, portable JSON export, and a
+  **verified restore test**; a Continuity panel at Settings → Continuity
+  (owner-only); a tested restore runbook in `DEPLOYING.md` §7. *TODO #15;
+  resolves the open HIGH audit finding.* Migration `00035` is taken.
+
+  Four things later waves need to know, because three of them change how you
+  write a doc:
+
+  **The backup runs in the worker, not a sidecar.** The doc specified a
+  `pg_dump` sidecar in `docker-compose.prod.yml`; it is River periodic jobs in
+  the existing worker instead. The deciding reason was not tidiness — the
+  restore test compares row counts against the live database, reads the coverage
+  registry to know which tables to compare, and writes `backup_runs` — so a
+  shell sidecar would have called back into the app anyway while adding a
+  container to keep running and patched. The worker image pins
+  `postgresql17-client`; **upgrading Postgres now means changing two lines**,
+  the compose image and that package.
+
+  **Off-host push is a directory, not S3.** `BACKUP_MIRROR_DIR` is copied to
+  after every artefact. No object store and, deliberately, **no second
+  encryption key**: the dump's Plaid tokens and every document byte are already
+  sealed with `ENCRYPTION_KEY`, and a `BACKUP_ENCRYPTION_KEY` would add a second
+  thing to lose to the one doc whose whole thesis is reducing loss surfaces. If
+  a *third-party* destination is ever added, client-side encryption becomes
+  mandatory and that trade has to be revisited.
+
+  **Every table you add must be classified, and the build enforces it.** See the
+  Continuity rule below — this is the part that affects every wave-5 doc.
+
+  **An instance hosts exactly one household**, by construction: the first user
+  bootstraps it and every registration after is invite-only into it. The export
+  relies on this rather than carrying a per-table household filter, and asserts
+  it at the download endpoint rather than assuming it. A doc that makes an
+  instance multi-household owes that endpoint a scoping story.
 
 ### Wave 4 — foundations (no prerequisites, all parallel-safe)
 
-**17 and 18 have shipped.** 16 is the only thing left behind them, deliberately
-deferred rather than dropped — it keeps its `00022` reservation, and now has a
-second thing to back up: see 18's note about the document volume not being in
-`pg_dump`.
+**This wave is complete.** 16 was deliberately held until 18 shipped so the
+document vault could be part of the backup rather than a later amendment — it
+is, and the restore test opens a document end to end to prove the dump, the
+archive and `ENCRYPTION_KEY` all agree.
 
 - **[17-merchant-canonicalization.md](17-merchant-canonicalization.md)** —
   **shipped.** Fragmented merchant strings map to canonical entities at
@@ -357,11 +387,47 @@ second thing to back up: see 18's note about the document volume not being in
 
 Every feature doc has these sections: **Context** (problem + why) · **AI vs
 deterministic split** (explicit) · **Prerequisites** (which docs) · **Data model**
-(tables/columns) · **Backend** (queries, jobs, API — naming concrete reuse
-paths) · **Frontend** (routes/components, capabilities gating) · **AI notes**
-(prompt/tooling, where applicable) · **Verification** (seed sandbox data, drive
-endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
-**Out of scope**.
+(tables/columns) · **Continuity** (see below) · **Backend** (queries, jobs, API —
+naming concrete reuse paths) · **Frontend** (routes/components, capabilities
+gating) · **AI notes** (prompt/tooling, where applicable) · **Verification**
+(seed sandbox data, drive endpoint, cross-check psql, `go build/vet/test`,
+frontend `tsc/build/lint`) · **Out of scope**.
+
+### The Continuity rule
+
+**Every new table must be classified, and every new volume must be accounted
+for.** A doc that adds either owes one line saying which.
+
+This is not a convention you can forget: `backend/internal/continuity/coverage.go`
+holds the registry and `coverage_test.go` fails `go test ./...` — with no
+database needed, so it fires on a laptop — the moment a migration creates a table
+nobody has classified, or `docker-compose.yml` declares a volume nobody has
+accounted for. The failure message names the file to edit and the four
+categories:
+
+| Category | Use when |
+|---|---|
+| `InExport` | User data — created, decided, or accumulated, and not re-derivable. Goes in the dump **and** the portable export, and is automatically enrolled in the restore test's row-count check. |
+| `DumpOnly` | Credentials, or bookkeeping meaningless outside this app. In the dump, deliberately absent from the portable export. |
+| `Derived` | A job already rebuilds it. Name the job in the comment. |
+| `Ephemeral` | Restoring it would be *wrong*: sessions, challenges, queue rows. |
+
+Classifying a table `InExport` is all it takes — the export walks the registry,
+so a wave-5 table is dumped, exported and restore-verified without editing
+anything else. If it is `InExport` it also needs to survive the export's
+invariants: money is cast to text in SQL (never a JSON number), and binary
+columns are withheld by type, so an encrypted secret should be `BYTEA` and will
+then be excluded automatically.
+
+Durable state that is **not** in Postgres — a new blob store, a cache with real
+content, an upload staging area — goes in the same file's `blobStores` registry
+*and* needs a capture step in `archive.go`; a separate test fails when only one
+of the two exists. The document vault is the precedent: it was nearly shipped
+without a backup story because the backup story predated it.
+
+The reason this is mechanical rather than advisory: a feature shipping with data
+nobody backs up is invisible until a restore, at which point it is permanent.
+Making it a build failure moves the discovery to the pull request.
 
 ## Environment notes for implementers
 
@@ -377,8 +443,8 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00034_household_people_and_splits.sql` (doc 21) is the latest.** Applied
-  before it: `00001`–`00021`, `00023`, `00024`, `00033`.
+  **`00035_backup_status.sql` (doc 16) is the latest.** Applied before it:
+  `00001`–`00021`, `00023`, `00024`, `00033`, `00034`.
 
   **The old `00022`–`00032` reservations are void and have been reissued
   above `00033`.** They were allocated below `00033` before doc 18's follow-up
@@ -404,7 +470,7 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   | ~~`00024_documents.sql`~~ | 18 | `documents`, `document_links` — **taken** |
   | ~~`00033_document_extractions.sql`~~ | 18 | `documents.extracted_*` — **taken** (follow-up to 18) |
   | ~~`00034_household_people_and_splits.sql`~~ | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` — **taken** |
-  | `00035_backup_status.sql` | 16 | `backup_runs` table |
+  | ~~`00035_backup_status.sql`~~ | 16 | `backup_runs` — **taken** |
   | `00036_merchant_baselines.sql` | 22 | `merchant_baselines` table |
   | `00037_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
   | `00038_digest_entries.sql` | 25 | `digest_entries` table |
