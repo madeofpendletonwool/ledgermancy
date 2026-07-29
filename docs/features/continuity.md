@@ -29,13 +29,19 @@ Once a day the worker takes three artefacts:
 | **Portable export** | plain JSON, documented below | Outlives this app entirely |
 
 Once a week it does the part almost nobody does by hand: **restores the latest
-dump into a scratch database and checks it**. Row counts are compared table by
+dump into a temporary database and checks it**. Row counts are compared table by
 table against the live database, the schema version is verified, and one document
 is pulled out of the archive, decrypted, and checked against its recorded hash.
-Then the scratch database is dropped.
+Then the temporary database is dropped.
 
 An untested backup is not a backup, it is a belief about a backup. This is the
 line on the panel worth looking at.
+
+!!! note "Your live database is never touched"
+    The check builds a throwaway copy beside your real database and reads both.
+    You are not expected to restore your production instance on a schedule, and
+    you should not — this exists precisely so that you do not have to find out
+    whether a backup works by using it.
 
 ## Reading the panel
 
@@ -48,10 +54,14 @@ rather than reporting a status word:
 Grey means switched off deliberately. Red means either a failure or "configured
 and has never worked" — which looks like a fresh install and is not.
 
-The **off-host copy** row is grey until you set `BACKUP_MIRROR_DIR`. Backups that
-live only on the machine they protect are the most common way self-hosted data is
-lost; see [Deploying](https://github.com/madeofpendletonwool/ledgermancy/blob/main/DEPLOYING.md)
-for how to point it at a NAS share or external disk.
+The **second backup location** row is grey until you set `BACKUP_MIRROR_DIR`. Note
+what it does and does not claim: the app cannot see what hardware is underneath
+`BACKUP_DIR`, so it will never tell you your backups are or are not on this
+machine. If you have already pointed `BACKUP_DIR` at a NAS mount, they are
+off-host and this row being grey is not a criticism. What the row reports is
+simply that one location is configured rather than two — and a second
+independent copy is still worth having, because losing a location to a dead
+disk or a mistaken `rm` is a different failure from losing the machine.
 
 The **encryption key** row is red until you confirm you have stored
 `ENCRYPTION_KEY` somewhere safe. The app cannot verify this and does not pretend
@@ -133,8 +143,13 @@ Rules the format guarantees:
 
 ## Retention
 
-7 daily, 4 weekly, 6 monthly by default, applied per destination and per artefact
-kind.
+7 daily, 4 weekly, 6 monthly by default.
+
+Each of the three kinds of file gets its own count — so you keep 7 daily
+database dumps *and* 7 daily document archives *and* 7 daily exports, not 7
+files in total. If you have configured a second location, it is pruned on the
+same schedule independently, so a slow or briefly unreachable NAS never drags
+the primary's retention with it.
 
 Retention is relative to the backups that exist, not to the clock. A home server
 that was powered off for a month comes back, keeps what it has, and starts a new

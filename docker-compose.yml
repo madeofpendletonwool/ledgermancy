@@ -74,17 +74,24 @@ services:
       # process has no business being able to write to the thing it is copying.
       - documents-data:/var/lib/ledgermancy/documents:ro
       #
-      # To also mirror backups off this host — the point of a backup — bind
-      # mount a second directory and set BACKUP_MIRROR_DIR in .env to match.
-      # A NAS share, an external disk, or a synced folder all work; the app
-      # only needs a directory it can write to.
+      # Two notes on where backups actually land.
+      #
+      # First: backup-data above is a Docker volume, which lives on this host.
+      # If that is not what you want, bind mount somewhere else over the same
+      # path — a NAS share works fine as the primary destination, and then the
+      # backups are off-host without anything further.
+      #
+      # Second: to keep a SECOND independent copy, mount another directory and
+      # set BACKUP_MIRROR_DIR in .env to match. Every artefact is copied there
+      # after it is written, with its own retention, so losing one location is
+      # not losing every backup.
       #
       #   - /mnt/nas/ledgermancy:/mnt/backup-mirror
       #
       # then in .env:  BACKUP_MIRROR_DIR=/mnt/backup-mirror
       #
-      # Treat that directory as being exactly as sensitive as the database,
-      # because it contains it.
+      # Treat any of these directories as being exactly as sensitive as the
+      # database, because they contain it.
     depends_on:
       postgres:
         condition: service_healthy

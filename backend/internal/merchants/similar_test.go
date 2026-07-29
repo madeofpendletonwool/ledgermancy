@@ -110,9 +110,9 @@ func TestFuzzyGroupsDropsComponentWithRejectedPair(t *testing.T) {
 
 func TestDisplayName(t *testing.T) {
 	tests := map[string]string{
-		"amazon com":  "Amazon",
-		"blue bottle": "Blue Bottle",
-		"netflix":     "Netflix",
+		"amazon com":   "Amazon",
+		"blue bottle":  "Blue Bottle",
+		"netflix":      "Netflix",
 		"bill payment": "Bill Payment", // nothing significant survives; keep it whole
 	}
 	for key, want := range tests {

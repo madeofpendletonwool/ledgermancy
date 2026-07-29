@@ -317,14 +317,14 @@ func (s *Server) handleClearTransactionSplits(w http.ResponseWriter, r *http.Req
 }
 
 type splitTransactionResponse struct {
-	TransactionID   uuid.UUID `json:"transaction_id"`
-	Name            string    `json:"name"`
-	Date            string    `json:"date"`
-	Amount          string    `json:"amount"`
-	PayerName       *string   `json:"payer_name"`
-	SplitCount      int64     `json:"split_count"`
-	UnsettledCount  int64     `json:"unsettled_count"`
-	FullySettled    bool      `json:"fully_settled"`
+	TransactionID  uuid.UUID `json:"transaction_id"`
+	Name           string    `json:"name"`
+	Date           string    `json:"date"`
+	Amount         string    `json:"amount"`
+	PayerName      *string   `json:"payer_name"`
+	SplitCount     int64     `json:"split_count"`
+	UnsettledCount int64     `json:"unsettled_count"`
+	FullySettled   bool      `json:"fully_settled"`
 }
 
 func (s *Server) handleListSplitTransactions(w http.ResponseWriter, r *http.Request) {

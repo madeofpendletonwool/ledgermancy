@@ -179,22 +179,34 @@ func panelHeadline(kind string, health continuity.Health, at *time.Time, now tim
 
 	switch kind {
 	case continuity.KindRestoreTest:
+		// Every string here says the app did it, or failed to.
+		//
+		// An earlier draft said "your last verified restore was N days ago",
+		// which reads as a chore the operator owes — nobody wants to restore
+		// their live instance weekly, and nobody should. The check runs by
+		// itself, against a temporary copy, and the live database is never
+		// touched. Copy that leaves that ambiguous invites the reader either to
+		// do something unnecessary and risky, or to ignore the row entirely.
 		switch health {
 		case continuity.HealthOff:
 			return "Backups are switched off, so nothing is being verified."
 		case continuity.HealthNeverRun:
-			return "Your backups have never been restored. Nobody knows whether they work — including you."
+			return "No restore test has run yet, so nothing has confirmed these backups can be " +
+				"restored at all. The check runs on its own and never touches your live database."
 		case continuity.HealthBad:
 			if days > 0 {
-				return fmt.Sprintf("Your last verified restore was %d days ago. If the database failed today, "+
-					"you would be restoring from a backup nobody has tested.", days)
+				return fmt.Sprintf("The automatic restore check has not succeeded in %d days. "+
+					"Nothing has confirmed your backups still restore, so if the database failed "+
+					"today you would find out then.", days)
 			}
-			return "The last restore test failed. Your backups did not restore cleanly — read the detail below."
+			return "The last automatic restore check failed: your backups did not restore cleanly. " +
+				"Read the detail below — this is a problem now, not during an outage."
 		case continuity.HealthWarn:
-			return fmt.Sprintf("Last verified %d days ago. Still fine, but this is the check that "+
-				"turns a backup into a recovery.", days)
+			return fmt.Sprintf("Last checked %d days ago. Still fine — this is the check that turns "+
+				"a backup into a recovery, so it is worth keeping green.", days)
 		}
-		return "Your backups were restored and verified. This is the line that matters."
+		return "Your latest backup was restored into a temporary database and verified, row counts " +
+			"and all. Your live database was not touched. This is the line that matters."
 
 	case continuity.KindDBDump:
 		switch health {
@@ -238,14 +250,23 @@ func panelHeadline(kind string, health continuity.Health, at *time.Time, now tim
 	case continuity.KindMirrorPush:
 		switch health {
 		case continuity.HealthOff:
-			return "Backups exist only on this host. If the machine is lost, stolen, or its disk fails, " +
-				"they are lost with it. Set BACKUP_MIRROR_DIR to a second location."
+			// Deliberately does not claim the backups are on this host.
+			//
+			// BACKUP_DIR is a path, and a path says nothing about the hardware
+			// underneath it — a bind mount of a NAS share is already off-host
+			// and is a perfectly good primary destination. The app cannot tell
+			// the difference and must not pretend to. What it does know is that
+			// only one destination is configured, so that is all it says.
+			return "Only one backup location is configured. If BACKUP_DIR already points at " +
+				"storage on another machine, you may well be covered — the app cannot see what " +
+				"is underneath that path. If it is a disk in this machine, a hardware failure " +
+				"takes the backups with it. Set BACKUP_MIRROR_DIR for a second copy either way."
 		case continuity.HealthNeverRun:
-			return "Nothing has been copied to the mirror yet."
+			return "A second location is configured but nothing has been copied to it yet."
 		case continuity.HealthBad, continuity.HealthWarn:
-			return fmt.Sprintf("Mirror last updated %d days ago — the off-host copy is behind.", days)
+			return fmt.Sprintf("The second copy was last updated %d days ago and is behind the primary.", days)
 		}
-		return "Backups are being copied off this host."
+		return "Backups are being written to two separate locations."
 
 	case continuity.KindKeyAck:
 		if health == continuity.HealthNeverRun {
@@ -253,8 +274,16 @@ func panelHeadline(kind string, health continuity.Health, at *time.Time, now tim
 				"Without it a restored database cannot decrypt its own Plaid tokens or a single document — " +
 				"the backup would be intact and unusable. No one can recover it for you."
 		}
-		return fmt.Sprintf("You confirmed your ENCRYPTION_KEY was stored safely %d days ago. "+
-			"Check it is still where you left it.", days)
+		// Phrased with Age rather than a day count: this row is the one an
+		// operator can turn green in a single click, so it routinely reads
+		// moments after the fact, and "0 days ago" is how a page loses the
+		// reader's trust in everything else it says.
+		when := "at some point"
+		if at != nil {
+			when = continuity.Age(now.Sub(*at))
+		}
+		return fmt.Sprintf("You confirmed your ENCRYPTION_KEY was stored safely %s. "+
+			"Check it is still where you left it.", when)
 	}
 	return ""
 }

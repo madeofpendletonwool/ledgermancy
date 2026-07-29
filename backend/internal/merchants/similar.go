@@ -37,8 +37,8 @@ var descriptorNoise = map[string]struct{}{
 // UI so a person can weight a borderline proposal — they are never a threshold
 // for acting automatically, because nothing here acts automatically.
 const (
-	confIdentical  = 0.95 // same significant tokens
-	confContained  = 0.80 // one descriptor is the other plus extra tokens
+	confIdentical   = 0.95 // same significant tokens
+	confContained   = 0.80 // one descriptor is the other plus extra tokens
 	confAbbreviated = 0.70 // vowel-dropped or truncated brand token
 )
 

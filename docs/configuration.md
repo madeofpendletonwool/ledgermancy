@@ -240,9 +240,11 @@ they never did on the day the disk fails.
 
 Once a day the worker dumps the database, archives the document vault, and
 writes a portable JSON export. Once a week it restores the latest dump into a
-scratch database and verifies it — row counts table by table, schema version,
-and one document opened end to end. Status is at **Settings → Continuity**
-(owner only). See [Continuity & backups](features/continuity.md).
+temporary database and verifies it — row counts table by table, schema version,
+and one document opened end to end — then drops it. Your live database is never
+touched, and you are never expected to restore your production instance on a
+schedule. Status is at **Settings → Continuity** (owner only). See
+[Continuity & backups](features/continuity.md).
 
 | Variable | Default | Notes |
 | --- | --- | --- |

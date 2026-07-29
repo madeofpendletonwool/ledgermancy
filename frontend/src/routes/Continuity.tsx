@@ -51,11 +51,14 @@ export function Continuity() {
 // ---------------------------------------------------------------------------
 
 const KIND_LABELS: Record<ContinuityKind, string> = {
-  restore_test: 'Verified restore',
+  restore_test: 'Automatic restore check',
   db_dump: 'Database backup',
   documents_archive: 'Document contents',
   export: 'Portable export',
-  mirror_push: 'Off-host copy',
+  // Not "off-host copy": BACKUP_DIR may already be a mount from another
+  // machine, and the app cannot tell. All it knows is how many destinations
+  // are configured, so that is what the label claims.
+  mirror_push: 'Second backup location',
   key_ack: 'Encryption key',
 }
 
@@ -85,7 +88,12 @@ function StatusSection({ data }: { data: ContinuityData }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-medium">Recovery posture</h2>
-          {!data.enabled && (
+          {data.enabled ? (
+            <p className="mt-1 text-sm text-mist-300">
+              All of this runs on its own. The restore check works against a
+              temporary copy and never touches your live database.
+            </p>
+          ) : (
             <p className="mt-1 text-sm text-ember-400">
               Backups are switched off. Nothing on this page is running.
             </p>
@@ -104,8 +112,9 @@ function StatusSection({ data }: { data: ContinuityData }) {
               className="btn-ghost"
               disabled={run.isPending}
               onClick={() => run.mutate('restore_test')}
+              title="Restores the latest backup into a temporary database, checks it, and drops it. Your live database is not touched."
             >
-              Test a restore
+              Check a restore now
             </button>
             <a className="btn-ghost" href="/api/admin/continuity/export">
               Download export
@@ -316,8 +325,8 @@ function SettingsSection({ data }: { data: ContinuityData }) {
       <dl className="mt-5 space-y-3 text-sm">
         <Row label="Backup directory" value={s.dir} mono />
         <Row
-          label="Off-host mirror"
-          value={s.mirror_dir || 'not configured — backups exist only on this host'}
+          label="Second location"
+          value={s.mirror_dir || 'not configured'}
           mono={!!s.mirror_dir}
           warn={!s.mirror_dir}
         />

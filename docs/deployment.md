@@ -314,15 +314,17 @@ history, so a lost database cannot be reconstructed by re-syncing.
 
 **Backups are on by default and you do not have to set them up.** Once a day the
 worker dumps the database, archives the document vault, and writes a portable
-JSON export. Once a week it restores the latest dump into a scratch database and
-verifies it, including opening one document end to end. Status is at
-**Settings → Continuity**.
+JSON export. Once a week it restores the latest dump into a temporary database
+and verifies it, including opening one document end to end — your live database
+is never touched. Status is at **Settings → Continuity**.
 
 Two things are still yours to do:
 
-- **Set `BACKUP_MIRROR_DIR`** to a location that is not this machine — a NAS
-  share, an external disk, a synced folder. Backups on the same disk as the
-  database die with it.
+- **Keep more than one copy.** `BACKUP_DIR` defaults to a Docker volume on this
+  machine; point it somewhere else, or set `BACKUP_MIRROR_DIR` to a second
+  location, or both. The app cannot tell what hardware is under either path, so
+  it will not claim your backups are or are not on this host — that part is
+  yours to know.
 - **Back up `.env` separately and securely.** It holds `ENCRYPTION_KEY`, which
   is in no backup this app takes, deliberately. Without it a restored database
   cannot decrypt its own Plaid tokens or open a single document.

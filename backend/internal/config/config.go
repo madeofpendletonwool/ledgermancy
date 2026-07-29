@@ -65,10 +65,17 @@ type BackupConfig struct {
 	Dir string
 
 	// MirrorDir is an optional second destination, copied to after every
-	// successful artefact. This is the "get it off the host" half: a backup
-	// that only exists on the machine it was taken from dies with that machine.
+	// successful artefact.
 	//
-	// Empty by default. Typically a bind mount of a NAS share.
+	// A second *location*, not necessarily a second *machine* — and the app
+	// cannot tell the difference for either destination. Dir may already be a
+	// bind mount of a NAS share, in which case backups are off-host without
+	// this being set at all, which is a perfectly reasonable way to run. What
+	// this buys is a second independent copy; whether either copy is on other
+	// hardware is the operator's knowledge, not ours. Nothing in the app should
+	// claim otherwise to the user.
+	//
+	// Empty by default.
 	MirrorDir string
 
 	// Interval is how often the dump, archive and export run.
@@ -79,8 +86,11 @@ type BackupConfig struct {
 	// measures (does this dump work) changes with the schema, not with the day.
 	RestoreTestInterval time.Duration
 
-	// Retention, in the classic generational shape. Applied per destination and
-	// per artefact kind.
+	// Retention, in the classic generational shape.
+	//
+	// Counts are per kind of file and per destination: 7 daily means seven
+	// dumps AND seven document archives AND seven exports, in each configured
+	// location, not seven files altogether.
 	KeepDaily   int
 	KeepWeekly  int
 	KeepMonthly int

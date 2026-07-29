@@ -346,26 +346,42 @@ Once a week it does the thing almost nobody does by hand:
 That last step is the point of the whole feature. An untested backup is not a
 backup, it is a belief about a backup.
 
-Old backups are pruned on a 7 daily / 4 weekly / 6 monthly schedule, applied to
-what exists rather than to the calendar — a server that was switched off for a
-month comes back and keeps what it has.
+**It does not touch your live database.** The check restores into a temporary
+database alongside it, compares the two, and drops the temporary one. You are
+never expected to restore your production instance on a schedule, and you
+should not — the app does the verifying so you do not have to.
+
+Old backups are pruned on a 7 daily / 4 weekly / 6 monthly schedule. Those
+counts are per kind of file and per location, so you keep seven daily dumps
+*and* seven daily document archives *and* seven daily exports, not seven files
+in total. Pruning is measured against the backups that exist rather than
+against the calendar — a server that was switched off for a month comes back and
+keeps what it has.
 
 Status for all of it is in the app, under **Settings → Continuity** (owner
 only). Check it once. If it is green, you are in better shape than most
 self-hosted deployments; if it is red, it says exactly why.
 
-### Get the backups off this host
+### Where the backups land, and keeping a second copy
 
-By default the backups sit on a Docker volume on the same machine as the
-database they protect. If that machine is lost, stolen, or its disk dies, they
-are lost with it — which is most of the reason people lose data.
+By default `BACKUP_DIR` is a Docker volume, which lives on this machine. Two
+independent things are worth doing something about, and they are often confused.
 
-Mount a second location into the worker and point `BACKUP_MIRROR_DIR` at it. A
-NAS share, an external disk, a synced folder — anything the container can write
-to:
+**Getting the backups off this machine.** Bind mount somewhere else over the
+same path and they are off-host, with nothing else to configure:
 
 ```yaml
 # docker-compose.yml, under the worker service
+    volumes:
+      - /mnt/nas/ledgermancy:/var/lib/ledgermancy/backups   # instead of backup-data
+      - documents-data:/var/lib/ledgermancy/documents:ro
+```
+
+**Keeping a second, independent copy.** Set `BACKUP_MIRROR_DIR` to another
+location; every artefact is copied there after it is written, with its own
+retention:
+
+```yaml
     volumes:
       - backup-data:/var/lib/ledgermancy/backups
       - documents-data:/var/lib/ledgermancy/documents:ro
@@ -377,14 +393,24 @@ to:
 BACKUP_MIRROR_DIR=/mnt/backup-mirror
 ```
 
-Every artefact is copied there as it is written, with its own retention.
+You can do either, both, or neither. Doing both is the strongest position: one
+copy off this machine, and a second copy so that losing one location — a dead
+disk, a NAS that ate itself, a directory deleted by accident — is not losing
+every backup you have.
 
-**Treat that directory as being exactly as sensitive as the database, because it
-contains it.** The dump holds your entire financial history in restorable form.
-Plaid tokens and document contents inside it stay encrypted under
-`ENCRYPTION_KEY`, but everything else — every transaction, balance, and merchant
-— is in the clear. Do not point this at anything you would not point the
-database itself at.
+!!! note "The app cannot tell where your backups physically live"
+    `BACKUP_DIR` is a path, and a path says nothing about the hardware
+    underneath it. The Continuity panel will never claim your backups are or are
+    not on this host, because it genuinely does not know. All it reports is how
+    many destinations are configured. Whether either of them is a different
+    machine is your knowledge, not the app's.
+
+**Treat every one of these directories as being exactly as sensitive as the
+database, because they contain it.** The dump holds your entire financial
+history in restorable form. Plaid tokens and document contents inside it stay
+encrypted under `ENCRYPTION_KEY`, but everything else — every transaction,
+balance, and merchant — is in the clear. Do not point these at anything you
+would not point the database itself at.
 
 ### The four things a restore needs
 
