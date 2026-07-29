@@ -90,7 +90,11 @@ openssl rand -base64 32   # -> SESSION_SECRET
 ```
 
 **Keep `ENCRYPTION_KEY` safe and never rotate it casually.** It encrypts your
-Plaid access tokens at rest; lose it and every institution must be relinked.
+Plaid access tokens at rest, and — since the document vault shipped — every
+document you file as well. Losing it costs you two very different things: the
+bank connections, which you can relink, and the vault, which you cannot. A
+tax return whose key is gone is gone. Back the key up somewhere other than the
+server it runs on.
 
 Fill in the rest of `.env`:
 
@@ -314,7 +318,36 @@ docker compose exec -T postgres pg_dump -U ledgermancy ledgermancy \
 ```
 
 Back up `.env` too, separately and securely: without `ENCRYPTION_KEY` a database
-restore cannot decrypt its own Plaid tokens.
+restore cannot decrypt its own Plaid tokens — or a single document in the vault.
+
+### The document volume is not in the dump
+
+`pg_dump` captures document *metadata* — every title, type, date and expiry —
+and none of the contents. The bytes live on the `documents-data` volume (or in
+your S3 bucket, if you configured one), so a restore needs **three** things in
+agreement:
+
+1. the database dump,
+2. the document volume,
+3. the `ENCRYPTION_KEY` both were written under.
+
+Any two of the three is a partial restore. Back the volume up alongside the
+dump:
+
+```bash
+docker run --rm \
+  -v ledgermancy_documents-data:/data:ro \
+  -v "$PWD":/backup alpine \
+  tar czf /backup/ledgermancy-documents-$(date +%F).tar.gz -C /data .
+```
+
+The archive contains ciphertext, so it is no more sensitive than the volume
+itself — but it is also useless without the key, which is the point. Verify a
+restore the same way you verify the database one: extract into a scratch volume
+and download a document.
+
+If you use the S3 backend instead, the bucket is your document backup; make
+sure its lifecycle rules do not expire objects the database still references.
 
 ---
 

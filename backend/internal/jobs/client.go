@@ -84,6 +84,13 @@ const securitySweepInterval = 6 * time.Hour
 // catch month rollover promptly rather than to regenerate anything daily.
 const summaryRefreshInterval = 24 * time.Hour
 
+// merchantSuggestInterval is how often every household is swept for merchant
+// merge candidates. Daily, because the descriptor space barely moves — a new
+// merchant is rare next to a sync — and because the pass compares every key
+// against every other, so a tighter cadence would re-do identical work to
+// produce an identical review queue.
+const merchantSuggestInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -167,6 +174,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		}
 	}
 
+	// Merchant canonicalisation is registered unconditionally: its first pass is
+	// pure string work and is the valuable half, with the model only ever seeing
+	// the residue. Gating the whole thing on a key would deny a keyless
+	// deployment the merges it can compute for free.
+	if err := river.AddWorkerSafely(workers, &SuggestMerchantsWorker{
+		Queries: queries, AI: aiClient,
+	}); err != nil {
+		return nil, fmt.Errorf("register merchant suggestion worker: %w", err)
+	}
+
 	config := &river.Config{
 		Queues: map[string]river.QueueConfig{
 			// A household has a handful of institutions; more concurrency
@@ -231,6 +248,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 				return DigestSweepArgs{}, nil
 			},
 			nil,
+		),
+		// Merchant merge suggestions. Deterministic first pass, so like the
+		// insight sweep it runs with or without a key. RunOnStart: the queue it
+		// fills is inert, so warming it on deploy costs nothing and means a fresh
+		// install has something to review immediately.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(merchantSuggestInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return SuggestMerchantsAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 	}
 
@@ -340,6 +368,14 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register insights sweep worker: %w", err)
 	}
 
+	// The merchant sweep enqueues per-household passes, so it needs the client
+	// and is registered after construction.
+	if err := river.AddWorkerSafely(workers, &SuggestMerchantsAllWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register merchant suggestion sweep worker: %w", err)
+	}
+
 	// Digest sweep + per-user worker. Both enqueue other jobs (the sweep enqueues
 	// DigestArgs; the worker enqueues NotifyArgs), so they need the client and are
 	// registered after construction. Registered unconditionally — the deterministic
@@ -414,6 +450,23 @@ func EnqueueLLMCategorise(ctx context.Context, client *river.Client[pgx.Tx], hou
 	if _, err := client.Insert(ctx, LLMCategoriseArgs{HouseholdID: householdID}, nil); err != nil {
 		slog.Error("enqueue llm categorise", "error", err, "household_id", householdID)
 	}
+}
+
+// EnqueueSuggestMerchants runs a merchant canonicalisation pass for a household
+// now, rather than waiting for the daily sweep — the "scan for merges" button.
+// It returns the error so the button can say when the request did not take;
+// unlike a digest, the user is standing in front of the result.
+//
+// SuggestMerchantsArgs.InsertOpts collapses repeats to one pass per hour, so a
+// user leaning on the button costs nothing.
+func EnqueueSuggestMerchants(ctx context.Context, client *river.Client[pgx.Tx], householdID uuid.UUID) error {
+	if client == nil {
+		return fmt.Errorf("background jobs are not available")
+	}
+	if _, err := client.Insert(ctx, SuggestMerchantsArgs{HouseholdID: householdID}, nil); err != nil {
+		return fmt.Errorf("enqueue merchant suggestions: %w", err)
+	}
+	return nil
 }
 
 // EnqueueDigestNow queues a one-off "send now" digest for a single user,

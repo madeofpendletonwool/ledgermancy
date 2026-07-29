@@ -486,12 +486,22 @@ FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
-  AND t.merchant_key = $3::text
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = COALESCE(
+        (SELECT a2.entity_id::text FROM merchant_aliases a2
+          WHERE a2.household_id = $1
+            AND a2.merchant_key = $3::text
+            AND a2.source <> 'suggested'),
+        $3::text
+      )
   AND t.id <> $4::uuid
   AND t.amount > 0
 `
@@ -514,6 +524,10 @@ type GetMerchantSpendBaselineRow struct {
 // transaction, so "you normally spend ~$X" is a real prior rather than one
 // skewed by the charge that triggered the alert. All arithmetic stays in SQL;
 // the model only quotes the result. Same visibility scoping as every report.
+//
+// Both sides of the key comparison are resolved (merchants.sql), so the prior
+// spans every descriptor of a merged merchant and the caller may pass a raw key
+// straight off a transaction.
 func (q *Queries) GetMerchantSpendBaseline(ctx context.Context, arg GetMerchantSpendBaselineParams) (GetMerchantSpendBaselineRow, error) {
 	row := q.db.QueryRow(ctx, getMerchantSpendBaseline,
 		arg.HouseholdID,
@@ -596,8 +610,8 @@ func (q *Queries) GetMonthlyTrend(ctx context.Context, arg GetMonthlyTrendParams
 const getRecurringAmountTrend = `-- name: GetRecurringAmountTrend :many
 WITH tx AS (
     SELECT
-        t.merchant_key,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
+        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
         t.amount
     FROM transactions t
@@ -605,6 +619,11 @@ WITH tx AS (
     JOIN plaid_items i ON i.id = a.plaid_item_id
     JOIN users u       ON u.id = i.user_id
     LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    LEFT JOIN merchant_entities me ON me.id = ma.entity_id
     WHERE u.household_id = $1
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
@@ -625,7 +644,7 @@ ranked AS (
     FROM tx
 )
 SELECT
-    merchant_key,
+    merchant_key::text AS merchant_key,
     COALESCE(MAX(merchant), '')::text                                      AS merchant,
     COALESCE(AVG(amount) FILTER (WHERE half = 1), 0)::numeric              AS early_avg,
     COALESCE(AVG(amount) FILTER (WHERE half = 2), 0)::numeric              AS recent_avg,
@@ -648,7 +667,7 @@ type GetRecurringAmountTrendParams struct {
 }
 
 type GetRecurringAmountTrendRow struct {
-	MerchantKey *string         `json:"merchant_key"`
+	MerchantKey string          `json:"merchant_key"`
 	Merchant    string          `json:"merchant"`
 	EarlyAvg    decimal.Decimal `json:"early_avg"`
 	RecentAvg   decimal.Decimal `json:"recent_avg"`
@@ -658,8 +677,9 @@ type GetRecurringAmountTrendRow struct {
 // Price-creep detection for recurring merchants: split each merchant's charges
 // into an older half and a newer half by date and compare the averages. The
 // split and the difference are computed here in SQL; the caller only formats and
-// explains, never subtracts. Same tx CTE (visibility + spend filters) as
-// GetRecurringMerchants so both agree on what counts as a charge.
+// explains, never subtracts. Same tx CTE (visibility + spend filters, and the
+// same resolved grouping) as GetRecurringMerchants so both agree on what counts
+// as a charge and key their rows the same way — the caller joins the two by key.
 func (q *Queries) GetRecurringAmountTrend(ctx context.Context, arg GetRecurringAmountTrendParams) ([]GetRecurringAmountTrendRow, error) {
 	rows, err := q.db.Query(ctx, getRecurringAmountTrend, arg.HouseholdID, arg.UserID, arg.Date)
 	if err != nil {
@@ -689,8 +709,8 @@ func (q *Queries) GetRecurringAmountTrend(ctx context.Context, arg GetRecurringA
 const getRecurringMerchants = `-- name: GetRecurringMerchants :many
 WITH tx AS (
     SELECT
-        t.merchant_key,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
+        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
         t.amount
     FROM transactions t
@@ -698,6 +718,11 @@ WITH tx AS (
     JOIN plaid_items i ON i.id = a.plaid_item_id
     JOIN users u       ON u.id = i.user_id
     LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    LEFT JOIN merchant_entities me ON me.id = ma.entity_id
     WHERE u.household_id = $1
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
@@ -710,8 +735,13 @@ WITH tx AS (
       AND t.date >= $3
       AND NOT EXISTS (
           SELECT 1 FROM recurring_overrides ro
+          LEFT JOIN merchant_aliases roa
+                 ON roa.household_id = ro.household_id
+                AND roa.merchant_key = ro.merchant_key
+                AND roa.source <> 'suggested'
           WHERE ro.household_id = $1
-            AND ro.merchant_key = t.merchant_key
+            AND COALESCE(roa.entity_id::text, ro.merchant_key)
+                = COALESCE(ma.entity_id::text, t.merchant_key)
       )
 ),
 gaps AS (
@@ -737,7 +767,7 @@ agg AS (
     GROUP BY merchant_key
 )
 SELECT
-    merchant_key,
+    merchant_key::text AS merchant_key,
     merchant,
     n::bigint                       AS occurrences,
     COALESCE(avg_amount, 0)::numeric AS average_amount,
@@ -763,7 +793,7 @@ type GetRecurringMerchantsParams struct {
 }
 
 type GetRecurringMerchantsRow struct {
-	MerchantKey   *string         `json:"merchant_key"`
+	MerchantKey   string          `json:"merchant_key"`
 	Merchant      string          `json:"merchant"`
 	Occurrences   int64           `json:"occurrences"`
 	AverageAmount decimal.Decimal `json:"average_amount"`
@@ -785,6 +815,15 @@ type GetRecurringMerchantsRow struct {
 // A merchant the household has explicitly marked "not recurring" is excluded
 // outright via recurring_overrides, so every consumer of this query (report
 // table, insight producers, recap, chat) honours the suppression at once.
+//
+// Charges are grouped by RESOLVED merchant (merchants.sql), which is the whole
+// point of canonicalisation: a subscription billing under two descriptors never
+// reached the n >= 3 threshold before, and now does. The returned merchant_key
+// is likewise the resolved key — an entity UUID for a merged merchant, the raw
+// key otherwise — so a caller that stores it (a suppression, a promoted
+// obligation) gets an identifier that survives further aliases joining the
+// entity. Suppressions are matched on the resolved key at both ends, so an
+// override recorded against one raw descriptor silences the whole merchant.
 func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMerchantsParams) ([]GetRecurringMerchantsRow, error) {
 	rows, err := q.db.Query(ctx, getRecurringMerchants, arg.HouseholdID, arg.UserID, arg.Date)
 	if err != nil {
@@ -1035,7 +1074,7 @@ func (q *Queries) GetSpendingSummary(ctx context.Context, arg GetSpendingSummary
 
 const getTopMerchants = `-- name: GetTopMerchants :many
 SELECT
-    COALESCE(t.merchant_name, t.name) AS merchant,
+    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
     SUM(t.amount)::numeric            AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
@@ -1043,6 +1082,11 @@ JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
 LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
@@ -1071,6 +1115,10 @@ type GetTopMerchantsRow struct {
 	TransactionCount int64           `json:"transaction_count"`
 }
 
+// Grouped by canonical merchant: fragments of one business that the household
+// has merged (see merchants.sql) collapse into a single row under the entity's
+// name. With no aliases the COALESCE falls straight through to the descriptor
+// and the result is identical to what it was before canonicalisation existed.
 func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams) ([]GetTopMerchantsRow, error) {
 	rows, err := q.db.Query(ctx, getTopMerchants,
 		arg.HouseholdID,
@@ -1160,7 +1208,17 @@ func (q *Queries) SumHouseholdBudgets(ctx context.Context, householdID uuid.UUID
 
 const suppressRecurringMerchant = `-- name: SuppressRecurringMerchant :exec
 INSERT INTO recurring_overrides (household_id, merchant_key, merchant_label)
-VALUES ($1, $2, $3)
+VALUES (
+    $1,
+    COALESCE(
+        (SELECT ma.entity_id::text FROM merchant_aliases ma
+          WHERE ma.household_id = $1
+            AND ma.merchant_key = $2::text
+            AND ma.source <> 'suggested'),
+        $2::text
+    ),
+    $3
+)
 ON CONFLICT (household_id, merchant_key) DO NOTHING
 `
 
@@ -1172,14 +1230,31 @@ type SuppressRecurringMerchantParams struct {
 
 // Mark a merchant "not recurring" for a household. Idempotent: re-suppressing an
 // already-suppressed merchant is a no-op (and does not disturb the label).
+//
+// The key is stored resolved (merchants.sql), so suppressing a merged merchant
+// records one row against the entity rather than one per descriptor. Resolution
+// is idempotent, so a caller may pass either a raw or an already-resolved key.
 func (q *Queries) SuppressRecurringMerchant(ctx context.Context, arg SuppressRecurringMerchantParams) error {
 	_, err := q.db.Exec(ctx, suppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey, arg.MerchantLabel)
 	return err
 }
 
 const unsuppressRecurringMerchant = `-- name: UnsuppressRecurringMerchant :exec
-DELETE FROM recurring_overrides
-WHERE household_id = $1 AND merchant_key = $2
+DELETE FROM recurring_overrides ro
+WHERE ro.household_id = $1
+  AND COALESCE(
+        (SELECT a2.entity_id::text FROM merchant_aliases a2
+          WHERE a2.household_id = ro.household_id
+            AND a2.merchant_key = ro.merchant_key
+            AND a2.source <> 'suggested'),
+        ro.merchant_key
+      ) = COALESCE(
+        (SELECT a3.entity_id::text FROM merchant_aliases a3
+          WHERE a3.household_id = $1
+            AND a3.merchant_key = $2::text
+            AND a3.source <> 'suggested'),
+        $2::text
+      )
 `
 
 type UnsuppressRecurringMerchantParams struct {
@@ -1187,7 +1262,9 @@ type UnsuppressRecurringMerchantParams struct {
 	MerchantKey string    `json:"merchant_key"`
 }
 
-// Restore a merchant to the recurring detector.
+// Restore a merchant to the recurring detector. Clears every override that
+// resolves to the same merchant, so undoing a suppression on a merged merchant
+// also clears any per-descriptor rows recorded before the merge.
 func (q *Queries) UnsuppressRecurringMerchant(ctx context.Context, arg UnsuppressRecurringMerchantParams) error {
 	_, err := q.db.Exec(ctx, unsuppressRecurringMerchant, arg.HouseholdID, arg.MerchantKey)
 	return err

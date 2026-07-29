@@ -56,8 +56,8 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 	}
 	creepByKey := make(map[string]dbgen.GetRecurringAmountTrendRow, len(trend))
 	for _, t := range trend {
-		if t.MerchantKey != nil {
-			creepByKey[*t.MerchantKey] = t
+		if t.MerchantKey != "" {
+			creepByKey[t.MerchantKey] = t
 		}
 	}
 
@@ -68,10 +68,10 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 	for _, m := range recurring {
 		// Only currently-active subscriptions, so a cancelled one stops
 		// resurfacing — same gate new_recurring uses.
-		if m.MerchantKey == nil || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
 			continue
 		}
-		key := *m.MerchantKey
+		key := m.MerchantKey
 
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {

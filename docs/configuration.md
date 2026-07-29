@@ -46,7 +46,7 @@ cp .env.example .env
 
 | Variable | Notes |
 | --- | --- |
-| `ENCRYPTION_KEY` | 32-byte base64 key. Encrypts Plaid access tokens at rest (AES-GCM). **Never rotate casually** — losing it means relinking every institution. Generate: `openssl rand -base64 32` |
+| `ENCRYPTION_KEY` | 32-byte base64 key. Encrypts Plaid access tokens **and every document in the vault** at rest (AES-GCM). **Never rotate casually** — losing it means relinking every institution, and losing every document permanently. Generate: `openssl rand -base64 32` |
 | `SESSION_SECRET` | Signs/derives session cookie values. Generate: `openssl rand -base64 32` |
 
 ## Plaid
@@ -102,3 +102,126 @@ simply shows your own line with nothing to compare it against, and says so.
 
 A failed fetch degrades to a missing series: the job logs a warning, stores what
 it did get, and never fails or retry-storms over a chart decoration.
+
+## Document vault
+
+Receipts, tax returns, warranties, policies and contracts, encrypted with
+`ENCRYPTION_KEY` and stored next to the transactions they belong to. **On by
+default** — unlike the two gated features below it makes no outbound request
+and needs nothing but a writable directory, which the compose file provides.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DOCUMENTS_ENABLED` | `true` | Set `false` to remove the vault entirely. Its endpoints then report 503 and the rest of the app is unaffected |
+| `DOCUMENTS_BACKEND` | `local` | `local` (a mounted volume) or `s3` |
+| `DOCUMENTS_LOCAL_ROOT` | `/var/lib/ledgermancy/documents` | Where ciphertext is written, for the local backend |
+| `DOCUMENTS_MAX_FILE_BYTES` | `25MB` | Per-file cap. Plain bytes or a `KB`/`MB`/`GB` suffix (binary multiples) |
+| `DOCUMENTS_QUOTA_BYTES` | `2GB` | Per-household total. `0` for no limit |
+| `DOCUMENTS_OCR_ENABLED` | `false` | Allow receipt field extraction via your AI provider |
+
+If the storage backend cannot be opened at startup — an unwritable directory,
+a bucket that refuses the credentials — the api logs an error and runs with the
+vault disabled rather than refusing to boot. The ledger is not held hostage to
+a misconfigured volume.
+
+### Two limits that are not tuning knobs
+
+`DOCUMENTS_MAX_FILE_BYTES` exists because encryption here is whole-buffer: a
+file becomes its own size in memory for the duration of a request, twice over
+while plaintext and ciphertext coexist. The cap is what turns "too big" into a
+clean 413 instead of an out-of-memory crash under a few concurrent uploads.
+Values above 100 MB are **rejected at startup** for that reason; a genuine need
+for larger files wants streaming encryption, which is a redesign rather than a
+bigger number.
+
+`DOCUMENTS_QUOTA_BYTES` is counted across the whole household including private
+uploads, because the thing being rationed is your disk, not anyone's allowance.
+
+If you raise the file cap, **also raise `client_max_body_size` in
+`frontend/nginx.conf`** — it defaults to 30m, deliberately a little above the
+25 MiB file cap so multipart framing has room. Leave it behind and uploads fail
+at the proxy with an HTML error the UI cannot explain, instead of the api's own
+413 that names the limit.
+
+### The volume is not in `pg_dump`
+
+Document *metadata* is in the database; the bytes are not. A backup that only
+dumps Postgres restores every title, type and expiry date and no contents. Back
+up the `documents-data` volume alongside your dumps, and keep `ENCRYPTION_KEY`
+somewhere else again — a restore needs all three. See
+[DEPLOYING.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/DEPLOYING.md).
+
+### S3-compatible storage
+
+Only read when `DOCUMENTS_BACKEND=s3`. Works with AWS S3, MinIO, Garage and R2;
+requests are signed with SigV4 directly rather than through an SDK.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DOCUMENTS_S3_ENDPOINT` | — | e.g. `https://s3.us-east-1.amazonaws.com`, or your MinIO host |
+| `DOCUMENTS_S3_REGION` | `us-east-1` | Part of the signature; must match the endpoint |
+| `DOCUMENTS_S3_BUCKET` | — | Required |
+| `DOCUMENTS_S3_ACCESS_KEY` | — | Required |
+| `DOCUMENTS_S3_SECRET_KEY` | — | Required |
+| `DOCUMENTS_S3_PREFIX` | — | Optional key prefix, so one bucket can hold more than this app |
+| `DOCUMENTS_S3_PATH_STYLE` | `true` | `{endpoint}/{bucket}/{key}` addressing. Correct for every self-hosted S3-compatible server |
+
+A half-configured S3 backend **fails startup validation** rather than accepting
+an upload it cannot store. Documents are encrypted before they are uploaded, so
+the bucket never holds readable content — but it does hold your data, which
+makes this an outbound destination you are choosing deliberately.
+
+## Receipt OCR
+
+Off by default, and gated separately from `AI_API_KEY` on purpose. This is the
+only place in the app that would send an *image of your paperwork* to a third
+party, and having configured a model for transaction categorisation is not the
+same as agreeing to that.
+
+With it on, an image document **typed `receipt`** gains an "Extract fields"
+action that asks your provider to read the merchant, total and date off it.
+
+**Nothing else is eligible.** Tax documents, insurance policies, contracts,
+statements, warranties and anything filed as `other` are refused with a 403 in
+the API — before the file is decrypted, not just by hiding the button. A W-2
+scanned to a PNG cannot be sent. That is an allowlist of one entry rather than a
+blocklist of the obvious offenders, so a document type added later is
+ineligible by default instead of sendable until someone notices.
+
+What comes back is a **suggestion**: the fields are displayed, along with the
+existing transactions whose amount and date could match, and the one action
+offered is attaching the document to whichever of those you pick. Nothing is
+written from a model's reading of a receipt — not a transaction, not a category,
+not an amount. A misread total should cost you one correction, not one wrong row
+in your ledger.
+
+Extraction is only ever triggered by you, on one named document. There is no
+background job, so nothing is sent because a sweep ran.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DOCUMENTS_OCR_ENABLED` | `false` | Set `true` to offer extraction. Also needs `AI_API_KEY` |
+
+## Retirement sequence-of-returns test
+
+Off by default, and for a different reason than the benchmark fetch above: this
+one makes **no outbound request at all**. The reason it is gated is that a
+"success rate" is the most quotable number a retirement tool can print, and
+Ledgermancy bundles no market history to compute one from.
+
+What it actually does, if you turn it on, is draw return sequences around *your
+own* stated real return and a volatility you set, then report how many of them
+survived the withdrawal phase. That is a genuinely useful thing to look at — it
+is what exposes sequence-of-returns risk, the reason two portfolios with the
+same average return can end very differently — but it is **not** a historical
+backtest, and the page says so in the panel rather than in a footnote. Seeds are
+derived from the inputs, so the same scenario always produces the same number;
+a figure that moves when you reload it is not one to plan around.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `RETIREMENT_MONTE_CARLO_ENABLED` | `false` | Set `true` to show the survival-rate panel on **Retirement** |
+
+Everything else on the Retirement page — the projection, FI age, supported
+spending, contribution headroom, the required-savings-rate solve — works with
+this off. It adds a panel; it is not load-bearing.

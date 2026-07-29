@@ -144,7 +144,7 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 
 	var out []Candidate
 	for _, m := range rows {
-		if m.MerchantKey == nil || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
 			continue
 		}
 
@@ -162,14 +162,14 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 				m.Merchant, money(avg), money(monthly)),
 			Data: map[string]any{
 				"merchant":         m.Merchant,
-				"merchant_key":     *m.MerchantKey,
+				"merchant_key":     m.MerchantKey,
 				"average_amount":   avg.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
 				"cadence":          cadenceLabel(m.AvgGapDays),
 				"occurrences":      m.Occurrences,
 				"last_seen":        m.LastSeen.Format(time.DateOnly),
 			},
-			DedupeKey: "new_recurring:" + *m.MerchantKey,
+			DedupeKey: "new_recurring:" + m.MerchantKey,
 		})
 	}
 	return out, nil

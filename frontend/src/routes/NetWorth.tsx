@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import { AttachDocuments } from '../components/AttachDocuments'
 import { CHART, SERIES, STATUS } from '../components/charts/tokens'
 
 export function NetWorth() {
@@ -294,6 +295,12 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
                 {a.is_liability ? '−' : ''}
                 {formatMoney(a.value)}
               </span>
+              {/* Title deeds, valuations and purchase paperwork belong with the
+                  asset they describe. */}
+              <AttachDocuments
+                target={{ kind: 'manual_asset', id: a.id }}
+                label="Attach a document"
+              />
               <button
                 className="text-xs text-mist-500 transition hover:text-ember-400"
                 onClick={() => remove.mutate(a.id)}

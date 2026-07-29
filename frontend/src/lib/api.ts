@@ -10,7 +10,14 @@
  *     bootstrapped from GET /api/auth/csrf on first use. The backend also
  *     rotates the token on login, so it is always read fresh from the cookie
  *     rather than cached in module state.
+ *
+ * Offline, a GET may be answered from the service worker's cache rather than
+ * the server; every response is reported to `offline.ts` so the UI can say so.
+ * Writes are refused outright rather than failing obscurely — see
+ * `assertOnline`.
  */
+
+import { noteResponseOrigin } from './offline'
 
 export interface User {
   id: string
@@ -710,6 +717,164 @@ export interface ProjectionQuery {
   annual_debt_paydown?: string
 }
 
+// --- Retirement -----------------------------------------------------------
+//
+// A separate surface from the Net Worth projection above, not a replacement.
+// That one compounds a single pooled balance and has no withdrawal phase; this
+// one is account-aware and answers "when can I stop, and does it last".
+//
+// Every rate here is a fraction ("0.05" is 5%) and REAL — already net of
+// inflation — so every dollar figure is in today's dollars.
+
+export interface RetirementAssumptions {
+  real_return_rate: string
+  inflation_rate: string
+  withdrawal_rate: string
+  /** Null means "not decided", which is a real answer and not a zero. */
+  target_retirement_age: number | null
+  current_age: number | null
+  annual_ss_income: string | null
+  ss_start_age: number | null
+  /**
+   * What the user set. When null the projection uses `defaulted_spending` —
+   * the household's own trailing-twelve-month spend — and says so.
+   */
+  target_annual_spending: string | null
+  defaulted_spending: string
+  spending_is_defaulted: boolean
+  basis: string
+}
+
+export interface AccountPoint {
+  balance: string
+  /** The employee's own money. The employer's match is kept separate. */
+  contributed: string
+  employer: string
+  growth: string
+}
+
+export interface RetirementPoint {
+  month: string
+  age: number
+  /** The nest egg: every projected account except education accounts. */
+  retirement: string
+  /** 529 balances, tracked apart and never counted as retirement money. */
+  education: string
+  contributed: string
+  growth: string
+  employer_contributed: string
+  /** Withdrawal rate on the nest egg, plus Social Security once it starts. */
+  supported_spending: string
+  by_account: Record<string, AccountPoint>
+}
+
+/** A contribution the projection had to reduce to stay inside an IRS limit. */
+export interface CapNote {
+  group: string
+  planned_annual: string
+  allowed_annual: string
+}
+
+export interface RetirementProjection {
+  points: RetirementPoint[]
+  limits_year: number
+  /** False when that year is missing: contributions were NOT capped. */
+  limits_configured: boolean
+  cap_notes: CapNote[]
+  nest_egg_at_target: string | null
+  supported_at_target: string | null
+  /** Null when FI is not reached inside the horizon — an answer, not a gap. */
+  fi_age: number | null
+  fi_month: string | null
+  already_fi: boolean
+  /** Accounts with no confirmed tax treatment, excluded and named. */
+  excluded_accounts: string[]
+  excluded_value: string
+}
+
+export interface SavingsRateSolve {
+  reachable: boolean
+  required_monthly: string | null
+  /** Null when income is unknown — a rate with no denominator is not a rate. */
+  required_rate: string | null
+  note: string
+}
+
+export interface MonteCarloResult {
+  runs: number
+  survived: number
+  years: number
+  /** A fraction over the MODELLED SEQUENCES, never a real-world probability. */
+  survival_rate: string
+  median_ending_balance: string
+  /** Reported so a result can be reproduced exactly. */
+  seed: number
+  /** Rendered verbatim. Never show the survival rate without it. */
+  basis: string
+}
+
+export interface RetirementResponse {
+  /** Travels with every projection so a curve is never rendered inputless. */
+  assumptions: RetirementAssumptions
+  projection: RetirementProjection
+  required_savings?: SavingsRateSolve
+  monte_carlo?: MonteCarloResult
+  monte_carlo_enabled: boolean
+  estimate: boolean
+  basis: string
+  /** What this model deliberately does not do. Always shown. */
+  omissions: string[]
+}
+
+export interface ContributionAccount {
+  id: string
+  name: string
+  mask: string | null
+  subtype: string | null
+  institution_name: string | null
+  balance: string | null
+  tax_treatment: TaxTreatment | null
+  monthly_contribution: string
+  employer_match_pct: string | null
+  annual_salary: string | null
+  employer_match_limit: string | null
+  beneficiary_current_age: number | null
+  beneficiary_target_age: number | null
+  /** The IRS cap this kind is subject to; null when none applies or the year is unconfigured. */
+  annual_limit: string | null
+  /** True when that cap covers more than this account (all 401ks share one). */
+  limit_shared: boolean
+  planned_annual: string
+}
+
+export interface ContributionsResponse {
+  accounts: ContributionAccount[]
+  limits_year: number
+  limits_configured: boolean
+  limits_note: string
+  untagged_accounts: number
+}
+
+export interface AssumptionsInput {
+  real_return_rate: string
+  inflation_rate: string
+  withdrawal_rate: string
+  target_retirement_age: number | null
+  current_age: number | null
+  annual_ss_income: string | null
+  ss_start_age: number | null
+  target_annual_spending: string | null
+}
+
+export interface ContributionInput {
+  monthly_contribution: string
+  employer_match_pct: string | null
+  annual_salary: string | null
+  employer_match_limit: string | null
+  beneficiary_current_age: number | null
+  beneficiary_target_age: number | null
+}
+
 export type AlertType =
   | 'big_spend'
   | 'budget_threshold'
@@ -827,6 +992,62 @@ export interface RecurringMerchant {
   last_seen: string
 }
 
+/**
+ * One raw bank descriptor mapped to a canonical merchant.
+ *
+ * The evidence fields are not decoration: nobody can judge "are these the same
+ * business?" from two strings, but the spend, the count and the date range make
+ * it obvious most of the time.
+ */
+export interface MerchantAlias {
+  merchant_key: string
+  /** The most recent raw descriptor, before normalisation stripped it down. */
+  sample_name: string
+  /** manual | fuzzy | llm | suggested. 'suggested' rows affect no report. */
+  source: string
+  /** The suggester's own 0–1 rating; null for a merge made by hand. */
+  confidence: number | null
+  transaction_count: number
+  total_amount: string
+  first_seen: string | null
+  last_seen: string | null
+}
+
+/** A canonical merchant: the descriptors merged into it, plus pending proposals. */
+export interface Merchant {
+  id: string
+  canonical_name: string
+  default_category_id: string | null
+  /** Confirmed descriptors. Only these count toward the totals below. */
+  members: MerchantAlias[]
+  /** Proposed descriptors awaiting review. Inert until confirmed. */
+  suggested: MerchantAlias[]
+  transaction_count: number
+  total_amount: string
+}
+
+/** A raw descriptor in the household, with its current mapping. */
+export interface MerchantKeyStat {
+  merchant_key: string
+  sample_name: string
+  transaction_count: number
+  total_amount: string
+  first_seen: string
+  last_seen: string
+  entity_id: string | null
+  alias_source: string
+}
+
+/** What a merge did to the descriptors' cached categories. */
+export interface MergeResult {
+  entity_id: string
+  /** Two descriptors carried different MANUAL categories; nothing was changed. */
+  category_conflict: boolean
+  category_applied: string | null
+  /** The surviving category was a manual choice, and the merge kept it. */
+  category_from_manual: boolean
+}
+
 /** A merchant the household has marked "not recurring". */
 export interface SuppressedRecurringMerchant {
   merchant_key: string
@@ -885,6 +1106,161 @@ export interface PreferenceWrite {
   value: unknown
 }
 
+// --- Document vault --------------------------------------------------------
+
+export const DOCUMENT_TYPES = [
+  'receipt',
+  'tax',
+  'warranty',
+  'insurance',
+  'contract',
+  'statement',
+  'other',
+] as const
+
+export type DocumentType = (typeof DOCUMENT_TYPES)[number]
+
+/** The ledger records a document can be attached to. */
+export type DocumentTargetKind =
+  | 'transaction'
+  | 'manual_asset'
+  | 'account'
+  | 'goal'
+
+export interface DocumentTarget {
+  kind: DocumentTargetKind
+  id: string
+}
+
+export interface DocumentLink {
+  id: string
+  document_id: string
+  target_kind: DocumentTargetKind
+  target_id: string
+  label: string
+  /** Present for transaction links. */
+  date: string | null
+  amount: string | null
+}
+
+export interface VaultDocument {
+  id: string
+  title: string
+  doc_type: DocumentType
+  filename: string
+  mime_type: string
+  size_bytes: number
+  /** False when another household member uploaded it. */
+  is_shared: boolean
+  uploaded_by: string | null
+  is_own: boolean
+  content_hash: string
+
+  document_date: string | null
+  expires_at: string | null
+  /** Advisory keep-until, computed from the type. Nothing is ever auto-deleted. */
+  retain_until: string | null
+  notes: string | null
+
+  /**
+   * Non-empty when the bytes may be rendered inline, e.g. "image/png". Only
+   * ever pass this to `api.documentPreviewURL` — never `mime_type`, which is
+   * whatever the uploader claimed.
+   */
+  preview_type: string
+
+  link_count: number
+  links: DocumentLink[]
+
+  /** Cached OCR result, or null if this receipt has never been read. */
+  extraction: StoredExtraction | null
+
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentFilters {
+  doc_type?: DocumentType | ''
+  search?: string
+  from?: string
+  to?: string
+  expiring_before?: string
+  /** Omit for everything; true = attached to something, false = standalone. */
+  linked?: boolean
+}
+
+export interface DocumentStorage {
+  bytes_used: number
+  /** 0 means unlimited. */
+  quota_bytes: number
+  max_file_bytes: number
+  document_count: number
+  /** Where ciphertext lands, e.g. "local:/var/lib/ledgermancy/documents". */
+  backend: string
+  ocr_enabled: boolean
+}
+
+export interface DocumentMetadata {
+  title: string
+  doc_type: DocumentType
+  is_shared: boolean
+  document_date: string | null
+  expires_at: string | null
+  notes: string | null
+}
+
+export interface DocumentUpload extends DocumentMetadata {
+  file: File
+  link?: DocumentTarget
+}
+
+/** A transaction a receipt's amount and date could belong to. */
+export interface ReceiptMatch {
+  transaction_id: string
+  /** When the charge posted. */
+  date: string
+  /**
+   * When the card was actually swiped, where the institution reports it. This
+   * is what the date printed on a receipt corresponds to, and it explains a
+   * match whose posted date looks days off.
+   */
+  authorized_date: string | null
+  amount: string
+  label: string
+}
+
+/**
+ * What OCR last read off a receipt, cached on the document.
+ *
+ * Its existence is why re-opening a receipt is free: the fields are already
+ * here, so nothing is sent to the AI provider a second time. Null when the
+ * receipt has never been read.
+ */
+export interface StoredExtraction {
+  extracted_at: string
+  merchant: string
+  /** Empty when the model declined to guess rather than misread it. */
+  total: string
+  date: string
+  confidence: number
+  notes: string
+}
+
+/**
+ * Fields read off a receipt image. Every one is a *suggestion* awaiting
+ * confirmation — nothing has been written, and a blank field means the model
+ * declined to guess rather than that the receipt was empty.
+ */
+export interface ReceiptExtraction {
+  merchant: string
+  total: string
+  date: string
+  currency: string
+  confidence: number
+  notes: string
+  matches: ReceiptMatch[]
+}
+
 /** One turn in a chatbot conversation. */
 export interface ChatTurn {
   role: 'user' | 'assistant'
@@ -930,6 +1306,28 @@ async function ensureCsrfToken(): Promise<string> {
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
+/**
+ * Refuses a write the browser knows it cannot deliver.
+ *
+ * The UI disables the obvious write controls when offline, but "obvious" is
+ * doing a lot of work in that sentence — there are dozens of them and more
+ * arrive with every feature. This is the backstop that turns the ones nobody
+ * remembered into a sentence the user can act on, instead of a bare "Failed to
+ * fetch" from somewhere in TanStack Query.
+ *
+ * Nothing is queued for replay. Replaying a recategorisation against data that
+ * moved while the phone was in a tunnel is a correctness problem, not a
+ * plumbing one, and a half-built version of it is worse than none.
+ */
+function assertOnline(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new ApiError(
+      503,
+      "You're offline, so this change can't be saved. It has not been queued — try again once you reconnect.",
+    )
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -937,7 +1335,10 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  if (UNSAFE.has(method)) headers['X-CSRF-Token'] = await ensureCsrfToken()
+  if (UNSAFE.has(method)) {
+    assertOnline()
+    headers['X-CSRF-Token'] = await ensureCsrfToken()
+  }
 
   const res = await fetch(path, {
     method,
@@ -945,6 +1346,9 @@ async function request<T>(
     credentials: 'include',
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+
+  // Tells the offline banner whether this came off the network or off disk.
+  noteResponseOrigin(res)
 
   if (res.status === 204) return undefined as T
 
@@ -1111,6 +1515,43 @@ export const api = {
   deleteCategory: (id: string) =>
     request<void>('DELETE', `/api/categories/${id}`),
 
+  // --- Merchants ----------------------------------------------------------
+  // Canonical merchants and the review queue for proposed merges. Everything
+  // the suggestion job writes is inert until confirmed here, so nothing on this
+  // page can change a number elsewhere without an explicit action.
+  merchantGroups: () => request<Merchant[]>('GET', '/api/merchants'),
+
+  /** Every raw descriptor, for the manual merge picker. */
+  merchantKeys: () => request<MerchantKeyStat[]>('GET', '/api/merchants/keys'),
+
+  /**
+   * Merge descriptors into one merchant. Pass entityId to confirm a suggestion
+   * or extend an existing merchant; omit it to create a new one.
+   */
+  mergeMerchants: (input: {
+    merchant_keys: string[]
+    entity_id?: string
+    canonical_name?: string
+  }) => request<MergeResult>('POST', '/api/merchants/merge', input),
+
+  /** Dismiss proposed descriptors and remember the refusal. */
+  rejectMerchantSuggestion: (merchantId: string, merchantKeys: string[]) =>
+    request<void>('POST', `/api/merchants/${merchantId}/reject`, {
+      merchant_keys: merchantKeys,
+    }),
+
+  /** Detach a descriptor from its merchant, undoing an over-eager merge. */
+  splitMerchant: (merchantKey: string) =>
+    request<void>('POST', '/api/merchants/split', { merchant_key: merchantKey }),
+
+  renameMerchant: (merchantId: string, canonicalName: string) =>
+    request<Merchant>('PATCH', `/api/merchants/${merchantId}`, {
+      canonical_name: canonicalName,
+    }),
+
+  /** Run a suggestion pass now instead of waiting for the daily sweep. */
+  scanMerchants: () => request<void>('POST', '/api/merchants/scan'),
+
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>
     request<Summary>('GET', withQuery('/api/reports/summary', params)),
@@ -1265,6 +1706,37 @@ export const api = {
       is_managed: boolean | null
     }>('PATCH', `/api/investments/accounts/${accountID}/tax-treatment`, input),
 
+  // --- Retirement ---------------------------------------------------------
+  retirementAssumptions: () =>
+    request<RetirementAssumptions>('GET', '/api/projections/assumptions'),
+
+  // Every field is sent on every save: the form is the whole state, so clearing
+  // an age genuinely clears it rather than leaving a stale value behind.
+  saveRetirementAssumptions: (input: AssumptionsInput) =>
+    request<RetirementAssumptions>('PUT', '/api/projections/assumptions', input),
+
+  retirementContributions: () =>
+    request<ContributionsResponse>('GET', '/api/projections/contributions'),
+
+  // Returns the refreshed list, so headroom updates without a second round trip.
+  saveContribution: (accountID: string, input: ContributionInput) =>
+    request<ContributionsResponse>(
+      'PUT',
+      `/api/projections/contributions/${accountID}`,
+      input,
+    ),
+
+  // Clears a plan rather than storing zeroes, so "no plan set" and "planning to
+  // contribute nothing" stay distinguishable.
+  deleteContribution: (accountID: string) =>
+    request<void>('DELETE', `/api/projections/contributions/${accountID}`),
+
+  retirementProjection: (params: { months?: number; volatility?: string } = {}) =>
+    request<RetirementResponse>(
+      'GET',
+      withQuery('/api/projections/retirement', params),
+    ),
+
   // --- Alerts -------------------------------------------------------------
   alerts: () => request<Alert[]>('GET', '/api/alerts/'),
 
@@ -1368,11 +1840,151 @@ export const api = {
       withQuery('/api/reports/monthly-summary', { month }),
     ),
 
+  // --- Document vault ------------------------------------------------------
+  documents: (filters: DocumentFilters = {}) =>
+    request<VaultDocument[]>('GET', withQuery('/api/documents/', filters)),
+
+  document: (id: string) => request<VaultDocument>('GET', `/api/documents/${id}`),
+
+  /** Storage used against the quota, plus the limits the UI states up front. */
+  documentStorage: () =>
+    request<DocumentStorage>('GET', '/api/documents/storage'),
+
+  /** The documents attached to one ledger record — what a paperclip expands into. */
+  attachedDocuments: (target: DocumentTarget) =>
+    request<VaultDocument[]>(
+      'GET',
+      withQuery('/api/documents/attached', targetQuery(target)),
+    ),
+
+  /**
+   * Attachment counts for a page of transactions, keyed by transaction id.
+   * One request per page rather than one per row.
+   */
+  documentCounts: (transactionIds: string[]) =>
+    request<Record<string, number>>(
+      'GET',
+      `/api/documents/counts?${transactionIds
+        .map((id) => `transaction_id=${encodeURIComponent(id)}`)
+        .join('&')}`,
+    ),
+
+  uploadDocument: (input: DocumentUpload) => uploadDocument(input),
+
+  updateDocument: (id: string, input: DocumentMetadata) =>
+    request<VaultDocument>('PUT', `/api/documents/${id}`, input),
+
+  deleteDocument: (id: string) =>
+    request<void>('DELETE', `/api/documents/${id}`),
+
+  linkDocument: (id: string, target: DocumentTarget) =>
+    request<DocumentLink>('POST', `/api/documents/${id}/links`, {
+      target_kind: target.kind,
+      target_id: target.id,
+    }),
+
+  unlinkDocument: (documentId: string, linkId: string) =>
+    request<void>('DELETE', `/api/documents/${documentId}/links/${linkId}`),
+
+  /**
+   * Reads the fields off a receipt image. Returns *suggestions only* — nothing
+   * is written until the user confirms them, by design.
+   *
+   * This is the only call that sends the image to the AI provider, so it is
+   * never made automatically. The reading it produces is cached on the
+   * document, and `documentMatches` re-checks against it for free — call this
+   * once per receipt and re-read only when the user explicitly asks.
+   */
+  extractReceipt: (id: string) =>
+    request<ReceiptExtraction>('POST', `/api/documents/${id}/extract`),
+
+  /**
+   * Re-runs the transaction match against a receipt's already-read fields.
+   *
+   * Costs nothing: no decryption, no upload, no model call. This is what finds
+   * the charge for a receipt that was scanned before it posted.
+   */
+  documentMatches: (id: string) =>
+    request<ReceiptMatch[]>('GET', `/api/documents/${id}/matches`),
+
+  /**
+   * Fetches a document's bytes as an object URL for inline preview.
+   *
+   * The blob's type is forced to the caller-supplied `previewType`, which the
+   * server derived from a short allowlist (images and PDF). That matters:
+   * blob: URLs inherit this origin, so a document that got to choose its own
+   * type could render as HTML here. Callers must pass a non-empty
+   * `preview_type` from the document, never the raw `mime_type`.
+   */
+  documentPreviewURL: (id: string, previewType: string) =>
+    documentObjectURL(id, previewType),
+
   // The chat endpoint streams its answer as Server-Sent Events: one
   // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
   // onDelta is called as text arrives so the UI can render it live.
   chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
     streamChat(messages, onDelta),
+}
+
+/**
+ * Uploads a document as multipart/form-data.
+ *
+ * It bypasses `request` because the body is a FormData, not JSON: setting a
+ * Content-Type by hand would omit the multipart boundary the browser
+ * generates. The CSRF header is still required, so it is attached explicitly.
+ */
+async function uploadDocument(input: DocumentUpload): Promise<VaultDocument> {
+  const form = new FormData()
+  form.set('file', input.file)
+  form.set('title', input.title)
+  form.set('doc_type', input.doc_type)
+  form.set('is_shared', String(input.is_shared))
+  if (input.document_date) form.set('document_date', input.document_date)
+  if (input.expires_at) form.set('expires_at', input.expires_at)
+  if (input.notes) form.set('notes', input.notes)
+  if (input.link) {
+    form.set('link_kind', input.link.kind)
+    form.set('link_id', input.link.id)
+  }
+
+  assertOnline()
+
+  const res = await fetch('/api/documents/', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+    credentials: 'include',
+    body: form,
+  })
+
+  if (!res.ok) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+  return (await res.json()) as VaultDocument
+}
+
+/** See api.documentPreviewURL for why the type is forced rather than inherited. */
+async function documentObjectURL(
+  id: string,
+  previewType: string,
+): Promise<string> {
+  const res = await fetch(`/api/documents/${id}/download`, {
+    credentials: 'include',
+  })
+  if (!res.ok) throw new ApiError(res.status, 'could not load the document')
+
+  const bytes = await res.arrayBuffer()
+  return URL.createObjectURL(new Blob([bytes], { type: previewType }))
+}
+
+function targetQuery(target: DocumentTarget): Record<string, string> {
+  return { [`${target.kind}_id`]: target.id }
 }
 
 // streamChat POSTs the transcript and reads the SSE body, invoking onDelta for
@@ -1382,6 +1994,8 @@ async function streamChat(
   messages: ChatTurn[],
   onDelta: (text: string) => void,
 ): Promise<void> {
+  assertOnline()
+
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: {

@@ -15,6 +15,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/crypto"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/documents"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
@@ -62,6 +63,29 @@ func run() error {
 	}
 
 	server := api.NewServer(cfg, pool, cipher)
+
+	// The document vault is optional in the same way Plaid is. Its storage
+	// backend is opened here rather than lazily on first upload so a
+	// misconfigured volume or bucket is a loud line in the startup log instead
+	// of a surprise the first time someone tries to file a receipt.
+	if cfg.Documents.Enabled {
+		store, err := documents.NewStorage(cfg.Documents)
+		if err != nil {
+			// Not fatal: the rest of the app is entirely usable without a vault,
+			// and refusing to boot over it would take the whole ledger down.
+			slog.Error("document vault disabled; storage backend could not be opened",
+				"backend", cfg.Documents.Backend, "error", err)
+		} else {
+			server.Documents = documents.New(cfg.Documents, cipher, store)
+			slog.Info("document vault enabled",
+				"backend", store.Describe(),
+				"max_file_bytes", cfg.Documents.MaxFileBytes,
+				"quota_bytes", cfg.Documents.QuotaBytes,
+				"ocr_enabled", cfg.Documents.OCREnabled && cfg.AI.Enabled())
+		}
+	} else {
+		slog.Info("document vault disabled by configuration")
+	}
 
 	// The queue client is wired regardless of Plaid: alert evaluation and other
 	// non-Plaid jobs need to be enqueueable even when no institutions are linked.

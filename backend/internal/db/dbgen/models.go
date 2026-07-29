@@ -30,6 +30,18 @@ type Account struct {
 	IsManaged        *bool               `json:"is_managed"`
 }
 
+type AccountContribution struct {
+	ID                    uuid.UUID           `json:"id"`
+	AccountID             uuid.UUID           `json:"account_id"`
+	MonthlyContribution   decimal.Decimal     `json:"monthly_contribution"`
+	EmployerMatchPct      decimal.NullDecimal `json:"employer_match_pct"`
+	AnnualSalary          decimal.NullDecimal `json:"annual_salary"`
+	EmployerMatchLimit    decimal.NullDecimal `json:"employer_match_limit"`
+	BeneficiaryCurrentAge *int32              `json:"beneficiary_current_age"`
+	BeneficiaryTargetAge  *int32              `json:"beneficiary_target_age"`
+	UpdatedAt             stdtime.Time        `json:"updated_at"`
+}
+
 type Alert struct {
 	ID          uuid.UUID    `json:"id"`
 	HouseholdID uuid.UUID    `json:"household_id"`
@@ -116,6 +128,42 @@ type DigestDelivery struct {
 	UserID    uuid.UUID    `json:"user_id"`
 	PeriodKey string       `json:"period_key"`
 	SentAt    stdtime.Time `json:"sent_at"`
+}
+
+type Document struct {
+	ID                  uuid.UUID           `json:"id"`
+	HouseholdID         uuid.UUID           `json:"household_id"`
+	UploadedBy          *uuid.UUID          `json:"uploaded_by"`
+	IsShared            bool                `json:"is_shared"`
+	Title               string              `json:"title"`
+	DocType             string              `json:"doc_type"`
+	Filename            string              `json:"filename"`
+	MimeType            string              `json:"mime_type"`
+	SizeBytes           int64               `json:"size_bytes"`
+	StorageKey          string              `json:"storage_key"`
+	ContentHash         string              `json:"content_hash"`
+	DocumentDate        *stdtime.Time       `json:"document_date"`
+	ExpiresAt           *stdtime.Time       `json:"expires_at"`
+	RetainUntil         *stdtime.Time       `json:"retain_until"`
+	Notes               *string             `json:"notes"`
+	CreatedAt           stdtime.Time        `json:"created_at"`
+	UpdatedAt           stdtime.Time        `json:"updated_at"`
+	ExtractedAt         *stdtime.Time       `json:"extracted_at"`
+	ExtractedMerchant   *string             `json:"extracted_merchant"`
+	ExtractedAmount     decimal.NullDecimal `json:"extracted_amount"`
+	ExtractedDate       *stdtime.Time       `json:"extracted_date"`
+	ExtractedConfidence decimal.NullDecimal `json:"extracted_confidence"`
+	ExtractedNotes      *string             `json:"extracted_notes"`
+}
+
+type DocumentLink struct {
+	ID            uuid.UUID    `json:"id"`
+	DocumentID    uuid.UUID    `json:"document_id"`
+	TransactionID *uuid.UUID   `json:"transaction_id"`
+	ManualAssetID *uuid.UUID   `json:"manual_asset_id"`
+	AccountID     *uuid.UUID   `json:"account_id"`
+	GoalID        *uuid.UUID   `json:"goal_id"`
+	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
 type Goal struct {
@@ -243,6 +291,16 @@ type ManualAsset struct {
 	UpdatedAt   stdtime.Time    `json:"updated_at"`
 }
 
+type MerchantAlias struct {
+	ID          uuid.UUID           `json:"id"`
+	HouseholdID uuid.UUID           `json:"household_id"`
+	EntityID    uuid.UUID           `json:"entity_id"`
+	MerchantKey string              `json:"merchant_key"`
+	Source      string              `json:"source"`
+	Confidence  decimal.NullDecimal `json:"confidence"`
+	CreatedAt   stdtime.Time        `json:"created_at"`
+}
+
 type MerchantCategoryMap struct {
 	ID          uuid.UUID           `json:"id"`
 	HouseholdID uuid.UUID           `json:"household_id"`
@@ -252,6 +310,24 @@ type MerchantCategoryMap struct {
 	Confidence  decimal.NullDecimal `json:"confidence"`
 	CreatedAt   stdtime.Time        `json:"created_at"`
 	UpdatedAt   stdtime.Time        `json:"updated_at"`
+}
+
+type MerchantEntity struct {
+	ID                uuid.UUID    `json:"id"`
+	HouseholdID       uuid.UUID    `json:"household_id"`
+	CanonicalName     string       `json:"canonical_name"`
+	DefaultCategoryID *uuid.UUID   `json:"default_category_id"`
+	Color             *string      `json:"color"`
+	CreatedAt         stdtime.Time `json:"created_at"`
+	UpdatedAt         stdtime.Time `json:"updated_at"`
+}
+
+type MerchantMergeRejection struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	KeyA        string       `json:"key_a"`
+	KeyB        string       `json:"key_b"`
+	CreatedAt   stdtime.Time `json:"created_at"`
 }
 
 type MfaChallenge struct {
@@ -319,6 +395,20 @@ type Preference struct {
 	Key         string       `json:"key"`
 	Value       []byte       `json:"value"`
 	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
+type ProjectionAssumption struct {
+	ID                   uuid.UUID           `json:"id"`
+	HouseholdID          uuid.UUID           `json:"household_id"`
+	RealReturnRate       decimal.Decimal     `json:"real_return_rate"`
+	InflationRate        decimal.Decimal     `json:"inflation_rate"`
+	WithdrawalRate       decimal.Decimal     `json:"withdrawal_rate"`
+	TargetRetirementAge  *int32              `json:"target_retirement_age"`
+	CurrentAge           *int32              `json:"current_age"`
+	AnnualSsIncome       decimal.NullDecimal `json:"annual_ss_income"`
+	SsStartAge           *int32              `json:"ss_start_age"`
+	TargetAnnualSpending decimal.NullDecimal `json:"target_annual_spending"`
+	UpdatedAt            stdtime.Time        `json:"updated_at"`
 }
 
 type RecurringObligation struct {

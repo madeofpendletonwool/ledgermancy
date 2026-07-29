@@ -331,7 +331,7 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 		// should not linger in the table for months. Also skip rows without a
 		// merchant_key — suppression is keyed by it, so an unkeyed row could not
 		// be acted on anyway.
-		if m.MerchantKey == nil || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
 			continue
 		}
 		// Normalise the charge to a monthly figure: amount * (month / gap).
@@ -340,7 +340,7 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
 		out = append(out, recurringResponse{
-			MerchantKey:     *m.MerchantKey,
+			MerchantKey:     m.MerchantKey,
 			Merchant:        m.Merchant,
 			Occurrences:     m.Occurrences,
 			AverageAmount:   m.AverageAmount.Round(2),

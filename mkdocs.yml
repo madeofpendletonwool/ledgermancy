@@ -96,10 +96,12 @@ nav:
       - Investments: features/investments.md
       - Transactions: features/transactions.md
       - Categories: features/categories.md
+      - Documents: features/documents.md
       - Accounts & Plaid: features/accounts.md
       - Alerts: features/alerts.md
       - Assistant: features/assistant.md
       - Households: features/households.md
+      - Install & offline: features/install.md
   - Concepts: concepts.md
   - Configuration: configuration.md
   - Security: security.md

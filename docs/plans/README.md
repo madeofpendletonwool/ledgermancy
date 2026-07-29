@@ -80,10 +80,10 @@ and the chat tool layer (`backend/internal/api/chat_handlers.go`).
 
 ### Wave 3 — next major initiatives
 
-Docs 00–12 are shipped, and so are **13 and 14**. Wave 3 is the current cycle,
-drawn from the "Next major initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
-large and mostly independent — **13, 14, and 16 can run fully in parallel**;
-only 15 has a hard prerequisite, and as of 14 shipping that prerequisite is met.
+Docs 00–12 are shipped, and so are **13, 14 and 15**. Drawn from the "Next major
+initiatives" section of [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md). Unlike waves 0–2 these are
+large and mostly independent. **Only 16 remains in this wave**; it has no
+prerequisites and was consciously skipped to start wave 4, so pick it up next.
 
 - **[13-bill-calendar.md](13-bill-calendar.md)** — recurring obligations
   (detected *and* manually entered), a Schedule page, day-by-day projected
@@ -104,10 +104,32 @@ only 15 has a hard prerequisite, and as of 14 shipping that prerequisite is met.
   and useful without them. Fee drag ships as structure plus disclosure only —
   Plaid supplies no expense ratio, so the endpoint reports full exclusion rather
   than a number computed over part of a portfolio.
-- **[15-fire-projections.md](15-fire-projections.md)** — account-aware
-  retirement projection and a withdrawal-rate lens, beside (not replacing) the
-  linear model in `networth/project.go`. *TODO #5.* **Needs 14** for
-  `accounts.tax_treatment`. Foundation for TODO #16's scenario engine.
+- **[15-fire-projections.md](15-fire-projections.md)** — **shipped.**
+  Account-aware retirement projection and a withdrawal-rate lens at
+  `/retirement`, beside (not replacing) the linear model in
+  `networth/project.go`. *TODO #5.* Migration `00021` is taken.
+
+  Four things 24's and 28's implementers should know, since both build on this.
+  First, the engine is `networth.ProjectRetirement` and takes `now` as a
+  parameter — call it that way rather than reaching for the clock, or the tests
+  become calendar-dependent. Second, IRS limits live in a versioned Go map
+  (`networth/limits.go`) keyed by tax year, and an unconfigured year returns
+  `ok=false` on purpose: surface it, never substitute an adjacent year. Third,
+  the migration gained three columns doc 15's sketch did not have —
+  `account_contributions.annual_salary` (an employer match is a percentage *of
+  salary*, so a match with no salary behind it is not an amount and is refused
+  at the API), and `beneficiary_current_age` / `beneficiary_target_age` for the
+  529 horizon.
+
+  Fourth and most load-bearing: **Monte Carlo did not ship as a historical
+  backtest**, and nothing downstream should assume one exists. No return series
+  is bundled — shipping one would mean either an outbound fetch the README
+  promises against or a transcribed table of numbers nobody can verify. What
+  ships instead draws sequences around the user's *own* stated real return and a
+  volatility they set, seeds deterministically from the inputs, names that basis
+  in every response, and is gated behind `RETIREMENT_MONTE_CARLO_ENABLED`
+  (default off). Tax drag on withdrawals and RMDs are likewise **not modelled**;
+  they are listed as omissions in the UI and want doc 23's income data.
 - **[16-continuity-and-backups.md](16-continuity-and-backups.md)** — automated
   `pg_dump` + a **verified restore test**, portable export, optional encrypted
   off-host push, a continuity panel, and a tested restore runbook. *TODO #15;
@@ -115,19 +137,107 @@ only 15 has a hard prerequisite, and as of 14 shipping that prerequisite is met.
 
 ### Wave 4 — foundations (no prerequisites, all parallel-safe)
 
-- **[17-merchant-canonicalization.md](17-merchant-canonicalization.md)** — map
-  fragmented merchant strings to canonical entities, suggestion-then-confirm.
-  *TODO #6.* Improves recurring detection, categorisation, and doc 22 as a side
-  effect — land it early where you can.
-- **[18-document-vault.md](18-document-vault.md)** — encrypted document storage
-  over the existing AES-GCM cipher, linked to transactions/assets/goals, with
-  expiry nudges. *TODO #7.* **Doc 23 depends on it.**
+**17 and 18 have shipped.** 16 is the only thing left behind them, deliberately
+deferred rather than dropped — it keeps its `00022` reservation, and now has a
+second thing to back up: see 18's note about the document volume not being in
+`pg_dump`.
+
+- **[17-merchant-canonicalization.md](17-merchant-canonicalization.md)** —
+  **shipped.** Fragmented merchant strings map to canonical entities at
+  `/merchants`, suggestion-then-confirm. *TODO #6.* Migration `00023` is taken.
+
+  Four things doc 22's implementer should know, since it builds on this. First,
+  **the resolution rule lives in SQL and only in SQL** — it is documented in full
+  at the top of `db/queries/merchants.sql` and every consumer inlines the same
+  two LEFT JOINs. A Go-side `Resolver` was written and then deleted: nothing
+  needed it, and a second implementation of the rule is a thing to keep in step
+  for no benefit. Copy the SQL block; do not reintroduce a Go resolver unless a
+  caller genuinely cannot do the join.
+
+  Second, **the resolved key is an entity UUID rendered as text**, and raw keys
+  pass through unchanged. Resolution is idempotent (no alias is ever keyed by a
+  UUID), which is what lets `recurring_overrides` and
+  `recurring_obligations.merchant_key` hold either form and still match —
+  including rows written before a merge. `GetRecurringMerchants` returns the
+  resolved key, so anything storing that key gets an identifier that survives
+  further descriptors joining the merchant. Baselines built per entity should key
+  the same way.
+
+  Third, the doc's schema shipped as written, plus a `key_a < key_b` check
+  constraint on `merchant_merge_rejections` so a pair has one representation, and
+  a partial index on active aliases. The one behaviour the doc did not specify:
+  **a component containing any rejected pair is dropped whole**, not split around
+  the refusal. Transitivity would otherwise re-form a rejected merge through a
+  third descriptor.
+
+  Fourth, one consumer outside the doc's list needed fixing and got it:
+  `UnusualMerchantCandidates` (`alerts.sql`) judged "first ever seen" per raw
+  descriptor, so a merged merchant's second descriptor fired a false new-merchant
+  alert. It now resolves. Anything else asking "have we seen this merchant
+  before?" must do the same.
+
+  Entity logos are out of scope and stayed out — an outbound dependency the app
+  otherwise does not have.
+- **[18-document-vault.md](18-document-vault.md)** — **shipped.** Encrypted
+  document storage over the existing AES-GCM cipher, linked to
+  transactions/assets/goals, with expiry nudges. *TODO #7.* Migration `00024` is
+  taken. **Doc 23's storage dependency is satisfied** — the storage layer,
+  encryption and upload/download endpoints are live, so 23 can build its
+  paystub-specific schema on top of `documents` today.
+
+  Five things doc 23's implementer (and anyone touching the vault) should know.
+
+  First, **the storage layer is a `Storage` interface with two implementations**
+  (`documents/storage.go`, `documents/s3.go`) and a `Vault` on top that owns the
+  cipher. Nothing outside the package knows documents are encrypted: callers
+  hand `Vault.Store` plaintext and get a storage key back. A paystub importer
+  should reuse `Vault` rather than sealing anything itself.
+
+  Second, **S3 shipped without an SDK.** SigV4 is signed by hand in `s3.go`,
+  because the vault needs three verbs against one bucket and aws-sdk-go-v2 is a
+  large tree for that. It is tested for encoding rules, header set, determinism
+  and coverage, not against a live endpoint — if you extend it beyond
+  PUT/GET/DELETE, extend those tests first.
+
+  Third, **the `mime_type` column is display metadata and nothing else.** The
+  download path sniffs the decrypted bytes against a five-entry allowlist and
+  falls back to `application/octet-stream`; the stored claim never reaches a
+  response header. Anything that adds a serving path must do the same, or the
+  HTML-as-receipt hole reopens.
+
+  Fourth, **`document_links` has four typed nullable target columns with a
+  one-of CHECK**, not a `(kind, id)` pair, so the foreign keys are real. Adding
+  a fifth target kind means a migration *and* a `Target*InHousehold` ownership
+  query — the insert cannot verify a target and deliberately does not try.
+
+  Fifth, **OCR shipped as suggestion-only and gated on `doc_type`, and doc 23
+  must not casually widen either.** There is no code path from `ExtractReceipt`
+  to a written row; the endpoint returns fields plus candidate transactions for
+  a person to act on. Eligibility is `documents.OCREligible`, an allowlist
+  containing `receipt` and nothing else, checked *before* the bytes are
+  decrypted — so a tax document cannot be sent whatever file format it is in.
+
+  This is the one thing doc 23 has to think hardest about, because a paystub is
+  more sensitive than a receipt and more sensitive than most tax documents: it
+  carries an employer, a full name, frequently a partial SSN, and exact gross
+  and net pay. Adding `paystub` to `ocrEligibleTypes` and moving on would be the
+  wrong instinct. The options worth weighing are a per-document opt-in rather
+  than a type-wide one, redaction before upload, or a local OCR path with no
+  outbound call at all. Whichever it is, it deserves its own switch rather than
+  inheriting `DOCUMENTS_OCR_ENABLED`, which a user turned on to read grocery
+  receipts. `ai.Block` gained image support (`ImageBlock`) and is available —
+  under that rule.
 - **[19-debt-payoff-goals.md](19-debt-payoff-goals.md)** — the `debt_payoff`
   goal kind the schema has always allowed, plus thousands separators in
   `money()`. *TODO known gaps.* Small; good first task.
 - **[20-pwa-offline.md](20-pwa-offline.md)** — installable PWA with read-only
-  offline. *TODO #11.* Frontend only, zero backend change — the safest doc to
-  run alongside anything.
+  offline. *TODO #11.* **Shipped.** Frontend only, as advertised. The MVP
+  landed; write queueing did not, and was closed rather than deferred — writes
+  are refused with an explanation instead. Two notes for anyone touching it:
+  the cacheable API set in `frontend/src/sw.ts` is an allowlist, so a new
+  read-only endpoint needs adding there before it works offline, and sign-out
+  must keep clearing the worker's caches (`clearApiCache`) or a shared device
+  leaks the previous user's figures.
 - **[21-household-sharing.md](21-household-sharing.md)** — shared-goal
   contributions, bill split + reimbursement ledger, and the `users.role` column
   kid sub-accounts need. *TODO #9.* Doc 16's admin check should consume this
@@ -137,11 +247,13 @@ only 15 has a hard prerequisite, and as of 14 shipping that prerequisite is met.
 
 - **[22-anomaly-detection.md](22-anomaly-detection.md)** — per-merchant
   baselines, outlier charges, duplicate detection. *TODO #2 — note price creep
-  is already shipped; don't rebuild it.* Much better after 17.
+  is already shipped; don't rebuild it.* **17 has shipped**, so build baselines
+  per resolved merchant; read 17's notes above before choosing a key.
 - **[23-paystub-income.md](23-paystub-income.md)** — the biggest hole in the
   data model: 30–45% of gross income is invisible today. Paystub schema, three
   ingest paths, paycheck breakdown, contribution limits, tax-prep summary.
-  *TODO #8.* **Needs 18.**
+  *TODO #8.* **18 has shipped**, so its dependency is met — read 18's notes
+  above before choosing where paystub files live.
 - **[24-proactive-advisor.md](24-proactive-advisor.md)** — ranked, deterministic
   options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
   15.**
@@ -183,8 +295,13 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
 - Throwaway Postgres for tests:
   `docker run -d --name lmtest-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=lmtest -p 55432:5432 postgres:17-alpine`
   then `TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test -p 1 ./...`
-- Migrations are numbered. **`00020_investment_analysis.sql` is the latest on
-  `main`** (`00019` and `00020` are taken by docs 13 and 14, which have shipped).
+- Migrations are numbered. **`00024_documents.sql` is the latest on
+  `main`**, with `00033` also taken (see the foot of the table). `00019`–`00021`,
+  `00023` and `00024` belong to docs 13, 14, 15, 17 and 18, which have shipped.
+  **`00022` is still free**: doc 16 was deliberately deferred, not dropped, and
+  keeps its reservation. **`00025`–`00032` remain reserved** and are still the
+  numbers their docs should use — 18's follow-up jumped to `00033` precisely so
+  it did not consume one.
   To avoid the collision class that already bit this repo once (two
   `00007`s), each doc that needs a migration has a **reserved number**; use it,
   but re-check it's still free at implementation time and renumber (+ update
@@ -197,7 +314,7 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   | `00021_projection_assumptions.sql` | 15 | `projection_assumptions`, `account_contributions` |
   | `00022_backup_status.sql` | 16 | `backup_runs` table |
   | `00023_merchant_entities.sql` | 17 | `merchant_entities`, `merchant_aliases`, `merchant_merge_rejections` |
-  | `00024_documents.sql` | 18 | `documents`, `document_links` |
+  | ~~`00024_documents.sql`~~ | 18 | `documents`, `document_links` — **taken** |
   | `00025_household_roles_and_splits.sql` | 21 | `users.role`, `goal_contributions`, `transaction_splits`, `child_allowances` |
   | `00026_merchant_baselines.sql` | 22 | `merchant_baselines` table |
   | `00027_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
@@ -206,18 +323,20 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   | `00030_cpi_series.sql` | 27 | `cpi_series` table |
   | `00031_scenarios.sql` | 28 | `scenarios` table |
   | `00032_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
+  | ~~`00033_document_extractions.sql`~~ | 18 | `documents.extracted_*` — **taken** (follow-up to 18; every number below 33 was already reserved) |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
   **these reservations are load-bearing** — take only your own number.
 
-  Two pairs can genuinely collide and need coordination rather than just
+  One pair can still genuinely collide and needs coordination rather than just
   distinct numbers:
 
-  - **14 → 15.** 15 needs `accounts.tax_treatment` from 14's `00020` and must
-    not add its own copy.
   - **21 → 16.** 16 needs an owner/admin check and observes that no role column
     exists; 21 adds `users.role`. Whichever lands second adopts the other's
     mechanism instead of inventing a parallel one.
+
+  (The 14 → 15 pair is resolved: 15 shipped reading `accounts.tax_treatment`
+  from 14's `00020` and added no copy of it.)
 
   Docs 01, 05–09, and 12 needed **no** migration (UI, new queries, or reuse
   only). All migrations goose-annotated (`-- +goose Up` / `-- +goose Down`).

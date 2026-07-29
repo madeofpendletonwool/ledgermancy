@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Goal, GoalInput, GoalProposal } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import { AttachDocuments } from '../components/AttachDocuments'
 import { STATUS } from '../components/charts/tokens'
 
 export function Goals() {
@@ -104,6 +105,8 @@ function GoalCard({ goal }: { goal: Goal }) {
           >
             {chip.label}
           </span>
+          {/* A quote, a contract or a policy behind the goal it justifies. */}
+          <AttachDocuments target={{ kind: 'goal', id: goal.id }} />
           <button
             className="btn-ghost px-2.5 py-1 text-xs text-ember-400"
             disabled={archive.isPending}

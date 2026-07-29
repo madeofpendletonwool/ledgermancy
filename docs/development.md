@@ -63,6 +63,29 @@ cd frontend && npm run build
     The project-references build catches things `tsc --noEmit` misses. Always
     run `npm run build`.
 
+### Testing the service worker
+
+The PWA is disabled in `npm run dev` on purpose — a service worker caching
+modules that Vite is trying to hot-replace produces bugs that do not exist in a
+real build. Exercise it against the production output instead:
+
+```bash
+cd frontend && npm run build && npm run preview
+```
+
+Then, in devtools: **Application → Service Workers** to confirm it activated,
+and **Network → Offline** followed by a reload to check the shell renders, the
+offline banner names a time, and write controls are disabled.
+
+Two things worth knowing before changing anything here:
+
+- The set of API paths that may be cached is an **allowlist** in
+  `frontend/src/sw.ts`. A new read-only endpoint gets no offline copy until it
+  is added there, which is the intended default.
+- Anything that ends a session must clear the worker's caches as well as the
+  query cache (`clearApiCache` in `frontend/src/lib/offline.ts`). Skipping it
+  leaves the previous user's figures readable on a shared device.
+
 ## Testing the API with a session
 
 Registration is invite-only after the first user, so rather than creating junk

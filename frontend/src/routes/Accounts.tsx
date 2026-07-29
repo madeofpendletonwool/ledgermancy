@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Account, type PlaidItem } from '../lib/api'
 import { formatMoney, formatRelative, isLiability } from '../lib/money'
+import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { ConnectAccount } from '../components/ConnectAccount'
 import { ReconnectAccount } from '../components/ReconnectAccount'
 
@@ -54,6 +55,9 @@ function InstitutionCard({
   accounts: Account[]
 }) {
   const qc = useQueryClient()
+  // Syncing, sharing and unlinking all reach Plaid. Offline they cannot start,
+  // so they are switched off rather than left to fail at the network layer.
+  const online = useOnline()
 
   const refreshAll = () => {
     qc.invalidateQueries({ queryKey: ['items'] })
@@ -128,7 +132,8 @@ function InstitutionCard({
               type="checkbox"
               className="accent-arcane-500"
               checked={item.is_shared}
-              disabled={share.isPending}
+              disabled={share.isPending || !online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onChange={(e) => share.mutate(e.target.checked)}
             />
             Shared with household
@@ -136,7 +141,8 @@ function InstitutionCard({
 
           <button
             className="btn-ghost px-3 py-1.5 text-xs"
-            disabled={sync.isPending}
+            disabled={sync.isPending || !online}
+            title={online ? undefined : OFFLINE_WRITE_HINT}
             onClick={() => sync.mutate()}
           >
             {sync.isPending ? 'Syncing…' : 'Sync now'}
@@ -144,7 +150,8 @@ function InstitutionCard({
 
           <button
             className="px-2 py-1.5 text-xs text-mist-500 transition hover:text-ember-400"
-            disabled={unlink.isPending}
+            disabled={unlink.isPending || !online}
+            title={online ? undefined : OFFLINE_WRITE_HINT}
             onClick={() => {
               if (
                 confirm(

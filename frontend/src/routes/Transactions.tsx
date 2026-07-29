@@ -9,7 +9,9 @@ import {
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
+import { AttachDocuments } from '../components/AttachDocuments'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
+import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 
 const PAGE_SIZE = 50
 
@@ -38,6 +40,8 @@ export function Transactions() {
 
   const [modal, setModal] = useState<ModalState>(null)
   const [importing, setImporting] = useState(false)
+  // The list itself reads fine from cache offline; adding and importing do not.
+  const online = useOnline()
 
   // patchParams writes filter changes back to the URL. Any change other than an
   // explicit page move resets to page 0, so a new filter never lands you past
@@ -91,6 +95,17 @@ export function Transactions() {
   const rows = transactions.data ?? []
   const isLastPage = rows.length < PAGE_SIZE
 
+  // Attachment counts for the whole page in one request, so a paperclip badge
+  // costs one round trip rather than fifty. A vault that is switched off
+  // answers 503; the empty fallback below just means no badges.
+  const documentCounts = useQuery({
+    queryKey: ['document-counts', rows.map((t) => t.id)],
+    queryFn: () => api.documentCounts(rows.map((t) => t.id)),
+    enabled: rows.length > 0,
+    retry: false,
+  })
+  const countFor = (id: string) => documentCounts.data?.[id] ?? 0
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -103,12 +118,16 @@ export function Transactions() {
         <div className="flex gap-2">
           <button
             className="btn-ghost px-4 py-2 text-sm"
+            disabled={!online}
+            title={online ? undefined : OFFLINE_WRITE_HINT}
             onClick={() => setImporting(true)}
           >
             Import CSV
           </button>
           <button
             className="btn-primary px-4 py-2 text-sm"
+            disabled={!online}
+            title={online ? undefined : OFFLINE_WRITE_HINT}
             onClick={() => setModal({ mode: 'create' })}
           >
             Add transaction
@@ -199,6 +218,7 @@ export function Transactions() {
                 transaction={t}
                 categoryById={categoryById}
                 spendCats={spendCats}
+                documentCount={countFor(t.id)}
                 onEdit={() => setModal({ mode: 'edit', transaction: t })}
               />
             ))}
@@ -322,17 +342,20 @@ function TransactionRow({
   transaction: t,
   categoryById,
   spendCats,
+  documentCount,
   onEdit,
 }: {
   transaction: Transaction
   categoryById: Map<string, Category>
   spendCats: Category[]
+  documentCount: number
   onEdit: () => void
 }) {
   const qc = useQueryClient()
   const amount = formatTransactionAmount(t.amount, t.currency)
   const isManual = t.source === 'manual'
   const [editingCat, setEditingCat] = useState(false)
+  const online = useOnline()
 
   const remove = useMutation({
     mutationFn: () => api.deleteTransaction(t.id),
@@ -387,8 +410,9 @@ function TransactionRow({
         />
       ) : (
         <button
-          className="hidden shrink-0 rounded-full border border-white/10 px-2.5 py-1 text-xs text-mist-300 transition hover:border-white/25 hover:text-mist-100 sm:inline"
-          title="Change category"
+          className="hidden shrink-0 rounded-full border border-white/10 px-2.5 py-1 text-xs text-mist-300 transition hover:border-white/25 hover:text-mist-100 disabled:opacity-60 disabled:hover:border-white/10 disabled:hover:text-mist-300 sm:inline"
+          disabled={!online}
+          title={online ? 'Change category' : OFFLINE_WRITE_HINT}
           onClick={() => setEditingCat(true)}
         >
           {currentLabel}
@@ -408,6 +432,15 @@ function TransactionRow({
       >
         {amount.text}
       </div>
+
+      {/* Receipts, invoices and warranties belong next to the charge they
+          explain, so the vault is reachable from the row rather than only from
+          the Documents page. */}
+      <AttachDocuments
+        target={{ kind: 'transaction', id: t.id }}
+        count={documentCount}
+        label="Attach a receipt"
+      />
 
       {/* Edit/delete only on hand-entered rows. Plaid rows stay read-only
           except category, which has its own path. */}

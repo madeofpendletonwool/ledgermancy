@@ -33,6 +33,15 @@ services:
     environment:
       # Override the .env value so it points at the compose service, not localhost.
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      # The document vault. Only the api reads or writes it — uploads and
+      # downloads are request-time work, and no job touches a blob.
+      #
+      # This volume is NOT covered by pg_dump. A backup that captures only the
+      # database captures every document's title, type and expiry and none of
+      # its contents, so it has to be backed up alongside the dump. See
+      # DEPLOYING.md.
+      - documents-data:/var/lib/ledgermancy/documents
     ports:
       # Loopback only, and only for local development: the vite dev server
       # proxies /api to 127.0.0.1:8080. In production the api has NO host port
@@ -80,3 +89,4 @@ services:
 
 volumes:
   postgres-data:
+  documents-data:

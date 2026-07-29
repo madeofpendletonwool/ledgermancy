@@ -3,6 +3,8 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
 import { DropdownMenu } from './DropdownMenu'
+import { OfflineBanner } from './OfflineBanner'
+import { InstallPrompt } from './PwaPrompts'
 import { api } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
@@ -28,6 +30,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/budgets', label: 'Budgets' },
       { to: '/schedule', label: 'Schedule' },
       { to: '/goals', label: 'Goals' },
+      { to: '/retirement', label: 'Retirement' },
     ],
   },
   {
@@ -36,6 +39,8 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/accounts', label: 'Accounts' },
       { to: '/transactions', label: 'Transactions' },
       { to: '/categories', label: 'Categories' },
+      { to: '/merchants', label: 'Merchants' },
+      { to: '/documents', label: 'Documents' },
       { to: '/net-worth', label: 'Net worth' },
       { to: '/investments', label: 'Investments' },
     ],
@@ -266,9 +271,14 @@ export function AppLayout() {
             </div>
           </nav>
         )}
+        {/* Inside the sticky header, below the nav row, so it stays pinned to
+            the top of the viewport. A disclosure that the figures are stale is
+            worth little if it scrolls away from the figures. */}
+        <OfflineBanner />
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10">
+        <InstallPrompt />
         <Outlet />
       </main>
     </div>

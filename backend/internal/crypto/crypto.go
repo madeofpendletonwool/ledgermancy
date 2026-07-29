@@ -1,6 +1,12 @@
 // Package crypto encrypts secrets that must be stored but never exposed —
 // principally Plaid access tokens, which grant read access to a user's bank
-// accounts and are therefore never written to the database in the clear.
+// accounts and are therefore never written to the database in the clear, and
+// every document in the vault, whose bytes reach a disk or a bucket only in
+// sealed form.
+//
+// Seal and Open are whole-buffer operations. That is fine for a token and is a
+// deliberate constraint on the vault: see documents.Vault, which caps file size
+// rather than pretending this streams.
 package crypto
 
 import (

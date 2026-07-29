@@ -227,7 +227,7 @@ func evalUnusualMerchant(ctx context.Context, q *dbgen.Queries, a dbgen.Alert, n
 		txID := row.ID
 		payload := mustJSON(map[string]string{
 			"merchant":     row.Merchant,
-			"merchant_key": derefKey(row.MerchantKey),
+			"merchant_key": row.MerchantKey,
 			"amount":       row.Amount.StringFixed(2),
 			"date":         row.Date.Format(time.DateOnly),
 		})
@@ -452,9 +452,3 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func derefKey(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}

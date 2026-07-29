@@ -81,6 +81,80 @@ Every response carries:
 - `Cache-Control: no-store` so financial JSON and CSV exports never land in a
   cache.
 
+## Document vault
+
+Documents are sealed with AES-256-GCM under `ENCRYPTION_KEY` — the same key
+that protects Plaid access tokens — before anything is written. The storage
+backend, whether a mounted volume or an S3 bucket, never sees plaintext.
+
+Four properties are worth stating explicitly, because each closes a specific
+failure:
+
+- **The path a document is stored at is a generated UUID, never its filename.**
+  This removes path traversal as a class rather than filtering for it. A file
+  called `../../etc/passwd` is stored at a UUID and downloads as `passwd`.
+- **A document id is not an authorisation.** Every route including the download
+  resolves the row scoped to the caller's household *and* user id. A document
+  belonging to another household — or a private one belonging to another
+  household member — returns **404**, not 403, so the response cannot be used to
+  confirm that an id exists somewhere.
+- **Downloads never echo the uploader's content type.** The type is sniffed
+  from the decrypted bytes against a short allowlist (PNG, JPEG, GIF, WebP,
+  PDF); everything else is served as `application/octet-stream`. Every response
+  carries `Content-Disposition: attachment` with a sanitised filename and
+  `X-Content-Type-Options: nosniff`. An HTML file filed as a "receipt"
+  downloads; it does not execute on this origin. SVG is deliberately absent
+  from the allowlist — it is a scriptable document format, not an image.
+- **Reads verify a SHA-256 of the plaintext.** GCM already detects tampering;
+  the hash catches the different failure of a storage-layer mixup serving the
+  wrong intact blob, which under encryption would otherwise be undetectable.
+  A mismatch fails closed with no partial output.
+
+**Private documents** (`is_shared = false`) are invisible to the rest of the
+household in every listing, count and download — the same model as per-
+institution sharing.
+
+**Nothing is ever auto-deleted.** Each document gets an advisory "keep until"
+date from its type; it is surfaced in the UI and acted on by a person. A
+finance app that silently discards a tax return has failed at its one job.
+
+### Receipt OCR sends images off the host
+
+`DOCUMENTS_OCR_ENABLED` is off by default and is a **separate switch from
+`AI_API_KEY`**, because it is the only feature that uploads an image of your
+paperwork to a third party.
+
+**Only documents typed `receipt` are eligible.** Tax documents, insurance
+policies, contracts, statements, warranties and anything filed as `other` are
+refused with a 403 — server-side, before the file is even decrypted, not merely
+by hiding the button. A W-2 scanned to a PNG is exactly as ineligible as a PDF
+of one. That distinction is the point: a receipt is a merchant, a total and a
+date that already exist in the transaction it belongs to, whereas a tax return
+is a name, an address, an SSN and a complete financial picture. They are not the
+same exposure and the app does not treat them as one because both happen to be
+images.
+
+The allowlist has exactly one entry and is checked with an allowlist rather than
+a blocklist deliberately: a doc type added by some future migration is
+ineligible by default rather than sendable until somebody remembers it. Refiling
+a document as a receipt is the deliberate act that opts it in.
+
+Beyond that, extraction is **only ever user-initiated** on one named document —
+there is no background job, so nothing is sent because a sweep ran. PDFs are
+refused, the type is decided by sniffing the bytes rather than trusting the
+uploader's claim, and images above 5 MB are rejected.
+
+The results are suggestions. The only action offered is attaching the document
+to a transaction *you* pick from the candidates. No transaction, category or
+amount is ever written from a model's reading of a receipt.
+
+**One upload per receipt, ever.** What the model read is cached on the document,
+so re-opening a receipt, and every later attempt to match it against a charge,
+runs as local SQL. The image is only re-sent if you explicitly press "Read
+again". This is a privacy property as much as a performance one: without the
+cache, matching a receipt to a charge that posted three days later would mean
+uploading it a second time.
+
 ## Registration
 
 **Invite-only after the first account.** The first account creates the

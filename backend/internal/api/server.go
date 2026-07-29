@@ -20,6 +20,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/crypto"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/documents"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
@@ -41,6 +42,11 @@ type Server struct {
 	Jobs    *river.Client[pgx.Tx]
 	AI      *ai.Client
 	Notify  notify.Notifier
+
+	// Documents is nil when the vault is switched off or its storage backend
+	// could not be opened. The document handlers check for that and return 503,
+	// exactly like the Plaid handlers — the rest of the app is unaffected.
+	Documents *documents.Vault
 
 	// Rate limiters, held on the Server so successful logins can reset the
 	// caller's counter rather than punishing someone who mistyped once.
@@ -237,6 +243,43 @@ func (s *Server) Routes() http.Handler {
 			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 		})
 
+		// Canonical merchants: the review queue for proposed merges, plus manual
+		// merge/split/rename. Everything the suggestion job writes is inert until
+		// something here confirms it.
+		r.Route("/merchants", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListMerchants)
+			r.Get("/keys", s.handleListMerchantKeys)
+			r.Post("/merge", s.handleMergeMerchants)
+			r.Post("/split", s.handleSplitMerchant)
+			r.Post("/scan", s.handleScanMerchants)
+			r.Post("/{merchantID}/reject", s.handleRejectMerchantSuggestion)
+			r.Patch("/{merchantID}", s.handleRenameMerchant)
+		})
+
+		// The encrypted document vault. Every route here is household-scoped,
+		// including the download — a document id is never on its own sufficient
+		// to fetch a blob. See document_handlers.go.
+		r.Route("/documents", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/", s.handleListDocuments)
+			r.Post("/", s.handleUploadDocument)
+			r.Get("/storage", s.handleDocumentStorage)
+			r.Get("/attached", s.handleAttachedDocuments)
+			r.Get("/counts", s.handleDocumentCounts)
+			r.Get("/{documentID}", s.handleGetDocument)
+			r.Put("/{documentID}", s.handleUpdateDocument)
+			r.Delete("/{documentID}", s.handleDeleteDocument)
+			r.Get("/{documentID}/download", s.handleDownloadDocument)
+			r.Post("/{documentID}/extract", s.handleExtractDocument)
+			// Re-runs the match against an already-read receipt. Deterministic
+			// SQL only: no decryption, no upload, no model call — which is what
+			// lets a receipt scanned before its charge posted find it later.
+			r.Get("/{documentID}/matches", s.handleDocumentMatches)
+			r.Post("/{documentID}/links", s.handleLinkDocument)
+			r.Delete("/{documentID}/links/{linkID}", s.handleUnlinkDocument)
+		})
+
 		r.Route("/categories", func(r chi.Router) {
 			r.Use(authMW.Authenticate)
 			r.Get("/", s.handleListCategories)
@@ -282,6 +325,22 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/history", s.handleNetWorthHistory)
 			r.Post("/snapshot", s.handleSnapshotNow)
 			r.Get("/projection", s.handleProjection)
+		})
+
+		// Retirement. Sits beside /networth rather than inside it: the
+		// straight-line model there is a net-worth illustration, and this is an
+		// account-aware retirement engine. Neither replaces the other.
+		//
+		// /retirement always returns the assumptions alongside the curve, so a
+		// client cannot render a projection without the inputs that produced it.
+		r.Route("/projections", func(r chi.Router) {
+			r.Use(authMW.Authenticate)
+			r.Get("/assumptions", s.handleGetAssumptions)
+			r.Put("/assumptions", s.handleSaveAssumptions)
+			r.Get("/contributions", s.handleListContributions)
+			r.Put("/contributions/{accountID}", s.handleSaveContribution)
+			r.Delete("/contributions/{accountID}", s.handleDeleteContribution)
+			r.Get("/retirement", s.handleRetirementProjection)
 		})
 
 		r.Route("/holdings", func(r chi.Router) {
@@ -401,7 +460,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Headers", "Content-Type, "+auth.CSRFHeaderName)
-			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			h.Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
