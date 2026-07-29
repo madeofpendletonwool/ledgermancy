@@ -11,48 +11,75 @@ manual assets, snapshots, projections), the exportable Financial Summary report,
 AI enrichment (LLM categorisation, insight feed, alerts, monthly narratives,
 natural-language parsing), and the tool-calling chatbot are all running.
 
+The major-initiative waves are landing too: the bill calendar, dedicated
+investments page, and FIRE projections are in (wave 3), as are merchant
+canonicalization, the encrypted document vault, debt-payoff goals, the
+installable PWA, and household people + kid accounts + bill split (wave 4).
+
 ## Known gaps
 
 Deliberate gaps — not bugs:
 
-- **Insights don't push in real time.** The proactive feed surfaces in-app and
-  in the digest, but doesn't ping your notification channel the moment it's
-  detected the way an alert does. Alerts are the real-time path; insights are
-  pull + digest.
 - **Debt payoff is single-debt only.** Payoff goals work end to end, but there's
   no strategy *across* debts — snowball vs. avalanche ordering, or modelling
   extra one-off payments. That belongs with the proactive advisor.
+- **An item's transaction history window cannot be widened after linking.**
+  Plaid fixes it at link time; update mode preserves it but cannot raise it, and
+  relinking orphans the history tied to the old item. The CSV importer is the way
+  to backfill further where an institution caps what it shares.
 
 ## Recently shipped
 
-- **Debt-payoff goals** — exact-decimal amortization (payoff date, total
-  interest, required payment), with an explicit "this is never paid off" when
-  the payment is below the interest.
-- **Optional Plaid products on existing connections** — enabling Investments or
-  Liabilities now backfills accounts you already linked, no relink required.
-- Thousands separators in every server-generated figure.
-- Category typing: **spending / income / transfer** (fixes card payments and
-  self-transfers inflating spend).
-- A transfer/card-payment **detection heuristic** for `OTHER_OTHER` cases.
-- Duplicate-category guard.
-- **Transactions** filtering by category and **multiple accounts**, URL-driven.
-- **Click a day or category** in charts to drill into transactions.
-- Period-scoped **insights auto-expire**.
-- A generic **CSV importer** that de-duplicates against synced data and runs
-  through the same categoriser.
+- **Household people, kid accounts, shared goals, bill split** — a *person* is
+  now distinct from a *login*, so a child with a 529 exists without credentials.
+  Custodial accounts are segregated from the nest egg; shared-goal contributions
+  attribute who funded what; transaction splits and a household ledger track who
+  owes whom.
+- **Smart merchant canonicalization** — fragmented descriptors group into one
+  canonical business at `/merchants`, suggestion-then-confirm, so a subscription
+  split across two descriptors is finally detected as recurring.
+- **Encrypted document vault** — receipts, tax returns, warranties, policies and
+  contracts sealed with the existing AES-GCM cipher, linked to transactions,
+  assets and goals, with expiry nudges and optional receipt OCR.
+- **Retirement & FIRE projections** — an account-aware engine at `/retirement`
+  beside the linear model: real returns, pooled contribution limits, an FI age,
+  and a bounded savings-rate solve.
+- **Dedicated Investments page** — time- and money-weighted returns in exact
+  decimal, growth rebased against benchmarks, allocation, and a holdings table.
+- **Bill calendar + cash-flow forecast** — a `/schedule` page over recurring
+  obligations, a month grid, day-by-day projected balances, and safe-to-spend
+  integration.
+- **Installable PWA** with read-only offline — installs to a home screen and
+  re-renders the last figures under a banner stating when they were saved.
+- **Debt-payoff goals** — exact-decimal amortization with an explicit "this is
+  never paid off" when the payment is below the interest.
+- Optional Plaid products on existing connections, thousands separators in every
+  server-generated figure, category typing (spending / income / transfer),
+  transfer/card-payment detection, a duplicate-category guard, transactions
+  filtering by category and multiple accounts, chart drill-down, period-scoped
+  insight auto-expiry, and a generic CSV importer.
 
 ## Still planned
 
-- **Monthly recap overhaul** — money formatting, real per-category breakdown fed
-  to the model, present tense for the in-progress month, weekly auto-generation
-  with a final past-tense recap on month close.
-- **Smarter recurring detection** — recency gate, per-merchant "not recurring"
-  override, better cadence detection.
-- **Insight expansion** — projected month-end cash flow, unusually-large single
-  transaction, income-change detection, savings-rate milestones, goal-progress
-  nudges; plus real-time insight push.
-- **Budget expansion** — "safe to spend", rollover/envelope budgets, non-monthly
-  periods, percentage / zero-based allocation, budget-vs-actual trend.
+The incremental polish on the original feed is done — thousands separators in
+generated prose now come from a shared formatting helper every insight, recap and
+alert body routes through.
+
+What remains is the next tier of major initiatives, each with an execution-ready
+plan in [`docs/plans/`](https://github.com/madeofpendletonwool/ledgermancy/blob/main/docs/plans/):
+
+- **Predictive anomaly detection** — per-merchant baselines, outlier charges,
+  duplicate detection.
+- **Pre-tax income & deduction tracking** — a paystub importer closing the
+  30–45% of gross income that is currently invisible.
+- **Proactive cash-flow advisor** — ranked, deterministic options for surplus
+  cash.
+- **In-app weekly digest**, **real-asset revaluation & depreciation**,
+  **inflation-adjusted views**, the **decision-modeling** what-if engine, and
+  (far future) **multi-currency**.
+
+See the [plan docs README](https://github.com/madeofpendletonwool/ledgermancy/blob/main/docs/plans/README.md)
+for the wave order and dependency graph.
 
 ## Build history
 
@@ -67,4 +94,4 @@ The original seven-phase plan, for reference:
    monthly net-worth snapshots, projections.
 5. **Financial summary** — exportable PDF + CSV report.
 6. **AI enrichment** — LLM categorization fallback, recurring detection, alerts.
-7. **Chatbot** — tool-calling agent over your own financial data.
+7. **Chatbot** — tool-calling agent over your financial data.

@@ -18,6 +18,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
 
     - [:material-wallet-outline: Budgets](budgets.md) — targets, rollover, safe-to-spend
     - [:material-target: Goals](goals.md) — savings targets and debt payoffs
+    - [:material-calendar-clock: Schedule](schedule.md) — bills due, projected balance
 
 - **Accounts**
 
@@ -27,6 +28,8 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
     - [:material-file-lock-outline: Documents](documents.md) — encrypted vault for receipts, tax and policies
     - [:material-chart-line: Net worth](net-worth.md) — trend, holdings, debt, projections
     - [:material-finance: Investments](investments.md) — returns, allocation, holdings, dividends
+    - [:material-account-tie: Retirement](retirement.md) — account-aware FIRE projections, FI age, savings-rate solve
+    - [:material-store: Merchants](merchants.md) — group fragmented descriptors into one business
 
 - **Watch**
 

@@ -38,6 +38,18 @@ server-side. This is the fastest way to clean up a mis-categorised merchant.
     the sync upsert — Plaid can never overwrite it. See
     [Concepts → Categorisation order](../concepts.md#categorisation-order).
 
+## Split with the household
+
+A row's **Split** button divides a charge across household members — 50/50,
+custom, or by picking who it was for. This is the path for shared expenses a
+single charge covers (one card, two people).
+
+A split is an **attribution overlay**: the charge still happened once, and your
+spending totals do not change when you split it. What changes is the household
+ledger — who owes whom — surfaced on the [Shared](households.md#shared-expenses-and-bill-split)
+page. Shares are stored as exact amounts, so they always sum to the transaction
+with no rounding drift. Clear a split to take it back off.
+
 ## Add transaction
 
 Use **Add transaction** to reconcile a charge your bank feed missed. A modal
