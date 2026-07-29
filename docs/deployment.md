@@ -307,18 +307,30 @@ Which makes the next section the important one.
 
 ---
 
-## Back up the database
+## Backups
 
 This becomes the only record of your net-worth history — Plaid keeps no balance
 history, so a lost database cannot be reconstructed by re-syncing.
 
-```bash
-docker compose exec -T postgres pg_dump -U ledgermancy ledgermancy \
-  | gzip > ledgermancy-$(date +%F).sql.gz
-```
+**Backups are on by default and you do not have to set them up.** Once a day the
+worker dumps the database, archives the document vault, and writes a portable
+JSON export. Once a week it restores the latest dump into a scratch database and
+verifies it, including opening one document end to end. Status is at
+**Settings → Continuity**.
 
-Back up `.env` too, separately and securely: without `ENCRYPTION_KEY` a database
-restore cannot decrypt its own Plaid tokens.
+Two things are still yours to do:
+
+- **Set `BACKUP_MIRROR_DIR`** to a location that is not this machine — a NAS
+  share, an external disk, a synced folder. Backups on the same disk as the
+  database die with it.
+- **Back up `.env` separately and securely.** It holds `ENCRYPTION_KEY`, which
+  is in no backup this app takes, deliberately. Without it a restored database
+  cannot decrypt its own Plaid tokens or open a single document.
+
+See [Continuity & backups](features/continuity.md) for the format of the export
+and how to read the panel, and
+[DEPLOYING.md §7](https://github.com/madeofpendletonwool/ledgermancy/blob/main/DEPLOYING.md#7-continuity-backups-and-proving-they-work)
+for the tested restore procedure.
 
 ---
 

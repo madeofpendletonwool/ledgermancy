@@ -147,10 +147,14 @@ at the proxy with an HTML error the UI cannot explain, instead of the api's own
 ### The volume is not in `pg_dump`
 
 Document *metadata* is in the database; the bytes are not. A backup that only
-dumps Postgres restores every title, type and expiry date and no contents. Back
-up the `documents-data` volume alongside your dumps, and keep `ENCRYPTION_KEY`
-somewhere else again — a restore needs all three. See
-[DEPLOYING.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/DEPLOYING.md).
+dumps Postgres restores every title, type and expiry date and no contents.
+
+The scheduled backup handles this — it archives the vault alongside each dump,
+and the weekly restore test opens a document end to end to prove the dump, the
+archive and `ENCRYPTION_KEY` all agree. See
+[Continuity & backups](features/continuity.md). Keep `ENCRYPTION_KEY` somewhere
+other than the server: a restore needs all three, and that one is in no backup
+the app takes.
 
 ### S3-compatible storage
 
@@ -226,3 +230,43 @@ a figure that moves when you reload it is not one to plan around.
 Everything else on the Retirement page — the projection, FI age, supported
 spending, contribution headroom, the required-savings-rate solve — works with
 this off. It adds a panel; it is not load-bearing.
+
+## Backups and continuity
+
+**On by default** — the only optional subsystem here that is. Everything else on
+this page defaults off because the safe answer is "don't"; here the safe answer
+is "do". An operator who has to opt in to backups is an operator who finds out
+they never did on the day the disk fails.
+
+Once a day the worker dumps the database, archives the document vault, and
+writes a portable JSON export. Once a week it restores the latest dump into a
+scratch database and verifies it — row counts table by table, schema version,
+and one document opened end to end. Status is at **Settings → Continuity**
+(owner only). See [Continuity & backups](features/continuity.md).
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `BACKUP_ENABLED` | `true` | Turning this off is a deliberate choice to have no automated recovery path |
+| `BACKUP_DIR` | `/var/lib/ledgermancy/backups` | The `backup-data` volume in the Compose deploy |
+| `BACKUP_MIRROR_DIR` | — | A second destination. **Set this** |
+| `BACKUP_INTERVAL` | `24h` | Dump, archive and export |
+| `BACKUP_RESTORE_TEST_INTERVAL` | `168h` | The restore test; much less frequent because it rebuilds the whole database |
+| `BACKUP_KEEP_DAILY` | `7` | |
+| `BACKUP_KEEP_WEEKLY` | `4` | |
+| `BACKUP_KEEP_MONTHLY` | `6` | |
+| `BACKUP_INCLUDE_DOCUMENTS` | `true` | Ignored when `DOCUMENTS_ENABLED=false` |
+
+`BACKUP_MIRROR_DIR` is the one worth acting on. By default backups sit on a
+volume on the same machine as the database they protect, so a dead disk takes
+both. Bind mount a NAS share or external disk into the worker (there is a
+commented example in `docker-compose.yml`) and point this at it.
+
+**Treat that directory as being exactly as sensitive as the database, because it
+contains it.** Plaid tokens and document contents inside the dump stay encrypted
+under `ENCRYPTION_KEY`, but every transaction, balance and merchant is in the
+clear. There is deliberately no separate backup-encryption key: it would be a
+second thing to lose, in the one subsystem whose entire purpose is reducing the
+number of things whose loss is unrecoverable.
+
+Invalid settings fail at startup rather than degrading — a backup subsystem that
+logs a warning and reports green is worse than one that is plainly off.

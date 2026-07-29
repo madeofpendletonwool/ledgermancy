@@ -118,7 +118,9 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // notifier is likewise always passed and always registered — it is not
 // AI-gated; delivery is gated per-user inside the notifier. appURL is the
 // frontend origin used to build notification deep links.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig) (*river.Client[pgx.Tx], error) {
+// backup carries the continuity dependencies, which the worker builds because
+// they need a cipher and a document store the api has already constructed.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
@@ -283,6 +285,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
+	}
+
+	// Continuity: the scheduled dump, vault archive, portable export and the
+	// restore test. Registered before the client is built because none of these
+	// workers enqueues another job.
+	if err := registerBackupJobs(workers, &config.PeriodicJobs, backup); err != nil {
+		return nil, err
 	}
 
 	// Benchmark closes only change once a day, after the market settles. Not

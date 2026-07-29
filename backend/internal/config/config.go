@@ -43,7 +43,66 @@ type Config struct {
 	Benchmarks BenchmarkConfig
 	Retirement RetirementConfig
 	Documents  DocumentsConfig
+	Backup     BackupConfig
 }
+
+// BackupConfig configures the scheduled dump, vault archive, portable export,
+// and the restore test that makes the other three mean something.
+//
+// Unlike every other optional subsystem in this file, this one defaults **on**.
+// That is deliberate and is the whole lesson of the feature: an operator who
+// has to opt in to backups is an operator who finds out they never did on the
+// day the disk fails. The cost of the default is a compressed dump per day on a
+// volume; the cost of the opposite default is the database.
+//
+// Destinations are directories, not object stores. A directory is what a NAS
+// mount, an external disk, or a syncthing folder already looks like, and it
+// keeps the entire outbound path something the operator can see with `ls`.
+type BackupConfig struct {
+	Enabled bool
+
+	// Dir is the primary destination, a volume in the Compose deploy.
+	Dir string
+
+	// MirrorDir is an optional second destination, copied to after every
+	// successful artefact. This is the "get it off the host" half: a backup
+	// that only exists on the machine it was taken from dies with that machine.
+	//
+	// Empty by default. Typically a bind mount of a NAS share.
+	MirrorDir string
+
+	// Interval is how often the dump, archive and export run.
+	Interval time.Duration
+	// RestoreTestInterval is how often the latest dump is actually restored and
+	// checked. Much less frequent than Interval because it is the expensive one
+	// — it restores the whole database into a scratch copy — and because what it
+	// measures (does this dump work) changes with the schema, not with the day.
+	RestoreTestInterval time.Duration
+
+	// Retention, in the classic generational shape. Applied per destination and
+	// per artefact kind.
+	KeepDaily   int
+	KeepWeekly  int
+	KeepMonthly int
+
+	// IncludeDocuments captures the document vault alongside the dump. On by
+	// default whenever the vault itself is on: the database holds every
+	// document's title, type and expiry and none of its bytes, so a
+	// database-only backup restores a vault full of entries that cannot be
+	// opened.
+	IncludeDocuments bool
+}
+
+// scratchDBPrefix is the name prefix every restore-test database gets.
+//
+// It is a constant rather than a setting because the restore test refuses to
+// drop any database whose name does not start with it. That check is the only
+// thing standing between a bug in the scratch-name construction and a DROP
+// DATABASE against the live one, so it must not be operator-tunable.
+const scratchDBPrefix = "ledgermancy_restoretest_"
+
+// ScratchDBPrefix exposes the guard prefix to the continuity package.
+func ScratchDBPrefix() string { return scratchDBPrefix }
 
 // DocumentsConfig configures the encrypted document vault: where ciphertext
 // lands, how big one file may be, and how much a household may store.
@@ -244,7 +303,23 @@ func Load() (Config, error) {
 				PathStyle: envBool("DOCUMENTS_S3_PATH_STYLE", true),
 			},
 		},
+		Backup: BackupConfig{
+			Enabled:             envBool("BACKUP_ENABLED", true),
+			Dir:                 env("BACKUP_DIR", "/var/lib/ledgermancy/backups"),
+			MirrorDir:           strings.TrimRight(os.Getenv("BACKUP_MIRROR_DIR"), "/"),
+			Interval:            envDuration("BACKUP_INTERVAL", 24*time.Hour),
+			RestoreTestInterval: envDuration("BACKUP_RESTORE_TEST_INTERVAL", 7*24*time.Hour),
+			KeepDaily:           envInt("BACKUP_KEEP_DAILY", 7),
+			KeepWeekly:          envInt("BACKUP_KEEP_WEEKLY", 4),
+			KeepMonthly:         envInt("BACKUP_KEEP_MONTHLY", 6),
+			IncludeDocuments:    envBool("BACKUP_INCLUDE_DOCUMENTS", true),
+		},
 	}
+
+	// The vault being off makes the archive step meaningless rather than
+	// merely unnecessary, so resolve it here instead of leaving every caller
+	// to remember the interaction.
+	cfg.Backup.IncludeDocuments = cfg.Backup.IncludeDocuments && cfg.Documents.Enabled
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
@@ -261,8 +336,42 @@ func Load() (Config, error) {
 	if err := validateDocuments(cfg.Documents); err != nil {
 		return Config{}, err
 	}
+	if err := validateBackup(cfg.Backup); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+// validateBackup fails startup on a backup configuration that would appear to
+// work and would not.
+//
+// Fail-fast is right here for the same reason it is right for a half-configured
+// S3 vault: the alternative is a subsystem that logs a warning nobody reads and
+// then reports green in a panel whose entire job is to be believed.
+func validateBackup(b BackupConfig) error {
+	if !b.Enabled {
+		return nil
+	}
+	if b.Dir == "" {
+		return fmt.Errorf("BACKUP_DIR is required when BACKUP_ENABLED is true (set BACKUP_ENABLED=false to turn backups off deliberately)")
+	}
+	if b.Dir == b.MirrorDir {
+		return fmt.Errorf("BACKUP_MIRROR_DIR is the same path as BACKUP_DIR, so the mirror would provide no second copy")
+	}
+	if b.Interval < time.Hour {
+		return fmt.Errorf("BACKUP_INTERVAL is %s; anything under an hour dumps the whole database faster than it can be pruned", b.Interval)
+	}
+	if b.RestoreTestInterval < time.Hour {
+		return fmt.Errorf("BACKUP_RESTORE_TEST_INTERVAL is %s; a restore test rebuilds the entire database and cannot run that often", b.RestoreTestInterval)
+	}
+	if b.KeepDaily < 1 {
+		return fmt.Errorf("BACKUP_KEEP_DAILY must be at least 1, or retention would delete every backup as soon as it is written")
+	}
+	if b.KeepWeekly < 0 || b.KeepMonthly < 0 {
+		return fmt.Errorf("BACKUP_KEEP_WEEKLY and BACKUP_KEEP_MONTHLY cannot be negative")
+	}
+	return nil
 }
 
 // maxDocumentFileCeiling is the highest DOCUMENTS_MAX_FILE_BYTES will accept.
@@ -366,6 +475,34 @@ func envBytes(key string, fallback int64) int64 {
 		return fallback
 	}
 	return n * multiplier
+}
+
+// envDuration parses a Go duration ("24h", "30m"). Like envBool it falls back
+// rather than failing startup, and every caller's fallback is the conservative
+// value — a typo slows a schedule down, it never speeds one up.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
+}
+
+// envInt parses a non-negative integer setting, falling back on anything else.
+func envInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
 }
 
 func splitList(s string) []string {

@@ -1,20 +1,24 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, isAdult } from '../lib/api'
+import { api, isAdult, isOwner } from '../lib/api'
 import type { PreferenceWrite } from '../lib/api'
 import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
+import { Continuity } from './Continuity'
 
-type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'household'
+type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'household' | 'continuity'
 
-const TABS: { id: Tab; label: string; adultOnly?: boolean }[] = [
+const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
   { id: 'notifications', label: 'Notifications', adultOnly: true },
   { id: 'digest', label: 'Digest', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
+  // Operator surface: the instance's recovery posture, not the household's
+  // data. Owner-only, and enforced server-side by auth.RequireOwner.
+  { id: 'continuity', label: 'Continuity', adultOnly: true, ownerOnly: true },
 ]
 
 const isTab = (v: string | null): v is Tab =>
@@ -27,10 +31,12 @@ export function Settings() {
   const initialTab = searchParams.get('tab')
   const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : 'profile')
 
-  // A child sees only the tabs that are theirs. The tabs a child cannot open
-  // are also refused server-side; hiding them here just avoids offering a
-  // door that does not open.
-  const tabs = TABS.filter((t) => !t.adultOnly || isAdult(user))
+  // A child sees only the tabs that are theirs, and only the owner sees the
+  // operator surface. Every tab hidden here is also refused server-side; this
+  // just avoids offering a door that does not open.
+  const tabs = TABS.filter(
+    (t) => (!t.adultOnly || isAdult(user)) && (!t.ownerOnly || isOwner(user)),
+  )
   const activeTab = tabs.some((t) => t.id === tab) ? tab : 'profile'
 
   return (
@@ -63,6 +69,7 @@ export function Settings() {
       {activeTab === 'notifications' && <NotificationsSection />}
       {activeTab === 'digest' && <DigestSection />}
       {activeTab === 'household' && <Household />}
+      {activeTab === 'continuity' && <Continuity />}
     </div>
   )
 }

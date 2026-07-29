@@ -287,6 +287,19 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Post("/test", s.handleSendDigestNow)
 		})
 
+		// Operator surface. This is the instance's recovery posture, not a
+		// household's data: it names paths on the host, reports on the backup
+		// subsystem, and can trigger a full database dump. Owner-only,
+		// enforced on the group rather than per handler, for the same reason
+		// the adult-only groups are.
+		r.Route("/admin", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult, auth.RequireOwner)
+			r.Get("/continuity", s.handleContinuityStatus)
+			r.Post("/continuity/key-ack", s.handleContinuityKeyAck)
+			r.Post("/continuity/run", s.handleContinuityRun)
+			r.Get("/continuity/export", s.handleContinuityExport)
+		})
+
 		r.Route("/plaid", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Post("/link-token", s.handleCreateLinkToken)

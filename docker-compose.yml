@@ -60,6 +60,31 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      # Backups live here: the nightly pg_dump, the document archive, and the
+      # portable JSON export. The worker owns them because it owns every other
+      # scheduled job — there is no separate backup container to keep running,
+      # forget to upgrade, or discover has been dead for a month.
+      #
+      # This volume is the one thing on the host you cannot rebuild from the
+      # others. Everything else here is either code (git) or state that the
+      # backups themselves restore.
+      - backup-data:/var/lib/ledgermancy/backups
+      # Read-only: the vault archive reads every document blob, and a backup
+      # process has no business being able to write to the thing it is copying.
+      - documents-data:/var/lib/ledgermancy/documents:ro
+      #
+      # To also mirror backups off this host — the point of a backup — bind
+      # mount a second directory and set BACKUP_MIRROR_DIR in .env to match.
+      # A NAS share, an external disk, or a synced folder all work; the app
+      # only needs a directory it can write to.
+      #
+      #   - /mnt/nas/ledgermancy:/mnt/backup-mirror
+      #
+      # then in .env:  BACKUP_MIRROR_DIR=/mnt/backup-mirror
+      #
+      # Treat that directory as being exactly as sensitive as the database,
+      # because it contains it.
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,3 +115,4 @@ services:
 volumes:
   postgres-data:
   documents-data:
+  backup-data:

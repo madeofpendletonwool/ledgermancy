@@ -101,6 +101,7 @@ nav:
       - Alerts: features/alerts.md
       - Assistant: features/assistant.md
       - Households: features/households.md
+      - Continuity & backups: features/continuity.md
       - Install & offline: features/install.md
   - Concepts: concepts.md
   - Configuration: configuration.md
