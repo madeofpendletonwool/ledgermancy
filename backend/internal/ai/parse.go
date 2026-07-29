@@ -108,49 +108,80 @@ func (c *Client) ParseRule(ctx context.Context, text string, categories []Catego
 	return parsed, nil
 }
 
-// ParsedGoal is the model's structured reading of a savings-goal sentence. It is
-// a proposal only: the caller re-validates the amount (positive decimal) and the
-// date (a real future date) before it can be saved.
+// ParsedGoal is the model's structured reading of a goal sentence. It is a
+// proposal only: the caller re-validates the amount (positive decimal), the date
+// (a real future date) and the named debt (one the household actually has)
+// before it can be saved.
 type ParsedGoal struct {
-	Name         string `json:"name"`
+	Name string `json:"name"`
+	// TargetAmount is empty for a payoff goal — the balance to eliminate is read
+	// from the account, never from the sentence.
 	TargetAmount string `json:"target_amount"`
 	// TargetDate is YYYY-MM-DD, or empty for an open-ended goal.
 	TargetDate string `json:"target_date"`
-	Kind       string `json:"kind"`
+	// Kind is "savings", "debt_payoff", or "unsupported".
+	Kind string `json:"kind"`
+	// Debt is set when Kind == "debt_payoff": the label, copied verbatim from the
+	// list the caller supplied, of the debt being paid off. The caller resolves
+	// it back to an account id; the model never sees or emits an id.
+	Debt string `json:"debt"`
+	// Reason carries the "why unsupported" text.
+	Reason string `json:"reason"`
 }
 
-const parseGoalSystemPrompt = `You extract a savings goal from a user's sentence for a household finance app.
-Pull out:
+const parseGoalSystemPrompt = `You extract one financial goal from a user's sentence for a household finance app. There are exactly two kinds.
+
+kind "savings" — putting money aside toward a target ("save $10k for a trip by December"):
 - name: a short label for what they're saving for (e.g. "Trip to Japan", "Emergency fund").
 - target_amount: the money target as a decimal string, e.g. "10000.00". Expand shorthand like "$10k" to "10000.00".
 - target_date: the deadline as YYYY-MM-DD if one is given or implied ("by December" → the next December's last day). Leave empty for an open-ended goal.
-- kind: always "savings" for now.
-Answer only by calling the propose_goal tool. Do not invent a target the user did not state.`
+
+kind "debt_payoff" — clearing a debt the household already owes ("pay off my credit card by December", "get the car loan gone next year"):
+- name: a short label, e.g. "Pay off the Chase card".
+- debt: which debt, copied EXACTLY from the household's debts listed below.
+- target_date: the deadline, same rules as above.
+- target_amount: leave EMPTY. The balance to clear is read from the account, not from the sentence.
+
+kind "unsupported" — with a short reason, when you cannot map the sentence:
+- The user names a debt the household does not have (a card, loan or mortgage missing from the list below). Say which one you could not find. Do NOT substitute a different debt.
+- The household has no debts at all and the sentence is about paying one off.
+- The sentence is not about a goal.
+
+Answer only by calling the propose_goal tool. Do not invent a target, a deadline, or a debt the user did not state.`
 
 var proposeGoalTool = Tool{
 	Name:        "propose_goal",
-	Description: "Return the savings goal described by the user.",
+	Description: "Return the savings or debt-payoff goal described by the user.",
 	InputSchema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"name": {"type": "string", "description": "Short label for the goal"},
-			"target_amount": {"type": "string", "description": "Money target as a decimal string, e.g. \"10000.00\""},
+			"target_amount": {"type": "string", "description": "Money target as a decimal string, e.g. \"10000.00\". Empty for a debt_payoff goal"},
 			"target_date": {"type": "string", "description": "Deadline as YYYY-MM-DD, or empty for open-ended"},
-			"kind": {"type": "string", "enum": ["savings"]}
+			"kind": {"type": "string", "enum": ["savings", "debt_payoff", "unsupported"]},
+			"debt": {"type": "string", "description": "Set when kind is debt_payoff: the debt's label, copied exactly from the household's debts"},
+			"reason": {"type": "string", "description": "Set when kind is unsupported: why this sentence could not be mapped"}
 		},
-		"required": ["name", "target_amount", "kind"]
+		"required": ["name", "kind"]
 	}`),
 }
 
-// ParseGoal turns one sentence into a savings-goal proposal. today is injected
-// (e.g. "Monday, 2 January 2006") so "by December" resolves to a concrete date.
-// Returns ErrDisabled when no key is configured.
-func (c *Client) ParseGoal(ctx context.Context, text, today string) (ParsedGoal, error) {
+// ParseGoal turns one sentence into a goal proposal. today is injected (e.g.
+// "Monday, 2 January 2006") so "by December" resolves to a concrete date. debts
+// are the household's debt labels; a payoff sentence naming anything outside
+// this list comes back unsupported rather than pointed at a debt the user does
+// not have. Returns ErrDisabled when no key is configured.
+func (c *Client) ParseGoal(ctx context.Context, text, today string, debts []string) (ParsedGoal, error) {
 	if !c.Enabled() {
 		return ParsedGoal{}, ErrDisabled
 	}
 
 	system := parseGoalSystemPrompt + "\n\nToday's date is " + today + "."
+	if len(debts) == 0 {
+		system += "\n\nThis household has no debt accounts linked, so no debt_payoff goal is possible."
+	} else {
+		system += "\n\nThe household's debts, to copy verbatim into \"debt\":\n- " + strings.Join(debts, "\n- ")
+	}
 	resp, err := c.Complete(ctx, Request{
 		System:     system,
 		Messages:   []Message{UserText(text)},

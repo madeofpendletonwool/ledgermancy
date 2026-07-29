@@ -19,12 +19,18 @@ Deliberate gaps — not bugs:
   in the digest, but doesn't ping your notification channel the moment it's
   detected the way an alert does. Alerts are the real-time path; insights are
   pull + digest.
-- **Debt-payoff goals are schema-only.** The `goals.kind` column allows
-  `debt_payoff`, but the feasibility maths, the parser, and the UI handle
-  `savings` only.
+- **Debt payoff is single-debt only.** Payoff goals work end to end, but there's
+  no strategy *across* debts — snowball vs. avalanche ordering, or modelling
+  extra one-off payments. That belongs with the proactive advisor.
 
 ## Recently shipped
 
+- **Debt-payoff goals** — exact-decimal amortization (payoff date, total
+  interest, required payment), with an explicit "this is never paid off" when
+  the payment is below the interest.
+- **Optional Plaid products on existing connections** — enabling Investments or
+  Liabilities now backfills accounts you already linked, no relink required.
+- Thousands separators in every server-generated figure.
 - Category typing: **spending / income / transfer** (fixes card payments and
   self-transfers inflating spend).
 - A transfer/card-payment **detection heuristic** for `OTHER_OTHER` cases.

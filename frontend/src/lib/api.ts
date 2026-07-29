@@ -715,6 +715,9 @@ export interface Holding {
 
 export interface Liability {
   id: string
+  /** The account this debt belongs to — the key to filter accounts by when a
+   *  picker must only offer debts (a payoff goal's linked account). */
+  account_id: string
   kind: string
   account_name: string
   mask: string | null
@@ -1109,17 +1112,57 @@ export interface AlertEvent {
   read: boolean
 }
 
+/** The two kinds of goal: put money aside, or clear a debt. */
+export type GoalKind = 'savings' | 'debt_payoff'
+
 /**
- * A savings goal plus its DERIVED standing. `current_amount`, `required_monthly`
- * and the on-track/shortfall figures are computed server-side (never stored, so
- * they can't drift). All money fields are decimal strings — never summed here.
+ * The amortization detail behind a debt_payoff goal. Every figure is computed
+ * server-side in exact decimal — interest is never approximated in the browser.
+ */
+export interface GoalPayoff {
+  /** False when there's no schedule to show; `reason` says why. */
+  available: boolean
+  reason: string
+  /** What's owed now — the account's current balance. */
+  balance: string
+  apr: string
+  monthly_payment: string
+  monthly_interest: string
+  /**
+   * The headline case: the payment is at or below the interest, so the balance
+   * never falls. `months`, `total_interest` and `payoff_date` are then empty —
+   * there is no schedule.
+   */
+  never_pays_off: boolean
+  months: number
+  total_interest: string
+  payoff_date: string | null
+  /** Smallest payment that clears the balance by the target date. */
+  required_monthly: string
+  target_reachable: boolean
+}
+
+/**
+ * A goal plus its DERIVED standing. `current_amount`, `required_monthly` and the
+ * on-track/shortfall figures are computed server-side (never stored, so they
+ * can't drift). All money fields are decimal strings — never summed here.
+ *
+ * The standing fields mean the same thing for both kinds but are computed
+ * differently: savings goals accumulate toward the target, payoff goals amortize
+ * a debt down to nothing, so a payoff goal's `required_monthly` accounts for
+ * interest and is larger than remaining ÷ months.
+ *
+ * For a payoff goal `target_amount` is THE BALANCE TO ELIMINATE, captured from
+ * the account when the goal was created — not zero. `current_amount` is
+ * therefore the debt retired so far, and the progress bar reads the same way for
+ * both kinds.
  */
 export interface Goal {
   id: string
   scope: 'household' | 'user' | 'person'
   /** Set iff scope === 'person': the household member the goal belongs to. */
   person_id: string | null
-  kind: string
+  kind: GoalKind
   name: string
   target_amount: string
   target_date: string | null
@@ -1134,13 +1177,20 @@ export interface Goal {
   open_ended: boolean
   achieved: boolean
   created_at: string
+  /** Present only on a debt_payoff goal. */
+  payoff?: GoalPayoff
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
 export interface GoalInput {
   name: string
-  target_amount: string
+  /** Omit only on a debt_payoff *create*, where the server captures the linked
+   *  account's current balance as the amount to eliminate. Every other call —
+   *  savings creates and all updates — must supply it. */
+  target_amount?: string
   target_date?: string
+  /** Defaults to 'savings'. A 'debt_payoff' goal must set `account_id`. */
+  kind?: GoalKind
   scope?: 'household' | 'user' | 'person'
   /** Required when scope is 'person'. */
   person_id?: string | null
@@ -1151,9 +1201,14 @@ export interface GoalInput {
 /** A parsed goal proposal from POST /api/goals/parse (never auto-saved). */
 export interface GoalProposal {
   name: string
+  /** Empty on a debt_payoff proposal — the balance comes from the account. */
   target_amount: string
   target_date: string | null
-  kind: string
+  kind: GoalKind
+  /** Set on a debt_payoff proposal: the debt the sentence named, resolved
+   *  server-side to a real account. */
+  account_id: string | null
+  account_name: string
 }
 
 /** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */

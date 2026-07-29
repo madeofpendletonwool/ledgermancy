@@ -70,23 +70,24 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 	// Refresh accounts first: transactions reference them by foreign key, so
 	// a transaction on a newly-opened account would otherwise have nowhere to
 	// land.
-	accountIDs, err := s.syncAccounts(ctx, item.ID, accessToken)
+	accountIDs, kinds, err := s.syncAccounts(ctx, item.ID, accessToken)
 	if err != nil {
 		return result, err
 	}
 	result.AccountsUpserted = len(accountIDs)
 
-	// Optional modules. Each checks its own product flag and is a no-op when
-	// the item was not linked for it, so a transactions-only item is
-	// completely unaffected by either. A module failing is logged but does not
-	// fail the sync: transactions are the priority and must still land.
-	if mod, err := s.SyncInvestments(ctx, item, accessToken, accountIDs); err != nil {
+	// Optional modules. Each runs when the operator enabled the product and the
+	// item has accounts it could apply to — see the gate note in modules.go for
+	// why neither of those is plaid_items.products. A module failing is logged
+	// but does not fail the sync: transactions are the priority and must still
+	// land.
+	if mod, err := s.SyncInvestments(ctx, accessToken, accountIDs, kinds); err != nil {
 		slog.Error("investments sync", "error", err, "item_id", item.ID)
 	} else {
 		result.Holdings, result.Securities = mod.Holdings, mod.Securities
 		result.InvestmentTxns = mod.InvestmentTransactions
 	}
-	if mod, err := s.SyncLiabilities(ctx, item, accessToken, accountIDs); err != nil {
+	if mod, err := s.SyncLiabilities(ctx, accessToken, accountIDs, kinds); err != nil {
 		slog.Error("liabilities sync", "error", err, "item_id", item.ID)
 	} else {
 		result.Liabilities = mod.Liabilities
@@ -245,15 +246,22 @@ func (s *Syncer) historyRange(ctx context.Context, itemID uuid.UUID) (*time.Time
 
 // syncAccounts refreshes the item's accounts and returns a lookup from Plaid
 // account id to our primary key.
-func (s *Syncer) syncAccounts(ctx context.Context, itemID uuid.UUID, accessToken string) (map[string]uuid.UUID, error) {
+// syncAccounts upserts the item's accounts and reports both their ids and what
+// kinds of account the item holds. The kinds decide which optional modules are
+// worth calling — an item with no credit or loan account is never asked about
+// its liabilities.
+func (s *Syncer) syncAccounts(ctx context.Context, itemID uuid.UUID, accessToken string) (map[string]uuid.UUID, itemAccountKinds, error) {
+	var kinds itemAccountKinds
+
 	accounts, err := s.Client.GetAccounts(ctx, accessToken)
 	if err != nil {
 		s.recordItemError(ctx, itemID, err)
-		return nil, err
+		return nil, kinds, err
 	}
 
 	ids := make(map[string]uuid.UUID, len(accounts))
 	for _, a := range accounts {
+		kinds.noteAccountType(a.Type)
 		row, err := s.Queries.UpsertAccount(ctx, dbgen.UpsertAccountParams{
 			PlaidItemID:      itemID,
 			PlaidAccountID:   a.PlaidAccountID,
@@ -268,11 +276,11 @@ func (s *Syncer) syncAccounts(ctx context.Context, itemID uuid.UUID, accessToken
 			Currency:         a.Currency,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("upsert account %s: %w", a.PlaidAccountID, err)
+			return nil, kinds, fmt.Errorf("upsert account %s: %w", a.PlaidAccountID, err)
 		}
 		ids[a.PlaidAccountID] = row.ID
 	}
-	return ids, nil
+	return ids, kinds, nil
 }
 
 // applyPage writes one sync page in a single transaction, so a page is either

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,13 +20,77 @@ const (
 	ProductLiabilities  = "liabilities"
 )
 
-// HasProduct reports whether an item is authorized for a product.
-//
-// This is the switch that makes the modules independent: transactions ship and
-// work on their own, and Investments or Liabilities only ever run for items
-// that were linked with them.
+// HasProduct reports whether a product appears in a product list.
 func HasProduct(products []string, product string) bool {
 	return slices.Contains(products, product)
+}
+
+// The optional modules are gated on TWO things, and neither of them is
+// plaid_items.products.
+//
+// That column records which products were requested when the Item was linked. It
+// is a snapshot of one moment, and using it as the gate was a real bug: an
+// operator who linked with `transactions` and later enabled `liabilities` got
+// nothing forever, because the only way to change a stored products list is to
+// relink — which orphans the transaction history tied to the old item and cannot
+// re-widen the history window. An access token does not work that way. Plaid
+// serves /liabilities/get and /investments/holdings/get on a transactions-only
+// token perfectly well, and does so for Items that already exist.
+//
+// So the gate is:
+//
+//   - the OPERATOR enabled the product (PLAID_PRODUCTS, via Client.Products) —
+//     these calls are billable, so an operator who has not asked for a product
+//     must never be charged for it; and
+//   - the ITEM actually has accounts of the relevant type, so no call is made to
+//     ask a chequing-only bank about its mortgages.
+//
+// A per-Item refusal is then handled as data, not as failure: see
+// productUnavailable.
+
+// itemAccountKinds records which optional modules an item's accounts could
+// possibly feed. Derived from the accounts Plaid just returned, so it is current
+// by construction rather than remembered from link time.
+type itemAccountKinds struct {
+	debt       bool
+	investment bool
+}
+
+// noteAccountType folds one account's type into the set.
+func (k *itemAccountKinds) noteAccountType(accountType string) {
+	switch accountType {
+	case "credit", "loan":
+		k.debt = true
+	case "investment", "brokerage":
+		k.investment = true
+	}
+}
+
+// productUnavailable reports whether a module error is Plaid declining to serve
+// the product for this Item, rather than something being broken.
+//
+// These are expected and permanent-ish: an institution that does not offer the
+// product, or an Item whose consent does not cover it. Treating them as errors
+// would log noise on every sweep for every unaffected Item, so they are a quiet
+// skip. Anything else — a network fault, a bad token, a Plaid outage — is a real
+// error and still surfaces.
+//
+// Matched on the message because wrapErr formats Plaid's error_code into it;
+// this mirrors the ITEM_LOGIN_REQUIRED check in sync.go.
+func productUnavailable(err error) bool {
+	for _, code := range []string{
+		"PRODUCTS_NOT_SUPPORTED",      // the institution does not offer it
+		"PRODUCT_NOT_READY",           // still being pulled; the next sweep gets it
+		"NO_LIABILITY_ACCOUNTS",       // nothing to report on this Item
+		"NO_INVESTMENT_ACCOUNTS",      //
+		"ADDITIONAL_CONSENT_REQUIRED", // consent does not cover it (EU/UK Items)
+		"INSUFFICIENT_CREDENTIALS",
+	} {
+		if strings.Contains(err.Error(), code) {
+			return true
+		}
+	}
+	return false
 }
 
 // ModuleResult reports what an optional module did.
@@ -34,6 +99,9 @@ type ModuleResult struct {
 	Securities             int
 	InvestmentTransactions int
 	Liabilities            int
+	// Skipped is true when the module did not run: not enabled, nothing for it
+	// to read, or Plaid declined to serve it for this Item.
+	Skipped bool
 }
 
 // investmentTransactionLookback is how far back investment transactions are
@@ -48,16 +116,21 @@ type ModuleResult struct {
 // the cursor machinery /transactions/sync has.
 const investmentTransactionLookback = 730 * 24 * time.Hour
 
-// SyncInvestments refreshes holdings for one item. A no-op unless the item is
-// authorized for the Investments product.
-func (s *Syncer) SyncInvestments(ctx context.Context, item dbgen.PlaidItem, accessToken string, accountIDs map[string]uuid.UUID) (ModuleResult, error) {
+// SyncInvestments refreshes holdings for one item. A no-op unless the operator
+// enabled the Investments product and the item has investment accounts.
+func (s *Syncer) SyncInvestments(ctx context.Context, accessToken string, accountIDs map[string]uuid.UUID, kinds itemAccountKinds) (ModuleResult, error) {
 	var result ModuleResult
-	if !HasProduct(item.Products, ProductInvestments) {
+	if !HasProduct(s.Client.SyncProducts(), ProductInvestments) || !kinds.investment {
+		result.Skipped = true
 		return result, nil
 	}
 
 	page, err := s.Client.GetHoldings(ctx, accessToken)
 	if err != nil {
+		if productUnavailable(err) {
+			result.Skipped = true
+			return result, nil
+		}
 		return result, err
 	}
 
@@ -131,7 +204,7 @@ func (s *Syncer) SyncInvestments(ctx context.Context, item dbgen.PlaidItem, acce
 	// reports success — the next sync retries.
 	n, err := s.syncInvestmentTransactions(ctx, accessToken, accountIDs, securityIDs, today)
 	if err != nil {
-		slog.Warn("sync investment transactions", "error", err, "item_id", item.ID)
+		slog.Warn("sync investment transactions", "error", err)
 	}
 	result.InvestmentTransactions = n
 
@@ -206,16 +279,21 @@ func (s *Syncer) syncInvestmentTransactions(
 	return stored, nil
 }
 
-// SyncLiabilities refreshes debt terms for one item. A no-op unless the item is
-// authorized for the Liabilities product.
-func (s *Syncer) SyncLiabilities(ctx context.Context, item dbgen.PlaidItem, accessToken string, accountIDs map[string]uuid.UUID) (ModuleResult, error) {
+// SyncLiabilities refreshes debt terms for one item. A no-op unless the operator
+// enabled the Liabilities product and the item has credit or loan accounts.
+func (s *Syncer) SyncLiabilities(ctx context.Context, accessToken string, accountIDs map[string]uuid.UUID, kinds itemAccountKinds) (ModuleResult, error) {
 	var result ModuleResult
-	if !HasProduct(item.Products, ProductLiabilities) {
+	if !HasProduct(s.Client.SyncProducts(), ProductLiabilities) || !kinds.debt {
+		result.Skipped = true
 		return result, nil
 	}
 
 	liabilities, err := s.Client.GetLiabilities(ctx, accessToken)
 	if err != nil {
+		if productUnavailable(err) {
+			result.Skipped = true
+			return result, nil
+		}
 		return result, err
 	}
 

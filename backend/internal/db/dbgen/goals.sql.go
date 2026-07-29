@@ -260,6 +260,47 @@ func (q *Queries) GetGoalAccountBalance(ctx context.Context, arg GetGoalAccountB
 	return balance, err
 }
 
+const getGoalLiability = `-- name: GetGoalLiability :one
+SELECT l.apr, l.interest_rate_percentage, l.minimum_payment
+FROM liabilities l
+JOIN accounts a    ON a.id = l.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE l.account_id = $1 AND u.household_id = $2
+`
+
+type GetGoalLiabilityParams struct {
+	AccountID   uuid.UUID `json:"account_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+type GetGoalLiabilityRow struct {
+	Apr                    decimal.NullDecimal `json:"apr"`
+	InterestRatePercentage decimal.NullDecimal `json:"interest_rate_percentage"`
+	MinimumPayment         decimal.NullDecimal `json:"minimum_payment"`
+}
+
+// The terms behind a debt-payoff goal's linked account: the rate the schedule
+// compounds at and the payment it assumes. Scoped through the same account →
+// plaid_item → user chain as GetGoalAccountBalance, so a goal can never read
+// another household's debt.
+//
+// The BALANCE is deliberately not selected here. liabilities.balance is the last
+// statement balance for a card; what the payoff schedule must start from is what
+// is owed right now, which is the account's current_balance — the same figure
+// GetGoalAccountBalance returns and the same one the user sees on the accounts
+// page. Two balances would be two answers.
+//
+// Student loans and mortgages report interest_rate_percentage rather than apr,
+// so both are returned and the caller falls back, exactly as the liabilities
+// endpoint does.
+func (q *Queries) GetGoalLiability(ctx context.Context, arg GetGoalLiabilityParams) (GetGoalLiabilityRow, error) {
+	row := q.db.QueryRow(ctx, getGoalLiability, arg.AccountID, arg.HouseholdID)
+	var i GetGoalLiabilityRow
+	err := row.Scan(&i.Apr, &i.InterestRatePercentage, &i.MinimumPayment)
+	return i, err
+}
+
 const listActiveHouseholdGoals = `-- name: ListActiveHouseholdGoals :many
 SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
 WHERE household_id = $1 AND scope = 'household' AND archived_at IS NULL

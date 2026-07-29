@@ -229,7 +229,18 @@ second thing to back up: see 18's note about the document volume not being in
   under that rule.
 - **[19-debt-payoff-goals.md](19-debt-payoff-goals.md)** — the `debt_payoff`
   goal kind the schema has always allowed, plus thousands separators in
-  `money()`. *TODO known gaps.* Small; good first task.
+  `money()`. *TODO known gaps.* **Shipped.** No migration, as advertised.
+  `goals.ComputePayoff` sits beside `Compute` and `money()` now delegates to the
+  shared `internal/moneyfmt`. Three notes for anyone touching it. The doc's
+  iteration-cap warning needed extending: a payment one cent above the interest
+  *does* amortize, over millions of months, so anything past a 100-year horizon
+  is reported as "never" too. Two callers were quietly applying savings maths to
+  every goal and had to be taught to skip payoff ones — `insights/goal.go` and
+  `reporting/safetospend.go`, the latter because a debt's payment is already a
+  bill in the cashflow it reserves against. And the feature was dead on arrival
+  until a *separate* bug was fixed: the Plaid sync gated Liabilities on
+  `plaid_items.products`, a link-time snapshot, so the `liabilities` table was
+  empty for every existing item. See `internal/plaid/modules.go`.
 - **[20-pwa-offline.md](20-pwa-offline.md)** — installable PWA with read-only
   offline. *TODO #11.* **Shipped.** Frontend only, as advertised. The MVP
   landed; write queueing did not, and was closed rather than deferred — writes

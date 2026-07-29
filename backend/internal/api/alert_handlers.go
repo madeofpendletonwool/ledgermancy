@@ -17,6 +17,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/alerts"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
 )
 
 // defaultEventLimit caps how many events the list endpoint returns; the bell
@@ -323,7 +324,7 @@ func resolveRuleProposal(parsed ai.ParsedRule, cats []dbgen.Category) parseRuleR
 				CategoryName: cat.Name,
 				Amount:       amount.StringFixed(2),
 			},
-			Summary: fmt.Sprintf("Budget $%s per month for %s.", amount.StringFixed(2), cat.Name),
+			Summary: fmt.Sprintf("Budget %s per month for %s.", moneyfmt.USD(amount), cat.Name),
 		}
 
 	default:

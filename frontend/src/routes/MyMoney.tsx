@@ -65,7 +65,11 @@ export function MyMoney() {
 
       {!!goals.data?.length && (
         <section className="glass p-6">
-          <h2 className="text-lg font-medium">What you're saving for</h2>
+          <h2 className="text-lg font-medium">
+            {goals.data.some((g) => g.kind === 'debt_payoff')
+              ? "What you're working toward"
+              : "What you're saving for"}
+          </h2>
           <ul className="mt-4 space-y-4">
             {goals.data.map((g) => {
               // Progress comes from the server. Percentages are display-only —
@@ -83,6 +87,10 @@ export function MyMoney() {
                     <span className="font-medium">{g.name}</span>
                     <span className="text-sm tabular-nums text-mist-300">
                       {formatMoney(g.current_amount)} of {formatMoney(g.target_amount)}
+                      {/* On a payoff goal current_amount is the debt retired so
+                          far, so the same two figures read correctly — they just
+                          need the verb. */}
+                      {g.kind === 'debt_payoff' && ' paid off'}
                     </span>
                   </div>
                   <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-white/5">

@@ -150,7 +150,11 @@ func (s *Server) handleListHoldings(w http.ResponseWriter, r *http.Request) {
 }
 
 type liabilityResponse struct {
-	ID                 uuid.UUID        `json:"id"`
+	ID uuid.UUID `json:"id"`
+	// AccountID is what makes this list usable as a filter: a debt-payoff goal
+	// may only link an account that has a liabilities row, and the picker needs
+	// to know which accounts those are.
+	AccountID          uuid.UUID        `json:"account_id"`
 	Kind               string           `json:"kind"`
 	AccountName        string           `json:"account_name"`
 	Mask               *string          `json:"mask"`
@@ -178,6 +182,7 @@ func (s *Server) handleListLiabilities(w http.ResponseWriter, r *http.Request) {
 	for _, l := range rows {
 		item := liabilityResponse{
 			ID:              l.ID,
+			AccountID:       l.AccountID,
 			Kind:            l.Kind,
 			AccountName:     l.AccountName,
 			Mask:            l.Mask,

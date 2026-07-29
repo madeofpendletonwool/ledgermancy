@@ -23,10 +23,11 @@ tool-calling chatbot (7).
 The app is feature-complete for daily use; these are known, deliberate gaps —
 not bugs:
 
-- **Debt-payoff goals are schema-only.** The `goals.kind` column allows
-  `debt_payoff`, but the feasibility maths (`backend/internal/goals`), the
-  natural-language parser (`backend/internal/ai/parse.go`), and the Goals UI all
-  handle `savings` only. Creating or tracking a payoff goal isn't possible yet.
+- **Debt payoff is single-debt only.** Payoff goals themselves now work end to
+  end (`goals.ComputePayoff`, the parser, the Goals UI). What is still missing is
+  strategy *across* debts — snowball vs. avalanche ordering, and modelling extra
+  one-off payments. That belongs with the proactive advisor, which already ranks
+  "pay down card Z (19% APR)" as an option.
 - **An item's transaction history window cannot be widened after linking.**
   Plaid fixes it at link time; update mode preserves it but cannot raise it, and
   relinking orphans the history already tied to the old `plaid_item_id`. Where
@@ -260,10 +261,9 @@ not bugs:
 
 ### Still planned
 
-- **Thousands separators in generated prose.** `money()` in
-  `backend/internal/insights/producers.go` is `"$" + StringFixed(2)`, so a
-  four-figure amount renders `$1234.56` rather than `$1,234.56` everywhere an
-  insight, recap, or alert body quotes a number. One helper, many call sites.
+_(Nothing outstanding here — thousands separators in generated prose now come
+from the shared `backend/internal/moneyfmt` helper, which every insight, recap
+and alert body routes through.)_
 
 ---
 

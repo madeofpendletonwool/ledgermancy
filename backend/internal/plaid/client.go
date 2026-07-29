@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	plaidapi "github.com/plaid/plaid-go/v40/plaid"
@@ -23,8 +24,16 @@ const maxTransactionHistoryDays = 730
 
 // Client is a thin wrapper over the generated Plaid SDK.
 type Client struct {
-	api      *plaidapi.PlaidApiService
+	api *plaidapi.PlaidApiService
+	// products are REQUIRED of an institution: Link only offers institutions
+	// supporting every one of them. Keep this minimal.
 	products []plaidapi.Products
+	// optional are best-effort. Plaid still shows institutions that don't
+	// support them, and only extracts (and bills) them where the chosen
+	// institution and accounts do. This is where Investments and Liabilities
+	// belong — putting them in products would silently shrink the institution
+	// list every user picks from.
+	optional []plaidapi.Products
 	webhook  string
 }
 
@@ -49,10 +58,19 @@ func New(cfg config.PlaidConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	optional, err := parseOptionalProducts(cfg.OptionalProducts)
+	if err != nil {
+		return nil, err
+	}
+	// Plaid rejects a product appearing in both arrays.
+	optional = slices.DeleteFunc(optional, func(p plaidapi.Products) bool {
+		return slices.Contains(products, p)
+	})
 
 	return &Client{
 		api:      plaidapi.NewAPIClient(apiCfg).PlaidApi,
 		products: products,
+		optional: optional,
 		webhook:  cfg.WebhookURL,
 	}, nil
 }
@@ -74,6 +92,12 @@ func parseProducts(names []string) ([]plaidapi.Products, error) {
 	if len(names) == 0 {
 		return nil, errors.New("at least one Plaid product must be configured")
 	}
+	return parseOptionalProducts(names)
+}
+
+// parseOptionalProducts is parseProducts without the non-empty requirement:
+// having no optional products is a valid configuration.
+func parseOptionalProducts(names []string) ([]plaidapi.Products, error) {
 	out := make([]plaidapi.Products, 0, len(names))
 	for _, name := range names {
 		switch name {
@@ -90,10 +114,28 @@ func parseProducts(names []string) ([]plaidapi.Products, error) {
 	return out, nil
 }
 
-// Products reports which Plaid products this client requests at link time.
-func (c *Client) Products() []string {
-	out := make([]string, 0, len(c.products))
-	for _, p := range c.products {
+// Products reports which Plaid products an institution must support to be
+// offered at link time.
+func (c *Client) Products() []string { return productNames(c.products) }
+
+// OptionalProducts reports the best-effort products: pulled where supported,
+// never a barrier to picking an institution.
+func (c *Client) OptionalProducts() []string { return productNames(c.optional) }
+
+// SyncProducts is what the optional sync modules gate on: everything the
+// operator has opted into, required or best-effort.
+//
+// This is deliberately the CONFIG, not plaid_items.products. An access token
+// serves whatever the institution supports, so enabling a product here starts
+// pulling it for Items that already exist — no relink, and no lost history. See
+// the gate note in modules.go.
+func (c *Client) SyncProducts() []string {
+	return append(productNames(c.products), productNames(c.optional)...)
+}
+
+func productNames(products []plaidapi.Products) []string {
+	out := make([]string, 0, len(products))
+	for _, p := range products {
 		out = append(out, string(p))
 	}
 	return out
@@ -125,6 +167,16 @@ func (c *Client) baseLinkTokenRequest(userID, displayName string) *plaidapi.Link
 func (c *Client) newLinkTokenRequest(userID, displayName string) *plaidapi.LinkTokenCreateRequest {
 	req := c.baseLinkTokenRequest(userID, displayName)
 	req.SetProducts(c.products)
+
+	// Investments and Liabilities go here rather than in products, because
+	// products is a HARD filter: Link only offers institutions supporting every
+	// one of them, so listing Liabilities would hide every bank that doesn't do
+	// loans from a user who only wanted their chequing account. optional_products
+	// keeps the full institution list and pulls the extra data wherever the
+	// chosen institution and accounts support it.
+	if len(c.optional) > 0 {
+		req.SetOptionalProducts(c.optional)
+	}
 
 	// Ask for the maximum history Plaid will give.
 	//

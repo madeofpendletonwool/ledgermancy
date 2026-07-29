@@ -56,7 +56,8 @@ cp .env.example .env
 | `PLAID_ENV` | `sandbox` | `sandbox` \| `development` \| `production` |
 | `PLAID_CLIENT_ID` | — | From Dashboard → Developers → Keys |
 | `PLAID_SECRET` | — | **Different per environment** for the same `client_id` |
-| `PLAID_PRODUCTS` | `transactions` | Comma-separated: `transactions`, `investments`, `liabilities`. Start with `transactions` only. |
+| `PLAID_PRODUCTS` | `transactions` | Products an institution **must** support to be offered in Link. Every entry here *shrinks* the institution list, so leave it alone. |
+| `PLAID_OPTIONAL_PRODUCTS` | `investments,liabilities` | Pulled where the institution and accounts support them, ignored where not — never a filter on which banks a user can pick. Also the switch for syncing them on **already-linked** accounts (no relink). Set empty to opt out. |
 | `PLAID_WEBHOOK_URL` | _(empty)_ | Public URL Plaid posts to. Blank disables webhooks locally (worker still sweeps hourly). |
 
 See [Deployment](deployment.md) for the Trial plan, history window, and the

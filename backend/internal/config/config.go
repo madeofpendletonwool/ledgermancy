@@ -140,11 +140,21 @@ type BenchmarkConfig struct {
 
 // PlaidConfig holds Plaid API credentials and the set of enabled products.
 type PlaidConfig struct {
-	Env        string
-	ClientID   string
-	Secret     string
-	Products   []string
-	WebhookURL string
+	Env      string
+	ClientID string
+	Secret   string
+	// Products an institution MUST support to appear in Link. Every entry here
+	// narrows the institution list, so it stays minimal — transactions only.
+	Products []string
+	// OptionalProducts are pulled where the institution and accounts support
+	// them, and ignored where they don't. Institutions are never filtered on
+	// these, and Plaid only bills for one when it actually applies. Investments
+	// and Liabilities belong here.
+	//
+	// This is also the switch that turns the optional sync modules on, including
+	// for Items that already exist — no relink required.
+	OptionalProducts []string
+	WebhookURL       string
 }
 
 // AIConfig points at any Anthropic Messages API-compatible endpoint (GLM,
@@ -189,11 +199,17 @@ func Load() (Config, error) {
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
 		TrustProxyHeaders: envBool("TRUST_PROXY_HEADERS", false),
 		Plaid: PlaidConfig{
-			Env:        env("PLAID_ENV", "sandbox"),
-			ClientID:   os.Getenv("PLAID_CLIENT_ID"),
-			Secret:     os.Getenv("PLAID_SECRET"),
-			Products:   splitList(env("PLAID_PRODUCTS", "transactions")),
-			WebhookURL: os.Getenv("PLAID_WEBHOOK_URL"),
+			Env:      env("PLAID_ENV", "sandbox"),
+			ClientID: os.Getenv("PLAID_CLIENT_ID"),
+			Secret:   os.Getenv("PLAID_SECRET"),
+			Products: splitList(env("PLAID_PRODUCTS", "transactions")),
+			// Defaulted on: the Investments page and debt-payoff goals are
+			// built into the app, and leaving them dark by default is how they
+			// came to be silently empty in the first place. Nothing is billed
+			// for an institution or account that doesn't carry them. Set the
+			// variable empty to opt out.
+			OptionalProducts: splitList(env("PLAID_OPTIONAL_PRODUCTS", "investments,liabilities")),
+			WebhookURL:       os.Getenv("PLAID_WEBHOOK_URL"),
 		},
 		AI: AIConfig{
 			BaseURL: env("AI_BASE_URL", "https://api.anthropic.com"),

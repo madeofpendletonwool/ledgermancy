@@ -98,6 +98,28 @@ JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
 WHERE a.id = $1 AND u.household_id = $2;
 
+-- name: GetGoalLiability :one
+-- The terms behind a debt-payoff goal's linked account: the rate the schedule
+-- compounds at and the payment it assumes. Scoped through the same account →
+-- plaid_item → user chain as GetGoalAccountBalance, so a goal can never read
+-- another household's debt.
+--
+-- The BALANCE is deliberately not selected here. liabilities.balance is the last
+-- statement balance for a card; what the payoff schedule must start from is what
+-- is owed right now, which is the account's current_balance — the same figure
+-- GetGoalAccountBalance returns and the same one the user sees on the accounts
+-- page. Two balances would be two answers.
+--
+-- Student loans and mortgages report interest_rate_percentage rather than apr,
+-- so both are returned and the caller falls back, exactly as the liabilities
+-- endpoint does.
+SELECT l.apr, l.interest_rate_percentage, l.minimum_payment
+FROM liabilities l
+JOIN accounts a    ON a.id = l.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE l.account_id = $1 AND u.household_id = $2;
+
 -- --------------------------------------------------------------------------
 -- Contributions
 -- --------------------------------------------------------------------------

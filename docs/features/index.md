@@ -17,7 +17,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
 - **Plan**
 
     - [:material-wallet-outline: Budgets](budgets.md) — targets, rollover, safe-to-spend
-    - [:material-target: Goals](goals.md) — savings targets that track to a date
+    - [:material-target: Goals](goals.md) — savings targets and debt payoffs
 
 - **Accounts**
 

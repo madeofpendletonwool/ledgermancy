@@ -83,7 +83,7 @@ you do all the math. Ledgermancy is neither.
     <td width="50%" align="center"><img src="docs/screenshots/assistant.png" alt="Assistant"><br><b>Assistant</b><br>Ask about your money in plain English. Every figure comes from your own data via tool calls — auditable, not hallucinated.</td>
   </tr>
   <tr>
-    <td width="50%" align="center"><img src="docs/screenshots/budget-goals.png" alt="Budgets and Goals"><br><b>Budgets & Goals</b><br>Weekly / monthly / yearly budgets with rollover, a "safe to spend" figure, suggested budgets from your history, and savings goals that track to a target date.</td>
+    <td width="50%" align="center"><img src="docs/screenshots/budget-goals.png" alt="Budgets and Goals"><br><b>Budgets & Goals</b><br>Weekly / monthly / yearly budgets with rollover, a "safe to spend" figure, suggested budgets from your history, savings goals that track to a target date, and debt-payoff goals that amortize a balance to zero.</td>
     <td width="50%" align="center"><img src="docs/screenshots/alerts.png" alt="Alerts"><br><b>Alerts</b><br>Rules that watch for you: big purchases, budget thresholds, new merchants, low leftover. Opt in to push per rule.</td>
   </tr>
 </table>

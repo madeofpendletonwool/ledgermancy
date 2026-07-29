@@ -47,6 +47,16 @@ func (goalProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uu
 	mStart := monthStart(now)
 	var out []Candidate
 	for _, g := range rows {
+		// Savings goals only. goals.Compute is accumulation arithmetic with no
+		// notion of interest, so running it over a debt-payoff goal would read
+		// the debt's balance as progress and coach from figures that are simply
+		// wrong. Payoff standing is amortized on the Goals page (ComputePayoff);
+		// coaching it in the shared feed is the advisor's job, not this
+		// producer's.
+		if g.Kind != "savings" {
+			continue
+		}
+
 		current, err := goalProgress(ctx, q, g, now)
 		if err != nil {
 			return nil, err
