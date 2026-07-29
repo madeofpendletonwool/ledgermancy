@@ -31,9 +31,11 @@ func (q *Queries) CreateHousehold(ctx context.Context, name string) (Household, 
 }
 
 const createInvite = `-- name: CreateInvite :one
-INSERT INTO household_invites (household_id, email, token_hash, invited_by, expires_at)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, household_id, email, token_hash, invited_by, expires_at, accepted_at, created_at
+INSERT INTO household_invites (
+    household_id, email, token_hash, invited_by, expires_at, role, person_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, household_id, email, token_hash, invited_by, expires_at, accepted_at, created_at, role, person_id
 `
 
 type CreateInviteParams struct {
@@ -42,8 +44,14 @@ type CreateInviteParams struct {
 	TokenHash   string       `json:"token_hash"`
 	InvitedBy   *uuid.UUID   `json:"invited_by"`
 	ExpiresAt   stdtime.Time `json:"expires_at"`
+	Role        string       `json:"role"`
+	PersonID    *uuid.UUID   `json:"person_id"`
 }
 
+// `role` is the permission level the invite grants; `person_id` attaches the
+// new login to an EXISTING person rather than creating a second one. That is
+// how "enable a login for Ellie" works — without it, accepting the invite would
+// produce a duplicate Ellie with no 529 attached.
 func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) (HouseholdInvite, error) {
 	row := q.db.QueryRow(ctx, createInvite,
 		arg.HouseholdID,
@@ -51,6 +59,8 @@ func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) (Hou
 		arg.TokenHash,
 		arg.InvitedBy,
 		arg.ExpiresAt,
+		arg.Role,
+		arg.PersonID,
 	)
 	var i HouseholdInvite
 	err := row.Scan(
@@ -62,6 +72,8 @@ func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) (Hou
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.Role,
+		&i.PersonID,
 	)
 	return i, err
 }
@@ -97,7 +109,7 @@ func (q *Queries) GetHousehold(ctx context.Context, id uuid.UUID) (Household, er
 }
 
 const getInviteByTokenHash = `-- name: GetInviteByTokenHash :one
-SELECT id, household_id, email, token_hash, invited_by, expires_at, accepted_at, created_at FROM household_invites
+SELECT id, household_id, email, token_hash, invited_by, expires_at, accepted_at, created_at, role, person_id FROM household_invites
 WHERE token_hash = $1
   AND accepted_at IS NULL
   AND expires_at > now()
@@ -117,12 +129,14 @@ func (q *Queries) GetInviteByTokenHash(ctx context.Context, tokenHash string) (H
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.Role,
+		&i.PersonID,
 	)
 	return i, err
 }
 
 const listHouseholdMembers = `-- name: ListHouseholdMembers :many
-SELECT id, household_id, email, display_name, created_at
+SELECT id, household_id, email, display_name, role, created_at
 FROM users
 WHERE household_id = $1
 ORDER BY created_at
@@ -133,6 +147,7 @@ type ListHouseholdMembersRow struct {
 	HouseholdID uuid.UUID    `json:"household_id"`
 	Email       string       `json:"email"`
 	DisplayName string       `json:"display_name"`
+	Role        string       `json:"role"`
 	CreatedAt   stdtime.Time `json:"created_at"`
 }
 
@@ -150,6 +165,7 @@ func (q *Queries) ListHouseholdMembers(ctx context.Context, householdID uuid.UUI
 			&i.HouseholdID,
 			&i.Email,
 			&i.DisplayName,
+			&i.Role,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -163,10 +179,12 @@ func (q *Queries) ListHouseholdMembers(ctx context.Context, householdID uuid.UUI
 }
 
 const listPendingInvites = `-- name: ListPendingInvites :many
-SELECT id, household_id, email, invited_by, expires_at, created_at
-FROM household_invites
-WHERE household_id = $1 AND accepted_at IS NULL AND expires_at > now()
-ORDER BY created_at DESC
+SELECT i.id, i.household_id, i.email, i.invited_by, i.expires_at, i.created_at,
+       i.role, i.person_id, p.display_name AS person_name
+FROM household_invites i
+LEFT JOIN household_people p ON p.id = i.person_id
+WHERE i.household_id = $1 AND i.accepted_at IS NULL AND i.expires_at > now()
+ORDER BY i.created_at DESC
 `
 
 type ListPendingInvitesRow struct {
@@ -176,6 +194,9 @@ type ListPendingInvitesRow struct {
 	InvitedBy   *uuid.UUID   `json:"invited_by"`
 	ExpiresAt   stdtime.Time `json:"expires_at"`
 	CreatedAt   stdtime.Time `json:"created_at"`
+	Role        string       `json:"role"`
+	PersonID    *uuid.UUID   `json:"person_id"`
+	PersonName  *string      `json:"person_name"`
 }
 
 func (q *Queries) ListPendingInvites(ctx context.Context, householdID uuid.UUID) ([]ListPendingInvitesRow, error) {
@@ -194,6 +215,9 @@ func (q *Queries) ListPendingInvites(ctx context.Context, householdID uuid.UUID)
 			&i.InvitedBy,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.Role,
+			&i.PersonID,
+			&i.PersonName,
 		); err != nil {
 			return nil, err
 		}

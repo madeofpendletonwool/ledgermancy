@@ -16,6 +16,20 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
+// Roles. A role is about what a LOGIN may do; it says nothing about who a
+// person is. A child with no login has no role at all, which is the normal
+// state for a young one — see household_people.
+const (
+	// RoleOwner created the household. Everything a member can do, plus role
+	// management and household settings.
+	RoleOwner = "owner"
+	// RoleMember is a full adult member: today's behaviour for everybody.
+	RoleMember = "member"
+	// RoleChild is a deliberately reduced login a parent enables. It sees its
+	// own allowance, its own goals, and the accounts held for it — nothing else.
+	RoleChild = "child"
+)
+
 // Identity is the authenticated caller attached to a request context.
 type Identity struct {
 	UserID      uuid.UUID
@@ -23,12 +37,34 @@ type Identity struct {
 	Email       string
 	DisplayName string
 	SessionID   uuid.UUID
+	// Role is one of RoleOwner / RoleMember / RoleChild. It comes from the same
+	// query that resolves the session, so no authorization decision needs a
+	// second round trip.
+	Role string
+	// PersonID is the household_people row this login belongs to. Nil only if
+	// that row was removed out from under the login, which the LEFT JOIN in
+	// GetSessionUser tolerates rather than failing authentication over.
+	PersonID *uuid.UUID
 	// TokenHash identifies the caller's own session row. Handlers that revoke
 	// "every session except this one" need it, and it is already computed
 	// during authentication — recomputing it later would mean re-reading a
 	// cookie the handler should not have to know about.
 	TokenHash string
 }
+
+// IsChild reports whether the caller is a reduced child login.
+func (i Identity) IsChild() bool { return i.Role == RoleChild }
+
+// IsAdult reports whether the caller is an owner or a full member. Written as
+// an allowlist rather than `!IsChild()` on purpose: a role added later is
+// non-adult until somebody decides otherwise, so a new role cannot silently
+// inherit permission over the household's money.
+func (i Identity) IsAdult() bool {
+	return i.Role == RoleOwner || i.Role == RoleMember
+}
+
+// IsOwner reports whether the caller owns the household.
+func (i Identity) IsOwner() bool { return i.Role == RoleOwner }
 
 type contextKey struct{}
 
@@ -118,8 +154,53 @@ func (m Middleware) identify(r *http.Request) (Identity, error) {
 		Email:       row.Email,
 		DisplayName: row.DisplayName,
 		SessionID:   row.SessionID,
+		Role:        row.Role,
+		PersonID:    row.PersonID,
 		TokenHash:   tokenHash,
 	}, nil
+}
+
+// RequireAdult rejects child logins.
+//
+// This is the blunt instrument, and it is mounted on whole route groups rather
+// than sprinkled per handler: a restriction applied to some routes and not
+// others implies protection that is not there. Where a child legitimately needs
+// one route out of a protected group, that route moves to its own group rather
+// than the group's guard being loosened.
+//
+// 403 rather than 404: the caller is authenticated and the resource exists, so
+// pretending otherwise would just make a confusing UI. Where the existence of
+// the resource is itself the secret, the handler returns 404 on its own.
+func RequireAdult(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := FromContext(r.Context())
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if !identity.IsAdult() {
+			writeJSONError(w, http.StatusForbidden, "not permitted for this account")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireOwner rejects anyone but the household owner. Used for the handful of
+// actions that change who can do what.
+func RequireOwner(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := FromContext(r.Context())
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if !identity.IsOwner() {
+			writeJSONError(w, http.StatusForbidden, "only the household owner can do this")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Interval converts a Go duration into the pgtype.Interval that sqlc emits for

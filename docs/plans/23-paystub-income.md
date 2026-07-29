@@ -86,7 +86,7 @@ contribution tracking) but does not block on it.
 
 ## Data model
 
-**Reserved migration: `00027_paystubs.sql`.**
+**Reserved migration: `00037_paystubs.sql`.**
 
 ```sql
 CREATE TABLE employers (

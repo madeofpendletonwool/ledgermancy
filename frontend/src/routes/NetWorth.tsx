@@ -60,6 +60,8 @@ export function NetWorth() {
         <NetWorthChart data={history.data ?? []} />
       </section>
 
+      <ByPerson />
+
       {b && (
         <section className="glass p-6">
           <h2 className="mb-5 text-lg font-medium">What it is made of</h2>
@@ -173,6 +175,71 @@ export function NetWorth() {
 }
 
 /** Net worth over time. A single series, so one colour and no legend. */
+/**
+ * Assets broken down by the person they are held for.
+ *
+ * A BREAKDOWN, never a second total. A child's 529 was already counted in
+ * household assets and stays there — this only says whose slice it is, which is
+ * why "unassigned" is shown rather than hidden: the two must visibly reconcile.
+ */
+function ByPerson() {
+  const byPerson = useQuery({
+    queryKey: ['networth-by-person'],
+    queryFn: api.netWorthByPerson,
+  })
+
+  const people = byPerson.data?.people.filter(
+    (p) => p.total !== '0.00' || p.is_dependent,
+  )
+  if (!people?.length) return null
+
+  return (
+    <section className="glass p-6">
+      <h2 className="mb-1 text-lg font-medium">Whose money</h2>
+      <p className="mb-5 text-sm text-mist-300">
+        A breakdown of the assets above, not an extra total. Anything not held
+        for a specific person shows as unassigned.
+      </p>
+
+      <ul className="divide-y divide-white/5">
+        {people.map((p) => (
+          <li key={p.person_id} className="flex flex-wrap items-center gap-3 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">
+                {p.person_name}
+                {p.is_dependent && (
+                  <span className="ml-2 rounded-full bg-white/5 px-2 py-0.5 text-xs text-mist-300">
+                    dependent
+                  </span>
+                )}
+              </p>
+              {Number(p.custodial_total) > 0 && (
+                <p className="truncate text-xs text-mist-500">
+                  {formatMoney(p.custodial_total)} custodial — theirs, and kept out
+                  of the household's retirement total
+                </p>
+              )}
+              {p.age !== null && (
+                <p className="text-xs text-mist-500">{p.age} years old</p>
+              )}
+            </div>
+            <span className="shrink-0 tabular-nums">{formatMoney(p.total)}</span>
+          </li>
+        ))}
+      </ul>
+
+      {byPerson.data && (
+        <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+          <span className="text-mist-500">Not assigned to anyone</span>
+          <span className="tabular-nums text-mist-300">
+            {formatMoney(byPerson.data.unassigned)}
+          </span>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
   if (data.length < 2) {
     return (

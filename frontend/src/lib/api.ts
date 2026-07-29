@@ -24,6 +24,23 @@ export interface User {
   household_id: string
   email: string
   display_name: string
+  /**
+   * owner | member | child.
+   *
+   * Drives which navigation renders. It is NOT the enforcement — every
+   * restricted route is guarded server-side, because a client-side role check
+   * is decoration that a devtools console removes in one line.
+   */
+  role: Role
+  /** The household_people row this login belongs to. */
+  person_id: string | null
+}
+
+export type Role = 'owner' | 'member' | 'child'
+
+/** An owner or a full member: everyone who is not a reduced child login. */
+export function isAdult(user: Pick<User, 'role'> | null | undefined): boolean {
+  return user?.role === 'owner' || user?.role === 'member'
 }
 
 /**
@@ -90,14 +107,192 @@ export interface Member {
   id: string
   email: string
   display_name: string
+  role: Role
   created_at: string
+}
+
+/**
+ * Someone the household's money can be ABOUT, whether or not they can sign in.
+ *
+ * Distinct from Member, which is a login. A six-year-old with a 529 is a
+ * Person with no Member — that distinction is the whole point of the feature.
+ */
+export interface Person {
+  id: string
+  display_name: string
+  /** YYYY-MM-DD, or null when not given. Never defaulted. */
+  birthdate: string | null
+  /** Derived server-side from the birthdate. Null when there is none. */
+  age: number | null
+  is_dependent: boolean
+  user_id: string | null
+  email: string | null
+  role: Role | null
+  has_login: boolean
+  created_at: string
+}
+
+export interface PersonInput {
+  display_name: string
+  birthdate: string | null
+  is_dependent: boolean
+}
+
+export interface Allowance {
+  person_id: string
+  amount: string | null
+  cadence: 'weekly' | 'biweekly' | 'monthly' | null
+  monthly_limit: string | null
+  auto_post: boolean
+  /** Derived by summing the ledger. Never stored. */
+  balance: string
+  spent_this_month: string
+  /** Null when no limit is set — different from a remaining balance of zero. */
+  limit_remaining: string | null
+}
+
+export type AllowanceKind = 'allowance' | 'chore' | 'gift' | 'spend' | 'correction'
+
+export interface AllowanceEntry {
+  id: string
+  person_id: string
+  kind: AllowanceKind
+  /**
+   * POSITIVE for money INTO the balance, NEGATIVE for money out — the opposite
+   * of a transaction amount. This table is a balance, not a spend feed.
+   */
+  amount: string
+  occurred_on: string
+  note: string | null
+  created_at: string
+}
+
+export interface AllowanceEntryInput {
+  kind: AllowanceKind
+  /** Always positive; the server derives the sign from the kind. */
+  amount: string
+  occurred_on?: string
+  note?: string | null
 }
 
 export interface Invite {
   id: string
   email: string
+  role: Role
+  person_id: string | null
+  person_name: string | null
   expires_at: string
   created_at: string
+}
+
+export interface CreateInviteInput {
+  email: string
+  role?: Role
+  /** Attaches the new login to an existing person instead of making a new one. */
+  person_id?: string | null
+}
+
+/** One person's share of a split transaction. */
+export interface SplitShare {
+  id: string
+  person_id: string
+  person_name: string
+  amount: string
+  settled_at: string | null
+}
+
+export interface TransactionSplits {
+  transaction_id: string
+  transaction_name: string
+  transaction_amount: string
+  date: string
+  shares: SplitShare[]
+}
+
+export interface SplitTransaction {
+  transaction_id: string
+  name: string
+  date: string
+  amount: string
+  payer_name: string | null
+  split_count: number
+  unsettled_count: number
+  fully_settled: boolean
+}
+
+/** One direction of "who owes whom", already netted. */
+export interface LedgerEntry {
+  debtor_id: string
+  debtor_name: string
+  creditor_id: string
+  creditor_name: string
+  amount: string
+}
+
+export interface GoalContribution {
+  id: string
+  goal_id: string
+  person_id: string
+  person_name: string
+  amount: string
+  occurred_on: string
+  note: string | null
+  created_at: string
+}
+
+export interface ContributorTotal {
+  person_id: string
+  person_name: string
+  total: string
+  share_pct: string
+}
+
+export interface GoalContributions {
+  goal_id: string
+  /**
+   * Sum of logged contributions. This is ATTRIBUTION, not the goal's progress:
+   * an account-linked goal still derives progress from the account balance.
+   * Render it as "funded by", never as the progress bar.
+   */
+  total: string
+  contributors: ContributorTotal[]
+  history: GoalContribution[]
+}
+
+/** An account held FOR the signed-in person. */
+export interface MyAccount {
+  id: string
+  name: string
+  institution_name: string | null
+  type: string
+  subtype: string | null
+  tax_treatment: string | null
+  balance: string | null
+  /** 529, UTMA/UGMA, Coverdell, custodial Roth or Trump account. */
+  is_custodial: boolean
+}
+
+export interface PersonNetWorth {
+  person_id: string
+  person_name: string
+  is_dependent: boolean
+  age: number | null
+  account_total: string
+  custodial_total: string
+  manual_total: string
+  total: string
+}
+
+/**
+ * A BREAKDOWN of household assets by the person they are held for — never a
+ * new total. `assigned + unassigned === total`, which is what the UI shows so
+ * the two obviously reconcile.
+ */
+export interface NetWorthByPerson {
+  people: PersonNetWorth[]
+  assigned: string
+  unassigned: string
+  total: string
 }
 
 export interface CreatedInvite extends Invite {
@@ -550,6 +745,13 @@ export type TaxTreatment =
   | 'roth_401k'
   | 'trad_ira'
   | 'roth_ira'
+  // Custodial treatments. Money held for a dependent: excluded from the
+  // household's retirement nest egg, because it is not the household's to
+  // retire on. A UTMA is irrevocably the child's property.
+  | 'utma_ugma'
+  | 'coverdell'
+  | 'custodial_roth'
+  | 'trump'
   | '529'
   | 'hsa'
   | 'trust'
@@ -565,6 +767,8 @@ export interface InvestmentAccount {
   currency: string
   /** Null until the user confirms one. Never inferred on their behalf. */
   tax_treatment: TaxTreatment | null
+  /** The person this account is held FOR (a 529's beneficiary, a UTMA's minor). */
+  beneficiary_person_id?: string | null
   /**
    * Inferred from the Plaid subtype for display beside the picker. Empty when
    * the subtype cannot distinguish — a 401(k) is reported identically whether
@@ -912,7 +1116,9 @@ export interface AlertEvent {
  */
 export interface Goal {
   id: string
-  scope: 'household' | 'user'
+  scope: 'household' | 'user' | 'person'
+  /** Set iff scope === 'person': the household member the goal belongs to. */
+  person_id: string | null
   kind: string
   name: string
   target_amount: string
@@ -935,7 +1141,9 @@ export interface GoalInput {
   name: string
   target_amount: string
   target_date?: string
-  scope?: 'household' | 'user'
+  scope?: 'household' | 'user' | 'person'
+  /** Required when scope is 'person'. */
+  person_id?: string | null
   account_id?: string | null
   category_id?: string | null
 }
@@ -1428,13 +1636,135 @@ export const api = {
 
   members: () => request<Member[]>('GET', '/api/household/members'),
 
+  setMemberRole: (userId: string, role: Role) =>
+    request<Member>('PUT', `/api/household/members/${userId}/role`, { role }),
+
   invites: () => request<Invite[]>('GET', '/api/household/invites'),
 
-  createInvite: (email: string) =>
-    request<CreatedInvite>('POST', '/api/household/invites', { email }),
+  createInvite: (input: CreateInviteInput) =>
+    request<CreatedInvite>('POST', '/api/household/invites', input),
 
   deleteInvite: (id: string) =>
     request<void>('DELETE', `/api/household/invites/${id}`),
+
+  // --- People ------------------------------------------------------------
+  people: () => request<Person[]>('GET', '/api/household/people'),
+
+  createPerson: (input: PersonInput) =>
+    request<Person>('POST', '/api/household/people', input),
+
+  updatePerson: (id: string, input: PersonInput) =>
+    request<Person>('PUT', `/api/household/people/${id}`, input),
+
+  deletePerson: (id: string) =>
+    request<void>('DELETE', `/api/household/people/${id}`),
+
+  // --- Allowance ---------------------------------------------------------
+  allowance: (personId: string) =>
+    request<Allowance>('GET', `/api/household/people/${personId}/allowance`),
+
+  saveAllowance: (
+    personId: string,
+    input: {
+      amount: string | null
+      cadence: string | null
+      monthly_limit: string | null
+      auto_post: boolean
+    },
+  ) => request<Allowance>('PUT', `/api/household/people/${personId}/allowance`, input),
+
+  allowanceEntries: (personId: string) =>
+    request<AllowanceEntry[]>(
+      'GET',
+      `/api/household/people/${personId}/allowance/entries`,
+    ),
+
+  addAllowanceEntry: (personId: string, input: AllowanceEntryInput) =>
+    request<AllowanceEntry>(
+      'POST',
+      `/api/household/people/${personId}/allowance/entries`,
+      input,
+    ),
+
+  deleteAllowanceEntry: (entryId: string) =>
+    request<void>('DELETE', `/api/household/allowance/entries/${entryId}`),
+
+  // --- The signed-in person's own surface --------------------------------
+  // Everything under /me is scoped to the caller and is the only data a child
+  // login can reach.
+  myPerson: () => request<Person>('GET', '/api/me/person'),
+
+  updateMyPerson: (input: PersonInput) =>
+    request<Person>('PUT', '/api/me/person', input),
+
+  myAllowance: () => request<Allowance>('GET', '/api/me/allowance'),
+
+  myAllowanceEntries: () =>
+    request<AllowanceEntry[]>('GET', '/api/me/allowance/entries'),
+
+  /** A child records their own spending. Credits are a parent's action. */
+  recordMySpend: (amount: string, note?: string) =>
+    request<AllowanceEntry>('POST', '/api/me/allowance/entries', {
+      kind: 'spend',
+      amount,
+      note: note ?? null,
+    }),
+
+  myAccounts: () => request<MyAccount[]>('GET', '/api/me/accounts'),
+
+  myGoals: () => request<Goal[]>('GET', '/api/me/goals'),
+
+  // --- Bill split --------------------------------------------------------
+  splitTransactions: () => request<SplitTransaction[]>('GET', '/api/splits/'),
+
+  householdLedger: () => request<LedgerEntry[]>('GET', '/api/splits/ledger'),
+
+  transactionSplits: (transactionId: string) =>
+    request<TransactionSplits>('GET', `/api/splits/transactions/${transactionId}`),
+
+  /**
+   * Replaces the whole split set. Send `equal` to divide evenly (the server
+   * resolves the remainder), or `shares` with exact amounts. The server refuses
+   * the write unless the shares sum to the transaction exactly.
+   */
+  setTransactionSplits: (
+    transactionId: string,
+    input:
+      | { equal: string[] }
+      | { shares: { person_id: string; amount: string }[] },
+  ) => request<TransactionSplits>('PUT', `/api/splits/transactions/${transactionId}`, input),
+
+  clearTransactionSplits: (transactionId: string) =>
+    request<void>('DELETE', `/api/splits/transactions/${transactionId}`),
+
+  settleSplit: (splitId: string) =>
+    request<void>('POST', `/api/splits/${splitId}/settle`),
+
+  unsettleSplit: (splitId: string) =>
+    request<void>('DELETE', `/api/splits/${splitId}/settle`),
+
+  // --- Goal contributions ------------------------------------------------
+  goalContributions: (goalId: string) =>
+    request<GoalContributions>('GET', `/api/goals/${goalId}/contributions`),
+
+  addGoalContribution: (
+    goalId: string,
+    input: { person_id?: string; amount: string; occurred_on?: string; note?: string },
+  ) => request<GoalContribution>('POST', `/api/goals/${goalId}/contributions`, input),
+
+  deleteGoalContribution: (contributionId: string) =>
+    request<void>('DELETE', `/api/goals/contributions/${contributionId}`),
+
+  // --- Whose money is it -------------------------------------------------
+  /** Tags an account with the person it is held for. Null clears it. */
+  setAccountBeneficiary: (accountId: string, personId: string | null) =>
+    request<{ id: string; name: string; beneficiary_person_id: string | null }>(
+      'PATCH',
+      `/api/investments/accounts/${accountId}/beneficiary`,
+      { person_id: personId },
+    ),
+
+  netWorthByPerson: () => request<NetWorthByPerson>('GET', '/api/networth/by-person'),
 
   // --- Plaid -------------------------------------------------------------
   /**

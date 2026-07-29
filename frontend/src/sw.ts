@@ -74,6 +74,11 @@ const CACHEABLE_API_PATHS = [
   '/api/manual-assets',
   '/api/merchants',
   '/api/networth',
+  // The signed-in person's own surface: allowance balance, their accounts,
+  // their goals. This is the whole child view, so without it an installed app
+  // shows a kid nothing at all offline.
+  '/api/me',
+  '/api/splits',
   '/api/obligations',
   // The linked-institution list, so the Accounts page renders offline. The
   // rest of /api/plaid (link tokens, exchange, sync) is POST-only and would

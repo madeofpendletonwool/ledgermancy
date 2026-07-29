@@ -77,7 +77,7 @@ five at once is how this stalls.
 
 ## Data model
 
-**Reserved migration: `00031_scenarios.sql`.**
+**Reserved migration: `00041_scenarios.sql`.**
 
 ```sql
 CREATE TABLE scenarios (

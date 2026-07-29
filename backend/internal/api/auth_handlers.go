@@ -40,6 +40,14 @@ type userResponse struct {
 	HouseholdID uuid.UUID `json:"household_id"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"display_name"`
+	// Role drives which navigation the client renders. It is a CONVENIENCE for
+	// the UI and never the enforcement — every restricted route is guarded
+	// server-side by auth.RequireAdult, because a client-side role check is
+	// decoration that a devtools console removes in one line.
+	Role string `json:"role"`
+	// PersonID is the household_people row this login belongs to, so the client
+	// can address its own person without a lookup.
+	PersonID *uuid.UUID `json:"person_id"`
 }
 
 // handleRegister creates an account.
@@ -80,6 +88,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	var householdID uuid.UUID
 	var inviteID *uuid.UUID
+	// The bootstrap user owns the household. An invited user gets the role the
+	// invite granted, and attaches to the person it named — that is how a
+	// parent enables a login for a child who already exists as a person.
+	role := auth.RoleOwner
+	var personID *uuid.UUID
 
 	if userCount == 0 {
 		// Bootstrap: create the household this first user will own.
@@ -122,6 +135,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		householdID = invite.HouseholdID
 		inviteID = &invite.ID
+		role = invite.Role
+		personID = invite.PersonID
 	}
 
 	hash, err := auth.HashPassword(req.Password)
@@ -135,6 +150,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Lower:        req.Email,
 		PasswordHash: hash,
 		DisplayName:  req.DisplayName,
+		Role:         role,
 	})
 	if err != nil {
 		// The unique index on lower(email) is the authority on duplicates,
@@ -145,6 +161,34 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		s.internalError(w, "create user", err)
 		return
+	}
+
+	// Every login belongs to a person. When the invite named one, attach to it
+	// so the child's 529, goals and allowance follow them into their new login;
+	// otherwise create the person this login is for.
+	//
+	// A failure here is logged rather than fatal: the account exists and can
+	// sign in, and a missing person row is recoverable from the Household page.
+	// Rolling the registration back at this point would be worse — the user
+	// would be told their account was not created when the credentials are
+	// already live.
+	if personID != nil {
+		if _, err := s.Queries.LinkPersonToUser(ctx, dbgen.LinkPersonToUserParams{
+			ID: *personID, HouseholdID: householdID, UserID: &user.ID,
+		}); err != nil {
+			slog.Error("link invited user to person", "error", err,
+				"user_id", user.ID, "person_id", *personID)
+		}
+	} else if _, err := s.Queries.CreatePerson(ctx, dbgen.CreatePersonParams{
+		HouseholdID: householdID,
+		UserID:      &user.ID,
+		DisplayName: req.DisplayName,
+		// No birthdate: there is no source for one at registration, and
+		// inventing it would feed a fabricated age into every projection.
+		Birthdate:   nil,
+		IsDependent: role == auth.RoleChild,
+	}); err != nil {
+		slog.Error("create person for new user", "error", err, "user_id", user.ID)
 	}
 
 	if inviteID != nil {
@@ -171,6 +215,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		HouseholdID: user.HouseholdID,
 		Email:       user.Email,
 		DisplayName: user.DisplayName,
+		Role:        user.Role,
 	})
 }
 
@@ -625,6 +670,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		HouseholdID: identity.HouseholdID,
 		Email:       identity.Email,
 		DisplayName: identity.DisplayName,
+		Role:        identity.Role,
+		PersonID:    identity.PersonID,
 	})
 }
 

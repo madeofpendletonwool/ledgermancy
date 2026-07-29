@@ -51,11 +51,18 @@ SELECT
     c.annual_salary,
     c.employer_match_limit,
     c.beneficiary_current_age,
-    c.beneficiary_target_age
+    c.beneficiary_target_age,
+    -- The beneficiary's birthdate, when the account is tagged with the person
+    -- it is held for. Preferred over beneficiary_current_age, which is a stored
+    -- integer that decays — see networth.ResolveAge for the order. NULL here
+    -- means fall back, which is what an upgraded instance does until somebody
+    -- enters a birthdate.
+    bp.birthdate AS beneficiary_birthdate
 FROM accounts a
 JOIN plaid_items i            ON i.id = a.plaid_item_id
 JOIN users u                  ON u.id = i.user_id
 LEFT JOIN account_contributions c ON c.account_id = a.id
+LEFT JOIN household_people bp     ON bp.id = a.beneficiary_person_id
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active

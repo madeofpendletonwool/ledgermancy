@@ -114,6 +114,16 @@ func (s *Server) enqueueAlertEval(householdID uuid.UUID) {
 
 // Routes returns the fully-wired HTTP handler.
 func (s *Server) Routes() http.Handler {
+	authMW := auth.Middleware{Queries: s.Queries, Secret: s.Config.SessionSecret}
+	return s.routesWithAuth(authMW.Authenticate)
+}
+
+// routesWithAuth builds the router with an injectable authentication step.
+//
+// Split out so the role-enforcement test can mount a stub that injects a fixed
+// identity and assert the guard on every route without a database. The
+// production path always passes auth.Middleware.Authenticate.
+func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -142,8 +152,6 @@ func (s *Server) Routes() http.Handler {
 	// handler for why that is safe.
 	r.Post("/webhooks/plaid", s.handlePlaidWebhook)
 
-	authMW := auth.Middleware{Queries: s.Queries, Secret: s.Config.SessionSecret}
-
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.generalLimiter.Middleware)
 		r.Use(auth.RequireCSRF)
@@ -168,7 +176,7 @@ func (s *Server) Routes() http.Handler {
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(authMW.Authenticate)
+				r.Use(authenticate)
 				r.Get("/me", s.handleMe)
 
 				r.Get("/sessions", s.handleListSessions)
@@ -192,33 +200,95 @@ func (s *Server) Routes() http.Handler {
 			})
 		})
 
-		r.Route("/household", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
-			r.Get("/", s.handleGetHousehold)
-			r.Get("/members", s.handleListMembers)
-			r.Post("/invites", s.handleCreateInvite)
-			r.Get("/invites", s.handleListInvites)
-			r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
+		// ------------------------------------------------------------------
+		// Child-accessible routes.
+		//
+		// Everything below the /me group is scoped to the CALLER's own person
+		// and is the only surface a `child` login can reach beyond its own
+		// account settings. Every route group after this one is adult-only,
+		// enforced by auth.RequireAdult on the group rather than per handler —
+		// a role checked on some routes and not others implies protection that
+		// is not there.
+		//
+		// When adding a route, the question is not "should a child see this"
+		// but "which group does it belong in". There is no third option.
+		// ------------------------------------------------------------------
+		r.Route("/me", func(r chi.Router) {
+			r.Use(authenticate)
+			r.Get("/person", s.handleGetMyPerson)
+			r.Put("/person", s.handleUpdateMyPerson)
+			r.Get("/allowance", s.handleGetMyAllowance)
+			r.Get("/allowance/entries", s.handleListMyAllowanceEntries)
+			// A child records their own spending. This is the one write a
+			// child has, and it is deliberate: a ledger a kid cannot write to
+			// teaches nothing. Credits are parent-only, enforced in the
+			// handler by rejecting any kind other than 'spend'.
+			r.Post("/allowance/entries", s.handleCreateMyAllowanceEntry)
+			r.Get("/accounts", s.handleListMyAccounts)
+			r.Get("/goals", s.handleListMyGoals)
 		})
 
+		r.Route("/household", func(r chi.Router) {
+			r.Use(authenticate)
+
+			// Household name is readable by anyone signed in — the child view
+			// puts it in the header, and it is not a financial figure.
+			r.Get("/", s.handleGetHousehold)
+
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAdult)
+				r.Get("/members", s.handleListMembers)
+				r.Get("/invites", s.handleListInvites)
+				r.Post("/invites", s.handleCreateInvite)
+				r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
+
+				// People: everyone the household's money can be about,
+				// whether or not they can sign in.
+				r.Get("/people", s.handleListPeople)
+				r.Post("/people", s.handleCreatePerson)
+				r.Put("/people/{personID}", s.handleUpdatePerson)
+				r.Delete("/people/{personID}", s.handleDeletePerson)
+
+				// Allowance schedules are a parent's to set, including for a
+				// child who can sign in — hence adult-only rather than /me.
+				r.Get("/people/{personID}/allowance", s.handleGetAllowance)
+				r.Put("/people/{personID}/allowance", s.handleUpsertAllowance)
+				r.Get("/people/{personID}/allowance/entries", s.handleListAllowanceEntries)
+				r.Post("/people/{personID}/allowance/entries", s.handleCreateAllowanceEntry)
+				r.Delete("/allowance/entries/{entryID}", s.handleDeleteAllowanceEntry)
+			})
+
+			// Changing who can do what is the owner's alone.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAdult)
+				r.Use(auth.RequireOwner)
+				r.Put("/members/{userID}/role", s.handleSetMemberRole)
+			})
+		})
+
+		// Preferences are mixed by design: a user-scoped preference is the
+		// caller's own, a household-scoped one is a household setting. The
+		// group is open and handleUpsertPreferences refuses a household-scoped
+		// write from a child — the one place a per-handler check is right,
+		// because the resource itself is split rather than the routes.
 		r.Route("/preferences", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate)
 			r.Get("/", s.handleGetPreferences)
 			r.Put("/", s.handleUpsertPreferences)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Post("/test", s.handleTestNotification)
 		})
 
 		r.Route("/digest", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Post("/test", s.handleSendDigestNow)
 		})
 
 		r.Route("/plaid", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Post("/link-token", s.handleCreateLinkToken)
 			r.Post("/exchange", s.handleExchangePublicToken)
 			r.Get("/items", s.handleListItems)
@@ -229,12 +299,12 @@ func (s *Server) Routes() http.Handler {
 		})
 
 		r.Route("/accounts", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListAccounts)
 		})
 
 		r.Route("/transactions", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListTransactions)
 			r.Post("/", s.handleCreateManualTransaction)
 			r.Post("/import", s.handleImportTransactions)
@@ -247,7 +317,7 @@ func (s *Server) Routes() http.Handler {
 		// merge/split/rename. Everything the suggestion job writes is inert until
 		// something here confirms it.
 		r.Route("/merchants", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListMerchants)
 			r.Get("/keys", s.handleListMerchantKeys)
 			r.Post("/merge", s.handleMergeMerchants)
@@ -261,7 +331,7 @@ func (s *Server) Routes() http.Handler {
 		// including the download — a document id is never on its own sufficient
 		// to fetch a blob. See document_handlers.go.
 		r.Route("/documents", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListDocuments)
 			r.Post("/", s.handleUploadDocument)
 			r.Get("/storage", s.handleDocumentStorage)
@@ -281,7 +351,7 @@ func (s *Server) Routes() http.Handler {
 		})
 
 		r.Route("/categories", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListCategories)
 			r.Post("/", s.handleCreateCategory)
 			r.Put("/{categoryID}", s.handleUpdateCategory)
@@ -289,7 +359,7 @@ func (s *Server) Routes() http.Handler {
 		})
 
 		r.Route("/budgets", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleBudgetProgress)
 			r.Get("/safe-to-spend", s.handleSafeToSpend)
 			r.Post("/", s.handleCreateBudget)
@@ -301,7 +371,7 @@ func (s *Server) Routes() http.Handler {
 		// /projection carries balances forward through them; both are derived,
 		// so neither is a second source of truth for what is due.
 		r.Route("/obligations", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListObligations)
 			r.Post("/", s.handleCreateObligation)
 			r.Get("/upcoming", s.handleUpcomingObligations)
@@ -310,21 +380,46 @@ func (s *Server) Routes() http.Handler {
 			r.Delete("/{obligationID}", s.handleDeleteObligation)
 		})
 
+		// Goals are the one mixed group. Reads are visibility-scoped in SQL
+		// (ListGoals takes all_person_goals, set from the caller's role), so a
+		// child listing goals gets their own and nothing else. Writes are
+		// adult-only: setting a child's target is a parent's action.
 		r.Route("/goals", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate)
 			r.Get("/", s.handleListGoals)
-			r.Post("/", s.handleCreateGoal)
-			r.Post("/parse", s.handleParseGoal)
-			r.Put("/{goalID}", s.handleUpdateGoal)
-			r.Delete("/{goalID}", s.handleArchiveGoal)
+			r.Get("/{goalID}/contributions", s.handleListGoalContributions)
+
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAdult)
+				r.Post("/", s.handleCreateGoal)
+				r.Post("/parse", s.handleParseGoal)
+				r.Put("/{goalID}", s.handleUpdateGoal)
+				r.Delete("/{goalID}", s.handleArchiveGoal)
+				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+				r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
+			})
+		})
+
+		// Bill split and the reimbursement ledger. Adult-only throughout: a
+		// split is a claim on another member's money.
+		r.Route("/splits", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListSplitTransactions)
+			r.Get("/ledger", s.handleHouseholdLedger)
+			r.Get("/transactions/{transactionID}", s.handleGetTransactionSplits)
+			r.Put("/transactions/{transactionID}", s.handleSetTransactionSplits)
+			r.Delete("/transactions/{transactionID}", s.handleClearTransactionSplits)
+			r.Post("/{splitID}/settle", s.handleSettleSplit)
+			r.Delete("/{splitID}/settle", s.handleUnsettleSplit)
 		})
 
 		r.Route("/networth", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleNetWorth)
 			r.Get("/history", s.handleNetWorthHistory)
 			r.Post("/snapshot", s.handleSnapshotNow)
 			r.Get("/projection", s.handleProjection)
+			r.Get("/by-person", s.handleNetWorthByPerson)
 		})
 
 		// Retirement. Sits beside /networth rather than inside it: the
@@ -334,7 +429,7 @@ func (s *Server) Routes() http.Handler {
 		// /retirement always returns the assumptions alongside the curve, so a
 		// client cannot render a projection without the inputs that produced it.
 		r.Route("/projections", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/assumptions", s.handleGetAssumptions)
 			r.Put("/assumptions", s.handleSaveAssumptions)
 			r.Get("/contributions", s.handleListContributions)
@@ -344,7 +439,7 @@ func (s *Server) Routes() http.Handler {
 		})
 
 		r.Route("/holdings", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListHoldings)
 		})
 
@@ -352,7 +447,7 @@ func (s *Server) Routes() http.Handler {
 		// other reporting endpoints; the one write is the tax-treatment
 		// confirmation, which is a user decision and never inferred.
 		r.Route("/investments", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleInvestmentOverview)
 			r.Get("/performance", s.handleInvestmentPerformance)
 			r.Get("/benchmarks", s.handleInvestmentBenchmarks)
@@ -361,22 +456,23 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/fees", s.handleInvestmentFees)
 			r.Get("/dividends", s.handleInvestmentDividends)
 			r.Patch("/accounts/{accountID}/tax-treatment", s.handleSetAccountTaxTreatment)
+			r.Patch("/accounts/{accountID}/beneficiary", s.handleSetAccountBeneficiary)
 		})
 
 		r.Route("/liabilities", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListLiabilities)
 		})
 
 		r.Route("/manual-assets", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListManualAssets)
 			r.Post("/", s.handleCreateManualAsset)
 			r.Delete("/{assetID}", s.handleDeleteManualAsset)
 		})
 
 		r.Route("/export", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/transactions.csv", s.handleExportTransactions)
 			r.Get("/categories.csv", s.handleExportCategorySummary)
 			r.Get("/net-worth.csv", s.handleExportNetWorth)
@@ -384,7 +480,7 @@ func (s *Server) Routes() http.Handler {
 		})
 
 		r.Route("/reports", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/summary", s.handleSummary)
 			r.Get("/by-category", s.handleSpendingByCategory)
 			r.Get("/by-day", s.handleSpendingByDay)
@@ -399,21 +495,27 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
 		})
 
+		// /capabilities stays open to every login: the frontend cannot decide
+		// what to render without it, and it exposes no figures. /chat is
+		// adult-only — it reads household data by design.
 		r.Group(func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate)
 			r.Get("/capabilities", s.handleCapabilities)
+		})
+		r.Group(func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
 			r.Post("/chat", s.handleChat)
 		})
 
 		r.Route("/insights", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListInsights)
 			r.Post("/{insightID}/read", s.handleMarkInsightRead)
 			r.Post("/{insightID}/dismiss", s.handleDismissInsight)
 		})
 
 		r.Route("/alerts", func(r chi.Router) {
-			r.Use(authMW.Authenticate)
+			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListAlerts)
 			r.Post("/", s.handleCreateAlert)
 			r.Post("/parse", s.handleParseAlert)

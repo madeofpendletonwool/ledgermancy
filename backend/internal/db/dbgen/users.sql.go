@@ -36,9 +36,9 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (household_id, email, password_hash, display_name)
-VALUES ($1, lower($2), $3, $4)
-RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until
+INSERT INTO users (household_id, email, password_hash, display_name, role)
+VALUES ($1, lower($2), $3, $4, $5)
+RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until, role
 `
 
 type CreateUserParams struct {
@@ -46,14 +46,20 @@ type CreateUserParams struct {
 	Lower        string    `json:"lower"`
 	PasswordHash string    `json:"password_hash"`
 	DisplayName  string    `json:"display_name"`
+	Role         string    `json:"role"`
 }
 
+// `role` is passed explicitly rather than left to the column default: the
+// bootstrap user owns the household, and an invited user gets whatever role the
+// invite granted. Defaulting here would quietly make every invited child a
+// full member.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
 	row := q.db.QueryRow(ctx, createUser,
 		arg.HouseholdID,
 		arg.Lower,
 		arg.PasswordHash,
 		arg.DisplayName,
+		arg.Role,
 	)
 	var i User
 	err := row.Scan(
@@ -70,12 +76,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.TotpLastStep,
 		&i.FailedLoginCount,
 		&i.LockedUntil,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until FROM users WHERE lower(email) = lower($1)
+SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until, role FROM users WHERE lower(email) = lower($1)
 `
 
 // Matches the lower(email) unique index, so lookups are case-insensitive.
@@ -96,12 +103,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.TotpLastStep,
 		&i.FailedLoginCount,
 		&i.LockedUntil,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until FROM users WHERE id = $1
+SELECT id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until, role FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -121,6 +129,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.TotpLastStep,
 		&i.FailedLoginCount,
 		&i.LockedUntil,
+		&i.Role,
 	)
 	return i, err
 }
@@ -171,7 +180,7 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 }
 
 const updateUserProfile = `-- name: UpdateUserProfile :one
-UPDATE users SET display_name = $2 WHERE id = $1 RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until
+UPDATE users SET display_name = $2 WHERE id = $1 RETURNING id, household_id, email, password_hash, display_name, created_at, updated_at, totp_secret_encrypted, totp_enabled, totp_confirmed_at, totp_last_step, failed_login_count, locked_until, role
 `
 
 type UpdateUserProfileParams struct {
@@ -196,6 +205,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.TotpLastStep,
 		&i.FailedLoginCount,
 		&i.LockedUntil,
+		&i.Role,
 	)
 	return i, err
 }

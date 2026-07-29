@@ -5,7 +5,7 @@ import { Wordmark } from './Brand'
 import { DropdownMenu } from './DropdownMenu'
 import { OfflineBanner } from './OfflineBanner'
 import { InstallPrompt } from './PwaPrompts'
-import { api } from '../lib/api'
+import { api, isAdult } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
 type NavLeaf = { to: string; label: string; end?: boolean }
@@ -14,6 +14,12 @@ type NavGroup = { label: string; items: NavLeaf[] }
 // Dashboard is a bare link; everything else is grouped behind a dropdown so the
 // top bar stays to a handful of triggers rather than a dozen flat tabs.
 const DASHBOARD: NavLeaf = { to: '/', label: 'Dashboard', end: true }
+
+// A child login gets its own single destination rather than the adult tree with
+// items removed. Hiding nav items is not a permission model — every route below
+// is guarded server-side — but a child should also never SEE a household
+// surface they cannot open.
+const CHILD_HOME: NavLeaf = { to: '/', label: 'My money', end: true }
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -30,6 +36,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/budgets', label: 'Budgets' },
       { to: '/schedule', label: 'Schedule' },
       { to: '/goals', label: 'Goals' },
+      { to: '/shared', label: 'Shared expenses' },
       { to: '/retirement', label: 'Retirement' },
     ],
   },
@@ -50,17 +57,26 @@ const NAV_GROUPS: NavGroup[] = [
 // The assistant only exists when an AI provider is configured; it lives with the
 // other insight-y views under Analyze.
 function useNavGroups(): NavGroup[] {
+  const { data: user } = useSession()
   const capabilities = useQuery({
     queryKey: ['capabilities'],
     queryFn: api.capabilities,
     staleTime: Infinity,
   })
+  // A child has no groups at all: their whole app is one page.
+  if (!isAdult(user)) return []
   if (!capabilities.data?.ai_enabled) return NAV_GROUPS
   return NAV_GROUPS.map((group) =>
     group.label === 'Analyze'
       ? { ...group, items: [...group.items, { to: '/assistant', label: 'Assistant' }] }
       : group,
   )
+}
+
+/** The home link, which is the child's entire navigation. */
+function useHomeLink(): NavLeaf {
+  const { data: user } = useSession()
+  return isAdult(user) ? DASHBOARD : CHILD_HOME
 }
 
 // A group is "active" when the current route is one of its leaves.
@@ -91,6 +107,7 @@ export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const navGroups = useNavGroups()
+  const home = useHomeLink()
   const [menuOpen, setMenuOpen] = useState(false)
 
   const signOut = () =>
@@ -116,8 +133,8 @@ export function AppLayout() {
           </NavLink>
 
           <nav className="hidden items-center gap-1 lg:flex">
-            <NavLink to={DASHBOARD.to} end={DASHBOARD.end} className={navLinkClass}>
-              {DASHBOARD.label}
+            <NavLink to={home.to} end={home.end} className={navLinkClass}>
+              {home.label}
             </NavLink>
             {navGroups.map((group) => (
               <DropdownMenu
@@ -222,12 +239,12 @@ export function AppLayout() {
           >
             <div className="mx-auto flex max-w-6xl flex-col gap-3">
               <NavLink
-                to={DASHBOARD.to}
-                end={DASHBOARD.end}
+                to={home.to}
+                end={home.end}
                 onClick={() => setMenuOpen(false)}
                 className={mobileLinkClass}
               >
-                {DASHBOARD.label}
+                {home.label}
               </NavLink>
 
               {navGroups.map((group) => (

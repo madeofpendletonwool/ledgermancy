@@ -23,6 +23,7 @@ import (
 type goalResponse struct {
 	ID              uuid.UUID  `json:"id"`
 	Scope           string     `json:"scope"`
+	PersonID        *uuid.UUID `json:"person_id"`
 	Kind            string     `json:"kind"`
 	Name            string     `json:"name"`
 	TargetAmount    string     `json:"target_amount"`
@@ -39,13 +40,29 @@ type goalResponse struct {
 	CreatedAt       string     `json:"created_at"`
 }
 
+// goalVisibility resolves the caller's identity into the three parameters every
+// goal query takes. Kept in one place so no call site can forget one: omitting
+// allPersonGoals would silently hide a child's goals from their parent, and
+// omitting personID would hide a child's goals from the child.
+//
+// A child sees person-scoped goals only where the person is themselves. An
+// adult sees all of them — a parent who cannot see their child's savings goal
+// cannot help with it.
+func goalVisibility(identity auth.Identity) (userID *uuid.UUID, personID *uuid.UUID, all bool) {
+	return &identity.UserID, identity.PersonID, identity.IsAdult()
+}
+
 func (s *Server) handleListGoals(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 	ctx := r.Context()
 	now := time.Now()
 
+	userID, personID, all := goalVisibility(identity)
 	rows, err := s.Queries.ListGoals(ctx, dbgen.ListGoalsParams{
-		HouseholdID: identity.HouseholdID, UserID: &identity.UserID,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         userID,
+		PersonID:       personID,
+		AllPersonGoals: all,
 	})
 	if err != nil {
 		s.internalError(w, "list goals", err)
@@ -76,6 +93,12 @@ func (s *Server) buildGoalResponse(ctx context.Context, g dbgen.Goal, now time.T
 
 	// Surplus scope matches the goal: a household goal reads shared cashflow; a
 	// personal goal reads its owner's.
+	//
+	// A person-scoped goal reads household cashflow (uuid.Nil). A child has no
+	// income or spending in the ledger — their money lives in the allowance
+	// ledger, which is deliberately not joined to transactions — so scoping to
+	// them would make every such goal read a surplus of zero and report
+	// "never" as its completion date.
 	surplusScope := uuid.Nil
 	if g.Scope == "user" && g.UserID != nil {
 		surplusScope = *g.UserID
@@ -90,6 +113,7 @@ func (s *Server) buildGoalResponse(ctx context.Context, g dbgen.Goal, now time.T
 	resp := goalResponse{
 		ID:              g.ID,
 		Scope:           g.Scope,
+		PersonID:        g.PersonID,
 		Kind:            g.Kind,
 		Name:            g.Name,
 		TargetAmount:    g.TargetAmount.StringFixed(2),
@@ -139,7 +163,8 @@ func (s *Server) goalProgress(ctx context.Context, g dbgen.Goal, now time.Time) 
 }
 
 type upsertGoalRequest struct {
-	Scope        string     `json:"scope"` // "household" (default) | "user"
+	Scope        string     `json:"scope"` // "household" (default) | "user" | "person"
+	PersonID     *uuid.UUID `json:"person_id"` // required iff scope == "person"
 	Kind         string     `json:"kind"`  // "savings" (default)
 	Name         string     `json:"name"`
 	TargetAmount string     `json:"target_amount"`
@@ -173,8 +198,19 @@ func validateGoalBody(req upsertGoalRequest) (amount decimal.Decimal, date *time
 	if scope == "" {
 		scope = "household"
 	}
-	if scope != "household" && scope != "user" {
-		return decimal.Zero, nil, "", "", errors.New("scope must be \"household\" or \"user\"")
+	switch scope {
+	case "household", "user":
+		if req.PersonID != nil {
+			return decimal.Zero, nil, "", "", errors.New("person_id is only valid with scope \"person\"")
+		}
+	case "person":
+		// Mirrors the goals_scope_target constraint, so a missing person is a
+		// readable 400 rather than a constraint violation.
+		if req.PersonID == nil {
+			return decimal.Zero, nil, "", "", errors.New("person_id is required for a person-scoped goal")
+		}
+	default:
+		return decimal.Zero, nil, "", "", errors.New("scope must be \"household\", \"user\" or \"person\"")
 	}
 	kind = req.Kind
 	if kind == "" {
@@ -197,16 +233,33 @@ func (s *Server) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// user_id is set iff the goal is personal, satisfying the table's scope CHECK.
-	var userID *uuid.UUID
-	if scope == "user" {
+	// Exactly one of user_id / person_id is set, per scope, satisfying the
+	// table's goals_scope_target CHECK.
+	var userID, personID *uuid.UUID
+	switch scope {
+	case "user":
 		userID = &identity.UserID
+	case "person":
+		// Resolve through the household guard: a valid person id from another
+		// household must not become a goal here.
+		if _, err := s.Queries.GetPerson(r.Context(), dbgen.GetPersonParams{
+			ID: *req.PersonID, HouseholdID: identity.HouseholdID,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "person not found")
+				return
+			}
+			s.internalError(w, "get person for goal", err)
+			return
+		}
+		personID = req.PersonID
 	}
 
 	g, err := s.Queries.CreateGoal(r.Context(), dbgen.CreateGoalParams{
 		HouseholdID:  identity.HouseholdID,
 		Scope:        scope,
 		UserID:       userID,
+		PersonID:     personID,
 		Kind:         kind,
 		Name:         req.Name,
 		TargetAmount: amount,
@@ -247,11 +300,14 @@ func (s *Server) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, personID, all := goalVisibility(identity)
 	g, err := s.Queries.UpdateGoal(r.Context(), dbgen.UpdateGoalParams{
-		ID:           goalID,
-		HouseholdID:  identity.HouseholdID,
-		UserID:       &identity.UserID,
-		Name:         req.Name,
+		ID:             goalID,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         userID,
+		PersonID:       personID,
+		AllPersonGoals: all,
+		Name:           req.Name,
 		TargetAmount: amount,
 		TargetDate:   date,
 		AccountID:    req.AccountID,
@@ -283,8 +339,13 @@ func (s *Server) handleArchiveGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, personID, all := goalVisibility(identity)
 	if err := s.Queries.ArchiveGoal(r.Context(), dbgen.ArchiveGoalParams{
-		ID: goalID, HouseholdID: identity.HouseholdID, UserID: &identity.UserID,
+		ID:             goalID,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         userID,
+		PersonID:       personID,
+		AllPersonGoals: all,
 	}); err != nil {
 		s.internalError(w, "archive goal", err)
 		return

@@ -30,7 +30,24 @@ const TAX_TREATMENTS: { value: TaxTreatment; label: string }[] = [
   { value: '529', label: '529' },
   { value: 'hsa', label: 'HSA' },
   { value: 'trust', label: 'Trust' },
+  { value: 'utma_ugma', label: 'UTMA / UGMA' },
+  { value: 'coverdell', label: 'Coverdell ESA' },
+  { value: 'custodial_roth', label: 'Custodial Roth IRA' },
+  { value: 'trump', label: 'Trump account' },
   { value: 'other', label: 'Other' },
+]
+
+/**
+ * Treatments whose balance belongs to a dependent rather than the household.
+ * Mirrors networth.IsCustodial on the server; kept in step deliberately, since
+ * the UI labels these as excluded from retirement and must not disagree.
+ */
+const CUSTODIAL_TREATMENTS: TaxTreatment[] = [
+  '529',
+  'utma_ugma',
+  'coverdell',
+  'custodial_roth',
+  'trump',
 ]
 
 function treatmentLabel(value: TaxTreatment | null): string {
@@ -659,15 +676,33 @@ function AccountTagRow({ account }: { account: InvestmentAccount }) {
     account.suggested_tax_treatment,
   )
   const [managed, setManaged] = useState(false)
+  const [beneficiary, setBeneficiary] = useState<string>('')
+
+  // Only asked for a custodial treatment. A joint checking account has two
+  // adult owners and this field cannot express that, so offering it everywhere
+  // would invite the wrong answer.
+  const isCustodial = choice !== '' && CUSTODIAL_TREATMENTS.includes(choice)
+  const people = useQuery({
+    queryKey: ['people'],
+    queryFn: api.people,
+    enabled: isCustodial,
+  })
 
   const save = useMutation({
-    mutationFn: () =>
-      api.setAccountTaxTreatment(account.id, {
+    mutationFn: async () => {
+      await api.setAccountTaxTreatment(account.id, {
         tax_treatment: choice === '' ? null : choice,
         is_managed: managed,
-      }),
+      })
+      // Written second and only when asked for, so an ordinary tagging never
+      // touches the beneficiary column.
+      if (isCustodial) {
+        await api.setAccountBeneficiary(account.id, beneficiary || null)
+      }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['investments'] })
+      qc.invalidateQueries({ queryKey: ['networth-by-person'] })
     },
   })
 
@@ -704,6 +739,27 @@ function AccountTagRow({ account }: { account: InvestmentAccount }) {
         </select>
       </div>
 
+      {isCustodial && (
+        <div>
+          <label className="label" htmlFor={`ben-${account.id}`}>
+            Held for
+          </label>
+          <select
+            id={`ben-${account.id}`}
+            className="field"
+            value={beneficiary}
+            onChange={(e) => setBeneficiary(e.target.value)}
+          >
+            <option value="">Nobody in particular</option>
+            {people.data?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <label className="flex items-center gap-2 pb-3 text-sm text-mist-300">
         <input
           type="checkbox"
@@ -722,6 +778,13 @@ function AccountTagRow({ account }: { account: InvestmentAccount }) {
       >
         {save.isPending ? 'Saving…' : 'Save'}
       </button>
+
+      {isCustodial && (
+        <p className="w-full text-xs text-mist-500">
+          Held for a dependent, so this balance stays out of the household's
+          retirement total. It is still counted in net worth.
+        </p>
+      )}
 
       {save.isError && (
         <p role="alert" className="w-full text-sm text-ember-400">

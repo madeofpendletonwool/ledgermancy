@@ -14,7 +14,7 @@ import (
 )
 
 const getAccountByPlaidID = `-- name: GetAccountByPlaidID :one
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed FROM accounts WHERE plaid_account_id = $1
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id FROM accounts WHERE plaid_account_id = $1
 `
 
 func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID string) (Account, error) {
@@ -38,12 +38,13 @@ func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID string
 		&i.UpdatedAt,
 		&i.TaxTreatment,
 		&i.IsManaged,
+		&i.BeneficiaryPersonID,
 	)
 	return i, err
 }
 
 const listAccountsForItem = `-- name: ListAccountsForItem :many
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed FROM accounts WHERE plaid_item_id = $1 ORDER BY name
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id FROM accounts WHERE plaid_item_id = $1 ORDER BY name
 `
 
 func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID) ([]Account, error) {
@@ -73,6 +74,141 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID
 			&i.UpdatedAt,
 			&i.TaxTreatment,
 			&i.IsManaged,
+			&i.BeneficiaryPersonID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAccountsForPerson = `-- name: ListAccountsForPerson :many
+SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, i.institution_name
+FROM accounts a
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE u.household_id = $1
+  AND a.beneficiary_person_id = $2
+  AND a.is_active
+ORDER BY i.institution_name, a.name
+`
+
+type ListAccountsForPersonParams struct {
+	HouseholdID         uuid.UUID  `json:"household_id"`
+	BeneficiaryPersonID *uuid.UUID `json:"beneficiary_person_id"`
+}
+
+type ListAccountsForPersonRow struct {
+	ID                  uuid.UUID           `json:"id"`
+	PlaidItemID         uuid.UUID           `json:"plaid_item_id"`
+	PlaidAccountID      string              `json:"plaid_account_id"`
+	Name                string              `json:"name"`
+	OfficialName        *string             `json:"official_name"`
+	Mask                *string             `json:"mask"`
+	Type                string              `json:"type"`
+	Subtype             *string             `json:"subtype"`
+	CurrentBalance      decimal.NullDecimal `json:"current_balance"`
+	AvailableBalance    decimal.NullDecimal `json:"available_balance"`
+	CreditLimit         decimal.NullDecimal `json:"credit_limit"`
+	Currency            string              `json:"currency"`
+	IsActive            bool                `json:"is_active"`
+	CreatedAt           stdtime.Time        `json:"created_at"`
+	UpdatedAt           stdtime.Time        `json:"updated_at"`
+	TaxTreatment        *string             `json:"tax_treatment"`
+	IsManaged           *bool               `json:"is_managed"`
+	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
+	InstitutionName     *string             `json:"institution_name"`
+}
+
+// Accounts held FOR one person. Read-only surface for a child, and the
+// per-person net-worth lens for a parent.
+func (q *Queries) ListAccountsForPerson(ctx context.Context, arg ListAccountsForPersonParams) ([]ListAccountsForPersonRow, error) {
+	rows, err := q.db.Query(ctx, listAccountsForPerson, arg.HouseholdID, arg.BeneficiaryPersonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccountsForPersonRow{}
+	for rows.Next() {
+		var i ListAccountsForPersonRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlaidItemID,
+			&i.PlaidAccountID,
+			&i.Name,
+			&i.OfficialName,
+			&i.Mask,
+			&i.Type,
+			&i.Subtype,
+			&i.CurrentBalance,
+			&i.AvailableBalance,
+			&i.CreditLimit,
+			&i.Currency,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TaxTreatment,
+			&i.IsManaged,
+			&i.BeneficiaryPersonID,
+			&i.InstitutionName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPersonAssetTotals = `-- name: ListPersonAssetTotals :many
+SELECT
+    p.id   AS person_id,
+    p.display_name,
+    p.is_dependent,
+    COALESCE(SUM(a.current_balance), 0)::numeric AS account_total,
+    COALESCE(SUM(a.current_balance) FILTER (
+        WHERE a.tax_treatment IN ('529','utma_ugma','coverdell','custodial_roth','trump')
+    ), 0)::numeric AS custodial_total
+FROM household_people p
+LEFT JOIN accounts a
+       ON a.beneficiary_person_id = p.id AND a.is_active
+WHERE p.household_id = $1
+GROUP BY p.id, p.display_name, p.is_dependent
+ORDER BY p.is_dependent, p.display_name
+`
+
+type ListPersonAssetTotalsRow struct {
+	PersonID       uuid.UUID       `json:"person_id"`
+	DisplayName    string          `json:"display_name"`
+	IsDependent    bool            `json:"is_dependent"`
+	AccountTotal   decimal.Decimal `json:"account_total"`
+	CustodialTotal decimal.Decimal `json:"custodial_total"`
+}
+
+// Per-person asset breakdown for the net-worth lens. This is a BREAKDOWN of a
+// total that already exists, not a new sum: a child's 529 was already in the
+// household's assets and stays there. Nothing here changes ComputeNetWorth.
+func (q *Queries) ListPersonAssetTotals(ctx context.Context, householdID uuid.UUID) ([]ListPersonAssetTotalsRow, error) {
+	rows, err := q.db.Query(ctx, listPersonAssetTotals, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPersonAssetTotalsRow{}
+	for rows.Next() {
+		var i ListPersonAssetTotalsRow
+		if err := rows.Scan(
+			&i.PersonID,
+			&i.DisplayName,
+			&i.IsDependent,
+			&i.AccountTotal,
+			&i.CustodialTotal,
 		); err != nil {
 			return nil, err
 		}
@@ -85,7 +221,7 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID uuid.UUID
 }
 
 const listVisibleAccounts = `-- name: ListVisibleAccounts :many
-SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, i.institution_name, i.user_id AS owner_id
+SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, i.institution_name, i.user_id AS owner_id
 FROM accounts a
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
@@ -101,25 +237,26 @@ type ListVisibleAccountsParams struct {
 }
 
 type ListVisibleAccountsRow struct {
-	ID               uuid.UUID           `json:"id"`
-	PlaidItemID      uuid.UUID           `json:"plaid_item_id"`
-	PlaidAccountID   string              `json:"plaid_account_id"`
-	Name             string              `json:"name"`
-	OfficialName     *string             `json:"official_name"`
-	Mask             *string             `json:"mask"`
-	Type             string              `json:"type"`
-	Subtype          *string             `json:"subtype"`
-	CurrentBalance   decimal.NullDecimal `json:"current_balance"`
-	AvailableBalance decimal.NullDecimal `json:"available_balance"`
-	CreditLimit      decimal.NullDecimal `json:"credit_limit"`
-	Currency         string              `json:"currency"`
-	IsActive         bool                `json:"is_active"`
-	CreatedAt        stdtime.Time        `json:"created_at"`
-	UpdatedAt        stdtime.Time        `json:"updated_at"`
-	TaxTreatment     *string             `json:"tax_treatment"`
-	IsManaged        *bool               `json:"is_managed"`
-	InstitutionName  *string             `json:"institution_name"`
-	OwnerID          uuid.UUID           `json:"owner_id"`
+	ID                  uuid.UUID           `json:"id"`
+	PlaidItemID         uuid.UUID           `json:"plaid_item_id"`
+	PlaidAccountID      string              `json:"plaid_account_id"`
+	Name                string              `json:"name"`
+	OfficialName        *string             `json:"official_name"`
+	Mask                *string             `json:"mask"`
+	Type                string              `json:"type"`
+	Subtype             *string             `json:"subtype"`
+	CurrentBalance      decimal.NullDecimal `json:"current_balance"`
+	AvailableBalance    decimal.NullDecimal `json:"available_balance"`
+	CreditLimit         decimal.NullDecimal `json:"credit_limit"`
+	Currency            string              `json:"currency"`
+	IsActive            bool                `json:"is_active"`
+	CreatedAt           stdtime.Time        `json:"created_at"`
+	UpdatedAt           stdtime.Time        `json:"updated_at"`
+	TaxTreatment        *string             `json:"tax_treatment"`
+	IsManaged           *bool               `json:"is_managed"`
+	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
+	InstitutionName     *string             `json:"institution_name"`
+	OwnerID             uuid.UUID           `json:"owner_id"`
 }
 
 // Accounts belonging to items the caller can see. Mirrors ListVisiblePlaidItems.
@@ -150,6 +287,7 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 			&i.UpdatedAt,
 			&i.TaxTreatment,
 			&i.IsManaged,
+			&i.BeneficiaryPersonID,
 			&i.InstitutionName,
 			&i.OwnerID,
 		); err != nil {
@@ -164,7 +302,7 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 }
 
 const setAccountActive = `-- name: SetAccountActive :one
-UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed
+UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id
 `
 
 type SetAccountActiveParams struct {
@@ -193,6 +331,64 @@ func (q *Queries) SetAccountActive(ctx context.Context, arg SetAccountActivePara
 		&i.UpdatedAt,
 		&i.TaxTreatment,
 		&i.IsManaged,
+		&i.BeneficiaryPersonID,
+	)
+	return i, err
+}
+
+const setAccountBeneficiary = `-- name: SetAccountBeneficiary :one
+UPDATE accounts a
+SET beneficiary_person_id = $1
+FROM plaid_items i, users u
+WHERE a.id = $2
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND u.household_id = $3
+  AND (
+        $1::uuid IS NULL
+     OR EXISTS (
+            SELECT 1 FROM household_people p
+            WHERE p.id = $1
+              AND p.household_id = $3
+        )
+  )
+RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id
+`
+
+type SetAccountBeneficiaryParams struct {
+	PersonID    *uuid.UUID `json:"person_id"`
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID uuid.UUID  `json:"household_id"`
+}
+
+// Whose money this account is: a 529's beneficiary, the minor on a UTMA, the
+// child on a custodial Roth. The 529 sense of "beneficiary", NOT payable-on-
+// death, and NOT joint ownership.
+//
+// Both the account and the person are re-resolved through the household guard,
+// so neither id is trusted from the request. A NULL person clears it.
+func (q *Queries) SetAccountBeneficiary(ctx context.Context, arg SetAccountBeneficiaryParams) (Account, error) {
+	row := q.db.QueryRow(ctx, setAccountBeneficiary, arg.PersonID, arg.ID, arg.HouseholdID)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.PlaidItemID,
+		&i.PlaidAccountID,
+		&i.Name,
+		&i.OfficialName,
+		&i.Mask,
+		&i.Type,
+		&i.Subtype,
+		&i.CurrentBalance,
+		&i.AvailableBalance,
+		&i.CreditLimit,
+		&i.Currency,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TaxTreatment,
+		&i.IsManaged,
+		&i.BeneficiaryPersonID,
 	)
 	return i, err
 }
@@ -212,7 +408,7 @@ ON CONFLICT (plaid_account_id) DO UPDATE SET
     available_balance = EXCLUDED.available_balance,
     credit_limit      = EXCLUDED.credit_limit,
     currency          = EXCLUDED.currency
-RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed
+RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id
 `
 
 type UpsertAccountParams struct {
@@ -266,6 +462,7 @@ func (q *Queries) UpsertAccount(ctx context.Context, arg UpsertAccountParams) (A
 		&i.UpdatedAt,
 		&i.TaxTreatment,
 		&i.IsManaged,
+		&i.BeneficiaryPersonID,
 	)
 	return i, err
 }

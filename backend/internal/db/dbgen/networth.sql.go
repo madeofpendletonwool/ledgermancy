@@ -73,9 +73,12 @@ func (q *Queries) ComputeNetWorth(ctx context.Context, householdID uuid.UUID) (C
 }
 
 const createManualAsset = `-- name: CreateManualAsset :one
-INSERT INTO manual_assets (household_id, created_by, name, kind, value, is_liability, as_of, notes)
-VALUES ($1, $2, $3, $4, $5, $6, COALESCE($8::date, CURRENT_DATE), $7)
-RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at
+INSERT INTO manual_assets (
+    household_id, created_by, name, kind, value, is_liability, as_of, notes, person_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, COALESCE($8::date, CURRENT_DATE), $7,
+        $9)
+RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id
 `
 
 type CreateManualAssetParams struct {
@@ -87,8 +90,12 @@ type CreateManualAssetParams struct {
 	IsLiability bool            `json:"is_liability"`
 	Notes       *string         `json:"notes"`
 	AsOf        *stdtime.Time   `json:"as_of"`
+	PersonID    *uuid.UUID      `json:"person_id"`
 }
 
+// person_id attributes the asset to the person it is held for — savings bonds
+// in a child's name are the case this exists for. NULL for household assets,
+// which is most of them.
 func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetParams) (ManualAsset, error) {
 	row := q.db.QueryRow(ctx, createManualAsset,
 		arg.HouseholdID,
@@ -99,6 +106,7 @@ func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetPa
 		arg.IsLiability,
 		arg.Notes,
 		arg.AsOf,
+		arg.PersonID,
 	)
 	var i ManualAsset
 	err := row.Scan(
@@ -113,6 +121,7 @@ func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetPa
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PersonID,
 	)
 	return i, err
 }
@@ -172,7 +181,7 @@ func (q *Queries) GetLatestNetWorthSnapshot(ctx context.Context, householdID uui
 }
 
 const listManualAssets = `-- name: ListManualAssets :many
-SELECT id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC
+SELECT id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC
 `
 
 func (q *Queries) ListManualAssets(ctx context.Context, householdID uuid.UUID) ([]ManualAsset, error) {
@@ -196,6 +205,7 @@ func (q *Queries) ListManualAssets(ctx context.Context, householdID uuid.UUID) (
 			&i.Notes,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PersonID,
 		); err != nil {
 			return nil, err
 		}
@@ -408,11 +418,55 @@ func (q *Queries) ListVisibleLiabilities(ctx context.Context, arg ListVisibleLia
 	return items, nil
 }
 
+const sumManualAssetsByPerson = `-- name: SumManualAssetsByPerson :many
+SELECT
+    m.person_id,
+    (COALESCE(SUM(m.value) FILTER (WHERE NOT m.is_liability), 0)
+   - COALESCE(SUM(m.value) FILTER (WHERE m.is_liability), 0))::numeric AS total
+FROM manual_assets m
+WHERE m.household_id = $1 AND m.person_id IS NOT NULL
+GROUP BY m.person_id
+`
+
+type SumManualAssetsByPersonRow struct {
+	PersonID *uuid.UUID      `json:"person_id"`
+	Total    decimal.Decimal `json:"total"`
+}
+
+// Manual assets attributed to a person: savings bonds in a child's name, cash
+// in a birthday envelope. Liabilities are netted off, matching the sign
+// convention ComputeNetWorth uses, so a person's manual total is what they own
+// minus what they owe rather than a gross figure.
+// The whole expression carries one explicit ::numeric cast. Casting each
+// COALESCE separately and subtracting leaves sqlc unable to infer the result
+// type, and it silently emits int32 — which would truncate every asset value
+// to a whole dollar.
+func (q *Queries) SumManualAssetsByPerson(ctx context.Context, householdID uuid.UUID) ([]SumManualAssetsByPersonRow, error) {
+	rows, err := q.db.Query(ctx, sumManualAssetsByPerson, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumManualAssetsByPersonRow{}
+	for rows.Next() {
+		var i SumManualAssetsByPersonRow
+		if err := rows.Scan(&i.PersonID, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateManualAsset = `-- name: UpdateManualAsset :one
 UPDATE manual_assets
-SET name = $3, kind = $4, value = $5, is_liability = $6, notes = $7, as_of = CURRENT_DATE
+SET name = $3, kind = $4, value = $5, is_liability = $6, notes = $7,
+    person_id = $8, as_of = CURRENT_DATE
 WHERE id = $1 AND household_id = $2
-RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at
+RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id
 `
 
 type UpdateManualAssetParams struct {
@@ -423,6 +477,7 @@ type UpdateManualAssetParams struct {
 	Value       decimal.Decimal `json:"value"`
 	IsLiability bool            `json:"is_liability"`
 	Notes       *string         `json:"notes"`
+	PersonID    *uuid.UUID      `json:"person_id"`
 }
 
 func (q *Queries) UpdateManualAsset(ctx context.Context, arg UpdateManualAssetParams) (ManualAsset, error) {
@@ -434,6 +489,7 @@ func (q *Queries) UpdateManualAsset(ctx context.Context, arg UpdateManualAssetPa
 		arg.Value,
 		arg.IsLiability,
 		arg.Notes,
+		arg.PersonID,
 	)
 	var i ManualAsset
 	err := row.Scan(
@@ -448,6 +504,7 @@ func (q *Queries) UpdateManualAsset(ctx context.Context, arg UpdateManualAssetPa
 		&i.Notes,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PersonID,
 	)
 	return i, err
 }

@@ -80,7 +80,7 @@ assets simply have no person until this doc lands.
 
 ## Data model
 
-**Reserved migration: `00025_household_people_and_splits.sql`.**
+**Reserved migration: `00034_household_people_and_splits.sql`.**
 
 ```sql
 -- --------------------------------------------------------------------------
@@ -313,6 +313,22 @@ will be read by someone.
 `networth.ProjectRetirement` takes `now` as a parameter by design — derive ages
 against that parameter, not against the clock, or the tests become
 calendar-dependent (doc 15's note, and it applies harder here).
+
+**An existing instance must be unaffected until someone opts in.** The backfill
+gives every current user a person row with `birthdate` NULL, and a NULL birthdate
+falls straight through to the stored integer — so an upgraded install produces
+byte-identical projections until a birthdate is actually entered. Assert that:
+it is the migration's most important property and the easiest to break by making
+a consumer assume a birthdate is present.
+
+**Every person needs a self-service way to set their own birthdate**, not only
+the Household admin screen. Note that `users.sql` already has an
+`UpdateUserProfile` query that **no handler calls** — there is no profile-editing
+endpoint in the app at all today, so this is new work rather than an exposure.
+One route serves both: `PUT /api/household/people/{personID}`, where a caller may
+always edit their own person row and may edit others' unless they are a `child`.
+Surface it in `Settings.tsx` (yourself) and `Household.tsx` (everyone), so an
+adult who never opens the Household page can still fill in their own.
 
 ## Backend
 

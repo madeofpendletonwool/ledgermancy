@@ -53,7 +53,7 @@ than inventing a second procedure.
 
 ## Data model
 
-**Reserved migration: `00022_backup_status.sql`.**
+**Reserved migration: `00035_backup_status.sql`.**
 
 ```sql
 -- One row per backup or restore-test attempt. This table exists so the app can

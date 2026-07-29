@@ -40,7 +40,7 @@ None hard.
 
 ## Data model
 
-**Reserved migration: `00030_cpi_series.sql`.**
+**Reserved migration: `00040_cpi_series.sql`.**
 
 ```sql
 -- CPI-U, monthly. Same shape as asset_prices (doc 14) and any future FX table

@@ -10,6 +10,7 @@ import {
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { SplitTransaction } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 
@@ -441,6 +442,10 @@ function TransactionRow({
         count={documentCount}
         label="Attach a receipt"
       />
+
+      {/* Whose share this charge was. An attribution overlay — it never changes
+          what the household spent. */}
+      <SplitTransaction transactionId={t.id} amount={t.amount} />
 
       {/* Edit/delete only on hand-entered rows. Plaid rows stay read-only
           except category, which has its own path. */}

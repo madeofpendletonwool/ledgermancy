@@ -75,7 +75,7 @@ with no person is still a correctly valued bond.
 
 ## Data model
 
-**Reserved migration: `00029_asset_revaluation.sql`.**
+**Reserved migration: `00039_asset_revaluation.sql`.**
 
 ```sql
 -- Class-specific metadata. Kept in a side table rather than widening

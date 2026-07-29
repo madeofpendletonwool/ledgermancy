@@ -524,11 +524,22 @@ func (s *Server) handleRetirementProjection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	assumptions := toRetirementAssumptions(stored, defaulted)
+	// The caller's own birthdate, when they have given one. A nil person or a
+	// nil birthdate falls back to the stored current_age, so an instance that
+	// has never set one projects exactly as it did before.
+	var birthdate *time.Time
+	if person, perr := s.Queries.GetPersonByUserID(ctx, &identity.UserID); perr == nil {
+		birthdate = person.Birthdate
+	} else if !errors.Is(perr, pgx.ErrNoRows) {
+		s.internalError(w, "get person for projection", perr)
+		return
+	}
+
+	assumptions := toRetirementAssumptions(stored, defaulted, birthdate, now)
 	assumptions.Months = parseInt(r.URL.Query().Get("months"), defaultProjectionMonths(stored), 12, 720)
 	assumptions.FamilyHSA = r.URL.Query().Get("family_hsa") == "true"
 
-	plans := toAccountPlans(rows)
+	plans := toAccountPlans(rows, now)
 
 	resp := retirementResponse{
 		Assumptions:       s.buildAssumptionsResponse(stored, defaulted),
@@ -539,10 +550,15 @@ func (s *Server) handleRetirementProjection(w http.ResponseWriter, r *http.Reque
 		Omissions:         knownOmissions,
 	}
 
-	// The savings-rate solve only means something with a target age set. It is
+	// The savings-rate solve only means something with both ages known. It is
 	// omitted rather than returned empty so the UI has nothing to render a blank
 	// panel from.
-	if stored.TargetRetirementAge != nil && stored.CurrentAge != nil {
+	//
+	// The current-age test reads the RESOLVED age rather than the stored column,
+	// so a household that gave a birthdate instead of typing an age still gets
+	// the solve. Testing stored.CurrentAge here would silently withhold it from
+	// exactly the households that supplied the better input.
+	if stored.TargetRetirementAge != nil && assumptions.CurrentAge > 0 {
 		income, err := s.annualIncome(ctx, identity, now)
 		if err != nil {
 			s.internalError(w, "annual income", err)
@@ -638,6 +654,7 @@ func defaultProjectionMonths(a dbgen.ProjectionAssumption) int {
 // the trailing-spend default when the user has not set a target.
 func toRetirementAssumptions(
 	row dbgen.ProjectionAssumption, defaultedSpending decimal.Decimal,
+	birthdate *time.Time, now time.Time,
 ) networth.RetirementAssumptions {
 	a := networth.RetirementAssumptions{
 		RealReturnRate:       row.RealReturnRate,
@@ -647,8 +664,15 @@ func toRetirementAssumptions(
 	if row.TargetAnnualSpending.Valid {
 		a.TargetAnnualSpending = row.TargetAnnualSpending.Decimal
 	}
+	// Prefer the caller's birthdate; fall back to the stored age; leave zero
+	// when there is neither, which is the existing "not decided" state the
+	// engine already reports rather than substitutes for.
+	stored := 0
 	if row.CurrentAge != nil {
-		a.CurrentAge = int(*row.CurrentAge)
+		stored = int(*row.CurrentAge)
+	}
+	if age, ok := networth.ResolveAge(birthdate, stored, now); ok {
+		a.CurrentAge = age
 	}
 	if row.TargetRetirementAge != nil {
 		a.TargetRetirementAge = int(*row.TargetRetirementAge)
@@ -665,7 +689,7 @@ func toRetirementAssumptions(
 // toAccountPlans maps query rows onto the engine's plans. A NULL tax_treatment
 // becomes an empty Treatment, which the engine excludes and reports — the whole
 // point of leaving the column nullable in doc 14.
-func toAccountPlans(rows []dbgen.ListProjectableAccountsRow) []networth.AccountPlan {
+func toAccountPlans(rows []dbgen.ListProjectableAccountsRow, now time.Time) []networth.AccountPlan {
 	plans := make([]networth.AccountPlan, 0, len(rows))
 	for _, r := range rows {
 		p := networth.AccountPlan{ID: r.ID.String(), Name: r.Name}
@@ -687,8 +711,12 @@ func toAccountPlans(rows []dbgen.ListProjectableAccountsRow) []networth.AccountP
 		if r.EmployerMatchLimit.Valid {
 			p.EmployerMatchLimit = r.EmployerMatchLimit.Decimal
 		}
+		stored := 0
 		if r.BeneficiaryCurrentAge != nil {
-			p.BeneficiaryCurrentAge = int(*r.BeneficiaryCurrentAge)
+			stored = int(*r.BeneficiaryCurrentAge)
+		}
+		if age, ok := networth.ResolveAge(r.BeneficiaryBirthdate, stored, now); ok {
+			p.BeneficiaryCurrentAge = age
 		}
 		if r.BeneficiaryTargetAge != nil {
 			p.BeneficiaryTargetAge = int(*r.BeneficiaryTargetAge)

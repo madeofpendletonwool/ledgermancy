@@ -238,7 +238,7 @@ second thing to back up: see 18's note about the document volume not being in
   read-only endpoint needs adding there before it works offline, and sign-out
   must keep clearing the worker's caches (`clearApiCache`) or a shared device
   leaks the previous user's figures.
-- **[21-household-sharing.md](21-household-sharing.md)** — **rewritten.** The
+- **[21-household-sharing.md](21-household-sharing.md)** — **shipped.** The
   organizing idea is that a **person** and a **login** are different things:
   `household_people` carries a name, a birthdate and an optional `user_id`, so a
   six-year-old with a 529 exists without credentials. Accounts and manual assets
@@ -257,6 +257,48 @@ second thing to back up: see 18's note about the document volume not being in
   dropped; both become the fallback behind a derived age. Anything needing an age
   after this doc lands resolves birthdate → stored integer → `ok=false`, and
   derives against `ProjectRetirement`'s `now` parameter rather than the clock.
+
+  Six things anyone touching this should know.
+
+  First, **migration numbering broke and was fixed here.** `db.Migrate` runs
+  goose in strict-ordering mode, so a `00025` could never apply to an instance
+  already at `00033` — it fails at startup with `found N missing migrations`.
+  This doc took `00034` and every remaining reservation was reissued above
+  `00033`. `goose.WithAllowMissing()` would also have silenced it and was
+  deliberately not used; see the note on `db.Migrate`.
+
+  Second, **the role guard is mounted on route groups, never per handler**
+  (`auth.RequireAdult` / `RequireOwner`). `Routes()` was split into
+  `routesWithAuth` so `role_enforcement_test.go` can mount a stub identity and
+  assert **every** route individually — 169 subtests, and it fails loudly if a
+  new top-level group forgets the guard. Adding a route means deciding which
+  group it belongs in; there is no third option. The one legitimate per-handler
+  check is `handleUpsertPreferences`, because that resource is split by scope
+  rather than by URL.
+
+  Third, **the sign convention on `allowance_entries` is inverted** relative to
+  `transactions.amount`: positive means money INTO the child's balance. It is a
+  balance, not a spend feed. Nothing joins the two tables and nothing should —
+  `TestAllowanceEntriesDoNotChangeHouseholdSpend` is the guard.
+
+  Fourth, **three double-counting invariants are asserted with exact decimals**
+  (`split_invariants_test.go`): splitting a transaction, adding allowance
+  entries, and tagging a beneficiary each leave the corresponding household
+  total byte-identical. These are the tests that make the rest trustworthy.
+
+  Fifth, **age resolution is birthdate → stored integer → `ok=false`**
+  (`networth.ResolveAge`). The backfill leaves every existing person's birthdate
+  NULL precisely so an upgraded instance produces identical projections until
+  somebody enters one — `TestResolveAgeIsUpgradeSafe` asserts that directly.
+  Self-service editing lives at `PUT /api/me/person`, surfaced as a Profile tab
+  in Settings, because `UpdateUserProfile` existed in `users.sql` with no handler
+  and there was no profile-editing endpoint in the app at all.
+
+  Sixth, **custodial money is excluded from the retirement nest egg.**
+  `networth.IsCustodial` covers `529`, `utma_ugma`, `coverdell`,
+  `custodial_roth` and `trump`. A UTMA is irrevocably the child's property, so
+  counting it as household retirement savings overstates the position by the
+  whole balance — in the flattering direction, which is why nobody catches it.
 
 ### Wave 5 — depend on waves 3–4
 
@@ -318,38 +360,51 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
 - Throwaway Postgres for tests:
   `docker run -d --name lmtest-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=lmtest -p 55432:5432 postgres:17-alpine`
   then `TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test -p 1 ./...`
-- Migrations are numbered. **`00024_documents.sql` is the latest on
-  `main`**, with `00033` also taken (see the foot of the table). `00019`–`00021`,
-  `00023` and `00024` belong to docs 13, 14, 15, 17 and 18, which have shipped.
-  **`00022` is still free**: doc 16 was deliberately deferred, not dropped, and
-  keeps its reservation. **`00025`–`00032` remain reserved** and are still the
-  numbers their docs should use — 18's follow-up jumped to `00033` precisely so
-  it did not consume one.
-  To avoid the collision class that already bit this repo once (two
-  `00007`s), each doc that needs a migration has a **reserved number**; use it,
-  but re-check it's still free at implementation time and renumber (+ update
-  dependents) if an out-of-order merge took it:
+- Migrations are numbered, and **`db.Migrate` runs goose in strict-ordering
+  mode**. That is the constraint everything below follows from: a new migration
+  must be numbered **above every version already applied**, or an instance that
+  has run the higher one refuses to start with
+  `found N missing migrations before current version`.
+
+  **`00034_household_people_and_splits.sql` (doc 21) is the latest.** Applied
+  before it: `00001`–`00021`, `00023`, `00024`, `00033`.
+
+  **The old `00022`–`00032` reservations are void and have been reissued
+  above `00033`.** They were allocated below `00033` before doc 18's follow-up
+  took that number, which left every one of them unusable — applying a `00025`
+  to an instance already at `00033` fails outright. Doc 21 hit this and
+  renumbered; the rest are renumbered here so nobody hits it again.
+  `goose.WithAllowMissing()` would also have silenced it and was deliberately
+  **not** used: it trades away "the schema is a function of the version number"
+  for a problem that renumbering solves outright.
+
+  To avoid the collision class that already bit this repo once (two `00007`s),
+  each doc that needs a migration has a **reserved number**. A reservation is a
+  claim on a name, not a guarantee: before writing one, check it is both still
+  free **and still above the highest applied version**, and renumber (+ update
+  this table) if either has stopped being true.
 
   | Migration | Doc | Adds |
   |---|---|---|
-  | `00019_recurring_obligations.sql` | 13 | `recurring_obligations` table |
-  | `00020_investment_analysis.sql` | 14 | `accounts.tax_treatment`, `investment_snapshots`, `asset_prices` |
-  | `00021_projection_assumptions.sql` | 15 | `projection_assumptions`, `account_contributions` |
-  | `00022_backup_status.sql` | 16 | `backup_runs` table |
-  | `00023_merchant_entities.sql` | 17 | `merchant_entities`, `merchant_aliases`, `merchant_merge_rejections` |
+  | ~~`00019_recurring_obligations.sql`~~ | 13 | `recurring_obligations` table — **taken** |
+  | ~~`00020_investment_analysis.sql`~~ | 14 | `accounts.tax_treatment`, `investment_snapshots`, `asset_prices` — **taken** |
+  | ~~`00021_projection_assumptions.sql`~~ | 15 | `projection_assumptions`, `account_contributions` — **taken** |
+  | ~~`00023_merchant_entities.sql`~~ | 17 | `merchant_entities`, `merchant_aliases`, `merchant_merge_rejections` — **taken** |
   | ~~`00024_documents.sql`~~ | 18 | `documents`, `document_links` — **taken** |
-  | `00025_household_people_and_splits.sql` | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` |
-  | `00026_merchant_baselines.sql` | 22 | `merchant_baselines` table |
-  | `00027_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
-  | `00028_digest_entries.sql` | 25 | `digest_entries` table |
-  | `00029_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
-  | `00030_cpi_series.sql` | 27 | `cpi_series` table |
-  | `00031_scenarios.sql` | 28 | `scenarios` table |
-  | `00032_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
-  | ~~`00033_document_extractions.sql`~~ | 18 | `documents.extracted_*` — **taken** (follow-up to 18; every number below 33 was already reserved) |
+  | ~~`00033_document_extractions.sql`~~ | 18 | `documents.extracted_*` — **taken** (follow-up to 18) |
+  | ~~`00034_household_people_and_splits.sql`~~ | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` — **taken** |
+  | `00035_backup_status.sql` | 16 | `backup_runs` table |
+  | `00036_merchant_baselines.sql` | 22 | `merchant_baselines` table |
+  | `00037_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
+  | `00038_digest_entries.sql` | 25 | `digest_entries` table |
+  | `00039_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
+  | `00040_cpi_series.sql` | 27 | `cpi_series` table |
+  | `00041_scenarios.sql` | 28 | `scenarios` table |
+  | `00042_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
-  **these reservations are load-bearing** — take only your own number.
+  **these reservations are load-bearing** — take only your own number, and only
+  after confirming it still sits above everything applied.
 
   One pair can still genuinely collide and needs coordination rather than just
   distinct numbers:

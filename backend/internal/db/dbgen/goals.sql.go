@@ -16,33 +16,49 @@ import (
 const archiveGoal = `-- name: ArchiveGoal :exec
 UPDATE goals
 SET archived_at = now()
-WHERE id = $1 AND household_id = $2
-  AND (scope = 'household' OR user_id = $3)
+WHERE id = $1
+  AND household_id = $2
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = $3)
+     OR (scope = 'person' AND ($4::boolean
+                               OR person_id = $5))
+  )
 `
 
 type ArchiveGoalParams struct {
-	ID          uuid.UUID  `json:"id"`
-	HouseholdID uuid.UUID  `json:"household_id"`
-	UserID      *uuid.UUID `json:"user_id"`
+	ID             uuid.UUID  `json:"id"`
+	HouseholdID    uuid.UUID  `json:"household_id"`
+	UserID         *uuid.UUID `json:"user_id"`
+	AllPersonGoals bool       `json:"all_person_goals"`
+	PersonID       *uuid.UUID `json:"person_id"`
 }
 
 func (q *Queries) ArchiveGoal(ctx context.Context, arg ArchiveGoalParams) error {
-	_, err := q.db.Exec(ctx, archiveGoal, arg.ID, arg.HouseholdID, arg.UserID)
+	_, err := q.db.Exec(ctx, archiveGoal,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.AllPersonGoals,
+		arg.PersonID,
+	)
 	return err
 }
 
 const createGoal = `-- name: CreateGoal :one
 
 INSERT INTO goals (
-    household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at
+    household_id, scope, user_id, person_id, kind, name, target_amount,
+    target_date, account_id, category_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id
 `
 
 type CreateGoalParams struct {
 	HouseholdID  uuid.UUID       `json:"household_id"`
 	Scope        string          `json:"scope"`
 	UserID       *uuid.UUID      `json:"user_id"`
+	PersonID     *uuid.UUID      `json:"person_id"`
 	Kind         string          `json:"kind"`
 	Name         string          `json:"name"`
 	TargetAmount decimal.Decimal `json:"target_amount"`
@@ -53,12 +69,25 @@ type CreateGoalParams struct {
 
 // Goals: savings/target goals and the derived-progress lookups behind them.
 // Every read is scoped so a caller sees their household's shared goals plus
-// their own personal ones, never another member's private goal.
+// their own, never another member's private goal.
+//
+// Three scopes, and the visibility rule differs per scope:
+//
+//	household — everyone in the household
+//	user      — only the login that owns it
+//	person    — the person it belongs to, plus any adult (a parent manages a
+//	            child's goals, and a child who cannot see their own goal has
+//	            no teaching surface at all)
+//
+// `all_person_goals` carries the adult/child decision into the SQL rather than
+// letting each caller re-derive it. It is set from the caller's role, which is
+// checked server-side; a child session always passes false.
 func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error) {
 	row := q.db.QueryRow(ctx, createGoal,
 		arg.HouseholdID,
 		arg.Scope,
 		arg.UserID,
+		arg.PersonID,
 		arg.Kind,
 		arg.Name,
 		arg.TargetAmount,
@@ -81,24 +110,114 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		&i.CreatedAt,
 		&i.AchievedAt,
 		&i.ArchivedAt,
+		&i.PersonID,
 	)
 	return i, err
 }
 
+const createGoalContribution = `-- name: CreateGoalContribution :one
+
+INSERT INTO goal_contributions (goal_id, person_id, amount, occurred_on, note)
+SELECT g.id, p.id, $1::numeric,
+       $2::date, $3
+FROM goals g
+JOIN household_people p
+  ON p.id = $4 AND p.household_id = g.household_id
+WHERE g.id = $5
+  AND g.household_id = $6
+RETURNING id, goal_id, person_id, amount, occurred_on, note, created_at
+`
+
+type CreateGoalContributionParams struct {
+	Amount      decimal.Decimal `json:"amount"`
+	OccurredOn  stdtime.Time    `json:"occurred_on"`
+	Note        *string         `json:"note"`
+	PersonID    uuid.UUID       `json:"person_id"`
+	GoalID      uuid.UUID       `json:"goal_id"`
+	HouseholdID uuid.UUID       `json:"household_id"`
+}
+
+// --------------------------------------------------------------------------
+// Contributions
+// --------------------------------------------------------------------------
+//
+// ATTRIBUTION, not progress. For an account-linked goal, progress remains the
+// account balance (see the 00012 header rule: progress is DERIVED, never
+// stored); these rows record who funded what. For an unlinked goal they are the
+// natural progress source. Never let the two become one number.
+// Goal and person are both re-resolved through the household guard rather than
+// trusted from the request.
+func (q *Queries) CreateGoalContribution(ctx context.Context, arg CreateGoalContributionParams) (GoalContribution, error) {
+	row := q.db.QueryRow(ctx, createGoalContribution,
+		arg.Amount,
+		arg.OccurredOn,
+		arg.Note,
+		arg.PersonID,
+		arg.GoalID,
+		arg.HouseholdID,
+	)
+	var i GoalContribution
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.PersonID,
+		&i.Amount,
+		&i.OccurredOn,
+		&i.Note,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteGoalContribution = `-- name: DeleteGoalContribution :execrows
+DELETE FROM goal_contributions c
+USING goals g
+WHERE c.id = $1
+  AND g.id = c.goal_id
+  AND g.household_id = $2
+`
+
+type DeleteGoalContributionParams struct {
+	ID          uuid.UUID `json:"id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (q *Queries) DeleteGoalContribution(ctx context.Context, arg DeleteGoalContributionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGoalContribution, arg.ID, arg.HouseholdID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getGoal = `-- name: GetGoal :one
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at FROM goals
-WHERE id = $1 AND household_id = $2
-  AND (scope = 'household' OR user_id = $3)
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
+WHERE id = $1
+  AND household_id = $2
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = $3)
+     OR (scope = 'person' AND ($4::boolean
+                               OR person_id = $5))
+  )
 `
 
 type GetGoalParams struct {
-	ID          uuid.UUID  `json:"id"`
-	HouseholdID uuid.UUID  `json:"household_id"`
-	UserID      *uuid.UUID `json:"user_id"`
+	ID             uuid.UUID  `json:"id"`
+	HouseholdID    uuid.UUID  `json:"household_id"`
+	UserID         *uuid.UUID `json:"user_id"`
+	AllPersonGoals bool       `json:"all_person_goals"`
+	PersonID       *uuid.UUID `json:"person_id"`
 }
 
 func (q *Queries) GetGoal(ctx context.Context, arg GetGoalParams) (Goal, error) {
-	row := q.db.QueryRow(ctx, getGoal, arg.ID, arg.HouseholdID, arg.UserID)
+	row := q.db.QueryRow(ctx, getGoal,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.AllPersonGoals,
+		arg.PersonID,
+	)
 	var i Goal
 	err := row.Scan(
 		&i.ID,
@@ -114,6 +233,7 @@ func (q *Queries) GetGoal(ctx context.Context, arg GetGoalParams) (Goal, error) 
 		&i.CreatedAt,
 		&i.AchievedAt,
 		&i.ArchivedAt,
+		&i.PersonID,
 	)
 	return i, err
 }
@@ -141,7 +261,7 @@ func (q *Queries) GetGoalAccountBalance(ctx context.Context, arg GetGoalAccountB
 }
 
 const listActiveHouseholdGoals = `-- name: ListActiveHouseholdGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
 WHERE household_id = $1 AND scope = 'household' AND archived_at IS NULL
 `
 
@@ -173,6 +293,61 @@ func (q *Queries) ListActiveHouseholdGoals(ctx context.Context, householdID uuid
 			&i.CreatedAt,
 			&i.AchievedAt,
 			&i.ArchivedAt,
+			&i.PersonID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGoalContributions = `-- name: ListGoalContributions :many
+SELECT c.id, c.goal_id, c.person_id, c.amount, c.occurred_on, c.note, c.created_at, p.display_name
+FROM goal_contributions c
+JOIN goals g            ON g.id = c.goal_id
+JOIN household_people p ON p.id = c.person_id
+WHERE c.goal_id = $1 AND g.household_id = $2
+ORDER BY c.occurred_on DESC, c.created_at DESC
+`
+
+type ListGoalContributionsParams struct {
+	GoalID      uuid.UUID `json:"goal_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+type ListGoalContributionsRow struct {
+	ID          uuid.UUID       `json:"id"`
+	GoalID      uuid.UUID       `json:"goal_id"`
+	PersonID    uuid.UUID       `json:"person_id"`
+	Amount      decimal.Decimal `json:"amount"`
+	OccurredOn  stdtime.Time    `json:"occurred_on"`
+	Note        *string         `json:"note"`
+	CreatedAt   stdtime.Time    `json:"created_at"`
+	DisplayName string          `json:"display_name"`
+}
+
+func (q *Queries) ListGoalContributions(ctx context.Context, arg ListGoalContributionsParams) ([]ListGoalContributionsRow, error) {
+	rows, err := q.db.Query(ctx, listGoalContributions, arg.GoalID, arg.HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGoalContributionsRow{}
+	for rows.Next() {
+		var i ListGoalContributionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.PersonID,
+			&i.Amount,
+			&i.OccurredOn,
+			&i.Note,
+			&i.CreatedAt,
+			&i.DisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -185,21 +360,33 @@ func (q *Queries) ListActiveHouseholdGoals(ctx context.Context, householdID uuid
 }
 
 const listGoals = `-- name: ListGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
 WHERE household_id = $1
   AND archived_at IS NULL
-  AND (scope = 'household' OR user_id = $2)
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = $2)
+     OR (scope = 'person' AND ($3::boolean
+                               OR person_id = $4))
+  )
 ORDER BY created_at DESC
 `
 
 type ListGoalsParams struct {
-	HouseholdID uuid.UUID  `json:"household_id"`
-	UserID      *uuid.UUID `json:"user_id"`
+	HouseholdID    uuid.UUID  `json:"household_id"`
+	UserID         *uuid.UUID `json:"user_id"`
+	AllPersonGoals bool       `json:"all_person_goals"`
+	PersonID       *uuid.UUID `json:"person_id"`
 }
 
-// Active goals visible to the caller: household-shared plus their own.
+// Active goals visible to the caller.
 func (q *Queries) ListGoals(ctx context.Context, arg ListGoalsParams) ([]Goal, error) {
-	rows, err := q.db.Query(ctx, listGoals, arg.HouseholdID, arg.UserID)
+	rows, err := q.db.Query(ctx, listGoals,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.AllPersonGoals,
+		arg.PersonID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +408,7 @@ func (q *Queries) ListGoals(ctx context.Context, arg ListGoalsParams) ([]Goal, e
 			&i.CreatedAt,
 			&i.AchievedAt,
 			&i.ArchivedAt,
+			&i.PersonID,
 		); err != nil {
 			return nil, err
 		}
@@ -250,35 +438,111 @@ func (q *Queries) MarkGoalAchieved(ctx context.Context, arg MarkGoalAchievedPara
 	return err
 }
 
+const sumGoalContributions = `-- name: SumGoalContributions :one
+SELECT COALESCE(SUM(c.amount), 0)::numeric AS total
+FROM goal_contributions c
+JOIN goals g ON g.id = c.goal_id
+WHERE c.goal_id = $1 AND g.household_id = $2
+`
+
+type SumGoalContributionsParams struct {
+	GoalID      uuid.UUID `json:"goal_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+func (q *Queries) SumGoalContributions(ctx context.Context, arg SumGoalContributionsParams) (decimal.Decimal, error) {
+	row := q.db.QueryRow(ctx, sumGoalContributions, arg.GoalID, arg.HouseholdID)
+	var total decimal.Decimal
+	err := row.Scan(&total)
+	return total, err
+}
+
+const sumGoalContributionsByPerson = `-- name: SumGoalContributionsByPerson :many
+SELECT p.id AS person_id, p.display_name, SUM(c.amount)::numeric AS total
+FROM goal_contributions c
+JOIN goals g            ON g.id = c.goal_id
+JOIN household_people p ON p.id = c.person_id
+WHERE c.goal_id = $1 AND g.household_id = $2
+GROUP BY p.id, p.display_name
+ORDER BY SUM(c.amount) DESC
+`
+
+type SumGoalContributionsByPersonParams struct {
+	GoalID      uuid.UUID `json:"goal_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+type SumGoalContributionsByPersonRow struct {
+	PersonID    uuid.UUID       `json:"person_id"`
+	DisplayName string          `json:"display_name"`
+	Total       decimal.Decimal `json:"total"`
+}
+
+// The "who funded what" breakdown. Ordered by size so the biggest contributor
+// reads first.
+func (q *Queries) SumGoalContributionsByPerson(ctx context.Context, arg SumGoalContributionsByPersonParams) ([]SumGoalContributionsByPersonRow, error) {
+	rows, err := q.db.Query(ctx, sumGoalContributionsByPerson, arg.GoalID, arg.HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumGoalContributionsByPersonRow{}
+	for rows.Next() {
+		var i SumGoalContributionsByPersonRow
+		if err := rows.Scan(&i.PersonID, &i.DisplayName, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateGoal = `-- name: UpdateGoal :one
 UPDATE goals
-SET name = $4, target_amount = $5, target_date = $6, account_id = $7, category_id = $8
-WHERE id = $1 AND household_id = $2
-  AND (scope = 'household' OR user_id = $3)
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at
+SET name = $1,
+    target_amount = $2,
+    target_date = $3,
+    account_id = $4,
+    category_id = $5
+WHERE id = $6
+  AND household_id = $7
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = $8)
+     OR (scope = 'person' AND ($9::boolean
+                               OR person_id = $10))
+  )
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id
 `
 
 type UpdateGoalParams struct {
-	ID           uuid.UUID       `json:"id"`
-	HouseholdID  uuid.UUID       `json:"household_id"`
-	UserID       *uuid.UUID      `json:"user_id"`
-	Name         string          `json:"name"`
-	TargetAmount decimal.Decimal `json:"target_amount"`
-	TargetDate   *stdtime.Time   `json:"target_date"`
-	AccountID    *uuid.UUID      `json:"account_id"`
-	CategoryID   *uuid.UUID      `json:"category_id"`
+	Name           string          `json:"name"`
+	TargetAmount   decimal.Decimal `json:"target_amount"`
+	TargetDate     *stdtime.Time   `json:"target_date"`
+	AccountID      *uuid.UUID      `json:"account_id"`
+	CategoryID     *uuid.UUID      `json:"category_id"`
+	ID             uuid.UUID       `json:"id"`
+	HouseholdID    uuid.UUID       `json:"household_id"`
+	UserID         *uuid.UUID      `json:"user_id"`
+	AllPersonGoals bool            `json:"all_person_goals"`
+	PersonID       *uuid.UUID      `json:"person_id"`
 }
 
 func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error) {
 	row := q.db.QueryRow(ctx, updateGoal,
-		arg.ID,
-		arg.HouseholdID,
-		arg.UserID,
 		arg.Name,
 		arg.TargetAmount,
 		arg.TargetDate,
 		arg.AccountID,
 		arg.CategoryID,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.AllPersonGoals,
+		arg.PersonID,
 	)
 	var i Goal
 	err := row.Scan(
@@ -295,6 +559,7 @@ func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, e
 		&i.CreatedAt,
 		&i.AchievedAt,
 		&i.ArchivedAt,
+		&i.PersonID,
 	)
 	return i, err
 }

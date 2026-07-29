@@ -23,6 +23,9 @@ import { Report } from './routes/Report'
 import { Retirement } from './routes/Retirement'
 import { Schedule } from './routes/Schedule'
 import { Settings } from './routes/Settings'
+import { MyMoney } from './routes/MyMoney'
+import { Shared } from './routes/Shared'
+import { isAdult } from './lib/api'
 import { useSession } from './lib/session'
 
 export default function App() {
@@ -56,13 +59,18 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Dashboard />} />
+          {/* A child's home is their own money, not the household dashboard.
+              This is presentation only — every household route below is
+              guarded server-side, so a child who types a URL gets a 403 from
+              the API regardless of what the router renders. */}
+          <Route index element={<Home />} />
           <Route path="/insights" element={<Insights />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/spending" element={<Spending />} />
           <Route path="/budgets" element={<Budgets />} />
           <Route path="/schedule" element={<Schedule />} />
           <Route path="/goals" element={<Goals />} />
+          <Route path="/shared" element={<Shared />} />
           <Route path="/net-worth" element={<NetWorth />} />
           <Route path="/investments" element={<Investments />} />
           <Route path="/retirement" element={<Retirement />} />
@@ -87,6 +95,15 @@ export default function App() {
       </Routes>
     </>
   )
+}
+
+/**
+ * The landing page, by role. A child gets their own money; everyone else gets
+ * the household dashboard.
+ */
+function Home() {
+  const { data: user } = useSession()
+  return isAdult(user) ? <Dashboard /> : <MyMoney />
 }
 
 /** Blocks a route until the session resolves, then redirects if signed out. */

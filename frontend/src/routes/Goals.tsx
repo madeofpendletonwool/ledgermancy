@@ -61,6 +61,7 @@ function statusChip(goal: Goal): { label: string; tone: 'good' | 'critical' | 'm
 
 function GoalCard({ goal }: { goal: Goal }) {
   const qc = useQueryClient()
+  const [showFunding, setShowFunding] = useState(false)
   const archive = useMutation({
     mutationFn: () => api.archiveGoal(goal.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['goals'] }),
@@ -89,6 +90,11 @@ function GoalCard({ goal }: { goal: Goal }) {
                 personal
               </span>
             )}
+            {goal.scope === 'person' && (
+              <span className="ml-2 text-xs font-normal text-mist-500">
+                someone's own
+              </span>
+            )}
           </p>
           <p className="mt-0.5 text-sm text-mist-400">
             {formatMoney(goal.current_amount)} of {formatMoney(goal.target_amount)}
@@ -105,6 +111,14 @@ function GoalCard({ goal }: { goal: Goal }) {
           >
             {chip.label}
           </span>
+          {goal.scope === 'household' && (
+            <button
+              className="btn-ghost px-2.5 py-1 text-xs"
+              onClick={() => setShowFunding((v) => !v)}
+            >
+              {showFunding ? 'Hide funding' : 'Who funded it'}
+            </button>
+          )}
           {/* A quote, a contract or a policy behind the goal it justifies. */}
           <AttachDocuments target={{ kind: 'goal', id: goal.id }} />
           <button
@@ -130,6 +144,101 @@ function GoalCard({ goal }: { goal: Goal }) {
           </span>
         )}
       </div>
+
+      {showFunding && <GoalFunding goal={goal} />}
+    </div>
+  )
+}
+
+/**
+ * Who funded a shared goal.
+ *
+ * ATTRIBUTION, not progress. The bar above still shows the goal's real
+ * standing — for an account-linked goal that is the account balance, whether or
+ * not anybody logged a contribution here. This panel answers a different
+ * question ("who put money in") and says so, because summing contributions into
+ * progress would create a second figure that drifts from the first the moment
+ * someone forgets to log one.
+ */
+function GoalFunding({ goal }: { goal: Goal }) {
+  const qc = useQueryClient()
+  const funding = useQuery({
+    queryKey: ['goal-contributions', goal.id],
+    queryFn: () => api.goalContributions(goal.id),
+  })
+
+  const [amount, setAmount] = useState('')
+
+  const add = useMutation({
+    mutationFn: () => api.addGoalContribution(goal.id, { amount }),
+    onSuccess: () => {
+      setAmount('')
+      qc.invalidateQueries({ queryKey: ['goal-contributions', goal.id] })
+    },
+  })
+
+  return (
+    <div className="mt-4 rounded-xl bg-white/5 p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <h4 className="text-sm font-medium text-mist-300">Funded by</h4>
+        <span className="text-xs text-mist-500">
+          {formatMoney(funding.data?.total)} logged
+        </span>
+      </div>
+
+      {funding.data?.contributors.length === 0 && (
+        <p className="mt-2 text-xs text-mist-500">
+          Nothing logged yet. Progress above still comes from the goal itself.
+        </p>
+      )}
+
+      <ul className="mt-3 space-y-2">
+        {funding.data?.contributors.map((c) => (
+          <li key={c.person_id} className="flex items-center gap-3 text-sm">
+            <span className="w-24 shrink-0 truncate">{c.person_name}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rounded-full bg-arcane-500"
+                style={{ width: `${c.share_pct}%` }}
+              />
+            </div>
+            <span className="w-24 shrink-0 text-right tabular-nums text-mist-300">
+              {formatMoney(c.total)}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <form
+        className="mt-4 flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault()
+          add.mutate()
+        }}
+      >
+        <input
+          required
+          className="field flex-1"
+          placeholder="I put in…"
+          inputMode="decimal"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+        <button className="btn-ghost shrink-0" disabled={add.isPending}>
+          {add.isPending ? 'Logging…' : 'Log'}
+        </button>
+      </form>
+
+      {add.isError && (
+        <p role="alert" className="mt-2 text-xs text-ember-400">
+          {add.error.message}
+        </p>
+      )}
+
+      <p className="mt-3 text-xs text-mist-500">
+        This records who contributed. It doesn't move the progress bar — that
+        comes from the goal's own balance.
+      </p>
     </div>
   )
 }
@@ -156,6 +265,10 @@ function CreateGoal() {
   const [accountID, setAccountID] = useState('')
   const [categoryID, setCategoryID] = useState('')
   const [personal, setPersonal] = useState(false)
+  // A goal that belongs to someone else in the household — a child's bike fund
+  // is the case this exists for. Mutually exclusive with "just for me".
+  const [forPerson, setForPerson] = useState('')
+  const people = useQuery({ queryKey: ['people'], queryFn: api.people })
 
   const create = useCreateGoal(() => {
     setName('')
@@ -174,7 +287,8 @@ function CreateGoal() {
       name: name.trim(),
       target_amount: amount,
       target_date: date || undefined,
-      scope: personal ? 'user' : 'household',
+      scope: forPerson ? 'person' : personal ? 'user' : 'household',
+      person_id: forPerson || undefined,
       account_id: accountID || null,
       category_id: categoryID || null,
     })
@@ -272,11 +386,34 @@ function CreateGoal() {
           </select>
         </div>
 
+        <div>
+          <label className="label" htmlFor="goal-person">
+            Whose goal
+          </label>
+          <select
+            id="goal-person"
+            className="field"
+            value={forPerson}
+            onChange={(e) => {
+              setForPerson(e.target.value)
+              if (e.target.value) setPersonal(false)
+            }}
+          >
+            <option value="">The household</option>
+            {people.data?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <label className="flex items-end gap-2 pb-2 text-sm text-mist-300">
           <input
             type="checkbox"
             className="h-4 w-4 accent-arcane-500"
             checked={personal}
+            disabled={!!forPerson}
             onChange={(e) => setPersonal(e.target.checked)}
           />
           Just for me (personal goal)

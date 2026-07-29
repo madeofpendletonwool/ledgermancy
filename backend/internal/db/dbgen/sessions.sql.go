@@ -131,9 +131,12 @@ SELECT
     u.id           AS user_id,
     u.household_id,
     u.email,
-    u.display_name
+    u.display_name,
+    u.role,
+    p.id           AS person_id
 FROM sessions s
 JOIN users u ON u.id = s.user_id
+LEFT JOIN household_people p ON p.user_id = u.id
 WHERE s.token_hash = $1
   AND s.expires_at > now()
   AND s.last_used_at > now() - $2::interval
@@ -152,6 +155,8 @@ type GetSessionUserRow struct {
 	HouseholdID       uuid.UUID    `json:"household_id"`
 	Email             string       `json:"email"`
 	DisplayName       string       `json:"display_name"`
+	Role              string       `json:"role"`
+	PersonID          *uuid.UUID   `json:"person_id"`
 }
 
 // Resolves a cookie token straight to the authenticated user in one round
@@ -160,6 +165,12 @@ type GetSessionUserRow struct {
 //
 //	expires_at   — the absolute cap, set at login (30 days)
 //	last_used_at — the idle cap, so an abandoned session dies sooner
+//
+// role and person_id ride along because every authorization decision needs the
+// role and most person-scoped reads need the id, and re-fetching either on each
+// request would add a round trip to the hottest path in the app. The LEFT JOIN
+// is deliberate: a login whose person row was somehow removed still
+// authenticates, it simply has no person-scoped data.
 func (q *Queries) GetSessionUser(ctx context.Context, arg GetSessionUserParams) (GetSessionUserRow, error) {
 	row := q.db.QueryRow(ctx, getSessionUser, arg.TokenHash, arg.IdleTtl)
 	var i GetSessionUserRow
@@ -171,6 +182,8 @@ func (q *Queries) GetSessionUser(ctx context.Context, arg GetSessionUserParams) 
 		&i.HouseholdID,
 		&i.Email,
 		&i.DisplayName,
+		&i.Role,
+		&i.PersonID,
 	)
 	return i, err
 }

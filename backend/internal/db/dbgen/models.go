@@ -11,35 +11,37 @@ import (
 )
 
 type Account struct {
-	ID               uuid.UUID           `json:"id"`
-	PlaidItemID      uuid.UUID           `json:"plaid_item_id"`
-	PlaidAccountID   string              `json:"plaid_account_id"`
-	Name             string              `json:"name"`
-	OfficialName     *string             `json:"official_name"`
-	Mask             *string             `json:"mask"`
-	Type             string              `json:"type"`
-	Subtype          *string             `json:"subtype"`
-	CurrentBalance   decimal.NullDecimal `json:"current_balance"`
-	AvailableBalance decimal.NullDecimal `json:"available_balance"`
-	CreditLimit      decimal.NullDecimal `json:"credit_limit"`
-	Currency         string              `json:"currency"`
-	IsActive         bool                `json:"is_active"`
-	CreatedAt        stdtime.Time        `json:"created_at"`
-	UpdatedAt        stdtime.Time        `json:"updated_at"`
-	TaxTreatment     *string             `json:"tax_treatment"`
-	IsManaged        *bool               `json:"is_managed"`
+	ID                  uuid.UUID           `json:"id"`
+	PlaidItemID         uuid.UUID           `json:"plaid_item_id"`
+	PlaidAccountID      string              `json:"plaid_account_id"`
+	Name                string              `json:"name"`
+	OfficialName        *string             `json:"official_name"`
+	Mask                *string             `json:"mask"`
+	Type                string              `json:"type"`
+	Subtype             *string             `json:"subtype"`
+	CurrentBalance      decimal.NullDecimal `json:"current_balance"`
+	AvailableBalance    decimal.NullDecimal `json:"available_balance"`
+	CreditLimit         decimal.NullDecimal `json:"credit_limit"`
+	Currency            string              `json:"currency"`
+	IsActive            bool                `json:"is_active"`
+	CreatedAt           stdtime.Time        `json:"created_at"`
+	UpdatedAt           stdtime.Time        `json:"updated_at"`
+	TaxTreatment        *string             `json:"tax_treatment"`
+	IsManaged           *bool               `json:"is_managed"`
+	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
 }
 
 type AccountContribution struct {
-	ID                    uuid.UUID           `json:"id"`
-	AccountID             uuid.UUID           `json:"account_id"`
-	MonthlyContribution   decimal.Decimal     `json:"monthly_contribution"`
-	EmployerMatchPct      decimal.NullDecimal `json:"employer_match_pct"`
-	AnnualSalary          decimal.NullDecimal `json:"annual_salary"`
-	EmployerMatchLimit    decimal.NullDecimal `json:"employer_match_limit"`
-	BeneficiaryCurrentAge *int32              `json:"beneficiary_current_age"`
-	BeneficiaryTargetAge  *int32              `json:"beneficiary_target_age"`
-	UpdatedAt             stdtime.Time        `json:"updated_at"`
+	ID                  uuid.UUID           `json:"id"`
+	AccountID           uuid.UUID           `json:"account_id"`
+	MonthlyContribution decimal.Decimal     `json:"monthly_contribution"`
+	EmployerMatchPct    decimal.NullDecimal `json:"employer_match_pct"`
+	AnnualSalary        decimal.NullDecimal `json:"annual_salary"`
+	EmployerMatchLimit  decimal.NullDecimal `json:"employer_match_limit"`
+	// DEPRECATED: prefer accounts.beneficiary_person_id -> birthdate.
+	BeneficiaryCurrentAge *int32       `json:"beneficiary_current_age"`
+	BeneficiaryTargetAge  *int32       `json:"beneficiary_target_age"`
+	UpdatedAt             stdtime.Time `json:"updated_at"`
 }
 
 type Alert struct {
@@ -61,6 +63,29 @@ type AlertEvent struct {
 	Payload       []byte        `json:"payload"`
 	ReadAt        *stdtime.Time `json:"read_at"`
 	NotifiedAt    *stdtime.Time `json:"notified_at"`
+}
+
+type Allowance struct {
+	ID            uuid.UUID           `json:"id"`
+	PersonID      uuid.UUID           `json:"person_id"`
+	Amount        decimal.NullDecimal `json:"amount"`
+	Cadence       *string             `json:"cadence"`
+	MonthlyLimit  decimal.NullDecimal `json:"monthly_limit"`
+	AutoPost      bool                `json:"auto_post"`
+	LastPostedFor *stdtime.Time       `json:"last_posted_for"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+	UpdatedAt     stdtime.Time        `json:"updated_at"`
+}
+
+type AllowanceEntry struct {
+	ID         uuid.UUID       `json:"id"`
+	PersonID   uuid.UUID       `json:"person_id"`
+	Kind       string          `json:"kind"`
+	Amount     decimal.Decimal `json:"amount"`
+	OccurredOn stdtime.Time    `json:"occurred_on"`
+	Note       *string         `json:"note"`
+	CreatedBy  *uuid.UUID      `json:"created_by"`
+	CreatedAt  stdtime.Time    `json:"created_at"`
 }
 
 type AssetPrice struct {
@@ -180,6 +205,17 @@ type Goal struct {
 	CreatedAt    stdtime.Time    `json:"created_at"`
 	AchievedAt   *stdtime.Time   `json:"achieved_at"`
 	ArchivedAt   *stdtime.Time   `json:"archived_at"`
+	PersonID     *uuid.UUID      `json:"person_id"`
+}
+
+type GoalContribution struct {
+	ID         uuid.UUID       `json:"id"`
+	GoalID     uuid.UUID       `json:"goal_id"`
+	PersonID   uuid.UUID       `json:"person_id"`
+	Amount     decimal.Decimal `json:"amount"`
+	OccurredOn stdtime.Time    `json:"occurred_on"`
+	Note       *string         `json:"note"`
+	CreatedAt  stdtime.Time    `json:"created_at"`
 }
 
 type Holding struct {
@@ -212,6 +248,19 @@ type HouseholdInvite struct {
 	ExpiresAt   stdtime.Time  `json:"expires_at"`
 	AcceptedAt  *stdtime.Time `json:"accepted_at"`
 	CreatedAt   stdtime.Time  `json:"created_at"`
+	Role        string        `json:"role"`
+	PersonID    *uuid.UUID    `json:"person_id"`
+}
+
+type HouseholdPerson struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	UserID      *uuid.UUID    `json:"user_id"`
+	DisplayName string        `json:"display_name"`
+	Birthdate   *stdtime.Time `json:"birthdate"`
+	IsDependent bool          `json:"is_dependent"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+	UpdatedAt   stdtime.Time  `json:"updated_at"`
 }
 
 type Insight struct {
@@ -289,6 +338,7 @@ type ManualAsset struct {
 	Notes       *string         `json:"notes"`
 	CreatedAt   stdtime.Time    `json:"created_at"`
 	UpdatedAt   stdtime.Time    `json:"updated_at"`
+	PersonID    *uuid.UUID      `json:"person_id"`
 }
 
 type MerchantAlias struct {
@@ -398,12 +448,13 @@ type Preference struct {
 }
 
 type ProjectionAssumption struct {
-	ID                   uuid.UUID           `json:"id"`
-	HouseholdID          uuid.UUID           `json:"household_id"`
-	RealReturnRate       decimal.Decimal     `json:"real_return_rate"`
-	InflationRate        decimal.Decimal     `json:"inflation_rate"`
-	WithdrawalRate       decimal.Decimal     `json:"withdrawal_rate"`
-	TargetRetirementAge  *int32              `json:"target_retirement_age"`
+	ID                  uuid.UUID       `json:"id"`
+	HouseholdID         uuid.UUID       `json:"household_id"`
+	RealReturnRate      decimal.Decimal `json:"real_return_rate"`
+	InflationRate       decimal.Decimal `json:"inflation_rate"`
+	WithdrawalRate      decimal.Decimal `json:"withdrawal_rate"`
+	TargetRetirementAge *int32          `json:"target_retirement_age"`
+	// DEPRECATED: prefer household_people.birthdate. A stored age decays.
 	CurrentAge           *int32              `json:"current_age"`
 	AnnualSsIncome       decimal.NullDecimal `json:"annual_ss_income"`
 	SsStartAge           *int32              `json:"ss_start_age"`
@@ -493,6 +544,15 @@ type Transaction struct {
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 }
 
+type TransactionSplit struct {
+	ID            uuid.UUID       `json:"id"`
+	TransactionID uuid.UUID       `json:"transaction_id"`
+	PersonID      uuid.UUID       `json:"person_id"`
+	Amount        decimal.Decimal `json:"amount"`
+	SettledAt     *stdtime.Time   `json:"settled_at"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
+}
+
 type User struct {
 	ID                  uuid.UUID     `json:"id"`
 	HouseholdID         uuid.UUID     `json:"household_id"`
@@ -507,6 +567,7 @@ type User struct {
 	TotpLastStep        *int64        `json:"totp_last_step"`
 	FailedLoginCount    int32         `json:"failed_login_count"`
 	LockedUntil         *stdtime.Time `json:"locked_until"`
+	Role                string        `json:"role"`
 }
 
 type UserRecoveryCode struct {

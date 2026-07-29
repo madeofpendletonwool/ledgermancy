@@ -45,16 +45,45 @@ type AccountPlan struct {
 	AnnualSalary       decimal.Decimal
 	EmployerMatchLimit decimal.Decimal // annual cap on the match; zero = uncapped
 
-	// A 529 runs to the beneficiary's college start, not to retirement.
-	// Contributions and compounding stop at that horizon and the balance is
-	// excluded from the retirement nest egg entirely — counting a college fund
-	// as retirement assets overstates the household by its whole balance.
+	// A custodial account runs to its beneficiary's horizon, not to retirement.
+	// Contributions and compounding stop there and the balance is excluded from
+	// the retirement nest egg entirely — counting a college fund as retirement
+	// assets overstates the household by its whole balance.
+	//
+	// BeneficiaryCurrentAge is resolved by the caller, preferring the linked
+	// person's birthdate aged to `now` and falling back to the stored integer
+	// only when there is no person or no birthdate. See ResolveAge — a stored
+	// age is correct the day it is typed and wrong every year after.
 	BeneficiaryCurrentAge int
 	BeneficiaryTargetAge  int
 }
 
-// isEducation reports whether this account funds college rather than retirement.
-func (p AccountPlan) isEducation() bool { return p.Treatment == "529" }
+// custodialTreatments are the tax treatments whose balance is NOT the
+// household's retirement money.
+//
+// A 529 was already here: it funds college, not retirement. The rest joined it
+// for a stronger reason — a UTMA/UGMA is irrevocably the child's property from
+// the moment it is funded, a Coverdell is education money, a custodial Roth is
+// the child's own retirement, and a Trump account is locked to the child until
+// they are 18. Counting any of them as the household's nest egg overstates the
+// household's position by the whole balance, and it is the kind of error nobody
+// catches because it moves the number in the flattering direction.
+var custodialTreatments = map[string]bool{
+	"529":            true,
+	"utma_ugma":      true,
+	"coverdell":      true,
+	"custodial_roth": true,
+	"trump":          true,
+}
+
+// IsCustodial reports whether a tax treatment holds money that belongs to a
+// dependent rather than to the household's retirement.
+func IsCustodial(treatment string) bool { return custodialTreatments[treatment] }
+
+// isEducation reports whether this account funds a dependent rather than the
+// household's retirement. Named for the original 529 case; the set is now
+// every custodial treatment.
+func (p AccountPlan) isEducation() bool { return IsCustodial(p.Treatment) }
 
 // RetirementAssumptions are the household-level inputs. Every one is
 // user-visible and user-editable, and every response carries them back so a
@@ -403,7 +432,7 @@ func capContributions(
 	for g, idx := range groups {
 		limit, capped := AnnualLimitFor(plans[idx[0]].Treatment, a.CurrentAge, limits, a.FamilyHSA)
 		if !capped {
-			continue // taxable, 529, trust: no federal annual cap
+			continue // taxable, 529, trust, UTMA: no federal annual deferral cap
 		}
 
 		planned := decimal.Zero
@@ -575,7 +604,10 @@ func SolveRequiredSavings(
 
 	projectable := make([]AccountPlan, 0, len(plans))
 	for _, p := range plans {
-		if p.Treatment != "" && p.Treatment != "529" {
+		// Untagged accounts have no known treatment, and custodial ones are not
+		// the household's to save into — solving for a contribution rate that
+		// funds retirement out of a child's UTMA would be nonsense.
+		if p.Treatment != "" && !IsCustodial(p.Treatment) {
 			projectable = append(projectable, p)
 		}
 	}

@@ -61,6 +61,12 @@ const llmSweepInterval = 15 * time.Minute
 // quiet household still surfaces. Evaluation is cheap deterministic SQL.
 const alertSweepInterval = 30 * time.Minute
 
+// allowancePostInterval is how often scheduled allowances are checked. Hourly
+// is not a payment cadence — the cadence lives on each allowance row. This is
+// only how often the app asks "is anybody due?", and running it often is what
+// lets a server that was off overnight still pay on the right day.
+const allowancePostInterval = time.Hour
+
 // insightInterval is how often every household's proactive feed is regenerated
 // independently of syncs, so a quiet household still surfaces a budget crossing
 // the calendar rolls into. Detection is cheap deterministic SQL; phrasing (when
@@ -196,6 +202,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Logger:      slog.Default(),
 	}
 
+	// Scheduled allowance credits. Registered unconditionally: it needs neither
+	// Plaid nor an AI key, and a household using the allowance ledger without
+	// either is a perfectly ordinary way to run this app.
+	if err := river.AddWorkerSafely(workers, &PostAllowancesWorker{Queries: queries}); err != nil {
+		return nil, fmt.Errorf("register allowance worker: %w", err)
+	}
+
 	config.PeriodicJobs = []*river.PeriodicJob{
 		river.NewPeriodicJob(
 			river.PeriodicInterval(snapshotInterval),
@@ -212,6 +225,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(snapshotInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SnapshotInvestmentsArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Hourly rather than daily. The period boundary in allowances is the
+		// idempotency key, so running often costs nothing and means a household
+		// whose server was asleep at midnight still gets paid.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(allowancePostInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return PostAllowancesArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),

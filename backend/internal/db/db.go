@@ -55,6 +55,12 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 // Migrate applies any outstanding migrations. Goose needs a database/sql
 // handle, so the pgx pool is adapted rather than opening a second connection.
+//
+// Ordering is strict on purpose: a new migration must be numbered ABOVE every
+// version already applied, or an instance that has run the higher one refuses
+// to start. See the reservation table in docs/plans/README.md — a reserved
+// number is only valid until something above it lands, and the implementer
+// renumbers rather than reaching for goose.WithAllowMissing().
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()

@@ -1,6 +1,10 @@
 -- name: CreateUser :one
-INSERT INTO users (household_id, email, password_hash, display_name)
-VALUES ($1, lower($2), $3, $4)
+-- `role` is passed explicitly rather than left to the column default: the
+-- bootstrap user owns the household, and an invited user gets whatever role the
+-- invite granted. Defaulting here would quietly make every invited child a
+-- full member.
+INSERT INTO users (household_id, email, password_hash, display_name, role)
+VALUES ($1, lower($2), $3, $4, $5)
 RETURNING *;
 
 -- name: GetUserByID :one
