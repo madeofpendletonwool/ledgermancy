@@ -49,13 +49,22 @@ func (q *Queries) CreateMerchantEntity(ctx context.Context, arg CreateMerchantEn
 const deleteEmptyMerchantEntities = `-- name: DeleteEmptyMerchantEntities :exec
 DELETE FROM merchant_entities e
 WHERE e.household_id = $1
-  AND (SELECT COUNT(*) FROM merchant_aliases ma WHERE ma.entity_id = e.id) < 2
+  AND NOT EXISTS (SELECT 1 FROM merchant_aliases ma WHERE ma.entity_id = e.id)
 `
 
-// An entity with fewer than two aliases is not a canonicalisation of anything;
-// it is the raw key wearing a hat. Splitting down to one member therefore
-// retires the entity, which also restores the raw descriptor as the display
-// name — the honest behaviour for an undone merge.
+// An entity with no aliases canonicalises nothing and is retired.
+//
+// This used to retire entities with fewer than TWO aliases, on the reasoning that
+// a single-alias entity is just the raw key wearing a hat. That stopped being
+// true once the import path started normalising descriptors through
+// plaid.MerchantKey: a business whose every descriptor collapses to one key --
+// twenty-odd AMAZON MKTPL*<order id> rows becoming a single "amazon mktpl" --
+// legitimately has one alias and a name the user chose. Deleting it would drop
+// that name and send every report back through COALESCE to the raw descriptor,
+// so "Amazon Marketplace" would redisplay as "AMAZON MKTPL*3842D24Q3".
+//
+// A one-alias entity is therefore a rename, which is real user intent, and only a
+// zero-alias one is genuinely empty.
 func (q *Queries) DeleteEmptyMerchantEntities(ctx context.Context, householdID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteEmptyMerchantEntities, householdID)
 	return err
@@ -86,6 +95,28 @@ type DeleteMerchantEntityParams struct {
 
 func (q *Queries) DeleteMerchantEntity(ctx context.Context, arg DeleteMerchantEntityParams) error {
 	_, err := q.db.Exec(ctx, deleteMerchantEntity, arg.ID, arg.HouseholdID)
+	return err
+}
+
+const deleteSuggestedAliases = `-- name: DeleteSuggestedAliases :exec
+DELETE FROM merchant_aliases
+WHERE household_id = $1 AND source = 'suggested'
+`
+
+// Clears a household's whole pending queue, so a suggestion pass rebuilds it from
+// scratch rather than adding to it.
+//
+// Without this, a pass could only ever ADD, and a proposal made by an older
+// version of the matching rules would outlive the rules that produced it: the
+// fixes that stopped HOMEGOODS being read as THE HOME DEPOT would never reach the
+// proposal already sitting in the queue saying it was. Suggestions are inert by
+// construction — no report counts them until a person confirms one — so throwing
+// them away and re-deriving costs nothing but the pass itself.
+//
+// Confirmed aliases are untouched: source <> 'suggested' is the line between a
+// guess and a decision, and only guesses are disposable.
+func (q *Queries) DeleteSuggestedAliases(ctx context.Context, householdID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSuggestedAliases, householdID)
 	return err
 }
 

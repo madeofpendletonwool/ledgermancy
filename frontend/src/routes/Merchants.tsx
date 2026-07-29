@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Merchant, MerchantAlias, MerchantKeyStat } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import { SINGLE_SERIES } from '../components/charts/tokens'
+import { merchantDetailPath } from '../lib/merchants'
 
 /**
  * Merchants — canonical merchant management.
@@ -35,10 +38,91 @@ export function Merchants() {
         </p>
       </div>
 
+      <TopMerchants />
       <ReviewQueue merchants={pending} isPending={merchants.isPending} />
       <ManualMerge />
       <ConfirmedMerchants merchants={confirmed} isPending={merchants.isPending} />
     </div>
+  )
+}
+
+// --- Where the money goes -------------------------------------------------
+
+/**
+ * Biggest merchants over the last twelve months, as the way into the per-merchant
+ * detail view.
+ *
+ * Sits at the top of this page because it answers the question people arrive with
+ * — "where does my money actually go?" — where the rest of the page answers the
+ * bookkeeping question of which descriptors belong together. It also makes the
+ * grouping work visibly worthwhile: a merchant only appears here as one row once
+ * its fragments have been merged.
+ */
+function TopMerchants() {
+  const range = useMemo(() => {
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+    const from = new Date(now.getFullYear(), now.getMonth() - 11, 1)
+    return {
+      from: `${from.getFullYear()}-${pad(from.getMonth() + 1)}-01`,
+      to: `${to.getFullYear()}-${pad(to.getMonth() + 1)}-${pad(to.getDate())}`,
+    }
+  }, [])
+
+  const top = useQuery({
+    queryKey: ['merchants-top', range.from, range.to],
+    queryFn: () => api.merchants({ ...range, limit: 10 }),
+  })
+
+  const rows = top.data ?? []
+  const max = Math.max(...rows.map((m) => Number(m.total)), 0)
+
+  return (
+    <section className="glass p-6">
+      <h2 className="mb-1 text-lg font-medium">Where the money goes</h2>
+      <p className="mb-5 text-sm text-mist-300">
+        Your biggest merchants over the last twelve months. Pick one to see its
+        history, how it’s filed, and every charge.
+      </p>
+
+      {top.isPending ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>No spending in the last twelve months.</Empty>
+      ) : (
+        <div className="space-y-2.5">
+          {rows.map((m) => {
+            const pct = max > 0 ? (Number(m.total) / max) * 100 : 0
+            return (
+              <Link
+                key={m.merchant_key || m.merchant}
+                to={merchantDetailPath(m.merchant_key, range)}
+                className="grid grid-cols-[10rem_1fr_6rem] items-center gap-3 rounded-lg py-1 hover:bg-white/5 sm:grid-cols-[14rem_1fr_7rem]"
+              >
+                <span className="truncate text-sm text-mist-100">
+                  {m.merchant}
+                </span>
+                {/* One measure across a categorical dimension is ONE series, so
+                    every bar carries the same colour — hue would encode nothing. */}
+                <span className="h-2.5 overflow-hidden rounded-full bg-white/5">
+                  <span
+                    className="block h-full rounded-full"
+                    style={{
+                      width: `${Math.max(pct, 1)}%`,
+                      backgroundColor: SINGLE_SERIES,
+                    }}
+                  />
+                </span>
+                <span className="tabular text-right text-sm text-mist-300">
+                  {formatMoney(m.total)}
+                </span>
+              </Link>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -112,6 +196,20 @@ function ReviewQueue({
   )
 }
 
+/**
+ * One proposed grouping, with each descriptor individually selectable.
+ *
+ * Selection exists because a proposal is a guess about a SET, and a guess about a
+ * set can be half right. The engine reads "HOME DEPOT" as a truncation of
+ * "HOMEGOODS", so it offers a hardware store and a homeware store as one
+ * merchant; without per-descriptor control the only answers are to accept a wrong
+ * merge or reject a right one.
+ *
+ * Unchecking is a statement, not an omission. The descriptors left unchecked are
+ * sent as reject_keys so they are recorded as a different business — that is what
+ * makes them come back as their OWN proposal next pass, instead of the same wrong
+ * grouping arriving again forever.
+ */
 function SuggestionCard({
   merchant,
   onDone,
@@ -123,14 +221,27 @@ function SuggestionCard({
   const [conflict, setConflict] = useState(false)
 
   const suggestedKeys = merchant.suggested.map((a) => a.merchant_key)
+  // Everything starts selected: the engine's proposal is the default answer, and
+  // the common case is still accepting it whole.
+  const [selected, setSelected] = useState<string[]>(suggestedKeys)
+
+  const checked = selected.filter((k) => suggestedKeys.includes(k))
+  const unchecked = suggestedKeys.filter((k) => !checked.includes(k))
+  const partial = unchecked.length > 0
+
+  const toggle = (key: string) =>
+    setSelected((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    )
 
   const confirm = useMutation({
     mutationFn: async () => {
       // A brand-new proposal has no confirmed members yet, so the merge carries
       // the name; an existing merchant just gains the descriptors.
       const result = await api.mergeMerchants({
-        merchant_keys: suggestedKeys,
+        merchant_keys: checked,
         entity_id: merchant.id,
+        reject_keys: unchecked,
       })
       if (name.trim() && name.trim() !== merchant.canonical_name) {
         await api.renameMerchant(merchant.id, name.trim())
@@ -149,6 +260,10 @@ function SuggestionCard({
   })
 
   const busy = confirm.isPending || reject.isPending
+  // A group of one is not a grouping, so a brand-new proposal needs two. An
+  // existing merchant can legitimately gain a single descriptor.
+  const minimum = merchant.members.length > 0 ? 1 : 2
+  const tooFew = checked.length < minimum
 
   return (
     <div className="rounded-xl border border-white/10 bg-ink-900/40 p-4">
@@ -169,9 +284,13 @@ function SuggestionCard({
           <button
             className="btn-primary text-sm"
             onClick={() => confirm.mutate()}
-            disabled={busy || name.trim() === ''}
+            disabled={busy || tooFew || name.trim() === ''}
           >
-            {confirm.isPending ? 'Merging…' : 'Confirm'}
+            {confirm.isPending
+              ? 'Merging…'
+              : partial
+                ? `Group ${checked.length} of ${suggestedKeys.length}`
+                : 'Confirm'}
           </button>
           <button
             className="btn-ghost text-sm"
@@ -183,15 +302,34 @@ function SuggestionCard({
         </div>
       </div>
 
+      <p className="mb-3 text-xs text-mist-400">
+        Untick anything that isn’t this merchant. Ticked descriptors are grouped;
+        unticked ones are remembered as a different business and offered on their
+        own next time.
+      </p>
+
       <div className="space-y-2">
         {merchant.members.map((a) => (
           <AliasRow key={a.merchant_key} alias={a} />
         ))}
         {merchant.suggested.map((a) => (
-          <AliasRow key={a.merchant_key} alias={a} proposed />
+          <AliasRow
+            key={a.merchant_key}
+            alias={a}
+            proposed
+            checked={checked.includes(a.merchant_key)}
+            onToggle={() => toggle(a.merchant_key)}
+          />
         ))}
       </div>
 
+      {tooFew && (
+        <p className="mt-3 text-sm text-mist-400">
+          {minimum === 2
+            ? 'Tick at least two descriptors to group them — or use “Not the same” if none of these belong together.'
+            : 'Tick at least one descriptor to add it, or use “Not the same” to dismiss the lot.'}
+        </p>
+      )}
       {conflict && (
         <p className="mt-3 text-sm text-amber-300">
           These descriptors were filed under two different categories that you
@@ -212,14 +350,23 @@ function SuggestionCard({
  * One descriptor with the evidence behind it. `proposed` marks a row that is
  * only a suggestion — visually distinct, because the difference between "this
  * is counted" and "this might be counted" is the whole point of the page.
+ *
+ * When `onToggle` is given the row becomes selectable, and an unticked row drops
+ * the dashed proposal styling and dims: it has to be obvious at a glance which
+ * descriptors the Confirm button is about to group, since that is the decision
+ * being made.
  */
 function AliasRow({
   alias,
   proposed,
+  checked,
+  onToggle,
   onSplit,
 }: {
   alias: MerchantAlias
   proposed?: boolean
+  checked?: boolean
+  onToggle?: () => void
   onSplit?: () => void
 }) {
   const span =
@@ -227,14 +374,19 @@ function AliasRow({
       ? `${formatDate(alias.first_seen)} – ${formatDate(alias.last_seen)}`
       : 'no charges'
 
-  return (
-    <div
-      className={`flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-3 py-2 text-sm ${
-        proposed
-          ? 'border-dashed border-arcane-500/40 bg-arcane-500/5'
-          : 'border-white/10'
-      }`}
-    >
+  const selectable = onToggle !== undefined
+  const excluded = selectable && !checked
+
+  const body = (
+    <>
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          aria-label={`Group ${alias.sample_name} into this merchant`}
+        />
+      )}
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium text-mist-100">
           {alias.sample_name}
@@ -252,7 +404,13 @@ function AliasRow({
       </div>
       <div className="w-44 text-right text-xs text-mist-500">{span}</div>
       {proposed && (
-        <Pill className="border-arcane-500/40 text-arcane-300">
+        <Pill
+          className={
+            excluded
+              ? 'border-white/15 text-mist-500'
+              : 'border-arcane-500/40 text-arcane-300'
+          }
+        >
           {alias.confidence === null
             ? 'suggested'
             : `${Math.round(alias.confidence * 100)}% match`}
@@ -266,7 +424,23 @@ function AliasRow({
           Separate
         </button>
       )}
-    </div>
+    </>
+  )
+
+  const shell = `flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-3 py-2 text-sm ${
+    excluded
+      ? 'border-white/10 opacity-50'
+      : proposed
+        ? 'border-dashed border-arcane-500/40 bg-arcane-500/5'
+        : 'border-white/10'
+  }`
+
+  // A selectable row is a label so the whole row is a hit target, matching the
+  // manual-merge picker below.
+  return selectable ? (
+    <label className={`${shell} cursor-pointer`}>{body}</label>
+  ) : (
+    <div className={shell}>{body}</div>
   )
 }
 
@@ -500,9 +674,15 @@ function MerchantCard({ merchant }: { merchant: Merchant }) {
           </>
         ) : (
           <>
-            <h3 className="text-base font-medium text-mist-100">
+            {/* The name is the way into this merchant's spending history. The
+                entity id IS its resolved key, so it addresses the detail page
+                directly. */}
+            <Link
+              className="text-base font-medium text-mist-100 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
+              to={merchantDetailPath(merchant.id)}
+            >
               {merchant.canonical_name}
-            </h3>
+            </Link>
             <span className="text-sm text-mist-400">
               {formatMoney(merchant.total_amount)} over{' '}
               {merchant.transaction_count} charge

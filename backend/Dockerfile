@@ -12,6 +12,11 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/api  ./cmd/api
 RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
 
+# A one-off maintenance command, shipped in the api image so an operator can run
+# it with `docker compose exec` against the deployment's own DATABASE_URL rather
+# than needing a Go toolchain on the host. It defaults to a dry run.
+RUN CGO_ENABLED=0 go build -trimpath -o /out/normalise-merchant-keys ./cmd/normalise-merchant-keys
+
 # ---- api -------------------------------------------------------------------
 FROM alpine:3.21 AS api
 RUN apk add --no-cache ca-certificates tzdata wget \
@@ -34,6 +39,7 @@ RUN mkdir -p /var/lib/ledgermancy/documents \
  && chmod 700 /var/lib/ledgermancy/documents
 
 COPY --from=build /out/api /usr/local/bin/api
+COPY --from=build /out/normalise-merchant-keys /usr/local/bin/normalise-merchant-keys
 USER ledgermancy
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \

@@ -307,6 +307,40 @@ Which makes the next section the important one.
 
 ---
 
+## One-off: normalising imported merchant keys
+
+Skip this unless you imported transactions from CSV **before** the descriptor
+normaliser was applied to that path.
+
+Every transaction carries a `merchant_key`, the stable handle that merchant
+grouping, the categorisation cache and recurring detection all key off. Plaid rows
+always went through the normaliser that strips store numbers, processor prefixes
+and order ids. CSV rows did not — they were only lower-cased — so one business
+arrived fragmented across dozens of keys: a separate "merchant" for every
+`AMAZON MKTPL*<order id>` and every `KWIK TRIP #<store>`.
+
+The import path is fixed. To repair rows it already wrote:
+
+```bash
+# Read-only: prints what it would change and stops.
+docker compose exec api normalise-merchant-keys
+
+# Writes, inside one transaction.
+docker compose exec api normalise-merchant-keys --apply
+```
+
+**Take a backup first.** The command rewrites keys that `merchant_category_map`,
+`merchant_aliases` and `recurring_overrides` all point at, and collapses the
+duplicates that result — keeping the highest-precedence category mapping (manual
+over rule over model) and reporting any descriptors you had filed under two
+different merchants.
+
+It moves no money. Amounts, dates and category assignments on transactions are
+untouched; only the merchant handle and the per-key tables change. Verify with the
+totals on [Spending](features/spending.md) before and after — they must match.
+
+---
+
 ## Backups
 
 This becomes the only record of your net-worth history — Plaid keeps no balance

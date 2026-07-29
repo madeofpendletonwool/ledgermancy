@@ -70,56 +70,104 @@ func orderedPair(a, b string) pair {
 // through a middle form) and it is what lets "amz order" reach "amazon com
 // abcd1" via "amazon com" without a direct rule between them.
 //
-// Transitivity is also how a rejection could be silently undone, so a component
-// containing ANY rejected pair is dropped whole rather than proposed. The user
-// said those two are different businesses; quietly re-merging them through a
-// third key would make the reject button a lie. A dropped component is still
-// mergeable by hand, so nothing is lost but the suggestion.
+// Transitivity is also how a rejection could be silently undone, so rejections
+// constrain the joining rather than being checked after the fact: edges are
+// applied strongest-evidence-first, and an edge is skipped when taking it would
+// land a rejected pair in the same component.
+//
+// That makes a rejection CUT the descriptor graph at the point the user objected
+// to instead of retiring the whole family. It matters for the case that follows a
+// rejection: having said HOMEGOODS is not THE HOME DEPOT, a household still needs
+// next month's THE HOME DEPOT #1234 to be proposed — and under the older rule,
+// which dropped any component containing a rejected pair, it never would have
+// been, because the new descriptor chains into the same component as the
+// rejection. A refusal about two descriptors has to stay a statement about those
+// two descriptors.
 func FuzzyGroups(stats []dbgen.ListMerchantKeyStatsRow, rejected map[pair]struct{}) []Group {
 	// Only keys with a real merchant name in them are comparable. A bare
-	// "BILL PAYMENT" has nothing to compare on and would match far too much.
+	// "BILL PAYMENT" has nothing to compare on and would match far too much, and
+	// a "DEPOSIT ..." or "WITHDRAWAL ..." row is a money movement with no
+	// business in it at all.
 	usable := make([]dbgen.ListMerchantKeyStatsRow, 0, len(stats))
 	for _, s := range stats {
-		if significantTokens(s.MerchantKey) != nil {
+		if comparableTokens(s.MerchantKey) != nil {
 			usable = append(usable, s)
 		}
 	}
 
-	uf := newUnionFind(len(usable))
-	// Why each key was joined, kept for the review UI. The first reason to fire
-	// for a component is the one shown: it is the strongest, since Compare
-	// returns rules in descending order of evidence.
-	best := make(map[int]Similarity, len(usable))
-
+	// Every match, collected before any of it is applied. Ordering the joins by
+	// evidence is what lets a rejection cut the graph in the right place: the
+	// 0.95 and 0.80 links that describe one merchant's own descriptor family are
+	// taken first, and a weaker 0.70 link that would fuse two families together
+	// is the one that gets dropped when the user has said those families differ.
+	type edge struct {
+		i, j int
+		sim  Similarity
+	}
+	edges := make([]edge, 0, len(usable))
 	for i := range usable {
 		for j := i + 1; j < len(usable); j++ {
 			if _, no := rejected[orderedPair(usable[i].MerchantKey, usable[j].MerchantKey)]; no {
 				continue
 			}
-			sim := Compare(usable[i].MerchantKey, usable[j].MerchantKey)
-			if !sim.Match {
-				continue
-			}
-			uf.union(i, j)
-			root := uf.find(i)
-			if prev, ok := best[root]; !ok || sim.Confidence > prev.Confidence {
-				best[root] = sim
+			if sim := Compare(usable[i].MerchantKey, usable[j].MerchantKey); sim.Match {
+				edges = append(edges, edge{i: i, j: j, sim: sim})
 			}
 		}
 	}
+	// Descending confidence, key order breaking ties so a pass is reproducible.
+	sort.SliceStable(edges, func(a, b int) bool {
+		if edges[a].sim.Confidence != edges[b].sim.Confidence {
+			return edges[a].sim.Confidence > edges[b].sim.Confidence
+		}
+		return usable[edges[a].i].MerchantKey < usable[edges[b].i].MerchantKey
+	})
 
-	members := make(map[int][]int)
+	uf := newUnionFind(len(usable))
+	// Live membership per root, so an edge can be tested against everything it
+	// would pull together before it is taken.
+	sets := make(map[int][]int, len(usable))
 	for i := range usable {
-		root := uf.find(i)
-		members[root] = append(members[root], i)
+		sets[i] = []int{i}
+	}
+	// Why each key was joined, kept for the review UI. The strongest reason in a
+	// component is the one shown.
+	best := make(map[int]Similarity, len(usable))
+
+	for _, e := range edges {
+		ra, rb := uf.find(e.i), uf.find(e.j)
+		if ra == rb {
+			if prev, ok := best[ra]; !ok || e.sim.Confidence > prev.Confidence {
+				best[ra] = e.sim
+			}
+			continue
+		}
+		if wouldMergeRejectedPair(usable, sets[ra], sets[rb], rejected) {
+			continue
+		}
+
+		uf.union(e.i, e.j)
+		root := uf.find(e.i)
+		merged := append(sets[ra], sets[rb]...)
+		delete(sets, ra)
+		delete(sets, rb)
+		sets[root] = merged
+
+		prevA, okA := best[ra]
+		prevB, okB := best[rb]
+		strongest := e.sim
+		if okA && prevA.Confidence > strongest.Confidence {
+			strongest = prevA
+		}
+		if okB && prevB.Confidence > strongest.Confidence {
+			strongest = prevB
+		}
+		best[root] = strongest
 	}
 
 	groups := make([]Group, 0)
-	for root, idxs := range members {
+	for root, idxs := range sets {
 		if len(idxs) < 2 {
-			continue
-		}
-		if componentHasRejection(usable, idxs, rejected) {
 			continue
 		}
 
@@ -172,12 +220,17 @@ func FuzzyGroups(stats []dbgen.ListMerchantKeyStatsRow, rejected map[pair]struct
 	return groups
 }
 
-// componentHasRejection reports whether any two members of a component are a
-// rejected pair — the transitivity escape hatch described on FuzzyGroups.
-func componentHasRejection(rows []dbgen.ListMerchantKeyStatsRow, idxs []int, rejected map[pair]struct{}) bool {
-	for a := range idxs {
-		for b := a + 1; b < len(idxs); b++ {
-			if _, no := rejected[orderedPair(rows[idxs[a]].MerchantKey, rows[idxs[b]].MerchantKey)]; no {
+// wouldMergeRejectedPair reports whether joining two components would put a
+// rejected pair in the same group. Only the cross product needs testing: neither
+// component can already contain a rejection, because this check gated every join
+// that built it.
+func wouldMergeRejectedPair(rows []dbgen.ListMerchantKeyStatsRow, left, right []int, rejected map[pair]struct{}) bool {
+	if len(rejected) == 0 {
+		return false
+	}
+	for _, a := range left {
+		for _, b := range right {
+			if _, no := rejected[orderedPair(rows[a].MerchantKey, rows[b].MerchantKey)]; no {
 				return true
 			}
 		}
@@ -209,6 +262,22 @@ func SuggestHousehold(
 	model merchantGrouper,
 	householdID, userID uuid.UUID,
 ) (int, error) {
+	// Clear the pending queue first, so this pass REPLACES the last one instead of
+	// adding to it. A stale proposal is a proposal the current rules would not
+	// make, and leaving it in place would mean every improvement to the matcher
+	// silently failed to reach the queue it was meant to improve.
+	//
+	// Ordering matters: the stats read below reports each key's entity, and a key
+	// whose only tie to an entity was a suggestion must read as unattached here or
+	// this pass would treat last pass's guess as settled fact.
+	if err := q.DeleteSuggestedAliases(ctx, householdID); err != nil {
+		return 0, fmt.Errorf("clear pending suggestions: %w", err)
+	}
+	// Entities that existed only to hold those suggestions now hold nothing.
+	if err := q.DeleteEmptyMerchantEntities(ctx, householdID); err != nil {
+		return 0, fmt.Errorf("retire empty merchants: %w", err)
+	}
+
 	stats, err := q.ListMerchantKeyStats(ctx, dbgen.ListMerchantKeyStatsParams{
 		HouseholdID: householdID, UserID: userID,
 	})
@@ -271,9 +340,10 @@ func llmSuggest(
 		if _, taken := claimed[s.MerchantKey]; taken {
 			continue
 		}
-		// A key already attached to an entity is settled, and one with no
-		// significant tokens has nothing to reason about.
-		if s.EntityID != nil || significantTokens(s.MerchantKey) == nil {
+		// A key already attached to an entity is settled, and one with nothing
+		// comparable in it has nothing to reason about — no point spending a
+		// model call asking which deposits are the same business.
+		if s.EntityID != nil || comparableTokens(s.MerchantKey) == nil {
 			continue
 		}
 		residue = append(residue, s)

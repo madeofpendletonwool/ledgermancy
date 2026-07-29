@@ -495,8 +495,62 @@ export interface DaySpend {
 
 export interface MerchantSpend {
   merchant: string
+  /**
+   * The resolved merchant key — an entity id for a grouped merchant, the raw
+   * descriptor otherwise. This is what addresses the merchant detail view, so it
+   * is what makes a top-merchants row a link.
+   */
+  merchant_key: string
   total: string
   transaction_count: number
+}
+
+export interface MerchantMonthPoint {
+  /** "YYYY-MM-DD", first of the month. */
+  month: string
+  total: string
+  transaction_count: number
+}
+
+export interface MerchantDetailTransaction {
+  id: string
+  date: string
+  amount: string
+  /** The raw text the bank printed for this charge. */
+  descriptor: string
+  raw_merchant_key: string | null
+  account_name: string
+  category_name: string | null
+  category_id: string | null
+}
+
+/**
+ * One merchant over one period: the numbers, the shape over time, how it is
+ * filed, and the charges behind all three.
+ *
+ * Works for merchants that were never grouped as well as merged ones, because it
+ * is addressed by resolved key rather than by entity id — and most of a
+ * household's spending sits at merchants nobody has grouped.
+ */
+export interface MerchantDetail {
+  merchant_key: string
+  merchant: string
+  /** True when this is a merged merchant rather than a lone descriptor. */
+  is_grouped: boolean
+  /** The raw descriptors resolving here; one when ungrouped. */
+  descriptors: string[]
+  from: string
+  to: string
+  total: string
+  transaction_count: number
+  average: string
+  largest: string
+  first_seen: string | null
+  last_seen: string | null
+  monthly: MerchantMonthPoint[]
+  /** Shaped as CategorySpend so CategoryBars consumes it directly. */
+  categories: CategorySpend[]
+  transactions: MerchantDetailTransaction[]
 }
 
 export interface BudgetProgress {
@@ -1980,11 +2034,16 @@ export const api = {
   /**
    * Merge descriptors into one merchant. Pass entityId to confirm a suggestion
    * or extend an existing merchant; omit it to create a new one.
+   *
+   * reject_keys confirms PART of a proposal: the listed descriptors are recorded
+   * as a different business in the same request, so the next suggestion pass
+   * proposes them separately instead of re-proposing the grouping just declined.
    */
   mergeMerchants: (input: {
     merchant_keys: string[]
     entity_id?: string
     canonical_name?: string
+    reject_keys?: string[]
   }) => request<MergeResult>('POST', '/api/merchants/merge', input),
 
   /** Dismiss proposed descriptors and remember the refusal. */
@@ -2004,6 +2063,17 @@ export const api = {
 
   /** Run a suggestion pass now instead of waiting for the daily sweep. */
   scanMerchants: () => request<void>('POST', '/api/merchants/scan'),
+
+  /**
+   * One merchant's detail for a period, addressed by RESOLVED key — an entity id
+   * for a grouped merchant, the raw descriptor otherwise. The key travels as a
+   * query parameter because a descriptor can contain a slash.
+   */
+  merchantDetail: (key: string, params: PeriodQuery = {}) =>
+    request<MerchantDetail>(
+      'GET',
+      withQuery('/api/merchants/detail', { ...params, key }),
+    ),
 
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>

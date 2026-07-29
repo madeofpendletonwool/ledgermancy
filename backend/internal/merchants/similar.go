@@ -12,7 +12,10 @@
 // on top of it.
 package merchants
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Descriptor noise. These tokens appear across unrelated merchants — they are
 // how a bank says "this was a card payment on a website", not what the business
@@ -31,6 +34,33 @@ var descriptorNoise = map[string]struct{}{
 	"purchase": {}, "order": {}, "orders": {}, "online": {}, "web": {},
 	"usa": {}, "us": {},
 }
+
+// bankOperationLeads are ledger verbs. A descriptor that OPENS with one of these
+// records a movement of money, not a purchase from a business, and has no
+// merchant in it to canonicalise.
+//
+// Such a key is excluded from comparison entirely rather than having the verb
+// stripped as noise. Stripping is actively harmful here: it reduces
+// "DEPOSIT MOBILE TRANSFER TO" and "WITHDRAWAL MOBILE TRANSFER TO" to the same
+// two words, so a deposit and a withdrawal look like one merchant — and both
+// then look like the phone carrier "US MOBILE". The verb is the only thing
+// telling them apart, so it has to stay, and the key has to stay out.
+//
+// Only the leading token is tested. That is where the verb sits, and a merchant
+// whose name merely contains one ("Transfer Co") keeps its identity.
+var bankOperationLeads = map[string]struct{}{
+	"deposit": {}, "withdrawal": {}, "dividend": {}, "transfer": {}, "xfer": {},
+}
+
+// tldSuffixes are stripped from the end of a token before it is compared.
+//
+// A bank writes the same business as both "WALMART" and "WALMART.COM", and
+// MerchantKey's punctuation pass does not split those (the dot is replaced only
+// when it is not already inside a word). Without this, the two forms reach the
+// abbreviation rule instead of matching outright — and a domain tail is also a
+// rich source of coincidental subsequences, which is how "TACO BELL" came to
+// look like an abbreviation of "TARGET.COM".
+var tldSuffixes = []string{".com", ".net", ".org", ".io", ".co"}
 
 // Confidence scores for each rule, ordered by how much evidence the rule
 // actually has. They are recorded on the suggested alias and shown in the review
@@ -53,6 +83,7 @@ func significantTokens(key string) []string {
 	fields := strings.Fields(key)
 	out := make([]string, 0, len(fields))
 	for _, tok := range fields {
+		tok = stripTLD(tok)
 		if len(tok) < 2 {
 			continue
 		}
@@ -65,6 +96,61 @@ func significantTokens(key string) []string {
 		return nil
 	}
 	return out
+}
+
+// stripTLD drops a trailing domain suffix, but only when something is left in
+// front of it: a bare ".com" token is noise the caller's own check will drop,
+// while "walmart.com" carries a brand that must survive.
+func stripTLD(tok string) string {
+	for _, tld := range tldSuffixes {
+		if len(tok) > len(tld) && strings.HasSuffix(tok, tld) {
+			return tok[:len(tok)-len(tld)]
+		}
+	}
+	return tok
+}
+
+// comparableTokens is significantTokens with every non-alphanumeric rune removed
+// from each token.
+//
+// Punctuation is the single largest source of spurious near-misses: one business
+// arrives as "WAL-MART" and "WALMART", "CULVER'S" and "CULVERS", "PAR*MOKA" and
+// "PAR MOKA". Comparing on the flattened form turns each of those into an exact
+// match, which is both correct and a much stronger claim than the abbreviation
+// rule that used to catch them.
+//
+// The originals are kept for DisplayName and for match reasons — flattening is a
+// comparison device, not a rename.
+func comparableTokens(key string) []string {
+	sig := significantTokens(key)
+	if sig == nil {
+		return nil
+	}
+	if _, isOp := bankOperationLeads[sig[0]]; isOp {
+		return nil
+	}
+	out := make([]string, 0, len(sig))
+	for _, tok := range sig {
+		if flat := flatten(tok); flat != "" {
+			out = append(out, flat)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// flatten keeps only letters and digits, lower-cased by MerchantKey already.
+func flatten(tok string) string {
+	var b strings.Builder
+	b.Grow(len(tok))
+	for _, r := range tok {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Similarity is the verdict on one pair of merchant keys.
@@ -94,15 +180,24 @@ func Compare(keyA, keyB string) Similarity {
 	if keyA == keyB {
 		return Similarity{}
 	}
-	a, b := significantTokens(keyA), significantTokens(keyB)
+	a, b := comparableTokens(keyA), comparableTokens(keyB)
 	if a == nil || b == nil {
 		return Similarity{}
 	}
 
 	// 1. The same significant tokens in the same order. The keys differed only
-	//    by noise ("netflix" vs "netflix com").
+	//    by noise, punctuation or a domain tail ("netflix" vs "netflix com",
+	//    "wal-mart" vs "walmart", "target" vs "target.com").
 	if equalTokens(a, b) {
 		return Similarity{Match: true, Confidence: confIdentical, Reason: "same merchant name once descriptor noise is removed"}
+	}
+
+	// 1b. The same name with the words divided differently ("kwik trip" vs
+	//     "kwik-trip", "par moka" vs "par*moka"). Only exact equality of the
+	//     whole flattened name counts, which is far too strict to fire by
+	//     accident — "homedepot" and "homegoods" are not equal.
+	if strings.Join(a, "") == strings.Join(b, "") {
+		return Similarity{Match: true, Confidence: confIdentical, Reason: "same letters, split into words differently"}
 	}
 
 	// 2. One is the other plus trailing junk ("amazon com" vs
@@ -117,11 +212,17 @@ func Compare(keyA, keyB string) Similarity {
 		}
 	}
 
-	// 3. Abbreviation of the brand token ("amz"/"amzn" vs "amazon"). Compared on
-	//    the FIRST significant token only: that is where the brand lives, and
-	//    running this rule over every token pair is how "ridge" ends up matching
-	//    something it should not.
-	if abbreviates(a[0], b[0]) {
+	// 3. Abbreviation of the brand token ("amz"/"amzn" vs "amazon").
+	//
+	//    Restricted to keys that are a SINGLE significant token. If a key has one
+	//    token, that token is the brand and an abbreviation of it is a claim about
+	//    the whole name. If it has several, the same test is only a claim about one
+	//    word — and a word that happens to prefix another business's name is
+	//    exactly how "HOME DEPOT" came to match "HOMEGOODS", "TACO BELL" matched
+	//    "TACOMEX", and every unstripped "TST*" descriptor matched every other one.
+	//    Rule 1b now covers the punctuation variants this rule used to earn its
+	//    keep on, so narrowing it costs almost nothing.
+	if len(a) == 1 && len(b) == 1 && abbreviates(a[0], b[0]) {
 		return Similarity{
 			Match:      true,
 			Confidence: confAbbreviated,

@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import { merchantDetailPath } from '../lib/merchants'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { TrendChart } from '../components/charts/TrendChart'
 import { CHART, STATUS } from '../components/charts/tokens'
@@ -414,7 +415,14 @@ function RecurringSection() {
                 <tr key={m.merchant_key}>
                   <td className="px-6 py-2.5">
                     <span className="flex items-center gap-2">
-                      {m.merchant}
+                      {/* The detector already groups by resolved key, which is
+                          exactly what addresses the merchant detail view. */}
+                      <Link
+                        className="underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
+                        to={merchantDetailPath(m.merchant_key)}
+                      >
+                        {m.merchant}
+                      </Link>
                       {creep && (
                         <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
                           price up

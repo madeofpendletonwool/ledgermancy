@@ -8,6 +8,7 @@ import { Alerts } from './routes/Alerts'
 import { Assistant } from './routes/Assistant'
 import { Budgets } from './routes/Budgets'
 import { Categories } from './routes/Categories'
+import { MerchantDetail } from './routes/MerchantDetail'
 import { Merchants } from './routes/Merchants'
 import { Dashboard } from './routes/Dashboard'
 import { Documents } from './routes/Documents'
@@ -78,6 +79,10 @@ export default function App() {
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/merchants" element={<Merchants />} />
+          {/* Drill-down target; reached from any merchant name, not the nav.
+              The merchant travels as ?key= rather than a path segment because a
+              raw descriptor can contain a slash. */}
+          <Route path="/merchants/detail" element={<MerchantDetail />} />
           <Route path="/documents" element={<Documents />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/assistant" element={<Assistant />} />

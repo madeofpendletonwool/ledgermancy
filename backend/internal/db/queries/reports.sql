@@ -168,9 +168,29 @@ ORDER BY total DESC;
 -- Grouped by canonical merchant: fragments of one business that the household
 -- has merged (see merchants.sql) collapse into a single row under the entity's
 -- name. With no aliases the COALESCE falls straight through to the descriptor
--- and the result is identical to what it was before canonicalisation existed.
+-- and the result reads as it did before canonicalisation existed.
+--
+-- merchant_key is the RESOLVED key, which is what makes a row here a link: it
+-- addresses the merchant detail view for both a merged entity and a bare
+-- descriptor, and it is stable across a later merge because resolution is
+-- idempotent.
+--
+-- The grouping is BY THAT KEY, not by the display name. Grouping by name splits
+-- one merchant across several rows whenever the bank varies its own text —
+-- "THE HOME DEPOT #4905" and "THE HOME DEPOT 4905" normalise to one key and are
+-- one business, but as names they are two, and they listed as two top merchants
+-- with two different totals that both linked to the same detail page. A row and
+-- the page it opens have to agree.
+--
+-- The name shown is the most RECENT descriptor for the key, matching how
+-- ListMerchantKeyStats picks its sample: the form a merchant bills under now is
+-- the form the user recognises.
 SELECT
-    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
+    COALESCE(
+        me.canonical_name,
+        (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
+    )::text                                                AS merchant,
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
     SUM(t.amount)::numeric            AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
@@ -192,7 +212,7 @@ WHERE u.household_id = $1
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
   AND t.amount > 0
-GROUP BY 1
+GROUP BY me.canonical_name, 2
 ORDER BY total DESC
 LIMIT $5;
 
@@ -628,3 +648,175 @@ WHERE u.household_id = $1
   AND t.amount > 0
 ORDER BY t.amount DESC
 LIMIT $5;
+
+-- --------------------------------------------------------------------------
+-- Merchant detail
+-- --------------------------------------------------------------------------
+--
+-- Everything below addresses ONE merchant by its resolved key — the same
+-- identifier GetTopMerchants returns and GetRecurringMerchants groups by, i.e.
+-- an entity UUID as text for a merged merchant and the raw descriptor for
+-- everything else. Keying on the resolved form is what lets the detail view work
+-- for the merchants a household has never grouped, which is most of them and
+-- most of their spending.
+--
+-- All four apply the same spending filter the rest of the reporting layer uses
+-- (active accounts, not excluded, not pending, not income, not a transfer,
+-- outflow only), so the totals here reconcile with the Spending page rather than
+-- telling a second story about the same money.
+
+-- name: GetMerchantSummary :one
+-- The headline numbers. Returns a row of zeroes and NULLs when the key matches
+-- nothing, so a stale link renders an empty merchant rather than a 500.
+SELECT
+    COALESCE(SUM(t.amount), 0)::numeric  AS total,
+    COUNT(*)::bigint                     AS transaction_count,
+    COALESCE(AVG(t.amount), 0)::numeric  AS average,
+    COALESCE(MAX(t.amount), 0)::numeric  AS largest,
+    COALESCE(MIN(t.date)::text, '')::text  AS first_seen,
+    COALESCE(MAX(t.date)::text, '')::text AS last_seen
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text;
+
+-- name: GetMerchantMonthlySpend :many
+-- Spend per calendar month. Gaps are left out rather than zero-filled: the
+-- caller knows the requested range and can fill it, and inventing rows here
+-- would make an empty month indistinguishable from a month outside the data.
+SELECT
+    date_trunc('month', t.date)::date AS month,
+    SUM(t.amount)::numeric            AS total,
+    COUNT(*)::bigint                  AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
+GROUP BY 1
+ORDER BY 1;
+
+-- name: GetMerchantCategoryBreakdown :many
+-- How this merchant's spending is filed. Shaped to match the category-spend rows
+-- the CategoryBars chart already consumes, so the frontend reuses that component
+-- rather than growing a second one.
+SELECT
+    c.id                   AS category_id,
+    c.name                 AS category_name,
+    c.slug                 AS category_slug,
+    c.color                AS category_color,
+    c.is_fixed,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::bigint       AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
+GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
+ORDER BY total DESC;
+
+-- name: ListMerchantTransactions :many
+-- The charges behind the numbers above. Returns the raw descriptor per row as
+-- well as the account, because on a merged merchant the interesting question is
+-- often WHICH fragment a given charge came in under.
+SELECT
+    t.id,
+    t.date,
+    t.amount,
+    t.name,
+    COALESCE(t.merchant_name, t.name) AS descriptor,
+    t.merchant_key                    AS raw_merchant_key,
+    a.name                            AS account_name,
+    c.name                            AS category_name,
+    c.id                              AS category_id
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
+ORDER BY t.date DESC, t.amount DESC
+LIMIT sqlc.arg('lim');
+
+-- name: GetMerchantIdentity :one
+-- The merchant's display name and the descriptors that resolve to it.
+--
+-- Resolved from the transaction side rather than by looking up the entity,
+-- because a resolved key is just as likely to be a bare descriptor with no entity
+-- behind it — and that case still has a name and exactly one descriptor.
+SELECT
+    COALESCE(me.canonical_name, MIN(t.merchant_name), MIN(t.name))  AS merchant,
+    (me.id IS NOT NULL)::boolean                                   AS is_grouped,
+    ARRAY_AGG(DISTINCT t.merchant_key)::text[]                     AS descriptors
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.pending
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
+GROUP BY me.id, me.canonical_name;

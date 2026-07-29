@@ -14,6 +14,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/categorize"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
 // maxImportRows caps one upload. Capital One (and most banks) export at most a
@@ -168,11 +169,24 @@ func (s *Server) handleImportTransactions(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// importMerchantKey derives a stable, low-effort merchant key from a CSV
-// description: lower-cased and whitespace-collapsed. It will not match Plaid's
-// own keys (categorisation cache hits across the two sources are a bonus, not a
-// guarantee), but it gives imported rows a consistent handle for "apply to all
-// from this merchant" and for de-duping a re-import's own categorisation.
+// importMerchantKey derives a stable merchant key from a CSV description, using
+// the same normaliser as the Plaid path.
+//
+// This used to only lower-case and collapse whitespace, on the reasoning that an
+// imported row just needs *a* consistent handle. That was a mistake: a CSV
+// description is the rawest input the app takes, carrying every store number,
+// processor prefix and order id the bank prints, so skipping normalisation left
+// one business fragmented across dozens of keys — 23 separate "merchants" for
+// AMAZON MKTPL*<order id>, 18 for KWIK TRIP #<store> — and pushed the whole
+// problem downstream onto merchant canonicalisation, which then had to guess its
+// way back to an answer plaid.MerchantKey already knew.
+//
+// The fallback keeps a key for descriptions MerchantKey rejects: it returns ""
+// when fewer than three characters survive, and an imported row still needs a
+// handle for "apply to all from this merchant".
 func importMerchantKey(description string) string {
+	if key := plaid.MerchantKey("", description); key != "" {
+		return key
+	}
 	return strings.Join(strings.Fields(strings.ToLower(description)), " ")
 }

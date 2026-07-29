@@ -333,6 +333,9 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListMerchants)
 			r.Get("/keys", s.handleListMerchantKeys)
+			// Ahead of the /{merchantID} routes below, so chi does not read
+			// "detail" as a merchant id.
+			r.Get("/detail", s.handleMerchantDetail)
 			r.Post("/merge", s.handleMergeMerchants)
 			r.Post("/split", s.handleSplitMerchant)
 			r.Post("/scan", s.handleScanMerchants)

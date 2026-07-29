@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { DaySpend } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { axisTicks, compactMoney } from './scale'
 import { CHART, SERIES } from './tokens'
 
 const WIDTH = 760
@@ -214,33 +215,4 @@ export function DayBars({
       </div>
     </div>
   )
-}
-
-/**
- * Ticks that land on round numbers, snapping the step to 1/2/2.5/5 × a power of
- * ten so labels read as an even sequence. Mirrors the approach in TrendChart.
- */
-function axisTicks(max: number): { ticks: number[]; niceMax: number } {
-  if (max <= 0) return { ticks: [0, 25, 50, 75, 100], niceMax: 100 }
-
-  const rawStep = max / 4
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep))
-  const normalized = rawStep / magnitude
-  const niceStep =
-    magnitude *
-    (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10)
-
-  const niceMax = Math.ceil(max / niceStep) * niceStep
-  const ticks: number[] = []
-  for (let v = 0; v <= niceMax + niceStep / 2; v += niceStep) ticks.push(v)
-  return { ticks, niceMax }
-}
-
-function compactMoney(v: number): string {
-  if (v === 0) return '$0'
-  if (v >= 1000) {
-    const k = v / 1000
-    return `$${Number.isInteger(k) ? k : k.toFixed(1)}k`
-  }
-  return `$${Math.round(v)}`
 }

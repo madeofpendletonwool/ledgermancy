@@ -250,7 +250,11 @@ func (s *Server) handleCategoryAverages(w http.ResponseWriter, r *http.Request) 
 }
 
 type merchantResponse struct {
-	Merchant         string          `json:"merchant"`
+	Merchant string `json:"merchant"`
+	// MerchantKey is the resolved key, which is what makes a row here clickable:
+	// it addresses the merchant detail view whether or not the merchant is one the
+	// household has grouped.
+	MerchantKey      string          `json:"merchant_key"`
 	Total            decimal.Decimal `json:"total"`
 	TransactionCount int64           `json:"transaction_count"`
 }
@@ -276,6 +280,7 @@ func (s *Server) handleTopMerchants(w http.ResponseWriter, r *http.Request) {
 	for _, m := range rows {
 		out = append(out, merchantResponse{
 			Merchant:         m.Merchant,
+			MerchantKey:      m.MerchantKey,
 			Total:            m.Total,
 			TransactionCount: m.TransactionCount,
 		})

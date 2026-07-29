@@ -476,6 +476,210 @@ func (q *Queries) GetLargestTransactions(ctx context.Context, arg GetLargestTran
 	return items, nil
 }
 
+const getMerchantCategoryBreakdown = `-- name: GetMerchantCategoryBreakdown :many
+SELECT
+    c.id                   AS category_id,
+    c.name                 AS category_name,
+    c.slug                 AS category_slug,
+    c.color                AS category_color,
+    c.is_fixed,
+    SUM(t.amount)::numeric AS total,
+    COUNT(*)::bigint       AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = $5::text
+GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
+ORDER BY total DESC
+`
+
+type GetMerchantCategoryBreakdownParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	ResolvedKey string       `json:"resolved_key"`
+}
+
+type GetMerchantCategoryBreakdownRow struct {
+	CategoryID       uuid.UUID       `json:"category_id"`
+	CategoryName     string          `json:"category_name"`
+	CategorySlug     string          `json:"category_slug"`
+	CategoryColor    *string         `json:"category_color"`
+	IsFixed          bool            `json:"is_fixed"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// How this merchant's spending is filed. Shaped to match the category-spend rows
+// the CategoryBars chart already consumes, so the frontend reuses that component
+// rather than growing a second one.
+func (q *Queries) GetMerchantCategoryBreakdown(ctx context.Context, arg GetMerchantCategoryBreakdownParams) ([]GetMerchantCategoryBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, getMerchantCategoryBreakdown,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ResolvedKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetMerchantCategoryBreakdownRow{}
+	for rows.Next() {
+		var i GetMerchantCategoryBreakdownRow
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.CategorySlug,
+			&i.CategoryColor,
+			&i.IsFixed,
+			&i.Total,
+			&i.TransactionCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getMerchantIdentity = `-- name: GetMerchantIdentity :one
+SELECT
+    COALESCE(me.canonical_name, MIN(t.merchant_name), MIN(t.name))  AS merchant,
+    (me.id IS NOT NULL)::boolean                                   AS is_grouped,
+    ARRAY_AGG(DISTINCT t.merchant_key)::text[]                     AS descriptors
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.pending
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = $3::text
+GROUP BY me.id, me.canonical_name
+`
+
+type GetMerchantIdentityParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+	ResolvedKey string    `json:"resolved_key"`
+}
+
+type GetMerchantIdentityRow struct {
+	Merchant    string   `json:"merchant"`
+	IsGrouped   bool     `json:"is_grouped"`
+	Descriptors []string `json:"descriptors"`
+}
+
+// The merchant's display name and the descriptors that resolve to it.
+//
+// Resolved from the transaction side rather than by looking up the entity,
+// because a resolved key is just as likely to be a bare descriptor with no entity
+// behind it — and that case still has a name and exactly one descriptor.
+func (q *Queries) GetMerchantIdentity(ctx context.Context, arg GetMerchantIdentityParams) (GetMerchantIdentityRow, error) {
+	row := q.db.QueryRow(ctx, getMerchantIdentity, arg.HouseholdID, arg.UserID, arg.ResolvedKey)
+	var i GetMerchantIdentityRow
+	err := row.Scan(&i.Merchant, &i.IsGrouped, &i.Descriptors)
+	return i, err
+}
+
+const getMerchantMonthlySpend = `-- name: GetMerchantMonthlySpend :many
+SELECT
+    date_trunc('month', t.date)::date AS month,
+    SUM(t.amount)::numeric            AS total,
+    COUNT(*)::bigint                  AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = $5::text
+GROUP BY 1
+ORDER BY 1
+`
+
+type GetMerchantMonthlySpendParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	ResolvedKey string       `json:"resolved_key"`
+}
+
+type GetMerchantMonthlySpendRow struct {
+	Month            stdtime.Time    `json:"month"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// Spend per calendar month. Gaps are left out rather than zero-filled: the
+// caller knows the requested range and can fill it, and inventing rows here
+// would make an empty month indistinguishable from a month outside the data.
+func (q *Queries) GetMerchantMonthlySpend(ctx context.Context, arg GetMerchantMonthlySpendParams) ([]GetMerchantMonthlySpendRow, error) {
+	rows, err := q.db.Query(ctx, getMerchantMonthlySpend,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ResolvedKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetMerchantMonthlySpendRow{}
+	for rows.Next() {
+		var i GetMerchantMonthlySpendRow
+		if err := rows.Scan(&i.Month, &i.Total, &i.TransactionCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMerchantSpendBaseline = `-- name: GetMerchantSpendBaseline :one
 SELECT
     COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
@@ -541,6 +745,90 @@ func (q *Queries) GetMerchantSpendBaseline(ctx context.Context, arg GetMerchantS
 		&i.VisitCount,
 		&i.MinAmount,
 		&i.MaxAmount,
+	)
+	return i, err
+}
+
+const getMerchantSummary = `-- name: GetMerchantSummary :one
+
+SELECT
+    COALESCE(SUM(t.amount), 0)::numeric  AS total,
+    COUNT(*)::bigint                     AS transaction_count,
+    COALESCE(AVG(t.amount), 0)::numeric  AS average,
+    COALESCE(MAX(t.amount), 0)::numeric  AS largest,
+    COALESCE(MIN(t.date)::text, '')::text  AS first_seen,
+    COALESCE(MAX(t.date)::text, '')::text AS last_seen
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = $5::text
+`
+
+type GetMerchantSummaryParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	ResolvedKey string       `json:"resolved_key"`
+}
+
+type GetMerchantSummaryRow struct {
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+	Average          decimal.Decimal `json:"average"`
+	Largest          decimal.Decimal `json:"largest"`
+	FirstSeen        string          `json:"first_seen"`
+	LastSeen         string          `json:"last_seen"`
+}
+
+// --------------------------------------------------------------------------
+// Merchant detail
+// --------------------------------------------------------------------------
+//
+// Everything below addresses ONE merchant by its resolved key — the same
+// identifier GetTopMerchants returns and GetRecurringMerchants groups by, i.e.
+// an entity UUID as text for a merged merchant and the raw descriptor for
+// everything else. Keying on the resolved form is what lets the detail view work
+// for the merchants a household has never grouped, which is most of them and
+// most of their spending.
+//
+// All four apply the same spending filter the rest of the reporting layer uses
+// (active accounts, not excluded, not pending, not income, not a transfer,
+// outflow only), so the totals here reconcile with the Spending page rather than
+// telling a second story about the same money.
+// The headline numbers. Returns a row of zeroes and NULLs when the key matches
+// nothing, so a stale link renders an empty merchant rather than a 500.
+func (q *Queries) GetMerchantSummary(ctx context.Context, arg GetMerchantSummaryParams) (GetMerchantSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getMerchantSummary,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ResolvedKey,
+	)
+	var i GetMerchantSummaryRow
+	err := row.Scan(
+		&i.Total,
+		&i.TransactionCount,
+		&i.Average,
+		&i.Largest,
+		&i.FirstSeen,
+		&i.LastSeen,
 	)
 	return i, err
 }
@@ -1074,7 +1362,11 @@ func (q *Queries) GetSpendingSummary(ctx context.Context, arg GetSpendingSummary
 
 const getTopMerchants = `-- name: GetTopMerchants :many
 SELECT
-    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
+    COALESCE(
+        me.canonical_name,
+        (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
+    )::text                                                AS merchant,
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
     SUM(t.amount)::numeric            AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
@@ -1096,7 +1388,7 @@ WHERE u.household_id = $1
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
   AND t.amount > 0
-GROUP BY 1
+GROUP BY me.canonical_name, 2
 ORDER BY total DESC
 LIMIT $5
 `
@@ -1111,6 +1403,7 @@ type GetTopMerchantsParams struct {
 
 type GetTopMerchantsRow struct {
 	Merchant         string          `json:"merchant"`
+	MerchantKey      string          `json:"merchant_key"`
 	Total            decimal.Decimal `json:"total"`
 	TransactionCount int64           `json:"transaction_count"`
 }
@@ -1118,7 +1411,23 @@ type GetTopMerchantsRow struct {
 // Grouped by canonical merchant: fragments of one business that the household
 // has merged (see merchants.sql) collapse into a single row under the entity's
 // name. With no aliases the COALESCE falls straight through to the descriptor
-// and the result is identical to what it was before canonicalisation existed.
+// and the result reads as it did before canonicalisation existed.
+//
+// merchant_key is the RESOLVED key, which is what makes a row here a link: it
+// addresses the merchant detail view for both a merged entity and a bare
+// descriptor, and it is stable across a later merge because resolution is
+// idempotent.
+//
+// The grouping is BY THAT KEY, not by the display name. Grouping by name splits
+// one merchant across several rows whenever the bank varies its own text —
+// "THE HOME DEPOT #4905" and "THE HOME DEPOT 4905" normalise to one key and are
+// one business, but as names they are two, and they listed as two top merchants
+// with two different totals that both linked to the same detail page. A row and
+// the page it opens have to agree.
+//
+// The name shown is the most RECENT descriptor for the key, matching how
+// ListMerchantKeyStats picks its sample: the form a merchant bills under now is
+// the form the user recognises.
 func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams) ([]GetTopMerchantsRow, error) {
 	rows, err := q.db.Query(ctx, getTopMerchants,
 		arg.HouseholdID,
@@ -1134,7 +1443,107 @@ func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams
 	items := []GetTopMerchantsRow{}
 	for rows.Next() {
 		var i GetTopMerchantsRow
-		if err := rows.Scan(&i.Merchant, &i.Total, &i.TransactionCount); err != nil {
+		if err := rows.Scan(
+			&i.Merchant,
+			&i.MerchantKey,
+			&i.Total,
+			&i.TransactionCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMerchantTransactions = `-- name: ListMerchantTransactions :many
+SELECT
+    t.id,
+    t.date,
+    t.amount,
+    t.name,
+    COALESCE(t.merchant_name, t.name) AS descriptor,
+    t.merchant_key                    AS raw_merchant_key,
+    a.name                            AS account_name,
+    c.name                            AS category_name,
+    c.id                              AS category_id
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND COALESCE(ma.entity_id::text, t.merchant_key) = $5::text
+ORDER BY t.date DESC, t.amount DESC
+LIMIT $6
+`
+
+type ListMerchantTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	ResolvedKey string       `json:"resolved_key"`
+	Lim         int32        `json:"lim"`
+}
+
+type ListMerchantTransactionsRow struct {
+	ID             uuid.UUID       `json:"id"`
+	Date           stdtime.Time    `json:"date"`
+	Amount         decimal.Decimal `json:"amount"`
+	Name           string          `json:"name"`
+	Descriptor     string          `json:"descriptor"`
+	RawMerchantKey *string         `json:"raw_merchant_key"`
+	AccountName    string          `json:"account_name"`
+	CategoryName   *string         `json:"category_name"`
+	CategoryID     *uuid.UUID      `json:"category_id"`
+}
+
+// The charges behind the numbers above. Returns the raw descriptor per row as
+// well as the account, because on a merged merchant the interesting question is
+// often WHICH fragment a given charge came in under.
+func (q *Queries) ListMerchantTransactions(ctx context.Context, arg ListMerchantTransactionsParams) ([]ListMerchantTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listMerchantTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ResolvedKey,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMerchantTransactionsRow{}
+	for rows.Next() {
+		var i ListMerchantTransactionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Date,
+			&i.Amount,
+			&i.Name,
+			&i.Descriptor,
+			&i.RawMerchantKey,
+			&i.AccountName,
+			&i.CategoryName,
+			&i.CategoryID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

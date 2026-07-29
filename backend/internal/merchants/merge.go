@@ -214,10 +214,15 @@ func cleanupEmpty(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID) 
 	return nil
 }
 
-// categorySourceRank orders the ways a merchant category can have been decided.
+// CategorySourceRank orders the ways a merchant category can have been decided.
 // It encodes the app's standing rule that a manual category is sticky and
 // outranks anything learned.
-func categorySourceRank(source string) int {
+//
+// Exported because any operation that collapses two merchant keys into one has to
+// decide which of their category mappings survives, and that decision must be the
+// same everywhere it is made — a merge here, and the merchant-key backfill in
+// cmd/normalise-merchant-keys.
+func CategorySourceRank(source string) int {
 	switch source {
 	case "manual":
 		return 3
@@ -331,7 +336,7 @@ func reconcileCategories(ctx context.Context, q *dbgen.Queries, householdID, ent
 
 // better reports whether a beats b as the surviving category mapping.
 func better(a, b dbgen.ListMerchantCategoryMappingsForKeysRow) bool {
-	ra, rb := categorySourceRank(a.Source), categorySourceRank(b.Source)
+	ra, rb := CategorySourceRank(a.Source), CategorySourceRank(b.Source)
 	if ra != rb {
 		return ra > rb
 	}

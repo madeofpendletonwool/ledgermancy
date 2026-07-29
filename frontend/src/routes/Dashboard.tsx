@@ -15,6 +15,7 @@ import {
   formatTransactionAmount,
   isLiability,
 } from '../lib/money'
+import { merchantDetailPath } from '../lib/merchants'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
 import { InsightFeed } from '../components/InsightFeed'
@@ -442,8 +443,10 @@ function MiniStat({
 }
 
 function MerchantRow({ merchant: m }: { merchant: MerchantSpend }) {
-  return (
-    <li className="flex items-center gap-4">
+  // A merchant with no resolved key cannot be addressed, so it stays plain text
+  // rather than becoming a link that goes nowhere.
+  const body = (
+    <>
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{m.merchant}</p>
         <p className="text-xs text-mist-500">
@@ -453,6 +456,21 @@ function MerchantRow({ merchant: m }: { merchant: MerchantSpend }) {
       <span className="tabular shrink-0 font-medium text-mist-100">
         {formatMoney(m.total)}
       </span>
+    </>
+  )
+
+  return (
+    <li>
+      {m.merchant_key ? (
+        <Link
+          className="-mx-2 flex items-center gap-4 rounded-lg px-2 py-1 hover:bg-white/5"
+          to={merchantDetailPath(m.merchant_key)}
+        >
+          {body}
+        </Link>
+      ) : (
+        <div className="flex items-center gap-4">{body}</div>
+      )}
     </li>
   )
 }

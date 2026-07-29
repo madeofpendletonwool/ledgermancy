@@ -16,11 +16,14 @@ where the app proposes merges for you to confirm.
 ## A suggestion never moves a number
 
 This is the rule the whole page is built on. Both the deterministic pass (token
-overlap, prefix containment, vowel-dropped abbreviation — pure string work) and
-the AI pass that sees only the residue write aliases marked `source='suggested'`,
-and **every reporting query excludes those.** A pass therefore cannot change a
-total; it can only fill a review queue. That is what makes it safe to run
-unattended, and it is asserted directly by a test.
+overlap, punctuation-insensitive equality, prefix containment, vowel-dropped
+abbreviation — pure string work) and the AI pass that sees only the residue write
+aliases marked `source='suggested'`, and **every reporting query excludes those.**
+A pass therefore cannot change a total; it can only fill a review queue. That is
+what makes it safe to run unattended, and it is asserted directly by a test.
+
+Each pass **replaces** the queue rather than adding to it, so a proposal the
+current rules would no longer make does not outlive the rules that produced it.
 
 Nothing changes anywhere until you **Confirm** a grouping here.
 
@@ -32,11 +35,20 @@ nobody can judge *same business?* from two strings alone, but the spend and the
 date spans usually settle it.
 
 - **Group these as** — set the canonical name for the merged merchant.
-- **Confirm** to make the suggestion count, or **Not the same** to reject it.
-- Rejections are **remembered**. A pair you reject is never proposed again, and
-  because transitivity could otherwise re-form the merge through a third
-  descriptor, **a component containing any rejected pair is dropped whole** rather
-  than split around the refusal.
+- **Tick the descriptors that belong.** A proposal is a guess about a *set*, and a
+  guess about a set can be half right — the engine will offer you `HOME DEPOT`
+  and `HOMEGOODS` together sooner or later. Untick the ones that don't belong and
+  the button becomes **Group N of M**.
+- **Confirm** groups what you ticked. Whatever you unticked is recorded in the
+  same action as a *different* business, which is what makes it come back as its
+  own proposal next pass instead of the same wrong grouping arriving forever.
+- **Not the same** dismisses the whole proposal.
+- Rejections are **remembered** pairwise. Because transitivity could otherwise
+  re-form a merge through a third descriptor, matches are applied
+  strongest-evidence-first and a match is skipped when it would put a rejected
+  pair in one group. A refusal therefore **cuts** the descriptor graph where you
+  objected rather than retiring the whole family — so having said `HOMEGOODS` is
+  not `THE HOME DEPOT`, next month's `THE HOME DEPOT #1234` is still proposed.
 
 Suggestions refresh on a daily schedule; **Scan for groupings** runs a pass
 immediately.
@@ -64,6 +76,26 @@ can:
 - **Separate** any descriptor that doesn't belong — split is a first-class action
   on purpose. An over-eager merge *will* happen eventually, and one nobody can
   undo is worse than one that never happened.
+- **Open the merchant** by name, for its spending history (see below).
+
+A merchant is retired only once it has **no** descriptors left. A merchant holding
+one descriptor is a name you chose, which is worth keeping: normalising descriptors
+at import means a business whose every form collapses to a single key legitimately
+has one, and discarding it would put the raw bank text back in your reports.
+
+## Per-merchant detail
+
+Any merchant name in the app — here, on the [Dashboard](dashboard.md)'s top
+merchants, in the recurring table on [Spending](spending.md) — opens that
+merchant's own page: total, charge count, per-charge and per-month averages,
+largest charge, spend per month as a chart, how the spending is filed by category,
+and every charge behind those numbers. On a grouped merchant the charge list shows
+which descriptor each charge arrived under.
+
+This works for merchants you have **never grouped**, not just merged ones, because
+the page is addressed by the *resolved* merchant key — an entity for a grouped
+merchant, the raw descriptor otherwise. Most of a household's spending sits at
+merchants nobody has grouped, and they need a history too.
 
 ## What it improves as a side effect
 
@@ -74,7 +106,9 @@ fixes things across the app at once:
   descriptors is finally detected as recurring; a subscription's price creep is
   measured against the whole.
 - **[Top merchants](spending.md)** and the monthly recap stop double-counting a
-  single business.
+  single business. Top merchants groups by resolved key rather than by display
+  name, so a bank that varies its own text — `THE HOME DEPOT #4905` one month and
+  `THE HOME DEPOT 4905` the next — still reads as one row.
 - **[Alerts](alerts.md)** — a merged merchant's second descriptor no longer fires
   a false *new merchant* alert; *new merchant* resolves against the entity.
 - **[Categorisation](../concepts.md#categorisation-order)** — the same business is
