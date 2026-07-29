@@ -75,14 +75,22 @@ export function Documents() {
 
       {unavailable ? (
         <section className="glass p-6">
-          <h2 className="text-lg font-medium">The vault is not set up</h2>
+          <h2 className="text-lg font-medium">The vault is not available</h2>
           <p className="mt-2 text-sm text-mist-300">
-            No document storage is configured on this deployment. An operator
-            enables it by mounting a volume and setting{' '}
-            <code>DOCUMENTS_LOCAL_ROOT</code>, or by pointing{' '}
-            <code>DOCUMENTS_BACKEND=s3</code> at a bucket. Everything else in
-            the app is unaffected.
+            Document storage is switched off, or its backend could not be
+            opened at startup. Everything else in the app is unaffected.
           </p>
+          {/* Deliberately points at the log rather than guessing. The server
+              knows exactly why — an unwritable volume, a bucket refusing
+              credentials — and sending an operator to re-read their .env when
+              the real answer is one line in the log wastes their time. */}
+          <p className="mt-3 text-sm text-mist-400">
+            The reason is in the API log, on the line{' '}
+            <code>document vault disabled</code>:
+          </p>
+          <pre className="mt-2 overflow-x-auto rounded-lg bg-black/30 p-3 text-xs text-mist-300">
+            docker compose logs api | grep &quot;document vault&quot;
+          </pre>
         </section>
       ) : (
         <>

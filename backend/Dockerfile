@@ -16,6 +16,23 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
 FROM alpine:3.21 AS api
 RUN apk add --no-cache ca-certificates tzdata wget \
  && adduser -D -u 10001 ledgermancy
+
+# The document vault's storage root, created here and owned by the user the
+# process actually runs as.
+#
+# This is not decoration. Docker creates a named volume owned by root:root, and
+# this container runs as uid 10001 — so mounting a volume at a path that does
+# not exist in the image gives the api a directory it cannot write to, and the
+# vault disables itself at startup. When the mount point *does* exist in the
+# image, Docker initialises an empty volume from it and carries this ownership
+# across, which is what makes the default compose deploy work unattended.
+#
+# An operator who already has a root-owned volume from an earlier build has to
+# discard it once: `docker compose down && docker volume rm ledgermancy_documents-data`.
+RUN mkdir -p /var/lib/ledgermancy/documents \
+ && chown -R ledgermancy:ledgermancy /var/lib/ledgermancy \
+ && chmod 700 /var/lib/ledgermancy/documents
+
 COPY --from=build /out/api /usr/local/bin/api
 USER ledgermancy
 EXPOSE 8080

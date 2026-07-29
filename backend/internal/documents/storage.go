@@ -107,10 +107,20 @@ func NewLocalStorage(root string) (*LocalStorage, error) {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("create document root %s: %w", abs, err)
 	}
-	// Fail at startup rather than on a user's first upload.
+
+	// Probe for writability at startup rather than discovering it on a user's
+	// first upload.
+	//
+	// The overwhelmingly common cause of a failure here is ownership, not a
+	// missing directory: Docker creates a named volume owned by root while this
+	// process runs as an unprivileged user, so the message names that explicitly.
+	// An operator reading "permission denied" at 1am should not have to work out
+	// which uid to chown to.
 	probe := filepath.Join(abs, ".writable")
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		return nil, fmt.Errorf("document root %s is not writable: %w", abs, err)
+		return nil, fmt.Errorf(
+			"document root %s is not writable by uid %d: %w — if this is a Docker volume it is probably owned by root; fix it with `chown -R %d %s` inside the container, or discard the volume and let the image recreate it (docker compose down && docker volume rm <project>_documents-data)",
+			abs, os.Getuid(), err, os.Getuid(), abs)
 	}
 	_ = os.Remove(probe)
 

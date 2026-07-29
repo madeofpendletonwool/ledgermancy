@@ -238,10 +238,25 @@ second thing to back up: see 18's note about the document volume not being in
   read-only endpoint needs adding there before it works offline, and sign-out
   must keep clearing the worker's caches (`clearApiCache`) or a shared device
   leaks the previous user's figures.
-- **[21-household-sharing.md](21-household-sharing.md)** — shared-goal
-  contributions, bill split + reimbursement ledger, and the `users.role` column
-  kid sub-accounts need. *TODO #9.* Doc 16's admin check should consume this
-  role.
+- **[21-household-sharing.md](21-household-sharing.md)** — **rewritten.** The
+  organizing idea is that a **person** and a **login** are different things:
+  `household_people` carries a name, a birthdate and an optional `user_id`, so a
+  six-year-old with a 529 exists without credentials. Accounts and manual assets
+  gain the person they are *for*; custodial treatments (`utma_ugma`,
+  `coverdell`, `custodial_roth`, `trump`) join `529` in being segregated from the
+  retirement nest egg. Kid logins are opt-in on top of that (`users.role`), with
+  an allowance ledger and person-scoped goals as the teaching surface. Shared-goal
+  contributions and the bill-split ledger are unchanged from the first draft.
+  *TODO #9.* Doc 16's admin check should consume this role.
+
+  **The birthdate is load-bearing beyond kids.** The app currently stores ages —
+  `projection_assumptions.current_age` and
+  `account_contributions.beneficiary_current_age` — which are correct once and
+  wrong every year after, and `networth/limits.go` already gates catch-up
+  contributions on an age it has no reliable source for. Neither column is
+  dropped; both become the fallback behind a derived age. Anything needing an age
+  after this doc lands resolves birthdate → stored integer → `ok=false`, and
+  derives against `ProjectRetirement`'s `now` parameter rather than the clock.
 
 ### Wave 5 — depend on waves 3–4
 
@@ -261,7 +276,15 @@ second thing to back up: see 18's note about the document volume not being in
   digest that already exists but only ever becomes a push. *TODO #10.* Soft deps
   on 13 and 24.
 - **[26-real-asset-revaluation.md](26-real-asset-revaluation.md)** — asset
-  classes, depreciation curves, value history, asset↔loan equity. *TODO #14.*
+  classes, depreciation curves, value history, asset↔loan equity, **and
+  directly-held bonds**. *TODO #14.* Brokerage-held bonds already work through
+  Plaid holdings; what has no home is TreasuryDirect — Series I and EE savings
+  bonds, which sit in `manual_assets` as a frozen number while their real value
+  accrues monthly against published rates. They are the one asset class here
+  whose correct value is arithmetic rather than an estimate, which is why they
+  are the single exception to this doc's "an estimate is a proposal, never a
+  write" rule. Soft tie to 21: savings bonds for a child attach through
+  `manual_assets.person_id`.
 - **[27-inflation-adjusted-views.md](27-inflation-adjusted-views.md)** — a CPI
   series and a real/nominal toggle. *TODO #12.* Small and self-contained; good
   candidate to bundle with 14 or 15.
@@ -315,11 +338,11 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   | `00022_backup_status.sql` | 16 | `backup_runs` table |
   | `00023_merchant_entities.sql` | 17 | `merchant_entities`, `merchant_aliases`, `merchant_merge_rejections` |
   | ~~`00024_documents.sql`~~ | 18 | `documents`, `document_links` — **taken** |
-  | `00025_household_roles_and_splits.sql` | 21 | `users.role`, `goal_contributions`, `transaction_splits`, `child_allowances` |
+  | `00025_household_people_and_splits.sql` | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` |
   | `00026_merchant_baselines.sql` | 22 | `merchant_baselines` table |
   | `00027_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
   | `00028_digest_entries.sql` | 25 | `digest_entries` table |
-  | `00029_asset_revaluation.sql` | 26 | `asset_details`, `asset_valuations`, `manual_assets.loan_account_id` |
+  | `00029_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
   | `00030_cpi_series.sql` | 27 | `cpi_series` table |
   | `00031_scenarios.sql` | 28 | `scenarios` table |
   | `00032_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
@@ -334,6 +357,16 @@ endpoint, cross-check psql, `go build/vet/test`, frontend `tsc/build/lint`) ·
   - **21 → 16.** 16 needs an owner/admin check and observes that no role column
     exists; 21 adds `users.role`. Whichever lands second adopts the other's
     mechanism instead of inventing a parallel one.
+  - **21 → 15 (shipped).** 21 changes where an age comes from. It drops neither
+    `projection_assumptions.current_age` nor
+    `account_contributions.beneficiary_current_age` — both become the fallback
+    behind a birthdate — but `ProjectRetirement` and `AnnualLimitFor` change
+    which source they prefer. Read 21's "Ages come from birthdates" before
+    touching either.
+  - **21 ↔ 26.** Both widen `manual_assets`, in different directions and without
+    overlap: 21 adds `person_id`, 26 adds `loan_account_id` plus the bond side
+    table. Distinct migration numbers are sufficient; no coordination needed
+    beyond not assuming the other has landed.
 
   (The 14 → 15 pair is resolved: 15 shipped reading `accounts.tax_treatment`
   from 14's `00020` and added no copy of it.)
