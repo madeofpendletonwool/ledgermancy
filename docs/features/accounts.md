@@ -44,6 +44,19 @@ Each institution card shows:
     want the history gone. There is no undo. See
     [Deployment → What happens after 730 days](../deployment.md#what-happens-after-730-days).
 
+### Reconnect without losing history
+
+When an item's status is `login_required` or `revoked` (credentials changed, MFA
+re-prompt, the institution revoked access), **Reconnect** opens Plaid Link in
+**update mode**. Update mode repairs the *existing* item in place rather than
+creating a new one, so its accounts, its transactions, and the 730-day history
+window it was linked with all stay put.
+
+This is the right action whenever an item needs attention — relinking from
+scratch instead would orphan the history tied to the old `plaid_item_id`, and
+*cannot* re-widen the history window (Plaid fixes that at link time). See
+[Deployment → What happens after 730 days](../deployment.md#what-happens-after-730-days).
+
 ## Products
 
 Two settings, and the difference between them matters.
