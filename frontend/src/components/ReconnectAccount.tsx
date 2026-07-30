@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { usePlaidLink } from 'react-plaid-link'
 import { api } from '../lib/api'
+import { describePlaidExit, logPlaidExit } from '../lib/plaidError'
 
 /**
  * Repairs a broken institution connection through Plaid Link's update mode.
@@ -44,9 +45,12 @@ export function ReconnectAccount({
     onSuccess,
     // Abandoning the flow leaves the item exactly as it was — still broken,
     // still showing its warning. That is a normal outcome, not an error.
-    onExit: (err) => {
+    onExit: (err, metadata) => {
       setLinkToken(null)
-      if (err) setError(err.display_message ?? err.error_message ?? null)
+      if (err) {
+        logPlaidExit(err, metadata)
+        setError(describePlaidExit(err, metadata))
+      }
     },
   })
 

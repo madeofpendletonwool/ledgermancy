@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { usePlaidLink } from 'react-plaid-link'
 import { api } from '../lib/api'
+import { describePlaidExit, logPlaidExit } from '../lib/plaidError'
 
 /**
  * Opens Plaid Link and completes the exchange.
@@ -37,9 +38,12 @@ export function ConnectAccount() {
     onSuccess,
     // The user closing Link is a normal outcome, not an error; only surface a
     // genuine failure.
-    onExit: (err) => {
+    onExit: (err, metadata) => {
       setLinkToken(null)
-      if (err) setError(err.display_message ?? err.error_message ?? null)
+      if (err) {
+        logPlaidExit(err, metadata)
+        setError(describePlaidExit(err, metadata))
+      }
     },
   })
 
