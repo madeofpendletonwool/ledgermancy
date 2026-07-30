@@ -40,7 +40,7 @@ func (q *Queries) AlertEventExistsForPeriod(ctx context.Context, arg AlertEventE
 
 const bigSpendCandidates = `-- name: BigSpendCandidates :many
 
-SELECT t.id, t.amount, t.date,
+SELECT t.id, ABS(t.amount)::numeric AS amount, t.date,
        COALESCE(t.merchant_name, t.name) AS merchant
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -51,7 +51,8 @@ WHERE u.household_id = $1
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
-  AND t.amount >= $2
+  AND is_spend(t.amount, a.type)
+  AND ABS(t.amount) >= $2
   AND t.date >= $3
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
@@ -59,7 +60,7 @@ WHERE u.household_id = $1
       SELECT 1 FROM alert_events e
       WHERE e.alert_id = $4 AND e.transaction_id = t.id
   )
-ORDER BY t.amount DESC
+ORDER BY ABS(t.amount) DESC
 LIMIT 500
 `
 
@@ -83,6 +84,11 @@ type BigSpendCandidatesRow struct {
 // Single spend transactions at or above the threshold, within a recent window
 // (so a two-year backfill does not raise a flood of historical alerts), that
 // this alert has not already fired on.
+//
+// is_spend/ABS handle the loan-account sign inversion the same way the
+// reporting queries do (see reports.sql) — without it, a large one-time
+// mortgage principal curtailment would never trip this alert, since Plaid
+// signs that payment negative and it would fail a plain `amount >= $2`.
 func (q *Queries) BigSpendCandidates(ctx context.Context, arg BigSpendCandidatesParams) ([]BigSpendCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, bigSpendCandidates,
 		arg.HouseholdID,
@@ -120,7 +126,7 @@ SELECT
     c.slug        AS category_slug,
     c.name        AS category_name,
     COALESCE((
-        SELECT SUM(t.amount)
+        SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
         JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -131,7 +137,7 @@ SELECT
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
-          AND t.amount > 0
+          AND is_spend(t.amount, a.type)
           AND t.date >= $2 AND t.date <= $3
     ), 0)::numeric AS spent
 FROM budgets b
@@ -640,7 +646,7 @@ func (q *Queries) MarkAllAlertEventsRead(ctx context.Context, arg MarkAllAlertEv
 
 const sharedMonthCashflow = `-- name: SharedMonthCashflow :one
 WITH visible AS (
-    SELECT t.amount, c.is_income, c.is_transfer
+    SELECT t.amount, a.type AS account_type, c.is_income, c.is_transfer
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -655,9 +661,9 @@ WITH visible AS (
 )
 SELECT
     COALESCE(SUM(-amount) FILTER (WHERE is_income), 0)::numeric AS income,
-    COALESCE(SUM(amount)  FILTER (WHERE NOT COALESCE(is_income, FALSE)
+    COALESCE(SUM(ABS(amount))  FILTER (WHERE NOT COALESCE(is_income, FALSE)
                                     AND NOT COALESCE(is_transfer, FALSE)
-                                    AND amount > 0), 0)::numeric AS spending
+                                    AND is_spend(amount, account_type)), 0)::numeric AS spending
 FROM visible
 `
 
@@ -701,7 +707,7 @@ WITH firsts AS (
     HAVING MIN(t.date) >= $2
 )
 SELECT DISTINCT ON (COALESCE(ma.entity_id::text, t.merchant_key))
-       t.id, t.amount, t.date,
+       t.id, ABS(t.amount)::numeric AS amount, t.date,
        COALESCE(ma.entity_id::text, t.merchant_key)::text AS merchant_key,
        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant
 FROM transactions t
@@ -719,7 +725,8 @@ WHERE u.household_id = $1
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
-  AND t.amount >= $3
+  AND is_spend(t.amount, a.type)
+  AND ABS(t.amount) >= $3
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
   AND NOT EXISTS (

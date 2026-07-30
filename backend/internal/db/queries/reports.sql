@@ -2,9 +2,12 @@
 --
 -- Conventions that every query here shares, and that the numbers depend on:
 --
---   * Plaid signs amounts as POSITIVE = money leaving the account. So spending
---     is sum(amount) over positive rows, and income is -sum(amount) over
---     negative rows in income categories.
+--   * Plaid signs amounts as POSITIVE = money leaving the account, EXCEPT on a
+--     `loan` account, where it inverts: a payment (money actually spent) is
+--     negative. is_spend(amount, account_type) is the one place that exception
+--     lives; every "is this row an outflow" test calls it instead of comparing
+--     amount > 0 directly. Income has no loan-account equivalent to invert, so
+--     it is still -sum(amount) over negative rows in income categories.
 --   * Transfers are excluded from BOTH income and spending. Moving money
 --     between your own accounts is neither, and counting it would inflate
 --     both sides. This is also what stops credit-card payments being
@@ -17,7 +20,7 @@
 -- Headline figures for one period: what came in, what went out, and what was
 -- left to invest.
 WITH visible AS (
-    SELECT t.amount, c.is_income, c.is_transfer, c.is_fixed
+    SELECT t.amount, a.type AS account_type, c.is_income, c.is_transfer, c.is_fixed
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -32,15 +35,15 @@ WITH visible AS (
 )
 SELECT
     COALESCE(SUM(-amount) FILTER (WHERE is_income), 0)::numeric        AS income,
-    COALESCE(SUM(amount)  FILTER (WHERE NOT COALESCE(is_income, FALSE)
+    COALESCE(SUM(ABS(amount))  FILTER (WHERE NOT COALESCE(is_income, FALSE)
                                     AND NOT COALESCE(is_transfer, FALSE)
-                                    AND amount > 0), 0)::numeric       AS spending,
-    COALESCE(SUM(amount)  FILTER (WHERE COALESCE(is_fixed, FALSE)
-                                    AND amount > 0), 0)::numeric       AS fixed_spending,
-    COALESCE(SUM(amount)  FILTER (WHERE NOT COALESCE(is_income, FALSE)
+                                    AND is_spend(amount, account_type)), 0)::numeric       AS spending,
+    COALESCE(SUM(ABS(amount))  FILTER (WHERE COALESCE(is_fixed, FALSE)
+                                    AND is_spend(amount, account_type)), 0)::numeric       AS fixed_spending,
+    COALESCE(SUM(ABS(amount))  FILTER (WHERE NOT COALESCE(is_income, FALSE)
                                     AND NOT COALESCE(is_transfer, FALSE)
                                     AND NOT COALESCE(is_fixed, FALSE)
-                                    AND amount > 0), 0)::numeric       AS discretionary_spending,
+                                    AND is_spend(amount, account_type)), 0)::numeric       AS discretionary_spending,
     COUNT(*)::bigint                                                    AS transaction_count
 FROM visible;
 
@@ -52,7 +55,7 @@ SELECT
     c.slug    AS category_slug,
     c.color   AS category_color,
     c.is_fixed,
-    SUM(t.amount)::numeric AS total,
+    SUM(ABS(t.amount))::numeric AS total,
     COUNT(*)::bigint       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -67,7 +70,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT c.is_income
   AND NOT c.is_transfer
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
 GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
 
@@ -77,9 +80,9 @@ ORDER BY total DESC;
 SELECT
     date_trunc('month', t.date)::date AS month,
     COALESCE(SUM(-t.amount) FILTER (WHERE c.is_income), 0)::numeric AS income,
-    COALESCE(SUM(t.amount)  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
+    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
                                      AND NOT COALESCE(c.is_transfer, FALSE)
-                                     AND t.amount > 0), 0)::numeric AS spending
+                                     AND is_spend(t.amount, a.type)), 0)::numeric AS spending
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -97,13 +100,13 @@ ORDER BY 1;
 -- name: GetSpendingByDay :many
 -- Spending per calendar day across a range. Drives the dashboard's
 -- "this month, by day" chart. Same spend definition as everywhere else:
--- money out (amount > 0), excluding income and transfers. Only days with
+-- money out (is_spend), excluding income and transfers. Only days with
 -- spending appear; the frontend fills the empty days across the month.
 SELECT
     t.date::date AS day,
-    COALESCE(SUM(t.amount) FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
+    COALESCE(SUM(ABS(t.amount)) FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
                                      AND NOT COALESCE(c.is_transfer, FALSE)
-                                     AND t.amount > 0), 0)::numeric AS spending
+                                     AND is_spend(t.amount, a.type)), 0)::numeric AS spending
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -144,8 +147,8 @@ SELECT
     c.slug  AS category_slug,
     c.color AS category_color,
     c.is_fixed,
-    SUM(t.amount)::numeric                        AS total,
-    (SUM(t.amount) / (SELECT n FROM months))::numeric AS monthly_average,
+    SUM(ABS(t.amount))::numeric                        AS total,
+    (SUM(ABS(t.amount)) / (SELECT n FROM months))::numeric AS monthly_average,
     COUNT(*)::bigint                              AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -160,7 +163,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT c.is_income
   AND NOT c.is_transfer
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
 GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
 
@@ -191,7 +194,7 @@ SELECT
         (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
     )::text                                                AS merchant,
     COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
-    SUM(t.amount)::numeric            AS total,
+    SUM(ABS(t.amount))::numeric            AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -211,7 +214,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
 GROUP BY me.canonical_name, 2
 ORDER BY total DESC
 LIMIT $5;
@@ -245,9 +248,9 @@ WITH window_spend AS (
             me.canonical_name,
             (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
         )::text                                     AS merchant,
-        SUM(t.amount)::numeric                      AS total,
+        SUM(ABS(t.amount))::numeric                      AS total,
         COUNT(*)::bigint                            AS transaction_count,
-        (SUM(t.amount) / COUNT(*))::numeric         AS average,
+        (SUM(ABS(t.amount)) / COUNT(*))::numeric         AS average,
         MIN(t.date)::date                           AS first_seen,
         MAX(t.date)::date                           AS last_seen,
         -- Does ANY raw form this merchant bills under match the needle? A null
@@ -275,7 +278,7 @@ WITH window_spend AS (
       AND t.date >= $3 AND t.date <= $4
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
       -- Optional category filter. Unlike the search needle this one IS applied
       -- before aggregation, on purpose: "what do I spend on groceries at Costco"
       -- is a question about a slice of a merchant, and the answer should be the
@@ -288,7 +291,7 @@ prior_spend AS (
     -- Same filters throughout, so a change of +18% compares like with like.
     SELECT
         COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
-        SUM(t.amount)::numeric                                 AS total
+        SUM(ABS(t.amount))::numeric                                 AS total
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -306,7 +309,7 @@ prior_spend AS (
       AND t.date >= sqlc.arg('prior_from') AND t.date <= sqlc.arg('prior_to')
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
       AND (sqlc.narg('category_id')::uuid IS NULL OR t.category_id = sqlc.narg('category_id')::uuid)
     GROUP BY 1
 ),
@@ -332,7 +335,7 @@ seen_before AS (
       AND t.date < $3
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
 ),
 merchant_category AS (
     -- Spend per (merchant, category) in the window. Inner join to categories, so
@@ -342,7 +345,7 @@ merchant_category AS (
         c.id                   AS category_id,
         c.name                 AS category_name,
         c.color                AS category_color,
-        SUM(t.amount)          AS total
+        SUM(ABS(t.amount))::numeric AS total
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -360,7 +363,7 @@ merchant_category AS (
       AND t.date >= $3 AND t.date <= $4
       AND NOT c.is_income
       AND NOT c.is_transfer
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
       AND (sqlc.narg('category_id')::uuid IS NULL OR t.category_id = sqlc.narg('category_id')::uuid)
     GROUP BY 1, c.id, c.name, c.color
 ),
@@ -438,7 +441,7 @@ WITH tx AS (
         COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
         COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
-        t.amount
+        ABS(t.amount)::numeric AS amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -455,7 +458,7 @@ WITH tx AS (
       AND NOT t.excluded_from_reports
       AND NOT t.pending
       AND t.merchant_key IS NOT NULL
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
       -- Discretionary spend is never a subscription. Eating at the same place
@@ -583,7 +586,7 @@ ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC;
 -- compares individual charges (from GetLargestTransactions) to this in Go, so
 -- no arithmetic the model sees happens outside SQL/decimal.
 SELECT
-    COALESCE(AVG(t.amount), 0)::numeric AS avg_amount,
+    COALESCE(AVG(ABS(t.amount)), 0)::numeric AS avg_amount,
     COUNT(*)::bigint                    AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -595,7 +598,7 @@ WHERE u.household_id = $1
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
   AND t.date >= $3;
@@ -672,10 +675,10 @@ ORDER BY ro.merchant_label, ro.merchant_key;
 -- spans every descriptor of a merged merchant and the caller may pass a raw key
 -- straight off a transaction.
 SELECT
-    COALESCE(AVG(t.amount), 0)::numeric AS typical_amount,
+    COALESCE(AVG(ABS(t.amount)), 0)::numeric AS typical_amount,
     COUNT(*)::bigint                    AS visit_count,
-    COALESCE(MIN(t.amount), 0)::numeric AS min_amount,
-    COALESCE(MAX(t.amount), 0)::numeric AS max_amount
+    COALESCE(MIN(ABS(t.amount)), 0)::numeric AS min_amount,
+    COALESCE(MAX(ABS(t.amount)), 0)::numeric AS max_amount
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -697,7 +700,7 @@ WHERE u.household_id = @household_id
         @merchant_key::text
       )
   AND t.id <> @exclude_tx::uuid
-  AND t.amount > 0;
+  AND is_spend(t.amount, a.type);
 
 -- name: GetRecurringAmountTrend :many
 -- Price-creep detection for recurring merchants: split each merchant's charges
@@ -711,7 +714,7 @@ WITH tx AS (
         COALESCE(ma.entity_id::text, t.merchant_key) AS merchant_key,
         COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
         t.date,
-        t.amount
+        ABS(t.amount)::numeric AS amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
     JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -728,7 +731,7 @@ WITH tx AS (
       AND NOT t.excluded_from_reports
       AND NOT t.pending
       AND t.merchant_key IS NOT NULL
-      AND t.amount > 0
+      AND is_spend(t.amount, a.type)
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
       AND t.date >= $3
@@ -794,7 +797,7 @@ SELECT
     COALESCE(date_trunc('month', b.effective_from)::date,
              date_trunc('month', b.created_at)::date)::date AS rollover_start,
     COALESCE((
-        SELECT SUM(t.amount)
+        SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
         JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -805,7 +808,7 @@ SELECT
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
-          AND t.amount > 0
+          AND is_spend(t.amount, a.type)
           AND t.date >= (CASE b.period
                 WHEN 'weekly' THEN date_trunc('week', @ref::date)::date
                 WHEN 'yearly' THEN date_trunc('year', @ref::date)::date
@@ -816,7 +819,7 @@ SELECT
                 ELSE @window_end::date END)
     ), 0)::numeric AS spent,
     COALESCE((
-        SELECT SUM(t.amount)
+        SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
         JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -827,7 +830,7 @@ SELECT
           AND NOT t.excluded_from_reports
           AND NOT t.pending
           AND t.category_id = b.category_id
-          AND t.amount > 0
+          AND is_spend(t.amount, a.type)
           AND t.date >= COALESCE(date_trunc('month', b.effective_from)::date,
                                  date_trunc('month', b.created_at)::date)
           AND t.date < @window_start::date
@@ -896,12 +899,12 @@ ORDER BY t.date DESC, t.created_at DESC;
 -- name: GetLargestTransactions :many
 -- The single biggest purchases in a window, largest first. Feeds the monthly
 -- recap ("your biggest hits were …"). Same spend definition and visibility
--- scoping as every other report: money out (amount > 0), no income, no
+-- scoping as every other report: money out (is_spend), no income, no
 -- transfers. Merchant falls back to the raw transaction name when Plaid has no
 -- cleaned merchant.
 SELECT
     COALESCE(t.merchant_name, t.name) AS merchant,
-    t.amount::numeric                 AS amount,
+    ABS(t.amount)::numeric            AS amount,
     t.date::date                      AS date,
     COALESCE(c.name, '')              AS category_name
 FROM transactions t
@@ -917,8 +920,8 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
-ORDER BY t.amount DESC
+  AND is_spend(t.amount, a.type)
+ORDER BY ABS(t.amount) DESC
 LIMIT $5;
 
 -- --------------------------------------------------------------------------
@@ -941,10 +944,10 @@ LIMIT $5;
 -- The headline numbers. Returns a row of zeroes and NULLs when the key matches
 -- nothing, so a stale link renders an empty merchant rather than a 500.
 SELECT
-    COALESCE(SUM(t.amount), 0)::numeric  AS total,
+    COALESCE(SUM(ABS(t.amount)), 0)::numeric  AS total,
     COUNT(*)::bigint                     AS transaction_count,
-    COALESCE(AVG(t.amount), 0)::numeric  AS average,
-    COALESCE(MAX(t.amount), 0)::numeric  AS largest,
+    COALESCE(AVG(ABS(t.amount)), 0)::numeric  AS average,
+    COALESCE(MAX(ABS(t.amount)), 0)::numeric  AS largest,
     COALESCE(MIN(t.date)::text, '')::text  AS first_seen,
     COALESCE(MAX(t.date)::text, '')::text AS last_seen
 FROM transactions t
@@ -964,7 +967,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text;
 
 -- name: GetMerchantMonthlySpend :many
@@ -973,7 +976,7 @@ WHERE u.household_id = $1
 -- would make an empty month indistinguishable from a month outside the data.
 SELECT
     date_trunc('month', t.date)::date AS month,
-    SUM(t.amount)::numeric            AS total,
+    SUM(ABS(t.amount))::numeric       AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -992,7 +995,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
 GROUP BY 1
 ORDER BY 1;
@@ -1007,7 +1010,7 @@ SELECT
     c.slug                 AS category_slug,
     c.color                AS category_color,
     c.is_fixed,
-    SUM(t.amount)::numeric AS total,
+    SUM(ABS(t.amount))::numeric AS total,
     COUNT(*)::bigint       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -1026,7 +1029,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT c.is_income
   AND NOT c.is_transfer
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
 GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
@@ -1038,7 +1041,7 @@ ORDER BY total DESC;
 SELECT
     t.id,
     t.date,
-    t.amount,
+    ABS(t.amount)::numeric AS amount,
     t.name,
     COALESCE(t.merchant_name, t.name) AS descriptor,
     t.merchant_key                    AS raw_merchant_key,
@@ -1062,9 +1065,9 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
-ORDER BY t.date DESC, t.amount DESC
+ORDER BY t.date DESC, ABS(t.amount) DESC
 LIMIT sqlc.arg('lim');
 
 -- name: GetMerchantIdentity :one
@@ -1116,10 +1119,10 @@ GROUP BY me.id, me.canonical_name;
 -- category matches nothing in the window, so an empty category renders as empty
 -- rather than a 500 — same contract as GetMerchantSummary.
 SELECT
-    COALESCE(SUM(t.amount), 0)::numeric    AS total,
+    COALESCE(SUM(ABS(t.amount)), 0)::numeric    AS total,
     COUNT(*)::bigint                       AS transaction_count,
-    COALESCE(AVG(t.amount), 0)::numeric    AS average,
-    COALESCE(MAX(t.amount), 0)::numeric    AS largest,
+    COALESCE(AVG(ABS(t.amount)), 0)::numeric    AS average,
+    COALESCE(MAX(ABS(t.amount)), 0)::numeric    AS largest,
     COALESCE(MIN(t.date)::text, '')::text  AS first_seen,
     COALESCE(MAX(t.date)::text, '')::text  AS last_seen
 FROM transactions t
@@ -1135,7 +1138,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND t.category_id = sqlc.arg('category_id');
 
 -- name: GetCategoryMonthlySpend :many
@@ -1147,7 +1150,7 @@ WHERE u.household_id = $1
 -- the same series by calling GetSpendingByCategory once per month in Go.
 SELECT
     date_trunc('month', t.date)::date AS month,
-    SUM(t.amount)::numeric            AS total,
+    SUM(ABS(t.amount))::numeric       AS total,
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -1162,7 +1165,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND t.category_id = sqlc.arg('category_id')
 GROUP BY 1
 ORDER BY 1;
@@ -1181,7 +1184,7 @@ SELECT
         (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
     )::text                                                AS merchant,
     COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
-    SUM(t.amount)::numeric                                 AS total,
+    SUM(ABS(t.amount))::numeric                                 AS total,
     COUNT(*)::bigint                                       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
@@ -1201,7 +1204,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND t.category_id = sqlc.arg('category_id')
 GROUP BY me.canonical_name, 2
 ORDER BY total DESC
@@ -1214,7 +1217,7 @@ LIMIT sqlc.arg('lim');
 SELECT
     t.id,
     t.date,
-    t.amount,
+    ABS(t.amount)::numeric AS amount,
     t.name,
     COALESCE(t.merchant_name, t.name)                      AS descriptor,
     COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
@@ -1238,7 +1241,7 @@ WHERE u.household_id = $1
   AND t.date >= $3 AND t.date <= $4
   AND NOT COALESCE(c.is_income, FALSE)
   AND NOT COALESCE(c.is_transfer, FALSE)
-  AND t.amount > 0
+  AND is_spend(t.amount, a.type)
   AND t.category_id = sqlc.arg('category_id')
-ORDER BY t.date DESC, t.amount DESC
+ORDER BY t.date DESC, ABS(t.amount) DESC
 LIMIT sqlc.arg('lim');

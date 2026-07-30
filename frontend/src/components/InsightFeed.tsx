@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, type Insight } from '../lib/api'
+import { formatRelative } from '../lib/money'
 
 /**
  * The proactive-insight feed. Renders in two shapes off one data source:
@@ -125,6 +126,7 @@ function InsightRow({
           </div>
           <p className="mt-2 font-medium text-mist-100">{insight.title}</p>
           <p className="mt-1 text-sm text-mist-300">{insight.body}</p>
+          <p className="mt-1.5 text-xs text-mist-500">{formatRelative(insight.created_at)}</p>
         </div>
         {!dismissed && (
           <div className="flex shrink-0 flex-col items-end gap-1.5">

@@ -258,6 +258,127 @@ func TestReportQueriesExecute(t *testing.T) {
 	}
 }
 
+// TestLoanAccountPaymentsCountAsSpend guards the sign-convention bug where a
+// mortgage (or any `loan` account) had two years of real payments that never
+// once appeared in a spend report. Plaid signs loan-account amounts opposite
+// to every other account type: a payment is NEGATIVE there, not positive, so
+// a report that tests `amount > 0` uniformly silently drops every payment
+// regardless of date range — is_spend() is what has to catch that. This also
+// pins the other half: the depository-side transfer leg that funds the
+// payment must stay excluded, or the same payment counts twice.
+func TestLoanAccountPaymentsCountAsSpend(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pool, err := Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	q := dbgen.New(pool)
+
+	householdID := uuid.New()
+	userID := uuid.New()
+	itemID := uuid.New()
+	savingsID := uuid.New()
+	loanID := uuid.New()
+	loanPaymentsID := uuid.New()
+	transferOutID := uuid.New()
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed exec: %v\n%s", err, sql)
+		}
+	}
+
+	exec(`INSERT INTO households (id, name) VALUES ($1, 'Loan Test')`, householdID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM households WHERE id = $1`, householdID)
+	})
+	exec(`INSERT INTO users (id, household_id, email, password_hash, display_name)
+	      VALUES ($1, $2, $3, 'x', 'Tester')`, userID, householdID, userID.String()+"@example.test")
+	exec(`INSERT INTO plaid_items (id, user_id, plaid_item_id, access_token_encrypted, products, status)
+	      VALUES ($1, $2, $3, '\x00', '{transactions}', 'active')`, itemID, userID, itemID.String())
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type)
+	      VALUES ($1, $2, $3, 'Regular Savings', 'depository')`, savingsID, itemID, savingsID.String())
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type, subtype)
+	      VALUES ($1, $2, $3, 'Mortgage', 'loan', 'mortgage')`, loanID, itemID, loanID.String())
+	exec(`INSERT INTO categories (id, household_id, name, slug, is_transfer)
+	      VALUES ($1, $2, 'Loan Payments', 'loan-payments', FALSE)`, loanPaymentsID, householdID)
+	exec(`INSERT INTO categories (id, household_id, name, slug, is_transfer)
+	      VALUES ($1, $2, 'Transfer Out', 'transfer-out', TRUE)`, transferOutID, householdID)
+
+	// The loan servicer's side: the balance goes down, so Plaid signs it
+	// negative. This is the row the bug dropped from every report.
+	exec(`INSERT INTO transactions
+	        (account_id, amount, currency, date, name, merchant_key, category_id, source)
+	      VALUES ($1, '-1000.00', 'USD', '2026-01-25', 'Regular Payment Transfer', 'mortgage payment', $2, 'plaid')`,
+		loanID, loanPaymentsID)
+	// The funding leg on the savings side: money actually leaves the account,
+	// signed positive as usual, but it is a transfer and must stay excluded —
+	// otherwise the one real payment is counted twice.
+	exec(`INSERT INTO transactions
+	        (account_id, amount, currency, date, name, merchant_key, category_id, source)
+	      VALUES ($1, '1000.00', 'USD', '2026-01-25', 'Withdrawal Transfer To Mortgage', 'withdrawal transfer to mortgage', $2, 'plaid')`,
+		savingsID, transferOutID)
+
+	from := mustDate(t, "2026-01-01")
+	to := mustDate(t, "2026-01-31")
+
+	summary, err := q.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
+		HouseholdID: householdID, UserID: userID, Date: from, Date_2: to,
+	})
+	if err != nil {
+		t.Fatalf("GetSpendingSummary: %v", err)
+	}
+	want := decimal.RequireFromString("1000.00")
+	if !summary.Spending.Equal(want) {
+		t.Errorf("GetSpendingSummary.Spending = %s, want %s (loan payment once, transfer leg excluded)",
+			summary.Spending, want)
+	}
+
+	byCat, err := q.GetSpendingByCategory(ctx, dbgen.GetSpendingByCategoryParams{
+		HouseholdID: householdID, UserID: userID, Date: from, Date_2: to,
+	})
+	if err != nil {
+		t.Fatalf("GetSpendingByCategory: %v", err)
+	}
+	var loanRow *dbgen.GetSpendingByCategoryRow
+	for i := range byCat {
+		if byCat[i].CategoryName == "Loan Payments" {
+			loanRow = &byCat[i]
+		}
+	}
+	if loanRow == nil {
+		t.Fatalf("Loan Payments missing from GetSpendingByCategory: %+v", byCat)
+	}
+	if loanRow.TransactionCount != 1 || !loanRow.Total.Equal(want) {
+		t.Errorf("Loan Payments = %d charges / %s, want 1 / %s", loanRow.TransactionCount, loanRow.Total, want)
+	}
+
+	// The merchant detail page — this is the exact query that told the user
+	// their mortgage had "no charges" despite two years of real payments.
+	merchSummary, err := q.GetMerchantSummary(ctx, dbgen.GetMerchantSummaryParams{
+		HouseholdID: householdID, UserID: userID, Date: from, Date_2: to,
+		ResolvedKey: "mortgage payment",
+	})
+	if err != nil {
+		t.Fatalf("GetMerchantSummary: %v", err)
+	}
+	if merchSummary.TransactionCount != 1 || !merchSummary.Total.Equal(want) {
+		t.Errorf("GetMerchantSummary(mortgage payment) = %d charges / %s, want 1 / %s",
+			merchSummary.TransactionCount, merchSummary.Total, want)
+	}
+}
+
 func mustDate(t *testing.T, s string) time.Time {
 	t.Helper()
 	d, err := time.Parse("2006-01-02", s)
