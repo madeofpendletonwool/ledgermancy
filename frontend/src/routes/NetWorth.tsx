@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type NetWorthPoint } from '../lib/api'
-import { formatMoney } from '../lib/money'
+import { formatMoney, isAmortizingDebt } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
 import { CHART, SERIES, STATUS } from '../components/charts/tokens'
 
@@ -161,7 +161,11 @@ export function NetWorth() {
                       one and needs to offer the fix rather than render blank. */}
                   {l.apr ? (
                     <span className="tabular text-sm text-mist-300">
-                      {Number(l.apr).toFixed(2)}% APR
+                      {isAmortizingDebt(l.account_type) ? (
+                        <>{Number(l.apr).toFixed(3)}% rate</>
+                      ) : (
+                        <>{Number(l.apr).toFixed(2)}% APR</>
+                      )}
                     </span>
                   ) : (
                     <Link to="/accounts" className="text-xs text-mist-500 underline">

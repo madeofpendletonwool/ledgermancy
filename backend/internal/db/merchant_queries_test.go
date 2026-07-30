@@ -245,7 +245,7 @@ func TestSuggestedAliasesChangeNoReport(t *testing.T) {
 	}
 	for i := range beforeRecurring {
 		if beforeRecurring[i].MerchantKey != afterRecurring[i].MerchantKey ||
-			!beforeRecurring[i].AverageAmount.Equal(afterRecurring[i].AverageAmount) {
+			!beforeRecurring[i].TypicalAmount.Equal(afterRecurring[i].TypicalAmount) {
 			t.Errorf("suggested alias changed a recurring row:\n before %+v\n after  %+v",
 				beforeRecurring[i], afterRecurring[i])
 		}

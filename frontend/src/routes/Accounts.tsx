@@ -7,7 +7,13 @@ import {
   type Liability,
   type PlaidItem,
 } from '../lib/api'
-import { formatDate, formatMoney, formatRelative, isLiability } from '../lib/money'
+import {
+  formatDate,
+  formatMoney,
+  formatRelative,
+  isAmortizingDebt,
+  isLiability,
+} from '../lib/money'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { ConnectAccount } from '../components/ConnectAccount'
 import { ReconnectAccount } from '../components/ReconnectAccount'
@@ -275,6 +281,10 @@ function DebtTerms({
   const knownAPR = terms?.apr_source ? terms.apr : null
   const knownPayment = terms?.payment_source ? terms.minimum_payment : null
 
+  // Decides whether this account's rate is an APR or a note rate, and so what
+  // every label below calls it. See isAmortizingDebt for why the two differ.
+  const isAmortizing = isAmortizingDebt(account.type)
+
   const save = useMutation({
     mutationFn: (input: Parameters<typeof api.setAccountTerms>[1]) =>
       api.setAccountTerms(account.id, input),
@@ -313,7 +323,8 @@ function DebtTerms({
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mist-500">
         {terms?.apr_source ? (
           <span>
-            {Number(terms.apr).toFixed(2)}% APR
+            {Number(terms.apr).toFixed(isAmortizing ? 3 : 2)}%{' '}
+            {isAmortizing ? 'rate' : 'APR'}
             {terms.apr_source === 'manual' && ' (yours)'}
           </span>
         ) : (
@@ -345,7 +356,7 @@ function DebtTerms({
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
           <label className="label" htmlFor={`apr-${account.id}`}>
-            APR (%)
+            {isAmortizing ? 'Interest rate (%)' : 'APR (%)'}
           </label>
           <input
             id={`apr-${account.id}`}
@@ -353,14 +364,22 @@ function DebtTerms({
             type="number"
             min="0"
             max="200"
-            step="0.01"
+            step="0.001"
             // 18.99 for 18.99%, never 0.1899 — the placeholder is doing real
             // work here, since the wrong form satisfies every validation rule
-            // and quietly reports the card as almost interest-free.
-            placeholder="18.99"
+            // and quietly reports the card as almost interest-free. The loan
+            // placeholder carries three decimals because note rates are quoted
+            // in eighths (6.775, 5.875) and a two-decimal step would refuse
+            // them.
+            placeholder={isAmortizing ? '6.775' : '18.99'}
             value={apr}
             onChange={(e) => setApr(e.target.value)}
           />
+          {isAmortizing && (
+            <p className="mt-1 text-xs text-mist-500">
+              Your note rate, not the APR disclosed at closing.
+            </p>
+          )}
         </div>
         <div>
           <label className="label" htmlFor={`payment-${account.id}`}>
@@ -376,6 +395,17 @@ function DebtTerms({
             value={payment}
             onChange={(e) => setPayment(e.target.value)}
           />
+          {isAmortizing && (
+            // Escrow is collected alongside the payment and never applied to the
+            // loan, but ComputePayoff subtracts whatever it is given from the
+            // balance. A payment entered with escrow included therefore retires
+            // principal that is really sitting in a tax account, and reports a
+            // 30-year mortgage as clearing years early.
+            <p className="mt-1 text-xs text-mist-500">
+              Principal and interest only — leave out escrow for taxes and
+              insurance.
+            </p>
+          )}
         </div>
       </div>
 

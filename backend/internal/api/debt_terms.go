@@ -103,6 +103,18 @@ func isDebtAccountType(accountType string) bool {
 // permits only credit/student/mortgage, so it cannot say "auto" or "line of
 // credit" at all. Plaid's subtype can, and is what the Accounts page already
 // displays, so the two now agree.
+// aprDecimals is how many places a rate should be rendered to for an account of
+// this type. Amortizing loans get three because note rates are quoted in
+// eighths — 6.775, 5.875 — and rounding one to two places prints a number the
+// household cannot find on their statement. Cards get two: nobody quotes a card
+// at 18.990%.
+func aprDecimals(accountType string) int32 {
+	if accountType == "loan" {
+		return 3
+	}
+	return 2
+}
+
 func debtKindLabel(accountType string, subtype *string) string {
 	if subtype != nil && *subtype != "" {
 		return *subtype

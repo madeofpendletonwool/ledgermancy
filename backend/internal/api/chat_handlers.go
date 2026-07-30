@@ -410,12 +410,12 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		for _, m := range rows {
 			var monthly decimal.Decimal
 			if m.AvgGapDays.IsPositive() {
-				monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+				monthly = m.TypicalAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 			}
 			out = append(out, map[string]string{
 				"merchant":         m.Merchant,
 				"cadence":          obligations.CadenceLabel(m.AvgGapDays),
-				"typical_amount":   m.AverageAmount.StringFixed(2),
+				"typical_amount":   m.TypicalAmount.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
 			})
 		}

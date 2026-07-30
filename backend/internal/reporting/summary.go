@@ -257,7 +257,7 @@ func buildRecurringTotal(
 		if !r.AvgGapDays.IsPositive() {
 			continue
 		}
-		monthly := r.AverageAmount.Mul(decimal.NewFromInt(30)).Div(r.AvgGapDays)
+		monthly := r.TypicalAmount.Mul(decimal.NewFromInt(30)).Div(r.AvgGapDays)
 		total = total.Add(monthly)
 	}
 	if !total.IsPositive() {

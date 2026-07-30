@@ -565,6 +565,8 @@ type Transaction struct {
 	Raw                  []byte          `json:"raw"`
 	CreatedAt            stdtime.Time    `json:"created_at"`
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
+	// User state: a real but non-repeating event (loan payoff, tax bill, car purchase). Counted in the month it fell; skipped by trailing-average and recurring-detection queries that pass exclude_one_time. Preserved across Plaid sync, like excluded_from_reports and notes.
+	IsOneTime bool `json:"is_one_time"`
 }
 
 type TransactionSplit struct {

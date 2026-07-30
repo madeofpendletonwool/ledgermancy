@@ -174,7 +174,7 @@ WHERE a.id = $8
   AND u.household_id = $9
   AND (i.user_id = $10 OR i.is_shared)
   AND a.is_active
-RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time
 `
 
 type CreateManualTransactionParams struct {
@@ -236,6 +236,7 @@ func (q *Queries) CreateManualTransaction(ctx context.Context, arg CreateManualT
 		&i.Raw,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsOneTime,
 	)
 	return i, err
 }
@@ -585,7 +586,7 @@ func (q *Queries) ListQueriedTransactions(ctx context.Context, arg ListQueriedTr
 }
 
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
-SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name,
+SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, a.name AS account_name, i.institution_name,
     -- The RESOLVED merchant key, so a row can address the merchant detail view.
     -- Raw t.merchant_key addresses one DESCRIPTOR; this addresses the BUSINESS,
     -- collapsing every fragment the household has grouped. Without it a row
@@ -617,18 +618,22 @@ LEFT JOIN merchant_aliases ma
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
-  AND NOT t.excluded_from_reports
+  -- Excluded rows are hidden by default, because the ledger should read like the
+  -- reports it feeds. They are NOT hidden unconditionally: this list is the only
+  -- surface that can clear the flag, and a row that vanishes the moment it is set
+  -- would make exclusion a one-way trip. NULL/false narg gives the ordinary view.
+  AND ($7::bool IS TRUE OR NOT t.excluded_from_reports)
   AND t.date >= $3
   AND t.date <= $4
   -- Optional multi-account filter: NULL/empty array passes everything, so "all
   -- accounts" needs no special case. Anything else narrows to the listed ids.
   AND (
-    $7::uuid[] IS NULL
-    OR cardinality($7::uuid[]) = 0
-    OR t.account_id = ANY($7::uuid[])
+    $8::uuid[] IS NULL
+    OR cardinality($8::uuid[]) = 0
+    OR t.account_id = ANY($8::uuid[])
   )
   -- Optional category filter (a null narg passes everything).
-  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND ($9::uuid IS NULL OR t.category_id = $9::uuid)
   -- Optional canonical merchant filter, for drilling in from a merchant page.
   --
   -- Matched against the RESOLVED key first, so filtering by a grouped merchant
@@ -643,24 +648,24 @@ WHERE u.household_id = $1
   -- merchant and a descriptor gives that fragment, and neither ever comes back
   -- empty for a key the household really has.
   AND (
-    $9::text IS NULL
-    OR COALESCE(ma.entity_id::text, t.merchant_key) = $9::text
-    OR t.merchant_key = $9::text
+    $10::text IS NULL
+    OR COALESCE(ma.entity_id::text, t.merchant_key) = $10::text
+    OR t.merchant_key = $10::text
   )
   -- Optional free-text search over what the user actually reads in the row: the
   -- merchant name the UI shows, its raw name fallback, and the descriptor key.
   -- Deliberately NOT the canonical name — a household that has renamed a merchant
   -- still recognises the bank's text, and both forms are covered here.
   AND (
-    $10::text IS NULL
-    OR t.merchant_key ILIKE '%' || $10::text || '%'
-    OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $10::text || '%'
+    $11::text IS NULL
+    OR t.merchant_key ILIKE '%' || $11::text || '%'
+    OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $11::text || '%'
   )
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
   -- category. NULL/false narg passes everything.
   AND (
-    $11::bool IS NOT TRUE
+    $12::bool IS NOT TRUE
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
   )
@@ -669,17 +674,18 @@ LIMIT $5 OFFSET $6
 `
 
 type ListVisibleTransactionsParams struct {
-	HouseholdID   uuid.UUID    `json:"household_id"`
-	UserID        uuid.UUID    `json:"user_id"`
-	Date          stdtime.Time `json:"date"`
-	Date_2        stdtime.Time `json:"date_2"`
-	Limit         int32        `json:"limit"`
-	Offset        int32        `json:"offset"`
-	AccountIds    []uuid.UUID  `json:"account_ids"`
-	CategoryID    *uuid.UUID   `json:"category_id"`
-	MerchantKey   *string      `json:"merchant_key"`
-	Search        *string      `json:"search"`
-	Uncategorised *bool        `json:"uncategorised"`
+	HouseholdID     uuid.UUID    `json:"household_id"`
+	UserID          uuid.UUID    `json:"user_id"`
+	Date            stdtime.Time `json:"date"`
+	Date_2          stdtime.Time `json:"date_2"`
+	Limit           int32        `json:"limit"`
+	Offset          int32        `json:"offset"`
+	IncludeExcluded *bool        `json:"include_excluded"`
+	AccountIds      []uuid.UUID  `json:"account_ids"`
+	CategoryID      *uuid.UUID   `json:"category_id"`
+	MerchantKey     *string      `json:"merchant_key"`
+	Search          *string      `json:"search"`
+	Uncategorised   *bool        `json:"uncategorised"`
 }
 
 type ListVisibleTransactionsRow struct {
@@ -706,6 +712,7 @@ type ListVisibleTransactionsRow struct {
 	Raw                  []byte          `json:"raw"`
 	CreatedAt            stdtime.Time    `json:"created_at"`
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
+	IsOneTime            bool            `json:"is_one_time"`
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
 	ResolvedMerchantKey  string          `json:"resolved_merchant_key"`
@@ -720,6 +727,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.Date_2,
 		arg.Limit,
 		arg.Offset,
+		arg.IncludeExcluded,
 		arg.AccountIds,
 		arg.CategoryID,
 		arg.MerchantKey,
@@ -757,6 +765,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.Raw,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsOneTime,
 			&i.AccountName,
 			&i.InstitutionName,
 			&i.ResolvedMerchantKey,
@@ -770,6 +779,73 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		return nil, err
 	}
 	return items, nil
+}
+
+const setTransactionFlags = `-- name: SetTransactionFlags :one
+UPDATE transactions t
+SET excluded_from_reports = COALESCE($1::bool, t.excluded_from_reports),
+    is_one_time           = COALESCE($2::bool, t.is_one_time),
+    updated_at            = now()
+FROM accounts a, plaid_items i, users u
+WHERE t.id = $3
+  AND a.id = t.account_id
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND u.household_id = $4
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
+`
+
+type SetTransactionFlagsParams struct {
+	ExcludedFromReports *bool     `json:"excluded_from_reports"`
+	IsOneTime           *bool     `json:"is_one_time"`
+	ID                  uuid.UUID `json:"id"`
+	HouseholdID         uuid.UUID `json:"household_id"`
+}
+
+// Sets the two user-state flags that decide how a row is counted. Unlike the
+// manual-row editors above there is no source='manual' guard: these flags are
+// judgements ABOUT a transaction, not edits TO it, so a Plaid-synced row is
+// exactly the case they exist for (a synced loan payoff is the motivating
+// example). Both are nargs — a NULL leaves that flag alone, so the handler can
+// set either independently without read-modify-write.
+//
+// The household join is the authorisation: a caller with a valid id from
+// another household matches no rows and the handler returns 404.
+func (q *Queries) SetTransactionFlags(ctx context.Context, arg SetTransactionFlagsParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, setTransactionFlags,
+		arg.ExcludedFromReports,
+		arg.IsOneTime,
+		arg.ID,
+		arg.HouseholdID,
+	)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsOneTime,
+	)
+	return i, err
 }
 
 const sumFilteredTransactions = `-- name: SumFilteredTransactions :one
@@ -939,7 +1015,7 @@ WHERE t.id = $8
   AND i.id = a.plaid_item_id
   AND u.id = i.user_id
   AND u.household_id = $9
-RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
 `
 
 type UpdateManualTransactionParams struct {
@@ -994,6 +1070,7 @@ func (q *Queries) UpdateManualTransaction(ctx context.Context, arg UpdateManualT
 		&i.Raw,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsOneTime,
 	)
 	return i, err
 }
@@ -1022,7 +1099,7 @@ ON CONFLICT (plaid_transaction_id) DO UPDATE SET
                            THEN transactions.category_id ELSE NULL END,
     category_source = CASE WHEN transactions.category_source = 'manual'
                            THEN transactions.category_source ELSE NULL END
-RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time
 `
 
 type UpsertTransactionParams struct {
@@ -1051,7 +1128,10 @@ type UpsertTransactionParams struct {
 //
 // Two fields are deliberately preserved across updates:
 //   - a manual category, because Plaid must never overwrite a human decision
-//   - excluded_from_reports and notes, which are purely user state
+//   - excluded_from_reports, is_one_time and notes, which are purely user state
+//
+// The preservation is structural, not conditional: those columns are simply
+// absent from the DO UPDATE SET list, so a redelivery cannot touch them.
 func (q *Queries) UpsertTransaction(ctx context.Context, arg UpsertTransactionParams) (Transaction, error) {
 	row := q.db.QueryRow(ctx, upsertTransaction,
 		arg.AccountID,
@@ -1094,6 +1174,7 @@ func (q *Queries) UpsertTransaction(ctx context.Context, arg UpsertTransactionPa
 		&i.Raw,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsOneTime,
 	)
 	return i, err
 }

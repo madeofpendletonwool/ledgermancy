@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,13 +27,56 @@ import (
 // (never its budget); a DISCRETIONARY category counts once, at its budgeted
 // envelope. A discretionary category with no budget is simply not subtracted —
 // the money for it is exactly what "safe to spend" is meant to cover.
+//
+// Two properties protect the trailing inputs from a single unusual month, and
+// both are load-bearing:
+//
+//   - MEDIAN, not mean. This figure's whole job is to describe a TYPICAL month,
+//     and a mean does not. A $14,295 auto-loan payoff — correctly categorised,
+//     correctly counted as spent — used to enter the six-month fixed average at
+//     ~$2,383/month and stay there for six months, telling a household its
+//     recurring bills had quadrupled at the exact moment they had FALLEN (the
+//     monthly payment died with the loan). A median ignores it outright.
+//     Symmetrically, a one-off bonus no longer inflates expected income.
+//
+//   - One-time rows excluded. Every query below passes ExcludeOneTime, so a
+//     transaction the household has flagged as non-repeating cannot reach these
+//     baselines at all. The Spending page still shows it: it happened. See the
+//     header of reports.sql for why the two flags are separate.
+//
+// The two are independent on purpose. The median handles the outlier nobody
+// flagged; the flag handles the outlier that is not extreme enough to be a
+// statistical outlier but is still known not to repeat.
 const (
-	// safeIncomeMonths / safeFixedMonths are the trailing full-month windows the
-	// income and fixed-cost averages are taken over. Matches the projection
-	// producer's income window so the two never disagree on "typical income".
-	safeIncomeMonths = 6
-	safeFixedMonths  = 6
+	// safeWindowMonths is the trailing full-month window BOTH medians are taken
+	// over. Income and fixed costs used to carry separate constants that were
+	// always equal; one window is now load-bearing rather than coincidental,
+	// because the per-category fixed medians are zero-filled against the set of
+	// months the income query returned. Matches the projection producer's income
+	// window so the two never disagree on "typical income".
+	safeWindowMonths = 6
 )
+
+// medianOf returns the median of xs, or zero for an empty slice. Even counts
+// average the two middle values.
+//
+// It sorts a COPY: callers pass slices derived from query results that other
+// code still reads in date order, and reordering those under them would be a
+// silent, month-shuffling bug.
+func medianOf(xs []decimal.Decimal) decimal.Decimal {
+	if len(xs) == 0 {
+		return decimal.Zero
+	}
+	sorted := make([]decimal.Decimal, len(xs))
+	copy(sorted, xs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].LessThan(sorted[j]) })
+
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return sorted[mid-1].Add(sorted[mid]).Div(decimal.NewFromInt(2))
+}
 
 // SafeToSpend is the computed figure and its component parts, so the UI can show
 // the full breakdown rather than a bare number.
@@ -54,9 +98,16 @@ type SafeToSpend struct {
 	// UpcomingObligations is every known bill still to fall due between today
 	// and the end of this month — the figure a person actually wants when they
 	// ask "can I spend this?" on the 8th with rent due on the 10th.
+	//
+	// It is REPORTED, NOT SUBTRACTED, and it is not the amount that went into
+	// FixedCostsAfterBills: that swap uses the whole month and only its fixed
+	// categories, while this counts every remaining occurrence including
+	// discretionary ones. UI copy that presents this as the driver of the
+	// bill-aware figure is wrong. See buildBillAware.
 	UpcomingObligations decimal.Decimal
-	// FixedCostsAfterBills is FixedCosts recomputed per category so no bill is
-	// counted twice. See buildBillAware for the rule.
+	// FixedCostsAfterBills is FixedCosts recomputed per category, from the whole
+	// month's scheduled obligations, so no bill is counted twice. See
+	// buildBillAware for the rule.
 	FixedCostsAfterBills decimal.Decimal
 	// AmountAfterBills is income − FixedCostsAfterBills − budgeted − goals.
 	AmountAfterBills decimal.Decimal
@@ -71,42 +122,43 @@ func BuildSafeToSpend(ctx context.Context, q *dbgen.Queries, householdID uuid.UU
 	shared := uuid.Nil
 	mStart := firstOfMonth(now)
 
-	// Expected income: average of prior full months' income (lumpy paychecks make
-	// this-month income unreliable). Income is already SQL-computed per month.
+	windowStart := mStart.AddDate(0, -safeWindowMonths, 0)
+	windowEnd := mStart.AddDate(0, 0, -1)
+
 	trend, err := q.GetMonthlyTrend(ctx, dbgen.GetMonthlyTrendParams{
 		HouseholdID: householdID, UserID: shared,
-		Date: mStart.AddDate(0, -safeIncomeMonths, 0), Date_2: mStart.AddDate(0, 0, -1),
+		Date: windowStart, Date_2: windowEnd,
+		ExcludeOneTime: true,
 	})
 	if err != nil {
 		return SafeToSpend{}, err
-	}
-	incomeSum := decimal.Zero
-	incomeMonths := 0
-	for _, m := range trend {
-		if m.Income.IsPositive() {
-			incomeSum = incomeSum.Add(m.Income)
-			incomeMonths++
-		}
-	}
-	expectedIncome := decimal.Zero
-	if incomeMonths > 0 {
-		expectedIncome = incomeSum.Div(decimal.NewFromInt(int64(incomeMonths)))
 	}
 
-	// Fixed costs: trailing fixed spend over the window, divided by the window
-	// length for a clean per-month figure. GetSpendingSummary already isolates
-	// fixed spend (is_fixed categories), so this needs no per-category work — and
-	// dividing by the exact month count avoids GetCategoryAverages' age()-based
-	// divisor, which reads a 6-calendar-month range as ~5 months and would inflate
-	// the estimate.
-	fixedWindow, err := q.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
-		HouseholdID: householdID, UserID: shared,
-		Date: mStart.AddDate(0, -safeFixedMonths, 0), Date_2: mStart.AddDate(0, 0, -1),
-	})
+	// Expected income: the MEDIAN of prior full months (lumpy paychecks make
+	// this-month income unreliable, and a bonus month should not raise the
+	// household's idea of normal). Months with no income at all are skipped
+	// rather than counted as zero — a household that linked its accounts three
+	// months ago has three months of history, not six months of poverty.
+	incomeMonthly := make([]decimal.Decimal, 0, len(trend))
+	for _, m := range trend {
+		if m.Income.IsPositive() {
+			incomeMonthly = append(incomeMonthly, m.Income)
+		}
+	}
+	expectedIncome := medianOf(incomeMonthly)
+	incomeMonths := len(incomeMonthly)
+
+	// Fixed costs, per category, as the median month. Computed once and reused by
+	// the bill-aware variant so the two can never disagree about what a category
+	// typically costs.
+	trailingByCategory, err := trailingFixedByCategory(ctx, q, householdID, windowStart, windowEnd, trend)
 	if err != nil {
 		return SafeToSpend{}, err
 	}
-	fixedCosts := fixedWindow.FixedSpending.Div(decimal.NewFromInt(safeFixedMonths))
+	fixedCosts := decimal.Zero
+	for _, typical := range trailingByCategory {
+		fixedCosts = fixedCosts.Add(typical)
+	}
 
 	// Discretionary budgets: the envelopes the household has set on non-fixed
 	// categories (fixed budgets are excluded to avoid double-counting the fixed
@@ -135,7 +187,7 @@ func BuildSafeToSpend(ctx context.Context, q *dbgen.Queries, householdID uuid.UU
 		IncomeMonths:          incomeMonths,
 	}
 
-	bills, err := buildBillAware(ctx, q, householdID, now, fixedCosts)
+	bills, err := buildBillAware(ctx, q, householdID, now, fixedCosts, trailingByCategory)
 	if err != nil {
 		return SafeToSpend{}, err
 	}
@@ -149,6 +201,80 @@ func BuildSafeToSpend(ctx context.Context, q *dbgen.Queries, householdID uuid.UU
 		Round(2)
 
 	return sts, nil
+}
+
+// trailingFixedByCategory returns, per fixed category, what that category costs
+// in a MEDIAN month of the window. Summing the result gives the household's
+// fixed-cost estimate; the map itself is what the bill-aware variant swaps
+// against. One definition, two consumers, so they cannot drift.
+//
+// A month in which a category did not appear counts as a ZERO for that category,
+// not as a missing observation. The distinction matters: a household that paid
+// rent five times in a six-month window really does have a month with no rent in
+// it, and dropping that month would report the cost of rent-paying months rather
+// than the cost of an average month. The months are taken from `trend`, i.e.
+// months in which the household had ANY activity — a window that extends before
+// the household linked its accounts contributes no phantom zeros.
+//
+// Consequence worth knowing: a bill that lands 4 times in 6 months (quarterly,
+// or an annual premium) medians to zero. That is the correct answer for "what
+// does a typical month cost" and the wrong one for "what will I pay this month",
+// which is precisely the question the bill-aware variant answers instead.
+func trailingFixedByCategory(
+	ctx context.Context,
+	q *dbgen.Queries,
+	householdID uuid.UUID,
+	windowStart, windowEnd time.Time,
+	trend []dbgen.GetMonthlyTrendRow,
+) (map[uuid.UUID]decimal.Decimal, error) {
+	rows, err := q.GetMonthlyFixedSpendByCategory(ctx, dbgen.GetMonthlyFixedSpendByCategoryParams{
+		HouseholdID: householdID, UserID: uuid.Nil,
+		Date: windowStart, Date_2: windowEnd,
+		ExcludeOneTime: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Index the observed spend so absent (category, month) pairs can be filled
+	// with zero below.
+	type key struct {
+		category uuid.UUID
+		month    time.Time
+	}
+	observed := make(map[key]decimal.Decimal, len(rows))
+	categories := make([]uuid.UUID, 0, 8)
+	for _, r := range rows {
+		if _, seen := observed[key{r.CategoryID, r.Month}]; !seen {
+			if _, known := indexOf(categories, r.CategoryID); !known {
+				categories = append(categories, r.CategoryID)
+			}
+		}
+		observed[key{r.CategoryID, r.Month}] = r.Total
+	}
+
+	out := make(map[uuid.UUID]decimal.Decimal, len(categories))
+	for _, catID := range categories {
+		monthly := make([]decimal.Decimal, 0, len(trend))
+		for _, m := range trend {
+			monthly = append(monthly, observed[key{catID, m.Month}]) // zero value when absent
+		}
+		if typical := medianOf(monthly); typical.IsPositive() {
+			out[catID] = typical
+		}
+	}
+	return out, nil
+}
+
+// indexOf reports whether id is already in ids. Linear because a household has a
+// handful of fixed categories, not thousands.
+func indexOf(ids []uuid.UUID, id uuid.UUID) (int, bool) {
+	for i, existing := range ids {
+		if existing == id {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // billAware is buildBillAware's result: the recomputed fixed component, the
@@ -174,7 +300,7 @@ type billAware struct {
 // the current month a fixed cost counts EXACTLY ONCE, and which side it counts
 // on is decided per category.
 //
-//   - A fixed category with obligation coverage counts as its remaining unpaid
+//   - A fixed category with obligation coverage counts as its scheduled
 //     obligations. Its trailing typical figure is dropped — the obligations are
 //     the better, dated answer for the same money.
 //   - A fixed category with no obligation coverage keeps its trailing typical
@@ -187,30 +313,57 @@ type billAware struct {
 //     construction the bills that need manual entry (an annual premium paid by
 //     cheque) are the ones the transaction history never saw.
 //
+// THE TWO WINDOWS ARE DIFFERENT, AND THAT IS THE FIX RATHER THAN THE BUG:
+//
+//   - The fixed-cost swap uses the WHOLE month, [mStart, monthEnd].
+//   - `upcoming` — the "still to pay" line the UI prints — uses the REMAINDER of
+//     the month, [today, monthEnd].
+//
+// The swap replaces a full-month trailing typical figure, so its replacement
+// must also be full-month; and it is subtracted from a full month of expected
+// income. Feeding it only the days left made the estimate drift upward as the
+// month aged: on the 30th, a household whose childcare typically runs $1,496 a
+// month had that swapped for the single $345.25 occurrence still to fall, and
+// safe-to-spend read $1,151 richer than the headline for no reason but the date.
+// `upcoming` keeps the remaining-days window because "what is still to pay" is
+// exactly what it means. It is reported, never subtracted.
+//
 // trailingFixed is the whole-household figure BuildSafeToSpend already computed;
-// it is used as the fallback when the per-category breakdown is unavailable, so
-// this can never make the estimate worse than it was.
+// it is the answer when nothing is known about the schedule, so this can never
+// make the estimate worse than it was. trailingByCategory is that same figure
+// decomposed — it sums to trailingFixed by construction (see
+// trailingFixedByCategory), which is what keeps the bill-aware number from
+// jumping the moment the first obligation is detected.
 func buildBillAware(
 	ctx context.Context,
 	q *dbgen.Queries,
 	householdID uuid.UUID,
 	now time.Time,
 	trailingFixed decimal.Decimal,
+	trailingByCategory map[uuid.UUID]decimal.Decimal,
 ) (billAware, error) {
 	shared := uuid.Nil
 	mStart := firstOfMonth(now)
 	today := firstOfDay(now)
 	monthEnd := mStart.AddDate(0, 1, -1)
 
-	// Obligations still to fall due this month, household-shared scope.
-	upcoming := decimal.Zero
-	occurrences, err := obligations.ListUpcoming(ctx, q, householdID, shared, today, monthEnd)
+	// Everything scheduled this month, whether already paid or not. This is what
+	// displaces the trailing figures.
+	occurrences, err := obligations.ListUpcoming(ctx, q, householdID, shared, mStart, monthEnd)
 	if err != nil {
 		return billAware{}, err
 	}
-	for _, o := range occurrences {
+
+	// Separately: what is still to fall due, for display only.
+	remaining, err := obligations.ListUpcoming(ctx, q, householdID, shared, today, monthEnd)
+	if err != nil {
+		return billAware{}, err
+	}
+	upcoming := decimal.Zero
+	for _, o := range remaining {
 		upcoming = upcoming.Add(o.Amount)
 	}
+
 	if len(occurrences) == 0 {
 		// Nothing known: the bill-aware figure is the ordinary one, exactly.
 		return billAware{fixed: trailingFixed, upcoming: decimal.Zero}, nil
@@ -226,25 +379,6 @@ func buildBillAware(
 	isFixed := make(map[uuid.UUID]bool, len(cats))
 	for _, c := range cats {
 		isFixed[c.ID] = c.IsFixed
-	}
-
-	// Trailing typical spend per fixed category, over the same window and the
-	// same definition BuildSafeToSpend used, so the two agree by construction:
-	// GetSpendingByCategory's fixed rows sum to GetSpendingSummary's
-	// fixed_spending over the same range.
-	byCategory, err := q.GetSpendingByCategory(ctx, dbgen.GetSpendingByCategoryParams{
-		HouseholdID: householdID, UserID: shared,
-		Date: mStart.AddDate(0, -safeFixedMonths, 0), Date_2: mStart.AddDate(0, 0, -1),
-	})
-	if err != nil {
-		return billAware{}, err
-	}
-	months := decimal.NewFromInt(safeFixedMonths)
-	trailingByCategory := make(map[uuid.UUID]decimal.Decimal, len(byCategory))
-	for _, row := range byCategory {
-		if row.IsFixed {
-			trailingByCategory[row.CategoryID] = row.Total.Div(months)
-		}
 	}
 
 	covered := make(map[uuid.UUID]bool)

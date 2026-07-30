@@ -99,6 +99,10 @@ type transactionResponse struct {
 	// PossibleDuplicate flags a manual row that a later Plaid-synced charge now
 	// appears to match, so the UI can offer a one-click "delete my manual entry".
 	PossibleDuplicate bool `json:"possible_duplicate"`
+	// The two counting flags, so a row can render its own state and offer the
+	// toggle. See transactionFlagsRequest for what each one means.
+	ExcludedFromReports bool `json:"excluded_from_reports"`
+	IsOneTime           bool `json:"is_one_time"`
 }
 
 // defaultTransactionWindow is used when the caller does not supply dates: a
@@ -150,18 +154,28 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	// Optional free-text merchant/description search.
 	search := trimmedParam(q.Get("q"))
 
+	// Optional "show the rows I've excluded from reports". Off by default so the
+	// ledger reads like the reports it feeds; on, it is the only way to find an
+	// excluded row again and clear the flag.
+	var includeExcluded *bool
+	if q.Get("include_excluded") == "true" {
+		t := true
+		includeExcluded = &t
+	}
+
 	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
-		HouseholdID:   identity.HouseholdID,
-		UserID:        identity.UserID,
-		Date:          from,
-		Date_2:        to,
-		Limit:         int32(limit),
-		Offset:        int32(offset),
-		AccountIds:    accountIDs,
-		CategoryID:    categoryID,
-		MerchantKey:   merchantKey,
-		Search:        search,
-		Uncategorised: uncategorised,
+		HouseholdID:     identity.HouseholdID,
+		UserID:          identity.UserID,
+		Date:            from,
+		Date_2:          to,
+		Limit:           int32(limit),
+		Offset:          int32(offset),
+		AccountIds:      accountIDs,
+		CategoryID:      categoryID,
+		MerchantKey:     merchantKey,
+		Search:          search,
+		Uncategorised:   uncategorised,
+		IncludeExcluded: includeExcluded,
 	})
 	if err != nil {
 		s.internalError(w, "list transactions", err)
@@ -189,6 +203,8 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 			Notes:               t.Notes,
 			Source:              t.Source,
 			PossibleDuplicate:   t.IsPossibleDuplicate != nil && *t.IsPossibleDuplicate,
+			ExcludedFromReports: t.ExcludedFromReports,
+			IsOneTime:           t.IsOneTime,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

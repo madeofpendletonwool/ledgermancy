@@ -147,20 +147,20 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {
-			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+			monthly = m.TypicalAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
-		avg := m.AverageAmount.Round(2)
+		typical := m.TypicalAmount.Round(2)
 		out = append(out, Candidate{
 			Kind:     "new_recurring",
 			Priority: 1,
 			Title:    fmt.Sprintf("Recurring charge from %s", m.Merchant),
 			Body: fmt.Sprintf(
 				"%s looks like a recurring charge — about %s each time, roughly %s per month.",
-				m.Merchant, money(avg), money(monthly)),
+				m.Merchant, money(typical), money(monthly)),
 			Data: map[string]any{
 				"merchant":         m.Merchant,
 				"merchant_key":     m.MerchantKey,
-				"average_amount":   avg.StringFixed(2),
+				"typical_amount":   typical.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
 				"cadence":          obligations.CadenceLabel(m.AvgGapDays),
 				"occurrences":      m.Occurrences,

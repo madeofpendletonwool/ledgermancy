@@ -257,10 +257,20 @@ function SafeToSpendCard() {
               <h3 className="text-sm font-medium text-mist-100">
                 Counting the bills on your schedule
               </h3>
+              {/* Deliberately does NOT present upcoming_obligations as the
+                  amount swapped in. The swap uses this month's whole schedule,
+                  for fixed categories only; upcoming_obligations is every
+                  remaining occurrence including discretionary ones. Wording them
+                  as the same number is how this card previously implied that
+                  safe-to-spend grew as the month wore on. */}
               <p className="mt-1 text-sm text-mist-300">
-                The figure above uses your typical fixed costs. This one swaps in{' '}
-                {formatMoney(d.upcoming_obligations)} of bills actually still due
-                this month — a bill is counted once either way, never twice.
+                The figure above estimates your fixed costs from a typical month.
+                This one uses the bills your schedule actually knows about — a
+                bill is counted once either way, never twice.
+              </p>
+              <p className="mt-1 text-sm text-mist-400">
+                {formatMoney(d.upcoming_obligations)} of that is still to fall
+                due before month end.
               </p>
             </div>
             <span

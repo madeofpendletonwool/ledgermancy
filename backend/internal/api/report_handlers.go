@@ -472,12 +472,12 @@ func (s *Server) handleMerchantExplorer(w http.ResponseWriter, r *http.Request) 
 		}
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {
-			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+			monthly = m.TypicalAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
 		out.Lapsed = append(out.Lapsed, lapsedMerchantResponse{
 			Merchant:        m.Merchant,
 			MerchantKey:     m.MerchantKey,
-			TypicalAmount:   m.AverageAmount.Round(2),
+			TypicalAmount:   m.TypicalAmount.Round(2),
 			MonthlyEstimate: monthly,
 			Cadence:         obligations.CadenceLabel(m.AvgGapDays),
 			LastSeen:        m.LastSeen.Format(time.DateOnly),
@@ -493,10 +493,14 @@ func (s *Server) handleMerchantExplorer(w http.ResponseWriter, r *http.Request) 
 var daysPerMonth = decimal.NewFromFloat(30.4368)
 
 type recurringResponse struct {
-	MerchantKey     string          `json:"merchant_key"`
-	Merchant        string          `json:"merchant"`
-	Occurrences     int64           `json:"occurrences"`
-	AverageAmount   decimal.Decimal `json:"average_amount"`
+	MerchantKey string `json:"merchant_key"`
+	Merchant    string `json:"merchant"`
+	Occurrences int64  `json:"occurrences"`
+	// The MEDIAN charge, not the mean — see GetRecurringMerchants. Named
+	// "typical" rather than "average" because it is deliberately not an average:
+	// a merchant's one anomalous charge (a loan payoff, an annual true-up) must
+	// not move the figure the household reads as "what this bill costs".
+	TypicalAmount   decimal.Decimal `json:"typical_amount"`
 	AvgGapDays      decimal.Decimal `json:"avg_gap_days"`
 	Cadence         string          `json:"cadence"`
 	MonthlyEstimate decimal.Decimal `json:"monthly_estimate"`
@@ -530,13 +534,13 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 		// Normalise the charge to a monthly figure: amount * (month / gap).
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {
-			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+			monthly = m.TypicalAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
 		out = append(out, recurringResponse{
 			MerchantKey:     m.MerchantKey,
 			Merchant:        m.Merchant,
 			Occurrences:     m.Occurrences,
-			AverageAmount:   m.AverageAmount.Round(2),
+			TypicalAmount:   m.TypicalAmount.Round(2),
 			AvgGapDays:      m.AvgGapDays.Round(1),
 			Cadence:         obligations.CadenceLabel(m.AvgGapDays),
 			MonthlyEstimate: monthly,

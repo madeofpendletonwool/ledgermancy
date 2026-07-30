@@ -112,7 +112,7 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 		_, err := q.UpsertDetectedObligation(ctx, dbgen.UpsertDetectedObligationParams{
 			HouseholdID:   householdID,
 			Label:         label,
-			Amount:        m.AverageAmount.Round(2),
+			Amount:        m.TypicalAmount.Round(2),
 			CategoryID:    categoryID,
 			IntervalCount: cadence.Count,
 			IntervalUnit:  cadence.Unit,

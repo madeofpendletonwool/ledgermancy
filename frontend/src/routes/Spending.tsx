@@ -441,7 +441,7 @@ function RecurringSection() {
                   )}
                   <td className="px-6 py-2.5 text-mist-300">{m.cadence}</td>
                   <td className="tabular px-6 py-2.5 text-right">
-                    {formatMoney(m.average_amount)}
+                    {formatMoney(m.typical_amount)}
                   </td>
                   <td className="tabular px-6 py-2.5 text-right text-mist-300">
                     {formatMoney(m.monthly_estimate)}

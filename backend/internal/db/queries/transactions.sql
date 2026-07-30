@@ -8,7 +8,10 @@
 --
 -- Two fields are deliberately preserved across updates:
 --   * a manual category, because Plaid must never overwrite a human decision
---   * excluded_from_reports and notes, which are purely user state
+--   * excluded_from_reports, is_one_time and notes, which are purely user state
+--
+-- The preservation is structural, not conditional: those columns are simply
+-- absent from the DO UPDATE SET list, so a redelivery cannot touch them.
 INSERT INTO transactions (
     account_id, plaid_transaction_id, amount, currency, date, authorized_date,
     name, merchant_name, merchant_key, pending, pending_transaction_id,
@@ -117,7 +120,11 @@ LEFT JOIN merchant_aliases ma
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
-  AND NOT t.excluded_from_reports
+  -- Excluded rows are hidden by default, because the ledger should read like the
+  -- reports it feeds. They are NOT hidden unconditionally: this list is the only
+  -- surface that can clear the flag, and a row that vanishes the moment it is set
+  -- would make exclusion a one-way trip. NULL/false narg gives the ordinary view.
+  AND (sqlc.narg('include_excluded')::bool IS TRUE OR NOT t.excluded_from_reports)
   AND t.date >= $3
   AND t.date <= $4
   -- Optional multi-account filter: NULL/empty array passes everything, so "all
@@ -441,6 +448,28 @@ SET amount          = sqlc.arg('amount'),
 FROM accounts a, plaid_items i, users u
 WHERE t.id = sqlc.arg('id')
   AND t.source = 'manual'
+  AND a.id = t.account_id
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND u.household_id = sqlc.arg('household_id')
+RETURNING t.*;
+
+-- name: SetTransactionFlags :one
+-- Sets the two user-state flags that decide how a row is counted. Unlike the
+-- manual-row editors above there is no source='manual' guard: these flags are
+-- judgements ABOUT a transaction, not edits TO it, so a Plaid-synced row is
+-- exactly the case they exist for (a synced loan payoff is the motivating
+-- example). Both are nargs — a NULL leaves that flag alone, so the handler can
+-- set either independently without read-modify-write.
+--
+-- The household join is the authorisation: a caller with a valid id from
+-- another household matches no rows and the handler returns 404.
+UPDATE transactions t
+SET excluded_from_reports = COALESCE(sqlc.narg('excluded_from_reports')::bool, t.excluded_from_reports),
+    is_one_time           = COALESCE(sqlc.narg('is_one_time')::bool, t.is_one_time),
+    updated_at            = now()
+FROM accounts a, plaid_items i, users u
+WHERE t.id = sqlc.arg('id')
   AND a.id = t.account_id
   AND i.id = a.plaid_item_id
   AND u.id = i.user_id

@@ -73,8 +73,17 @@ type payoffResponse struct {
 
 	// Balance is what is owed now — the account's current balance, not the
 	// liability's last statement balance.
-	Balance         string `json:"balance"`
-	APR             string `json:"apr"`
+	Balance string `json:"balance"`
+	// APR is a percentage. Fixed to THREE decimals on an amortizing loan and two
+	// on a card: note rates are quoted in eighths, so a 6.775% mortgage renders
+	// as "6.78%" at two places — a figure that appears nowhere on the statement
+	// the household read it off, and that they will reasonably take for a
+	// transcription error of ours.
+	APR string `json:"apr"`
+	// AccountType is 'credit' or 'loan', so the UI can name the rate correctly:
+	// on a card the rate IS the APR, on a loan the APR is a closing disclosure
+	// and this figure is the note rate. See money.ts isAmortizingDebt().
+	AccountType     string `json:"account_type"`
 	MonthlyPayment  string `json:"monthly_payment"`
 	MonthlyInterest string `json:"monthly_interest"`
 
@@ -274,7 +283,8 @@ func (s *Server) fillPayoffStanding(ctx context.Context, g dbgen.Goal, resp goal
 	resp.Shortfall = shortfall.StringFixed(2)
 
 	p.Balance = balance.StringFixed(2)
-	p.APR = apr.StringFixed(2)
+	p.AccountType = row.Type
+	p.APR = apr.StringFixed(aprDecimals(row.Type))
 	p.MonthlyPayment = payment.StringFixed(2)
 	p.MonthlyInterest = f.MonthlyInterest.StringFixed(2)
 	p.NeverPaysOff = f.NeverPaysOff

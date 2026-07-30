@@ -162,6 +162,14 @@ type liabilityResponse struct {
 	// links an account, and the picker needs to know which accounts are debts.
 	AccountID       uuid.UUID `json:"account_id"`
 	Kind            string    `json:"kind"`
+	// AccountType is the raw 'credit' or 'loan', alongside Kind's display label.
+	// A revolving debt and an amortizing one are not described the same way — on
+	// a card the rate IS the APR, on a loan the APR is a disclosure figure and
+	// the note rate is what accrues — so the UI has to be able to tell them
+	// apart. Kind cannot answer that: it is Plaid's free-form subtype, and
+	// enumerating which of its values revolve would be a second, guessier copy
+	// of the rule isLiability() and ComputeNetWorth already share.
+	AccountType     string    `json:"account_type"`
 	AccountName     string    `json:"account_name"`
 	Mask            *string   `json:"mask"`
 	InstitutionName *string   `json:"institution_name"`
@@ -250,6 +258,7 @@ func liabilityFromRow(
 		ID:              row.AccountID,
 		AccountID:       row.AccountID,
 		Kind:            debtKindLabel(row.AccountType, row.Subtype),
+		AccountType:     row.AccountType,
 		AccountName:     row.AccountName,
 		Mask:            row.Mask,
 		InstitutionName: row.InstitutionName,

@@ -48,6 +48,28 @@ export function isLiability(accountType: string): boolean {
 }
 
 /**
+ * True when a debt amortizes on a schedule rather than revolving.
+ *
+ * This decides what the app CALLS a rate, and the distinction is not cosmetic.
+ * On a card, "APR" and "interest rate" are one number: there are no closing
+ * costs to fold in. On a mortgage or auto loan they are two — the note rate,
+ * which the servicer multiplies by the balance every month, and the disclosed
+ * APR, which spreads points, origination fees and PMI across the original
+ * principal so that offers can be compared. Every payoff projection in this app
+ * wants the first (ComputePayoff: interest = balance × rate / 100 / 12), and a
+ * field labelled "APR" on a mortgage asks the household for the second. The
+ * gap is a couple of tenths of a point: too small to look wrong, big enough to
+ * move a payoff date by months.
+ *
+ * Keyed on account TYPE and not on subtype/kind, which is Plaid's free-form
+ * label — enumerating which of its values revolve would be a guess where the
+ * type is already an answer.
+ */
+export function isAmortizingDebt(accountType: string): boolean {
+  return accountType === 'loan'
+}
+
+/**
  * Formats a transaction date.
  *
  * These are calendar dates (Postgres `DATE`), serialised as midnight UTC —

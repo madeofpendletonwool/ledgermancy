@@ -559,7 +559,7 @@ WHERE t.id = $1
   AND i.id = a.plaid_item_id
   AND u.id = i.user_id
   AND u.household_id = $2
-RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
 `
 
 type SetTransactionCategoryParams struct {
@@ -597,6 +597,7 @@ func (q *Queries) SetTransactionCategory(ctx context.Context, arg SetTransaction
 		&i.Raw,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsOneTime,
 	)
 	return i, err
 }

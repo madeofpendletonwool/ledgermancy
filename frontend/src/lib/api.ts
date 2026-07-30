@@ -394,6 +394,19 @@ export interface Transaction {
    * delivering the charge the user reconciled by hand.
    */
   possible_duplicate: boolean
+  /**
+   * Hidden from every report — a duplicate, or money that is not really the
+   * household's. Rows with this set are only listed when the query asks for
+   * them (`include_excluded`), which is the only way to clear the flag again.
+   */
+  excluded_from_reports: boolean
+  /**
+   * Real, but not repeating: a loan payoff, a tax bill, a car purchase. It still
+   * counts in the month it fell — the Spending page shows it — but it is kept
+   * out of the trailing averages that predict future months, so one unusual
+   * month cannot rewrite the household's idea of its fixed costs.
+   */
+  is_one_time: boolean
 }
 
 /**
@@ -440,6 +453,12 @@ export interface TransactionQuery {
   q?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
+  /**
+   * Also list rows flagged excluded_from_reports, which are hidden by default.
+   * The ledger is the only place the flag can be cleared, so without this there
+   * is no way back from excluding a row.
+   */
+  include_excluded?: boolean
 }
 
 export interface Category {
@@ -698,22 +717,35 @@ export interface BudgetProgress {
  * = expected_income − fixed_costs − budgeted_discretionary − goal_contributions.
  */
 export interface SafeToSpend {
+  /** The MEDIAN month's income over the trailing six, not the mean. */
   expected_income: string
+  /**
+   * What fixed categories cost in a MEDIAN month of the trailing six, summed
+   * per category. Deliberately not a mean: one loan payoff inside the window
+   * would otherwise raise this for six months running.
+   */
   fixed_costs: string
   budgeted_discretionary: string
   goal_contributions: string
   safe_to_spend: string
-  /** Months the income average is based on; low values mean a thin history. */
+  /** Months the income figure is based on; low values mean a thin history. */
   income_months: number
 
   /**
    * The bill-aware view, added ALONGSIDE safe_to_spend — the original field
-   * keeps its meaning. `fixed_costs` is a trailing six-month average of what was
-   * actually paid; these fields replace that per category with the bills the
-   * calendar knows are still to come, so no bill is subtracted twice.
+   * keeps its meaning. `fixed_costs` estimates a typical month from history;
+   * these fields replace that, per category, with this month's actual schedule,
+   * so no bill is subtracted twice.
+   */
+  fixed_costs_after_bills: string
+  /**
+   * What is still to fall due between today and month end. REPORTED, NOT
+   * SUBTRACTED — and NOT the amount that went into fixed_costs_after_bills,
+   * which uses the whole month and only fixed categories. Presenting this as
+   * the driver of the after-bills figure makes it look like safe-to-spend grows
+   * as the month wears on.
    */
   upcoming_obligations: string
-  fixed_costs_after_bills: string
   safe_to_spend_after_bills: string
   /**
    * How many fixed categories have a known obligation behind them. 0 means the
@@ -913,6 +945,10 @@ export interface Liability {
    *  filtering an account list read better against this name. */
   account_id: string
   kind: string
+  /** The raw account type, 'credit' or 'loan'. `kind` is the display label
+   *  (Plaid's subtype); this is what decides whether the rate is an APR or a
+   *  note rate — see isAmortizingDebt(). */
+  account_type: string
   account_name: string
   mask: string | null
   institution_name: string | null
@@ -1364,7 +1400,13 @@ export interface GoalPayoff {
   reason: string
   /** What's owed now — the account's current balance. */
   balance: string
+  /** A percentage, already fixed to the right number of places for the account
+   *  type — three on a loan, whose note rates are quoted in eighths, two on a
+   *  card. Render it as given rather than reformatting. */
   apr: string
+  /** 'credit' or 'loan', so the rate can be named correctly. See
+   *  isAmortizingDebt(). */
+  account_type: string
   monthly_payment: string
   monthly_interest: string
   /**
@@ -1494,7 +1536,12 @@ export interface RecurringMerchant {
   merchant_key: string
   merchant: string
   occurrences: number
-  average_amount: string
+  /**
+   * The MEDIAN charge, not the mean. A merchant's one anomalous charge — a loan
+   * payoff billing under the same descriptor as its monthly payment, an annual
+   * true-up — must not move what the household reads as "what this bill costs".
+   */
+  typical_amount: string
   avg_gap_days: string
   /** weekly | every 2 weeks | monthly | every 2 months | quarterly | every 6 months | yearly */
   cadence: string
@@ -2195,6 +2242,21 @@ export const api = {
       `/api/transactions/${transactionID}/category`,
       { category_id: categoryID, apply_to_merchant: applyToMerchant },
     ),
+
+  /**
+   * Sets how a transaction COUNTS, as distinct from what it says. Omitted fields
+   * are left alone, so either flag can be toggled without sending the other.
+   * Accepts Plaid-synced rows — a synced loan payoff is the case it exists for.
+   */
+  setTransactionFlags: (
+    transactionID: string,
+    flags: { is_one_time?: boolean; excluded_from_reports?: boolean },
+  ) =>
+    request<{
+      id: string
+      excluded_from_reports: boolean
+      is_one_time: boolean
+    }>('PATCH', `/api/transactions/${transactionID}/flags`, flags),
 
   createTransaction: (input: ManualTransactionInput) =>
     request<{ id: string; source: string }>('POST', '/api/transactions', input),

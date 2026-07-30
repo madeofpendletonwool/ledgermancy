@@ -327,6 +327,9 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Post("/", s.handleCreateManualTransaction)
 			r.Post("/import", s.handleImportTransactions)
 			r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
+			// How a row COUNTS, as opposed to what it says — so this accepts
+			// Plaid-synced rows, unlike the manual-only editors below.
+			r.Patch("/{transactionID}/flags", s.handleSetTransactionFlags)
 			r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 		})

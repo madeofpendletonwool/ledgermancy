@@ -986,6 +986,90 @@ func (q *Queries) GetMerchantSummary(ctx context.Context, arg GetMerchantSummary
 	return i, err
 }
 
+const getMonthlyFixedSpendByCategory = `-- name: GetMonthlyFixedSpendByCategory :many
+SELECT
+    c.id                              AS category_id,
+    date_trunc('month', t.date)::date AS month,
+    SUM(ABS(t.amount))::numeric       AS total
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT ($5::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND c.is_fixed
+  AND is_spend(t.amount, a.type)
+GROUP BY c.id, 2
+ORDER BY c.id, 2
+`
+
+type GetMonthlyFixedSpendByCategoryParams struct {
+	HouseholdID    uuid.UUID    `json:"household_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Date           stdtime.Time `json:"date"`
+	Date_2         stdtime.Time `json:"date_2"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
+}
+
+type GetMonthlyFixedSpendByCategoryRow struct {
+	CategoryID uuid.UUID       `json:"category_id"`
+	Month      stdtime.Time    `json:"month"`
+	Total      decimal.Decimal `json:"total"`
+}
+
+// Fixed spend per (category, calendar month) across a range. The input to
+// safe-to-spend's fixed-cost estimate, and to nothing else.
+//
+// Why per-category-per-month rather than reusing GetSpendingByCategory: that
+// query totals a range, which supports a mean and only a mean. A mean is what
+// let a single loan payoff raise a household's "fixed bills" for six months.
+// Medians need the individual months.
+//
+// And why per CATEGORY rather than a median of whole-month fixed totals: means
+// decompose and medians do not. safe-to-spend's bill-aware variant swaps a
+// category's trailing figure for its known obligations one category at a time,
+// so it needs a per-category number that SUMS to the headline. Defining the
+// headline as the sum of per-category medians makes that identity hold by
+// construction instead of approximately. It is also the more robust reading:
+// an outlier in loan payments perturbs only the loan-payments estimate rather
+// than every month's total.
+//
+// The `is_fixed` filter mirrors GetSpendingSummary's fixed_spending FILTER,
+// which deliberately omits the income/transfer guards the other buckets carry —
+// the API forces is_fixed = false for income and transfer categories
+// (isFixedFor in category_handlers.go), so the combination cannot arise.
+func (q *Queries) GetMonthlyFixedSpendByCategory(ctx context.Context, arg GetMonthlyFixedSpendByCategoryParams) ([]GetMonthlyFixedSpendByCategoryRow, error) {
+	rows, err := q.db.Query(ctx, getMonthlyFixedSpendByCategory,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ExcludeOneTime,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetMonthlyFixedSpendByCategoryRow{}
+	for rows.Next() {
+		var i GetMonthlyFixedSpendByCategoryRow
+		if err := rows.Scan(&i.CategoryID, &i.Month, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMonthlyTrend = `-- name: GetMonthlyTrend :many
 SELECT
     date_trunc('month', t.date)::date AS month,
@@ -1002,6 +1086,7 @@ WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
+  AND NOT ($5::bool AND t.is_one_time)
   AND NOT t.pending
   AND t.date >= $3 AND t.date <= $4
 GROUP BY 1
@@ -1009,10 +1094,11 @@ ORDER BY 1
 `
 
 type GetMonthlyTrendParams struct {
-	HouseholdID uuid.UUID    `json:"household_id"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Date        stdtime.Time `json:"date"`
-	Date_2      stdtime.Time `json:"date_2"`
+	HouseholdID    uuid.UUID    `json:"household_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Date           stdtime.Time `json:"date"`
+	Date_2         stdtime.Time `json:"date_2"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
 }
 
 type GetMonthlyTrendRow struct {
@@ -1029,6 +1115,7 @@ func (q *Queries) GetMonthlyTrend(ctx context.Context, arg GetMonthlyTrendParams
 		arg.UserID,
 		arg.Date,
 		arg.Date_2,
+		arg.ExcludeOneTime,
 	)
 	if err != nil {
 		return nil, err
@@ -1168,6 +1255,10 @@ WITH tx AS (
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
+      -- Unconditional here, unlike the period reports: this query exists ONLY to
+      -- predict what will bill AGAIN, and a one-time event is by definition not
+      -- that. There is no "real period" mode to preserve, so nothing to opt into.
+      AND NOT t.is_one_time
       AND NOT t.pending
       AND t.merchant_key IS NOT NULL
       AND is_spend(t.amount, a.type)
@@ -1206,7 +1297,22 @@ agg AS (
         merchant_key,
         COALESCE(MAX(merchant), '')::text                          AS merchant,
         COUNT(*)                                                   AS n,
-        AVG(amount)                                                AS avg_amount,
+        -- MEDIAN, not mean. The mean is not robust to the one charge that does
+        -- not belong to the cadence, and that charge is common in exactly this
+        -- data: a loan's final PAYOFF bills under the same merchant as its
+        -- monthly payment. Averaged in, a $540/month car loan was promoted to
+        -- the bill calendar at $2,068.59 — a figure the household never paid
+        -- once, for a loan that no longer existed. The median ignores it and
+        -- returns $540.22, which is what the recurring charge actually was.
+        --
+        -- PERCENTILE_DISC, not PERCENTILE_CONT. _CONT has no NUMERIC signature:
+        -- it takes and returns DOUBLE PRECISION, so it would round-trip money
+        -- through a float — the one thing this codebase never does. _DISC is
+        -- polymorphic and returns the input type untouched. It also returns an
+        -- amount the household ACTUALLY PAID rather than an interpolation
+        -- between two of them, which is the better answer for "what does this
+        -- bill cost".
+        PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY amount)        AS typical_amount,
         MIN(amount)                                                AS min_amount,
         MAX(amount)                                                AS max_amount,
         MAX(date)                                                  AS last_seen,
@@ -1221,7 +1327,7 @@ SELECT
     merchant_key::text AS merchant_key,
     merchant,
     n::bigint                       AS occurrences,
-    COALESCE(avg_amount, 0)::numeric AS average_amount,
+    COALESCE(typical_amount, 0)::numeric AS typical_amount,
     first_seen::date                AS first_seen,
     last_seen::date                 AS last_seen,
     COALESCE(avg_gap, 0)::numeric    AS avg_gap_days,
@@ -1260,7 +1366,7 @@ WHERE avg_gap IS NOT NULL
       -- or exchange-rate wobble and nothing more. With n = 2 the span IS the gap,
       -- so the 180-day floor is expressed in the band itself.
       OR (n = 2 AND avg_gap BETWEEN 180 AND 400
-              AND (max_amount - min_amount) <= avg_amount * 0.02)
+              AND (max_amount - min_amount) <= typical_amount * 0.02)
   )
   -- Has it gone quiet? A cancelled or paid-off charge must stop being a bill,
   -- but a flat day count cannot serve both a weekly childcare payment and an
@@ -1289,7 +1395,7 @@ WHERE avg_gap IS NOT NULL
           OR (days_quiet <= avg_gap * 2.5 AND days_quiet <= avg_gap + 90)
     END
   )
-ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
+ORDER BY COALESCE(typical_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
 `
 
 type GetRecurringMerchantsParams struct {
@@ -1304,7 +1410,7 @@ type GetRecurringMerchantsRow struct {
 	MerchantKey   string          `json:"merchant_key"`
 	Merchant      string          `json:"merchant"`
 	Occurrences   int64           `json:"occurrences"`
-	AverageAmount decimal.Decimal `json:"average_amount"`
+	TypicalAmount decimal.Decimal `json:"typical_amount"`
 	FirstSeen     stdtime.Time    `json:"first_seen"`
 	LastSeen      stdtime.Time    `json:"last_seen"`
 	AvgGapDays    decimal.Decimal `json:"avg_gap_days"`
@@ -1363,7 +1469,7 @@ func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMer
 			&i.MerchantKey,
 			&i.Merchant,
 			&i.Occurrences,
-			&i.AverageAmount,
+			&i.TypicalAmount,
 			&i.FirstSeen,
 			&i.LastSeen,
 			&i.AvgGapDays,
@@ -1397,6 +1503,7 @@ WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
+  AND NOT ($5::bool AND t.is_one_time)
   AND NOT t.pending
   AND t.date >= $3 AND t.date <= $4
   AND NOT c.is_income
@@ -1407,10 +1514,11 @@ ORDER BY total DESC
 `
 
 type GetSpendingByCategoryParams struct {
-	HouseholdID uuid.UUID    `json:"household_id"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Date        stdtime.Time `json:"date"`
-	Date_2      stdtime.Time `json:"date_2"`
+	HouseholdID    uuid.UUID    `json:"household_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Date           stdtime.Time `json:"date"`
+	Date_2         stdtime.Time `json:"date_2"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
 }
 
 type GetSpendingByCategoryRow struct {
@@ -1430,6 +1538,7 @@ func (q *Queries) GetSpendingByCategory(ctx context.Context, arg GetSpendingByCa
 		arg.UserID,
 		arg.Date,
 		arg.Date_2,
+		arg.ExcludeOneTime,
 	)
 	if err != nil {
 		return nil, err
@@ -1532,6 +1641,7 @@ WITH visible AS (
       AND (i.user_id = $2 OR i.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
+      AND NOT ($5::bool AND t.is_one_time)
       AND NOT t.pending
       AND t.date >= $3 AND t.date <= $4
 )
@@ -1551,10 +1661,11 @@ FROM visible
 `
 
 type GetSpendingSummaryParams struct {
-	HouseholdID uuid.UUID    `json:"household_id"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Date        stdtime.Time `json:"date"`
-	Date_2      stdtime.Time `json:"date_2"`
+	HouseholdID    uuid.UUID    `json:"household_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Date           stdtime.Time `json:"date"`
+	Date_2         stdtime.Time `json:"date_2"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
 }
 
 type GetSpendingSummaryRow struct {
@@ -1582,7 +1693,23 @@ type GetSpendingSummaryRow struct {
 //   - Every total is computed here, in NUMERIC, never in the application and
 //     never in JavaScript.
 //   - Visibility is always scoped: own items plus shared household items.
+//   - excluded_from_reports rows are ALWAYS dropped. is_one_time rows are
+//     dropped only when the caller passes exclude_one_time — see below.
 //
+// The two exclusion flags answer different questions, and conflating them is
+// how a report starts lying:
+//
+//	excluded_from_reports  "this did not happen"      — always honoured
+//	is_one_time            "this happened, but it is  — honoured on request
+//	                        not evidence about a
+//	                        typical month"
+//
+// So a $14k loan payoff belongs in July's Spending page (the money left) and
+// must NOT sit in the six-month average that predicts August's fixed bills.
+// Every query that reports on a REAL PERIOD passes exclude_one_time = false —
+// which is also the zero value, so an existing caller keeps its meaning. Only
+// a query feeding a TRAILING BASELINE passes true. If you add a caller, ask
+// which of those two things it is; there is no third answer.
 // Headline figures for one period: what came in, what went out, and what was
 // left to invest.
 func (q *Queries) GetSpendingSummary(ctx context.Context, arg GetSpendingSummaryParams) (GetSpendingSummaryRow, error) {
@@ -1591,6 +1718,7 @@ func (q *Queries) GetSpendingSummary(ctx context.Context, arg GetSpendingSummary
 		arg.UserID,
 		arg.Date,
 		arg.Date_2,
+		arg.ExcludeOneTime,
 	)
 	var i GetSpendingSummaryRow
 	err := row.Scan(

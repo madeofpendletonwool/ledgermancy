@@ -57,6 +57,10 @@ export function Transactions() {
   const merchantFilter = searchParams.get('merchant') || ''
   const search = searchParams.get('q') || ''
   const onlyUncat = searchParams.get('uncat') === '1'
+  // Excluded rows are hidden by default so the ledger reads like the reports it
+  // feeds. This is the only way to see them again — and therefore the only way
+  // to un-exclude one.
+  const showExcluded = searchParams.get('excluded') === '1'
   const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
 
   const [modal, setModal] = useState<ModalState>(null)
@@ -111,6 +115,7 @@ export function Transactions() {
       merchantFilter,
       debouncedSearch,
       onlyUncat,
+      showExcluded,
       page,
     ],
     queryFn: () =>
@@ -122,6 +127,7 @@ export function Transactions() {
         merchant: merchantFilter || undefined,
         q: debouncedSearch || undefined,
         uncategorised: onlyUncat || undefined,
+        include_excluded: showExcluded || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
@@ -250,6 +256,18 @@ export function Transactions() {
             onChange={(e) => patchParams({ uncat: e.target.checked ? '1' : null })}
           />
           Needs a category
+        </label>
+
+        <label
+          className="flex items-center gap-2 pb-2 text-sm text-mist-300"
+          title="Rows you've hidden from reports. Turn this on to find one and put it back."
+        >
+          <input
+            type="checkbox"
+            checked={showExcluded}
+            onChange={(e) => patchParams({ excluded: e.target.checked ? '1' : null })}
+          />
+          Show excluded
         </label>
 
         <p className="ml-auto text-sm text-mist-500">
@@ -464,6 +482,22 @@ function TransactionRow({
               Manual
             </span>
           )}
+          {t.is_one_time && (
+            <span
+              className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rune-300"
+              title="Counted in this month, but left out of the averages that predict future months."
+            >
+              One-time
+            </span>
+          )}
+          {t.excluded_from_reports && (
+            <span
+              className="shrink-0 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mist-400"
+              title="Hidden from every report."
+            >
+              Excluded
+            </span>
+          )}
         </p>
         <p className="truncate text-xs text-mist-500">
           {t.account_name}
@@ -528,6 +562,10 @@ function TransactionRow({
           what the household spent. */}
       <SplitTransaction transactionId={t.id} amount={t.amount} />
 
+      {/* How this row counts, as opposed to what it says. Applies to synced rows
+          too — a loan payoff arrives from Plaid. */}
+      <CountingFlags transaction={t} />
+
       {/* Edit/delete only on hand-entered rows. Plaid rows stay read-only
           except category, which has its own path. */}
       {isManual && (
@@ -548,6 +586,123 @@ function TransactionRow({
         </div>
       )}
     </li>
+  )
+}
+
+// CountingFlags toggles how a transaction is counted, without changing anything
+// it says.
+//
+// "One-time" is the one that matters. Ledgermancy predicts a typical month by
+// averaging trailing ones, and a genuine but non-repeating event — a loan
+// payoff, a tax bill, a car bought outright — is real spending that is terrible
+// evidence about next month. Flagging it keeps it in the month it happened
+// (Spending still shows it; the money left) while taking it out of the baselines
+// that drive safe-to-spend and bill detection.
+//
+// "Exclude" is the stronger, rarer claim: this did not really happen to us.
+// Excluded rows drop out of the ledger too, which is why the list has a "Show
+// excluded" filter — without it the flag would be a one-way door.
+function CountingFlags({ transaction: t }: { transaction: Transaction }) {
+  const qc = useQueryClient()
+  const online = useOnline()
+  const [open, setOpen] = useState(false)
+
+  const set = useMutation({
+    mutationFn: (flags: { is_one_time?: boolean; excluded_from_reports?: boolean }) =>
+      api.setTransactionFlags(t.id, flags),
+    onSuccess: () => {
+      setOpen(false)
+      // Both flags move report totals, so every surface computed from them has
+      // to refetch — including safe-to-spend, whose whole point here is to stop
+      // reflecting the outlier.
+      for (const key of [
+        'transactions',
+        'summary',
+        'by-category',
+        'averages',
+        'safe-to-spend',
+        'trend',
+        'recurring',
+      ]) {
+        qc.invalidateQueries({ queryKey: [key] })
+      }
+    },
+  })
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        className="btn-ghost px-2 py-1 text-xs text-mist-400"
+        disabled={!online}
+        title={online ? 'How this counts' : OFFLINE_WRITE_HINT}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋯
+      </button>
+
+      {open && (
+        <>
+          {/* Click-away layer. Sits under the menu but over everything else, so
+              the next click anywhere closes rather than acting on the page. */}
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          <div
+            role="menu"
+            className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={set.isPending}
+              onClick={() => set.mutate({ is_one_time: !t.is_one_time })}
+            >
+              <span className="block font-medium text-mist-100">
+                {t.is_one_time ? 'Treat as usual spending' : 'Mark as one-time'}
+              </span>
+              <span className="block text-mist-500">
+                {t.is_one_time
+                  ? 'Let this count towards typical-month averages again.'
+                  : 'Keep it in this month, but out of future estimates.'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={set.isPending}
+              onClick={() =>
+                set.mutate({ excluded_from_reports: !t.excluded_from_reports })
+              }
+            >
+              <span className="block font-medium text-mist-100">
+                {t.excluded_from_reports
+                  ? 'Include in reports'
+                  : 'Exclude from reports'}
+              </span>
+              <span className="block text-mist-500">
+                {t.excluded_from_reports
+                  ? 'Count this everywhere again.'
+                  : 'Hide it everywhere, as if it never happened.'}
+              </span>
+            </button>
+
+            {set.isError && (
+              <p className="px-2 py-1 text-ember-400">
+                Could not save that. Try again.
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

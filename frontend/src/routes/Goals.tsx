@@ -11,7 +11,7 @@ import type {
   GoalProposal,
   Liability,
 } from '../lib/api'
-import { formatDate, formatMoney, isLiability } from '../lib/money'
+import { formatDate, formatMoney, isAmortizingDebt, isLiability } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
 import { STATUS } from '../components/charts/tokens'
 
@@ -220,8 +220,10 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
           — the interest alone is {formatMoney(payoff.monthly_interest)}/mo.
         </p>
         <p className="mt-1 text-xs text-mist-300">
-          {formatMoney(payoff.balance)} at {payoff.apr}% APR. Anything at or below
-          the monthly interest leaves the balance where it is or higher.
+          {formatMoney(payoff.balance)} at {payoff.apr}%{' '}
+          {isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'}. Anything
+          at or below the monthly interest leaves the balance where it is or
+          higher.
           {payoff.target_reachable && (
             <>
               {' '}
@@ -251,7 +253,9 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
           ? ''
           : payoff.apr_source === 'manual'
             ? ` at the ${payoff.apr}% you entered`
-            : ` at ${payoff.apr}% APR`}
+            : ` at ${payoff.apr}% ${
+                isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'
+              }`}
       </PayoffFact>
       {payoff.target_reachable && (
         <PayoffFact label="To hit your date">

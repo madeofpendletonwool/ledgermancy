@@ -73,9 +73,9 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 
 		var monthly decimal.Decimal
 		if m.AvgGapDays.IsPositive() {
-			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+			monthly = m.TypicalAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 		}
-		avg := m.AverageAmount.Round(2)
+		avg := m.TypicalAmount.Round(2)
 
 		creep, isCreep := creepByKey[key]
 		isZombie := monthly.IsPositive() && monthly.LessThanOrEqual(zombieCeiling)
