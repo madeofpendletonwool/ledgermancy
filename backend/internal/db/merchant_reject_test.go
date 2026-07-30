@@ -1,9 +1,11 @@
 package db
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
@@ -25,20 +27,8 @@ func TestRejectWholeProposalIsRemembered(t *testing.T) {
 	// has to be one the matcher really proposes, or the "does not come back"
 	// assertion below passes for the wrong reason.
 	keys := []string{"la crosse", "la crosse symphony orche"}
-	entity, err := f.q.CreateMerchantEntity(ctx, dbgen.CreateMerchantEntityParams{
-		HouseholdID: f.householdID, CanonicalName: "La Crosse",
-	})
-	if err != nil {
-		t.Fatalf("CreateMerchantEntity: %v", err)
-	}
 	for _, key := range keys {
 		f.addTx(t, ctx, "2026-02-14", strings.ToUpper(key), key)
-		if _, err := f.q.UpsertMerchantAlias(ctx, dbgen.UpsertMerchantAliasParams{
-			HouseholdID: f.householdID, EntityID: entity.ID, MerchantKey: key,
-			Source: "suggested", Confidence: decimal.NullDecimal{},
-		}); err != nil {
-			t.Fatalf("UpsertMerchantAlias: %v", err)
-		}
 	}
 
 	// Baseline: with no refusal on record, a pass really does propose this pair.
@@ -50,17 +40,16 @@ func TestRejectWholeProposalIsRemembered(t *testing.T) {
 		t.Fatalf("baseline: the matcher does not group %q with %q, so this test proves nothing", keys[0], keys[1])
 	}
 
-	// Re-attach them to the entity under test — the baseline pass rebuilt the
-	// queue under its own entity — then refuse the whole proposal.
-	for _, key := range keys {
-		if _, err := f.q.UpsertMerchantAlias(ctx, dbgen.UpsertMerchantAliasParams{
-			HouseholdID: f.householdID, EntityID: entity.ID, MerchantKey: key,
-			Source: "suggested", Confidence: decimal.NullDecimal{},
-		}); err != nil {
-			t.Fatalf("UpsertMerchantAlias: %v", err)
-		}
-	}
-	if err := merchants.Reject(ctx, f.q, f.householdID, entity.ID, keys); err != nil {
+	// Refuse the proposal the pass actually made, which means reading its entity
+	// back rather than seeding one. A pass REPLACES the pending queue: it drops
+	// every suggested alias and then the entities left holding nothing, so an
+	// entity created before it no longer exists afterwards. That matters beyond
+	// the dangling reference, because Reject reads the entity's aliases to decide
+	// whether anything survives the refusal — handing it an id that owns nothing
+	// takes the "nothing stays" branch by accident rather than because the user
+	// rejected the whole group.
+	entityID := f.suggestedEntityFor(t, ctx, keys[0])
+	if err := merchants.Reject(ctx, f.q, f.householdID, entityID, keys); err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
 
@@ -80,6 +69,21 @@ func TestRejectWholeProposalIsRemembered(t *testing.T) {
 	if proposesPair(f.suggestedGroups(t, ctx), keys[0], keys[1]) {
 		t.Fatalf("re-proposed a grouping the user rejected outright: %v", f.suggestedGroups(t, ctx))
 	}
+}
+
+// suggestedEntityFor is the entity a pending suggestion attached a descriptor to.
+// Tests that reject a proposal need it, because the entity a pass creates is the
+// only one whose aliases Reject can see.
+func (f *merchantFixture) suggestedEntityFor(t *testing.T, ctx context.Context, key string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := f.pool.QueryRow(ctx, `
+		SELECT entity_id FROM merchant_aliases
+		WHERE household_id = $1 AND merchant_key = $2 AND source = 'suggested'`,
+		f.householdID, key).Scan(&id); err != nil {
+		t.Fatalf("no pending suggestion for %q: %v", key, err)
+	}
+	return id
 }
 
 // proposesPair reports whether any pending group holds both keys.
