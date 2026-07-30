@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import {
@@ -14,6 +14,7 @@ import { CategoryBars } from '../components/charts/CategoryBars'
 import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { Tile } from '../components/Tile'
 import { categoryDetailPath } from '../lib/categories'
+import { merchantDetailPath } from '../lib/merchants'
 
 /**
  * One merchant, in detail.
@@ -107,7 +108,14 @@ export function MerchantDetail() {
           >
             ← Merchants
           </Link>
-          <h1 className="mt-1 truncate text-2xl font-semibold">{d.merchant}</h1>
+          <MerchantNameEditor
+            merchant={d.merchant}
+            merchantKey={d.merchant_key}
+            isGrouped={d.is_grouped}
+            descriptors={d.descriptors}
+            from={from}
+            to={to}
+          />
           <p className="mt-1 text-sm text-mist-300">
             {d.is_grouped
               ? `${d.descriptors.length} descriptor${
@@ -289,4 +297,180 @@ export function MerchantDetail() {
 
 function Shell({ children }: { children: ReactNode }) {
   return <div className="space-y-8">{children}</div>
+}
+
+// MerchantNameEditor is the only way to rename a merchant from its own detail
+// page. It has to handle two starting states, because the page works for both:
+//
+//   - Already grouped: merchantKey IS the entity id (the resolved-key
+//     convention this whole feature runs on), so renaming is a plain PATCH.
+//   - A lone descriptor: there is no entity yet. Saving a fresh name mints one
+//     by merging this single descriptor with itself — the same call the merge
+//     picker makes, just with one key instead of several.
+//
+// Typing also searches the household's existing merchant names, so a
+// descriptor that belongs to a business already named elsewhere ("Buffalo
+// Jeans") can be folded into it by picking the suggestion, instead of the user
+// re-typing the exact same spelling and ending up with two entities that
+// should have been one.
+function MerchantNameEditor({
+  merchant,
+  merchantKey,
+  isGrouped,
+  descriptors,
+  from,
+  to,
+}: {
+  merchant: string
+  merchantKey: string
+  isGrouped: boolean
+  descriptors: string[]
+  from: string
+  to: string
+}) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(merchant)
+  // Set only by clicking a suggestion — saving then folds this merchant into
+  // that existing one rather than renaming in place. Cleared the moment the
+  // text is hand-edited again, so it never outlives the exact name it matched.
+  const [matchID, setMatchID] = useState<string | null>(null)
+
+  const merchantsList = useQuery({
+    queryKey: ['merchants'],
+    queryFn: api.merchantGroups,
+    enabled: editing,
+  })
+
+  const query = name.trim().toLowerCase()
+  const suggestions =
+    editing && query.length >= 2 && merchantsList.data
+      ? merchantsList.data
+          .filter(
+            (m) =>
+              m.canonical_name.toLowerCase().includes(query) &&
+              m.id !== merchantKey,
+          )
+          .slice(0, 6)
+      : []
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['merchant-detail'] })
+    qc.invalidateQueries({ queryKey: ['merchants'] })
+    qc.invalidateQueries({ queryKey: ['merchant-keys'] })
+  }
+
+  const rename = useMutation({
+    mutationFn: async () => {
+      const trimmed = name.trim()
+      if (matchID) {
+        // Folding into an existing merchant: hand over every descriptor
+        // currently resolving here, not just this page's own key, so a
+        // grouped merchant merges whole rather than leaving fragments behind.
+        const keys = isGrouped ? descriptors : [merchantKey]
+        const result = await api.mergeMerchants({
+          merchant_keys: keys,
+          entity_id: matchID,
+        })
+        return result.entity_id
+      }
+      if (isGrouped) {
+        await api.renameMerchant(merchantKey, trimmed)
+        return merchantKey
+      }
+      const result = await api.mergeMerchants({
+        merchant_keys: [merchantKey],
+        canonical_name: trimmed,
+      })
+      return result.entity_id
+    },
+    onSuccess: (resolvedID) => {
+      setEditing(false)
+      setMatchID(null)
+      invalidate()
+      if (resolvedID !== merchantKey) {
+        navigate(merchantDetailPath(resolvedID, { from, to }), {
+          replace: true,
+        })
+      }
+    },
+  })
+
+  if (!editing) {
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <h1 className="truncate text-2xl font-semibold">{merchant}</h1>
+        <button
+          className="text-xs text-mist-400 underline underline-offset-2 hover:text-mist-100"
+          onClick={() => {
+            setName(merchant)
+            setEditing(true)
+          }}
+        >
+          Rename
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative mt-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="field w-64"
+          maxLength={80}
+          value={name}
+          autoFocus
+          onChange={(e) => {
+            setName(e.target.value)
+            setMatchID(null)
+          }}
+        />
+        <button
+          className="btn-primary text-sm"
+          onClick={() => rename.mutate()}
+          disabled={rename.isPending || name.trim() === ''}
+        >
+          Save
+        </button>
+        <button
+          className="btn-ghost text-sm"
+          onClick={() => {
+            setName(merchant)
+            setMatchID(null)
+            setEditing(false)
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+
+      {suggestions.length > 0 && (
+        <div className="absolute z-30 mt-1 w-64 overflow-hidden rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+          {suggestions.map((m) => (
+            <button
+              key={m.id}
+              className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+              onClick={() => {
+                setName(m.canonical_name)
+                setMatchID(m.id)
+              }}
+            >
+              {m.canonical_name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {matchID && (
+        <p className="mt-1 text-xs text-arcane-300">
+          Saving folds this into the existing “{name.trim()}”.
+        </p>
+      )}
+      {rename.isError && (
+        <p className="mt-1 text-sm text-red-300">Couldn’t save that name.</p>
+      )}
+    </div>
+  )
 }

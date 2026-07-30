@@ -235,7 +235,7 @@ func (s *Server) handleMergeMerchants(w http.ResponseWriter, r *http.Request) {
 		ctx, qtx, identity.HouseholdID, req.Keys, req.CanonicalName, req.EntityID,
 	)
 	if errors.Is(err, merchants.ErrNoKeys) {
-		writeError(w, http.StatusBadRequest, "a merge needs at least two descriptors")
+		writeError(w, http.StatusBadRequest, "a merchant needs at least one descriptor")
 		return
 	}
 	if err != nil {

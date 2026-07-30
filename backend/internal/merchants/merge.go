@@ -14,9 +14,8 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
-// ErrNoKeys is returned when a merge is asked for with fewer than two
-// descriptors. One descriptor is not a canonicalisation of anything.
-var ErrNoKeys = errors.New("a merge needs at least two merchant keys")
+// ErrNoKeys is returned when a merge is asked for with no descriptors at all.
+var ErrNoKeys = errors.New("a merge needs at least one merchant key")
 
 // CategoryOutcome reports what reconciliation did, so the UI can say it plainly
 // rather than leaving the user to discover a re-filed history on their own.
@@ -49,9 +48,6 @@ func Merge(
 	entityID *uuid.UUID,
 ) (uuid.UUID, CategoryOutcome, error) {
 	keys = dedupeKeys(keys)
-	if entityID == nil && len(keys) < 2 {
-		return uuid.Nil, CategoryOutcome{}, ErrNoKeys
-	}
 	if len(keys) == 0 {
 		return uuid.Nil, CategoryOutcome{}, ErrNoKeys
 	}
