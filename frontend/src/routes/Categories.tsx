@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Category } from '../lib/api'
+import { CategoryLink } from '../components/CategoryLink'
 
 // A small preset palette for category chips. Hex strings map straight to the
 // categories.color column; a null color falls back to a neutral dot.
@@ -113,7 +114,7 @@ export function Categories() {
         <h2 className="mb-1 text-lg font-medium">Built-in categories</h2>
         <p className="mb-5 text-sm text-mist-300">
           Defaults that ship with the app. These can’t be edited, but you can
-          recategorize any charge into your own.
+          recategorize any charge into your own — or open one to see what’s in it.
         </p>
         <div className="flex flex-wrap gap-2">
           {system.map((c) => (
@@ -121,8 +122,12 @@ export function Categories() {
               key={c.id}
               className="flex items-center gap-2 rounded-full border border-white/10 px-3 py-1 text-sm text-mist-300"
             >
-              <Dot color={c.color} />
-              {c.name}
+              <CategoryLink
+                name={c.name}
+                categoryID={c.id}
+                color={c.color}
+                showDot
+              />
               <TypeBadge category={c} />
             </span>
           ))}
@@ -322,8 +327,12 @@ function CategoryRow({ category }: { category: Category }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 p-4">
       <span className="flex items-center gap-2 font-medium">
-        <Dot color={category.color} />
-        {category.name}
+        <CategoryLink
+          name={category.name}
+          categoryID={category.id}
+          color={category.color}
+          showDot
+        />
         <TypeBadge category={category} />
       </span>
 
@@ -384,15 +393,6 @@ function Swatches({ value, onChange }: { value: string; onChange: (c: string) =>
         />
       ))}
     </div>
-  )
-}
-
-function Dot({ color }: { color: string | null }) {
-  return (
-    <span
-      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-      style={{ backgroundColor: color ?? '#7b749c' }}
-    />
   )
 }
 

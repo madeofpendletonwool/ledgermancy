@@ -432,3 +432,9 @@ func decFromString(t *testing.T, s string) decimal.Decimal {
 	}
 	return d
 }
+
+// decNullable is decFromString for the nullable columns sqlc generates.
+func decNullable(t *testing.T, s string) decimal.NullDecimal {
+	t.Helper()
+	return decimal.NullDecimal{Decimal: decFromString(t, s), Valid: true}
+}

@@ -149,9 +149,12 @@ func TestPromoteHonoursSuppression(t *testing.T) {
 	f := newFixture(t, "Promotion suppression")
 	ctx := context.Background()
 
+	// Deliberately NOT a food-and-drink or groceries category: those are excluded
+	// from detection outright, which would make this test pass for the wrong
+	// reason. See TestRecurringSkipsDiscretionaryCategories.
 	catID := uuid.New()
 	f.exec(`INSERT INTO categories (id, household_id, name, slug)
-	        VALUES ($1, $2, 'Groceries', 'groceries')`, catID, f.householdID)
+	        VALUES ($1, $2, 'General Services', 'general-services')`, catID, f.householdID)
 	seedMonthlyMerchant(t, f, "never-me", "Coincidence Mart", "60.00", catID)
 
 	// Suppressed before the first pass: it must never reach the calendar at all.
@@ -223,6 +226,103 @@ func TestPromoteSkipsGoneQuietMerchants(t *testing.T) {
 	}
 	if rows := f.detectedRows(t); len(rows) != 0 {
 		t.Errorf("a cancelled subscription was promoted to the calendar: %+v", rows)
+	}
+}
+
+// TestPromoteRetiresUndetectedMerchants is the fix for bills that were counted
+// twice. Promotion is an upsert keyed on the RESOLVED merchant key, and nothing
+// used to clear a row, so a merchant that stopped being detected sat on the
+// calendar forever. The expensive version of that is a descriptor merge: the
+// resolved key changes, promotion writes a fresh row under the entity, and the
+// row under the raw descriptor keeps billing alongside it.
+func TestPromoteRetiresUndetectedMerchants(t *testing.T) {
+	f := newFixture(t, "Promotion retirement")
+	ctx := context.Background()
+
+	catID := uuid.New()
+	f.exec(`INSERT INTO categories (id, household_id, name, slug)
+	        VALUES ($1, $2, 'General Services', 'general-services')`, catID, f.householdID)
+	seedMonthlyMerchant(t, f, "gone-soon", "Ephemeral Media", "8.00", catID)
+
+	if _, err := Promote(ctx, f.q, f.householdID, promoteNow); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	rows := f.detectedRows(t)
+	if len(rows) != 1 || !rows[0].IsActive {
+		t.Fatalf("expected one active detected row, got %+v", rows)
+	}
+
+	// Take the merchant out of the detector's reach the way a real change would:
+	// its charges stop existing under that key. A merge does exactly this, by
+	// moving them under an entity id instead.
+	f.exec(`DELETE FROM transactions WHERE merchant_key = 'gone-soon'`)
+
+	if _, err := Promote(ctx, f.q, f.householdID, promoteNow); err != nil {
+		t.Fatalf("Promote after the merchant vanished: %v", err)
+	}
+	rows = f.detectedRows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected the row to be retired, not deleted; got %d rows", len(rows))
+	}
+	if rows[0].IsActive {
+		t.Error("an undetected merchant is still an active obligation")
+	}
+
+	// A retired obligation must reach no expansion — the calendar, the projection
+	// and safe-to-spend all read through the same one.
+	occ, err := ListUpcoming(ctx, f.q, f.householdID, f.userID,
+		promoteNow, promoteNow.AddDate(0, 3, 0))
+	if err != nil {
+		t.Fatalf("ListUpcoming: %v", err)
+	}
+	if len(occ) != 0 {
+		t.Errorf("a retired merchant still expands to %d occurrences", len(occ))
+	}
+}
+
+// TestPromoteRetirementSparesUserEditedRows guards the other side of the sweep.
+// Retirement must respect the same boundary the upsert does: once someone has
+// corrected a bill by hand it is theirs, and deleting a correction because the
+// detector lost interest is worse than carrying a stale row.
+func TestPromoteRetirementSparesUserEditedRows(t *testing.T) {
+	f := newFixture(t, "Promotion retirement edited")
+	ctx := context.Background()
+
+	catID := uuid.New()
+	f.exec(`INSERT INTO categories (id, household_id, name, slug)
+	        VALUES ($1, $2, 'General Services', 'general-services')`, catID, f.householdID)
+	seedMonthlyMerchant(t, f, "curated", "Hand Tuned", "40.00", catID)
+
+	if _, err := Promote(ctx, f.q, f.householdID, promoteNow); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	rows := f.detectedRows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected one detected row, got %+v", rows)
+	}
+
+	if _, err := f.q.UpdateObligation(ctx, dbgen.UpdateObligationParams{
+		ID: rows[0].ID, HouseholdID: f.householdID, UserID: &f.userID,
+		Label: "Hand Tuned", Amount: decimal.RequireFromString("41.00"),
+		CategoryID: &catID, AccountID: nil,
+		IntervalCount: 1, IntervalUnit: UnitMonth,
+		AnchorDate: mustDate(t, "2026-07-10"), EndDate: nil,
+		IsShared: true, IsActive: true,
+	}); err != nil {
+		t.Fatalf("UpdateObligation: %v", err)
+	}
+
+	f.exec(`DELETE FROM transactions WHERE merchant_key = 'curated'`)
+
+	if _, err := Promote(ctx, f.q, f.householdID, promoteNow); err != nil {
+		t.Fatalf("Promote after the merchant vanished: %v", err)
+	}
+	rows = f.detectedRows(t)
+	if len(rows) != 1 {
+		t.Fatalf("expected the edited row to survive, got %d rows", len(rows))
+	}
+	if !rows[0].IsActive {
+		t.Error("a user-edited obligation was retired by the detector")
 	}
 }
 

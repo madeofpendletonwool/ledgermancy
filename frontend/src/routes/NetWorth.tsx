@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney } from '../lib/money'
@@ -156,10 +157,16 @@ export function NetWorth() {
                   </p>
                 </div>
                 <div className="ml-auto flex items-center gap-6">
-                  {l.apr && (
+                  {/* Most banks report no rate, so the absent case is the common
+                      one and needs to offer the fix rather than render blank. */}
+                  {l.apr ? (
                     <span className="tabular text-sm text-mist-300">
                       {Number(l.apr).toFixed(2)}% APR
                     </span>
+                  ) : (
+                    <Link to="/accounts" className="text-xs text-mist-500 underline">
+                      add a rate
+                    </Link>
                   )}
                   <span className="tabular font-medium" style={{ color: STATUS.critical }}>
                     {formatMoney(l.balance)}

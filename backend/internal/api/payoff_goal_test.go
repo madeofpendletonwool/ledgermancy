@@ -53,6 +53,7 @@ func TestPayoffGoalEndpoints(t *testing.T) {
 
 	householdID, userID, itemID := uuid.New(), uuid.New(), uuid.New()
 	cardID, loanID, checkingID := uuid.New(), uuid.New(), uuid.New()
+	mortgageID, clearedID := uuid.New(), uuid.New()
 
 	exec(`INSERT INTO households (id, name) VALUES ($1, 'Payoff Test')`, householdID)
 	exec(`INSERT INTO users (id, household_id, email, password_hash, display_name)
@@ -81,6 +82,18 @@ func TestPayoffGoalEndpoints(t *testing.T) {
 	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type, subtype, current_balance)
 	      VALUES ($1, $2, $3, 'Checking', 'depository', 'checking', 2500.00)`,
 		checkingID, itemID, checkingID.String())
+
+	// A mortgage with NO liabilities row — the ordinary case, not an edge one.
+	// Plaid serves its Liabilities product at a minority of institutions, so most
+	// real debts look exactly like this.
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type, subtype, current_balance)
+	      VALUES ($1, $2, $3, 'Mortgage', 'loan', 'mortgage', 159201.08)`,
+		mortgageID, itemID, mortgageID.String())
+
+	// A cleared card: a debt account with nothing owed on it.
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type, subtype, current_balance)
+	      VALUES ($1, $2, $3, 'Paid Card', 'credit', 'credit card', 0.00)`,
+		clearedID, itemID, clearedID.String())
 
 	caller := auth.Identity{UserID: userID, HouseholdID: householdID, DisplayName: "Tester", Role: "adult"}
 	withCaller := func(r *http.Request) *http.Request {
@@ -215,6 +228,179 @@ func TestPayoffGoalEndpoints(t *testing.T) {
 
 	t.Run("an unknown kind is refused", func(t *testing.T) {
 		rec := post(t, `{"kind":"retirement","name":"Retire","target_amount":"100.00"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// THE REGRESSION. A household with a mortgage and two credit cards could not
+	// create a single payoff goal, because the gate was "did Plaid serve loan
+	// terms for this account?" rather than "is this account a debt?". Plaid
+	// serves that product at a minority of institutions, so the answer was no
+	// every time and the picker was empty.
+	t.Run("a debt account with no liabilities row is accepted", func(t *testing.T) {
+		rec := post(t, `{"kind":"debt_payoff","name":"Clear the mortgage","account_id":"`+
+			mortgageID.String()+`","target_date":"`+targetDate+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d, want 201 — a loan with no reported terms is still a debt: %s",
+				rec.Code, rec.Body.String())
+		}
+		g := decodeGoal(t, rec)
+
+		if g.TargetAmount != "159201.08" {
+			t.Errorf("target_amount = %s, want 159201.08 captured from the account", g.TargetAmount)
+		}
+		if g.Payoff == nil {
+			t.Fatal("a payoff goal must carry a payoff block")
+		}
+		if g.Payoff.Available {
+			t.Error("with no rate and no payment there is no schedule to report")
+		}
+		if g.Payoff.APRSource != "" || g.Payoff.PaymentSource != "" {
+			t.Errorf("sources = %q/%q, want empty — nobody has supplied either figure",
+				g.Payoff.APRSource, g.Payoff.PaymentSource)
+		}
+		if !strings.Contains(g.Payoff.Reason, "Accounts page") {
+			t.Errorf("reason must point at the fix, got %q", g.Payoff.Reason)
+		}
+		// The number that makes the goal useful even with no terms at all.
+		if !g.Payoff.TargetReachable || g.Payoff.RequiredMonthly == "0.00" {
+			t.Errorf("a deadline still yields a required payment, got %+v", g.Payoff)
+		}
+	})
+
+	t.Run("manual terms produce a real schedule", func(t *testing.T) {
+		exec(`INSERT INTO account_terms (account_id, apr, minimum_payment)
+		      VALUES ($1, 6.5, 1200.00)`, mortgageID)
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(),
+				`DELETE FROM account_terms WHERE account_id = $1`, mortgageID)
+		})
+
+		rec := post(t, `{"kind":"debt_payoff","name":"Mortgage with terms","account_id":"`+
+			mortgageID.String()+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		g := decodeGoal(t, rec)
+
+		if g.Payoff == nil || !g.Payoff.Available {
+			t.Fatalf("typed terms must produce a schedule, got %+v", g.Payoff)
+		}
+		if g.Payoff.APRSource != "manual" || g.Payoff.PaymentSource != "manual" {
+			t.Errorf("sources = %q/%q, want manual/manual",
+				g.Payoff.APRSource, g.Payoff.PaymentSource)
+		}
+		if g.Payoff.APR != "6.50" || g.Payoff.MonthlyPayment != "1200.00" {
+			t.Errorf("terms = %s%% paying %s, want 6.50 / 1200.00",
+				g.Payoff.APR, g.Payoff.MonthlyPayment)
+		}
+		if g.Payoff.PayoffDate == nil || g.Payoff.Months == 0 {
+			t.Error("a schedule built on typed terms has a date and a month count")
+		}
+		if g.Payoff.TotalInterest == "0.00" {
+			t.Error("a 6.5% mortgage accrues interest")
+		}
+	})
+
+	// Per-field precedence. Taking the whole row from one source would throw
+	// away half of what is known.
+	t.Run("manual terms beat plaid terms, field by field", func(t *testing.T) {
+		exec(`INSERT INTO account_terms (account_id, apr) VALUES ($1, 9.99)`, cardID)
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(),
+				`DELETE FROM account_terms WHERE account_id = $1`, cardID)
+		})
+
+		rec := post(t, `{"kind":"debt_payoff","name":"Card at my rate","account_id":"`+cardID.String()+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		g := decodeGoal(t, rec)
+
+		if g.Payoff == nil {
+			t.Fatal("expected a payoff block")
+		}
+		if g.Payoff.APR != "9.99" || g.Payoff.APRSource != "manual" {
+			t.Errorf("apr = %s (%s), want 9.99 (manual) overriding Plaid's 18.99",
+				g.Payoff.APR, g.Payoff.APRSource)
+		}
+		// The payment was never typed, so it still comes from the institution.
+		if g.Payoff.MonthlyPayment != "200.00" || g.Payoff.PaymentSource != "plaid" {
+			t.Errorf("payment = %s (%s), want 200.00 (plaid) — precedence is per field, not per row",
+				g.Payoff.MonthlyPayment, g.Payoff.PaymentSource)
+		}
+	})
+
+	// The constraint the whole account_terms table exists to satisfy. If anyone
+	// later "simplifies" this by folding manual terms into the liabilities row,
+	// this is the test that stops them: UpsertLiability rewrites every column on
+	// conflict, so the typed rate would be gone on the next sync.
+	t.Run("a plaid sync does not clobber manual terms", func(t *testing.T) {
+		exec(`INSERT INTO account_terms (account_id, apr) VALUES ($1, 9.99)`, cardID)
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(),
+				`DELETE FROM account_terms WHERE account_id = $1`, cardID)
+		})
+
+		// Exactly what SyncLiabilities runs.
+		if err := srv.Queries.UpsertLiability(ctx, dbgen.UpsertLiabilityParams{
+			AccountID:      cardID,
+			Kind:           "credit",
+			Apr:            decNullable(t, "18.99"),
+			Balance:        decNullable(t, "4800.00"),
+			MinimumPayment: decNullable(t, "200.00"),
+		}); err != nil {
+			t.Fatalf("upsert liability: %v", err)
+		}
+
+		rec := post(t, `{"kind":"debt_payoff","name":"Card after sync","account_id":"`+cardID.String()+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		g := decodeGoal(t, rec)
+
+		if g.Payoff == nil || g.Payoff.APR != "9.99" || g.Payoff.APRSource != "manual" {
+			t.Errorf("a sync must not overwrite a typed rate, got %+v", g.Payoff)
+		}
+	})
+
+	// Newly reachable: a liabilities row without an APR is rare, but a household
+	// that types a payment and leaves the rate blank is not.
+	t.Run("a payment with no rate is a real schedule", func(t *testing.T) {
+		exec(`INSERT INTO account_terms (account_id, minimum_payment)
+		      VALUES ($1, 1500.00)`, mortgageID)
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(),
+				`DELETE FROM account_terms WHERE account_id = $1`, mortgageID)
+		})
+
+		rec := post(t, `{"kind":"debt_payoff","name":"Mortgage, payment only","account_id":"`+
+			mortgageID.String()+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		g := decodeGoal(t, rec)
+
+		if g.Payoff == nil || !g.Payoff.Available {
+			t.Fatalf("a known payment is enough for a schedule, got %+v", g.Payoff)
+		}
+		if g.Payoff.APRSource != "" {
+			t.Errorf("apr_source = %q, want empty so the UI can caveat the date", g.Payoff.APRSource)
+		}
+		// 159201.08 / 1500 = 106.13 → 107 interest-free payments.
+		if g.Payoff.Months != 107 {
+			t.Errorf("months = %d, want 107 — a zero rate amortizes interest-free", g.Payoff.Months)
+		}
+		if g.Payoff.TotalInterest != "0.00" {
+			t.Errorf("total_interest = %s, want 0.00 with no rate", g.Payoff.TotalInterest)
+		}
+	})
+
+	// Pins the check the picker now mirrors client-side.
+	t.Run("a debt account with nothing owed is refused", func(t *testing.T) {
+		rec := post(t, `{"kind":"debt_payoff","name":"Pay off the paid card","account_id":"`+
+			clearedID.String()+`"}`)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
 		}

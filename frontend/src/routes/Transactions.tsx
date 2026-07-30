@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
@@ -10,11 +10,25 @@ import {
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { MerchantLink } from '../components/MerchantLink'
 import { SplitTransaction } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 
 const PAGE_SIZE = 50
+
+/**
+ * Trails a fast-changing value, so a filter can update the URL on every keystroke
+ * while the request behind it fires once the typing settles.
+ */
+function useDebounced<T>(value: T, delayMs: number): T {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), delayMs)
+    return () => clearTimeout(timer)
+  }, [value, delayMs])
+  return settled
+}
 
 // modalState drives the add/edit dialog: null = closed, otherwise create or a
 // specific manual row being edited.
@@ -36,6 +50,12 @@ export function Transactions() {
   const to = searchParams.get('to') || today
   const accountIDs = (searchParams.get('accounts') || '').split(',').filter(Boolean)
   const categoryFilter = searchParams.get('category') || ''
+  // A resolved merchant key, set when arriving from a merchant's breakdown. Shown
+  // as a removable chip rather than another dropdown: it is a filter you were
+  // handed, not one you chose from a list, and the list of every merchant would be
+  // hundreds long.
+  const merchantFilter = searchParams.get('merchant') || ''
+  const search = searchParams.get('q') || ''
   const onlyUncat = searchParams.get('uncat') === '1'
   const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
 
@@ -76,14 +96,31 @@ export function Transactions() {
   const categoryById = new Map((categories.data ?? []).map((c) => [c.id, c]))
   const spendCats = spendCategories(categories.data ?? [])
 
+  // Search is debounced into the query key rather than the URL: the URL updates on
+  // every keystroke so the view stays shareable and the back button works, but a
+  // request per character would be one per character.
+  const debouncedSearch = useDebounced(search, 250)
+
   const transactions = useQuery({
-    queryKey: ['transactions', from, to, accountIDs.join(','), categoryFilter, onlyUncat, page],
+    queryKey: [
+      'transactions',
+      from,
+      to,
+      accountIDs.join(','),
+      categoryFilter,
+      merchantFilter,
+      debouncedSearch,
+      onlyUncat,
+      page,
+    ],
     queryFn: () =>
       api.transactions({
         from,
         to,
         accounts: accountIDs,
         category_id: categoryFilter || undefined,
+        merchant: merchantFilter || undefined,
+        q: debouncedSearch || undefined,
         uncategorised: onlyUncat || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -192,6 +229,20 @@ export function Transactions() {
           </select>
         </div>
 
+        <div className="min-w-40 flex-1">
+          <label className="label" htmlFor="search">
+            Search
+          </label>
+          <input
+            id="search"
+            type="search"
+            className="field"
+            placeholder="Merchant or description…"
+            value={search}
+            onChange={(e) => patchParams({ q: e.target.value || null })}
+          />
+        </div>
+
         <label className="flex items-center gap-2 pb-2 text-sm text-mist-300">
           <input
             type="checkbox"
@@ -206,10 +257,32 @@ export function Transactions() {
         </p>
       </div>
 
+      {merchantFilter && (
+        <div className="flex items-center gap-2 text-sm text-mist-300">
+          <span>Showing only</span>
+          {/* The label comes off the first row, so the chip names the merchant
+              without a second request. With no rows there is nothing to name it
+              after, and the key itself is the honest fallback. */}
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-rune-400/30 bg-rune-400/10 px-2.5 py-1 text-xs text-rune-200">
+            {rows[0]?.merchant_name ?? rows[0]?.name ?? merchantFilter}
+            <button
+              type="button"
+              className="text-rune-300/70 transition-colors hover:text-rune-100"
+              title="Show every merchant again"
+              onClick={() => patchParams({ merchant: null })}
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      )}
+
       <section className="glass overflow-hidden">
         {rows.length === 0 && !transactions.isFetching ? (
           <p className="px-6 py-12 text-center text-sm text-mist-500">
-            No transactions in this range. Connect an account or add one by hand.
+            {search || merchantFilter
+              ? 'No transactions match these filters. Try widening the dates or clearing the search.'
+              : 'No transactions in this range. Connect an account or add one by hand.'}
           </p>
         ) : (
           <ul className="divide-y divide-white/5">
@@ -377,7 +450,15 @@ function TransactionRow({
 
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-2 truncate font-medium">
-          <span className="truncate">{t.merchant_name ?? t.name}</span>
+          {/* An inline link, not a whole-row one: this row already holds the
+              category button, the paperclip, the split control and edit/delete,
+              and nesting those inside a link is neither valid nor usable.
+              merchant_key_resolved, never merchant_key — the raw descriptor would
+              strand every fragment of a grouped merchant but one. */}
+          <MerchantLink
+            name={t.merchant_name ?? t.name}
+            merchantKey={t.merchant_key_resolved}
+          />
           {isManual && (
             <span className="shrink-0 rounded-full border border-arcane-500/30 bg-arcane-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-arcane-400">
               Manual

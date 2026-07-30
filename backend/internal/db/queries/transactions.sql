@@ -86,6 +86,15 @@ RETURNING id;
 
 -- name: ListVisibleTransactions :many
 SELECT t.*, a.name AS account_name, i.institution_name,
+    -- The RESOLVED merchant key, so a row can address the merchant detail view.
+    -- Raw t.merchant_key addresses one DESCRIPTOR; this addresses the BUSINESS,
+    -- collapsing every fragment the household has grouped. Without it a row
+    -- links to a merchant that no longer exists under that key — see the
+    -- canonicalisation contract at the top of merchants.sql.
+    --
+    -- merchant_aliases is UNIQUE (household_id, merchant_key), so the LEFT JOIN
+    -- cannot fan a transaction out into several rows.
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
     -- the same account for the same amount within four days — the issuer having
     -- finally delivered a charge the user already entered by hand. Computed at
@@ -101,6 +110,10 @@ FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
@@ -116,6 +129,33 @@ WHERE u.household_id = $1
   )
   -- Optional category filter (a null narg passes everything).
   AND (sqlc.narg('category_id')::uuid IS NULL OR t.category_id = sqlc.narg('category_id')::uuid)
+  -- Optional canonical merchant filter, for drilling in from a merchant page.
+  --
+  -- Matched against the RESOLVED key first, so filtering by a grouped merchant
+  -- returns every descriptor's charges rather than one fragment's — the whole
+  -- point of the grouping.
+  --
+  -- The raw key is also accepted, and that second comparison is not redundant. A
+  -- descriptor belonging to a grouped merchant resolves to the entity id, so
+  -- resolved-only matching would answer "no charges" for a perfectly valid
+  -- descriptor key — the same stranded-link failure this column exists to
+  -- prevent, just one level down. With both, an entity id gives the whole
+  -- merchant and a descriptor gives that fragment, and neither ever comes back
+  -- empty for a key the household really has.
+  AND (
+    sqlc.narg('merchant_key')::text IS NULL
+    OR COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.narg('merchant_key')::text
+    OR t.merchant_key = sqlc.narg('merchant_key')::text
+  )
+  -- Optional free-text search over what the user actually reads in the row: the
+  -- merchant name the UI shows, its raw name fallback, and the descriptor key.
+  -- Deliberately NOT the canonical name — a household that has renamed a merchant
+  -- still recognises the bank's text, and both forms are covered here.
+  AND (
+    sqlc.narg('search')::text IS NULL
+    OR t.merchant_key ILIKE '%' || sqlc.narg('search')::text || '%'
+    OR COALESCE(t.merchant_name, t.name) ILIKE '%' || sqlc.narg('search')::text || '%'
+  )
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
   -- category. NULL/false narg passes everything.

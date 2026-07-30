@@ -16,15 +16,14 @@ import (
 // isNoRows reports whether err is pgx's "query returned nothing".
 func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
-// promotionLookbackMonths is the history the detector reads. Matches the
-// Spending page's recurring table so the two never show different merchants.
-const promotionLookbackMonths = 12
-
-// promotionActiveDays is how recently a merchant must have charged to still be
-// treated as a live obligation. A cancelled subscription stops charging; without
-// this it would sit on the calendar forever, predicting money that will never
-// leave.
-const promotionActiveDays = 75
+// RecurringLookbackMonths is the history the recurring detector reads, shared by
+// every caller of GetRecurringMerchants so none of them can scan a different
+// window than the others.
+//
+// Three years rather than one. A yearly charge has to be observed at least twice
+// before its cadence is anything but a guess, and a twelve-month window can
+// never see it twice.
+const RecurringLookbackMonths = 36
 
 // Promote turns the recurring detector's output into persisted, forward-looking
 // obligations. It is safe to run on every insight pass:
@@ -36,28 +35,31 @@ const promotionActiveDays = 75
 //   - Suppressed merchants never arrive: GetRecurringMerchants already excludes
 //     anything in recurring_overrides. Rows promoted BEFORE a suppression are
 //     retired here, so the suppression reaches the calendar too.
+//   - Anything the detector no longer returns is retired at the end of the pass,
+//     which is what keeps the calendar in step with the Spending page.
 //
-// Detection stays exactly as it was. This writes source='detected' rows
-// alongside GetRecurringMerchants; it does not replace or consume it.
+// Detection itself lives entirely in GetRecurringMerchants, including the test
+// for whether a merchant has gone quiet. This function decides nothing about
+// what recurs; it only persists the answer.
 func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) (int, error) {
 	// Household-shared scope: the calendar is a household surface, so a member's
 	// private institution must not seed it.
 	shared := uuid.Nil
-	since := now.AddDate(0, -promotionLookbackMonths, 0)
+	since := now.AddDate(0, -RecurringLookbackMonths, 0)
 
 	if _, err := q.DeactivateSuppressedObligations(ctx, householdID); err != nil {
 		return 0, fmt.Errorf("retire suppressed obligations: %w", err)
 	}
 
 	merchants, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-		HouseholdID: householdID, UserID: shared, Date: since,
+		HouseholdID: householdID, UserID: shared, Date: since, Column4: dateOnly(now),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("detect recurring merchants: %w", err)
 	}
-	if len(merchants) == 0 {
-		return 0, nil
-	}
+	// No early return on an empty result. "Nothing recurs any more" is a real
+	// answer, and acting on it means retiring every detected row rather than
+	// leaving the calendar frozen at whatever it last believed.
 
 	// The category a merchant is usually filed under. Without it every promoted
 	// bill would look uncovered to the safe-to-spend split, which is exactly the
@@ -78,12 +80,16 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 		}
 	}
 
-	activeCutoff := dateOnly(now.AddDate(0, 0, -promotionActiveDays))
+	// Every key that survives to a live obligation on this pass. It drives the
+	// retirement sweep below, so a merchant dropped by any of the guards in this
+	// loop must NOT appear here — an unmappable cadence is as good as undetected,
+	// and leaving its key in the list would strand the old row on the calendar.
+	live := make([]string, 0, len(merchants))
 	promoted := 0
 	for _, m := range merchants {
 		// Suppression is keyed by merchant_key, so an unkeyed row could never be
-		// acted on — and a gone-quiet merchant is a cancelled charge, not a bill.
-		if m.MerchantKey == "" || dateOnly(m.LastSeen).Before(activeCutoff) {
+		// acted on.
+		if m.MerchantKey == "" {
 			continue
 		}
 		cadence, ok := CadenceForGapDays(m.AvgGapDays)
@@ -116,33 +122,74 @@ func Promote(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now t
 		if err != nil {
 			// A user-edited row makes the DO UPDATE match nothing, which sqlc's
 			// :one surfaces as no rows. That is the intended outcome, not a
-			// failure — skip it and keep going.
+			// failure — skip the write and keep going. The key still counts as
+			// live: the merchant is detected, the row simply belongs to the user
+			// now, and omitting it here would retire a bill they curated.
 			if isNoRows(err) {
+				live = append(live, m.MerchantKey)
 				continue
 			}
 			return promoted, fmt.Errorf("promote merchant %s: %w", m.MerchantKey, err)
 		}
+		live = append(live, m.MerchantKey)
 		promoted++
 	}
+
+	// Retire whatever the detector no longer vouches for. This is what stops a
+	// merged merchant billing twice — promotion writes the entity-keyed row, and
+	// this clears the raw-descriptor row the same pass.
+	if _, err := q.DeactivateUndetectedObligations(ctx, dbgen.DeactivateUndetectedObligationsParams{
+		HouseholdID:  householdID,
+		DetectedKeys: live,
+	}); err != nil {
+		return promoted, fmt.Errorf("retire undetected obligations: %w", err)
+	}
+
 	return promoted, nil
 }
 
 // Cadence buckets, in average days between charges. The boundaries sit in the
 // gaps between real cadences rather than at them, so ordinary jitter (a bill
 // that lands on the next business day) cannot tip a monthly charge into
-// something else. GetRecurringMerchants only emits gaps in 6–40 days today, but
-// the full table is here because the mapping is the part that has to be right,
-// not the part that has to be reachable.
+// something else.
+//
+// The human word lives here too, beside the interval it describes. It used to be
+// a switch statement in the API package and another in the insight producers,
+// each "mirroring" this table — which is how the Spending page could call a
+// merchant monthly while the Schedule page billed it quarterly. One table, one
+// answer.
 var cadenceBuckets = []struct {
 	maxGapDays float64
 	cadence    Cadence
+	label      string
 }{
-	{10, Cadence{Count: 1, Unit: UnitWeek}},
-	{20, Cadence{Count: 2, Unit: UnitWeek}},
-	{45, Cadence{Count: 1, Unit: UnitMonth}},
-	{135, Cadence{Count: 3, Unit: UnitMonth}},
-	{270, Cadence{Count: 6, Unit: UnitMonth}},
-	{450, Cadence{Count: 1, Unit: UnitYear}},
+	{10, Cadence{Count: 1, Unit: UnitWeek}, "weekly"},
+	{20, Cadence{Count: 2, Unit: UnitWeek}, "every 2 weeks"},
+	{45, Cadence{Count: 1, Unit: UnitMonth}, "monthly"},
+	// Two months. Added when the detector's gap ceiling went from 40 days to
+	// 400: without it every gap from 45 to 135 days collapsed onto "quarterly",
+	// so a bi-monthly bill was projected at two thirds of its real cost.
+	{75, Cadence{Count: 2, Unit: UnitMonth}, "every 2 months"},
+	{135, Cadence{Count: 3, Unit: UnitMonth}, "quarterly"},
+	{270, Cadence{Count: 6, Unit: UnitMonth}, "every 6 months"},
+	{450, Cadence{Count: 1, Unit: UnitYear}, "yearly"},
+}
+
+// CadenceLabel is the human word for an average day-gap — what the Spending
+// page's recurring table and the assistant both show. Read from the same table
+// CadenceForGapDays uses, so the word and the interval always agree.
+//
+// Unlike CadenceForGapDays this always returns something: a label is a caption,
+// and a caption that is slightly coarse is fine where a wrong bill on a calendar
+// is not.
+func CadenceLabel(avgGapDays decimal.Decimal) string {
+	days := avgGapDays.InexactFloat64()
+	for _, b := range cadenceBuckets {
+		if days < b.maxGapDays {
+			return b.label
+		}
+	}
+	return cadenceBuckets[len(cadenceBuckets)-1].label
 }
 
 // CadenceForGapDays maps an average day-gap to the nearest sane cadence. A raw

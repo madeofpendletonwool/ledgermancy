@@ -50,6 +50,44 @@ type userResponse struct {
 	PersonID *uuid.UUID `json:"person_id"`
 }
 
+// sessionUserResponse assembles the payload a client caches as its session.
+//
+// Every field matters, and Role most of all: the client draws an entirely
+// different app for a child login than for an adult one, so a response that
+// leaves Role empty renders the reduced allowance view to an owner until the
+// next GET /api/auth/me replaces it. That is why this exists rather than each
+// authentication path filling the struct out by hand — login, MFA verification
+// and registration all hand the same complete answer back.
+//
+// The person id is looked up rather than carried through, because it lives on
+// household_people rather than users.
+func (s *Server) sessionUserResponse(ctx context.Context, user dbgen.User) userResponse {
+	resp := userResponse{
+		ID:          user.ID,
+		HouseholdID: user.HouseholdID,
+		Email:       user.Email,
+		DisplayName: user.DisplayName,
+		Role:        user.Role,
+	}
+
+	person, err := s.Queries.GetPersonByUserID(ctx, &user.ID)
+	switch {
+	case err == nil:
+		resp.PersonID = &person.ID
+	case errors.Is(err, pgx.ErrNoRows):
+		// Deliberately not an error, matching the LEFT JOIN in GetSessionUser: a
+		// login whose person row was removed still signs in, it simply has no
+		// person-scoped data.
+	default:
+		// The caller is already authenticated at this point, so failing the
+		// request over a missing convenience field would turn a degraded view
+		// into a refused login.
+		slog.Error("look up person for session user", "error", err, "user_id", user.ID)
+	}
+
+	return resp
+}
+
 // handleRegister creates an account.
 //
 // The first ever user bootstraps a new household. After that, registration is
@@ -210,13 +248,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		s.audit(ctx, r, user.ID, "", eventInviteAccepted, nil)
 	}
 
-	writeJSON(w, http.StatusCreated, userResponse{
-		ID:          user.ID,
-		HouseholdID: user.HouseholdID,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
-	})
+	writeJSON(w, http.StatusCreated, s.sessionUserResponse(ctx, user))
 }
 
 type csrfResponse struct {
@@ -343,12 +375,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.audit(ctx, r, user.ID, "", eventLoginSucceeded, map[string]any{"mfa": false})
 	s.loginLimiter.Reset(ratelimit.ClientIP(r))
 
-	writeJSON(w, http.StatusOK, userResponse{
-		ID:          user.ID,
-		HouseholdID: user.HouseholdID,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-	})
+	writeJSON(w, http.StatusOK, s.sessionUserResponse(ctx, user))
 }
 
 // loginFailureGrace is how many wrong passwords are tolerated before the

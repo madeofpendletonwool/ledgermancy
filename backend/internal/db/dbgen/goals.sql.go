@@ -260,44 +260,84 @@ func (q *Queries) GetGoalAccountBalance(ctx context.Context, arg GetGoalAccountB
 	return balance, err
 }
 
-const getGoalLiability = `-- name: GetGoalLiability :one
-SELECT l.apr, l.interest_rate_percentage, l.minimum_payment
-FROM liabilities l
-JOIN accounts a    ON a.id = l.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE l.account_id = $1 AND u.household_id = $2
+const getGoalDebtTerms = `-- name: GetGoalDebtTerms :one
+SELECT
+    a.type,
+    a.subtype,
+    COALESCE(a.current_balance, 0)::numeric AS balance,
+    t.apr             AS manual_apr,
+    t.minimum_payment AS manual_minimum_payment,
+    -- The scheduled bill outranks the typed minimum payment, so a schedule
+    -- edited on the bill calendar and a payoff projection can never quote
+    -- different numbers for the same payment.
+    o.amount          AS obligation_amount,
+    l.apr,
+    l.interest_rate_percentage,
+    l.minimum_payment
+FROM accounts a
+JOIN plaid_items i        ON i.id = a.plaid_item_id
+JOIN users u              ON u.id = i.user_id
+LEFT JOIN liabilities l   ON l.account_id = a.id
+LEFT JOIN account_terms t ON t.account_id = a.id
+LEFT JOIN recurring_obligations o
+       ON o.id = t.payment_obligation_id AND o.is_active
+WHERE a.id = $1 AND u.household_id = $2
 `
 
-type GetGoalLiabilityParams struct {
-	AccountID   uuid.UUID `json:"account_id"`
+type GetGoalDebtTermsParams struct {
+	ID          uuid.UUID `json:"id"`
 	HouseholdID uuid.UUID `json:"household_id"`
 }
 
-type GetGoalLiabilityRow struct {
+type GetGoalDebtTermsRow struct {
+	Type                   string              `json:"type"`
+	Subtype                *string             `json:"subtype"`
+	Balance                decimal.Decimal     `json:"balance"`
+	ManualApr              decimal.NullDecimal `json:"manual_apr"`
+	ManualMinimumPayment   decimal.NullDecimal `json:"manual_minimum_payment"`
+	ObligationAmount       decimal.NullDecimal `json:"obligation_amount"`
 	Apr                    decimal.NullDecimal `json:"apr"`
 	InterestRatePercentage decimal.NullDecimal `json:"interest_rate_percentage"`
 	MinimumPayment         decimal.NullDecimal `json:"minimum_payment"`
 }
 
-// The terms behind a debt-payoff goal's linked account: the rate the schedule
-// compounds at and the payment it assumes. Scoped through the same account →
-// plaid_item → user chain as GetGoalAccountBalance, so a goal can never read
-// another household's debt.
+// Everything a debt-payoff goal needs to know about its linked account: whether
+// it is a debt at all, what is owed on it right now, and the terms to amortize
+// at — the institution's, and the household's own, which override them.
 //
-// The BALANCE is deliberately not selected here. liabilities.balance is the last
-// statement balance for a card; what the payoff schedule must start from is what
-// is owed right now, which is the account's current_balance — the same figure
-// GetGoalAccountBalance returns and the same one the user sees on the accounts
-// page. Two balances would be two answers.
+// Replaces GetGoalLiability, which selected FROM liabilities and so answered
+// "does Plaid serve terms for this account?" when the question is "is this
+// account a debt?". Those are different questions with different answers: Plaid
+// serves the Liabilities product for a minority of institutions, and the answer
+// to the first was no for every debt the household that found this bug had. The
+// gate is now a.type, matching ComputeNetWorth and money.ts isLiability().
+//
+// Scoped through the same account → plaid_item → user chain as
+// GetGoalAccountBalance, and deliberately with the same household-wide rule
+// rather than the stricter is_shared one, so no goal that resolves today stops
+// resolving.
+//
+// BALANCE is the account's current_balance, never liabilities.balance: the
+// latter is the last statement balance for a card, and a payoff schedule must
+// start from what is owed now. Coalesced to 0 when unknown, as
+// GetGoalAccountBalance does.
 //
 // Student loans and mortgages report interest_rate_percentage rather than apr,
-// so both are returned and the caller falls back, exactly as the liabilities
-// endpoint does.
-func (q *Queries) GetGoalLiability(ctx context.Context, arg GetGoalLiabilityParams) (GetGoalLiabilityRow, error) {
-	row := q.db.QueryRow(ctx, getGoalLiability, arg.AccountID, arg.HouseholdID)
-	var i GetGoalLiabilityRow
-	err := row.Scan(&i.Apr, &i.InterestRatePercentage, &i.MinimumPayment)
+// so both are returned and mergeDebtTerms falls back between them.
+func (q *Queries) GetGoalDebtTerms(ctx context.Context, arg GetGoalDebtTermsParams) (GetGoalDebtTermsRow, error) {
+	row := q.db.QueryRow(ctx, getGoalDebtTerms, arg.ID, arg.HouseholdID)
+	var i GetGoalDebtTermsRow
+	err := row.Scan(
+		&i.Type,
+		&i.Subtype,
+		&i.Balance,
+		&i.ManualApr,
+		&i.ManualMinimumPayment,
+		&i.ObligationAmount,
+		&i.Apr,
+		&i.InterestRatePercentage,
+		&i.MinimumPayment,
+	)
 	return i, err
 }
 

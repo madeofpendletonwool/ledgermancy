@@ -14,6 +14,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 // maxToolIterations bounds the model↔tool loop. A finance question rarely needs
@@ -397,27 +398,23 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 
 	case "recurring_charges":
 		now := time.Now()
-		since := now.AddDate(0, -recurringLookbackMonths, 0)
-		activeCutoff := now.AddDate(0, 0, -recurringActiveDays)
+		since := now.AddDate(0, -obligations.RecurringLookbackMonths, 0)
 		rows, err := s.Queries.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: since,
+			HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			Date: since, Column4: now,
 		})
 		if err != nil {
 			return "", err
 		}
 		out := make([]map[string]string, 0, len(rows))
 		for _, m := range rows {
-			// Only currently-active charges, matching the recurring table.
-			if m.LastSeen.Before(activeCutoff) {
-				continue
-			}
 			var monthly decimal.Decimal
 			if m.AvgGapDays.IsPositive() {
 				monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
 			}
 			out = append(out, map[string]string{
 				"merchant":         m.Merchant,
-				"cadence":          cadenceLabel(m.AvgGapDays),
+				"cadence":          obligations.CadenceLabel(m.AvgGapDays),
 				"typical_amount":   m.AverageAmount.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
 			})

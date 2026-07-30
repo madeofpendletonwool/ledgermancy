@@ -202,6 +202,43 @@ func (q *Queries) DeleteCategoryRule(ctx context.Context, arg DeleteCategoryRule
 	return err
 }
 
+const getCategoryByID = `-- name: GetCategoryByID :one
+SELECT id, household_id, parent_id, name, slug, icon, color, is_fixed, is_income, is_transfer, sort_order, created_at, updated_at FROM categories
+WHERE id = $1 AND (household_id IS NULL OR household_id = $2)
+`
+
+type GetCategoryByIDParams struct {
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+}
+
+// One category the caller can see, for the category detail view's identity.
+//
+// Visibility matches ListCategories rather than UpdateCategory: a system default
+// (household_id NULL) is readable by every household even though only a custom
+// category is editable. Guarding this like an edit would make the built-in
+// categories — where most spending lands — the only ones with no detail page.
+func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams) (Category, error) {
+	row := q.db.QueryRow(ctx, getCategoryByID, arg.ID, arg.HouseholdID)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.ParentID,
+		&i.Name,
+		&i.Slug,
+		&i.Icon,
+		&i.Color,
+		&i.IsFixed,
+		&i.IsIncome,
+		&i.IsTransfer,
+		&i.SortOrder,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getCategoryBySlug = `-- name: GetCategoryBySlug :one
 SELECT id, household_id, parent_id, name, slug, icon, color, is_fixed, is_income, is_transfer, sort_order, created_at, updated_at FROM categories
 WHERE slug = $1 AND (household_id IS NULL OR household_id = $2)

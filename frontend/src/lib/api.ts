@@ -367,6 +367,14 @@ export interface Transaction {
   /** Normalized key the app caches categories by; present even when
    * merchant_name is null, empty when there was too little signal to key on. */
   merchant_key: string | null
+  /**
+   * The key that addresses the MERCHANT rather than the descriptor: an entity id
+   * for a merchant the household has grouped, the raw key otherwise. Always use
+   * this one to link to the merchant detail view — `merchant_key` above would
+   * strand every fragment of a grouped merchant but one. Empty when there was too
+   * little signal to key on, and the name then renders as plain text.
+   */
+  merchant_key_resolved: string
   /** Positive = money out, negative = money in (Plaid's convention). */
   amount: string
   currency: string
@@ -422,6 +430,14 @@ export interface TransactionQuery {
   accounts?: string[]
   /** Restrict to one category. Empty/omitted means all categories. */
   category_id?: string
+  /**
+   * Restrict to one merchant, by resolved key — so a grouped merchant returns
+   * every descriptor's charges. This is what "Open in Transactions" on a merchant
+   * page passes.
+   */
+  merchant?: string
+  /** Free-text search over the merchant name, raw name and descriptor key. */
+  q?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
 }
@@ -551,6 +567,108 @@ export interface MerchantDetail {
   /** Shaped as CategorySpend so CategoryBars consumes it directly. */
   categories: CategorySpend[]
   transactions: MerchantDetailTransaction[]
+}
+
+/** One row of the merchant explorer. All money fields are decimal strings. */
+export interface MerchantExplorerRow {
+  merchant: string
+  /** The resolved key — what addresses the merchant detail view. */
+  merchant_key: string
+  total: string
+  transaction_count: number
+  average: string
+  first_seen: string
+  last_seen: string
+  /**
+   * Spend here over the equivalent preceding window, "0" when there was none.
+   * Never render a percentage change against zero — `is_new` covers that case.
+   */
+  prior_total: string
+  /** No charge here before the window at all, not merely none last period. */
+  is_new: boolean
+  /** The category most of this merchant's spend lands in; null when uncategorised. */
+  category_id: string | null
+  category_name: string | null
+  category_color: string | null
+}
+
+/** A merchant that used to charge on a regular cadence and has stopped. */
+export interface LapsedMerchant {
+  merchant: string
+  merchant_key: string
+  typical_amount: string
+  monthly_estimate: string
+  cadence: string
+  last_seen: string
+  days_quiet: number
+}
+
+/**
+ * Every merchant in a window, plus the gone-quiet list.
+ *
+ * Deliberately unpaginated: a household has hundreds of merchants, so the page
+ * fetches the window once and searches, sorts and pages it locally. `truncated`
+ * says whether the server's row cap bit, which the UI must surface rather than
+ * present a partial list as the whole picture.
+ */
+export interface MerchantExplorer {
+  from: string
+  to: string
+  prior_from: string
+  prior_to: string
+  /** Everything spent in the window — the concentration denominator. Unaffected
+   * by the search needle, so the headline stays true while the user types. */
+  window_total: string
+  merchant_count: number
+  truncated: boolean
+  merchants: MerchantExplorerRow[]
+  lapsed: LapsedMerchant[]
+}
+
+/** One merchant's slice of a category. Shaped like MerchantSpend on purpose. */
+export interface CategoryMerchant {
+  merchant: string
+  merchant_key: string
+  total: string
+  transaction_count: number
+}
+
+export interface CategoryDetailTransaction {
+  id: string
+  date: string
+  amount: string
+  /** The raw text the bank printed for this charge. */
+  descriptor: string
+  /** The canonical merchant name, and the key that opens its detail page. */
+  merchant: string
+  merchant_key: string
+  account_name: string
+}
+
+/**
+ * One category over one period: the numbers, the shape over time, who the money
+ * went to, and the charges behind all three. The counterpart of MerchantDetail.
+ */
+export interface CategoryDetail {
+  category_id: string
+  name: string
+  slug: string
+  color: string | null
+  is_fixed: boolean
+  /** A built-in category, which cannot be renamed or deleted. */
+  is_system: boolean
+  from: string
+  to: string
+  total: string
+  transaction_count: number
+  average: string
+  largest: string
+  first_seen: string | null
+  last_seen: string | null
+  /** Shaped as MerchantMonthPoint so MonthlyBars consumes it directly. */
+  monthly: MerchantMonthPoint[]
+  merchants: CategoryMerchant[]
+  transactions: CategoryDetailTransaction[]
 }
 
 export interface BudgetProgress {
@@ -778,21 +896,77 @@ export interface Holding {
   is_cash_equivalent: boolean
 }
 
+/**
+ * One debt the household carries, with whatever terms are known for it.
+ *
+ * This list is every credit and loan ACCOUNT, not only the ones Plaid served
+ * loan terms for. Plaid supports its Liabilities product at a minority of
+ * institutions, and keying this on it meant a household with a mortgage and two
+ * credit cards saw an empty debt table under a non-zero debt total, and an empty
+ * payoff-goal picker. A debt with no terms is still a debt; it just has nulls.
+ */
 export interface Liability {
+  /** The ACCOUNT id — a debt is an account, and most have no separate
+   *  institution-reported terms row behind them at all. */
   id: string
-  /** The account this debt belongs to — the key to filter accounts by when a
-   *  picker must only offer debts (a payoff goal's linked account). */
+  /** The account this debt belongs to; identical to `id`, kept because callers
+   *  filtering an account list read better against this name. */
   account_id: string
   kind: string
   account_name: string
   mask: string | null
   institution_name: string | null
   apr: string | null
+  /** What is owed now, matching the Accounts page and the Net Worth
+   *  liabilities tile — not the last statement balance. */
   balance: string | null
   minimum_payment: string | null
+  /** Where each figure came from. '' means nobody knows it: render the "add it"
+   *  affordance rather than a confident zero. 'manual' means the household
+   *  typed it, and it will survive every future sync. */
+  apr_source: '' | 'manual' | 'plaid'
+  payment_source: '' | 'manual' | 'plaid'
+  /** The household's own scheduled bill where one is set, otherwise whatever
+   *  the institution reported. Derived from the recurrence on every read, so it
+   *  is never a stale cached date. */
   next_payment_due_date: string | null
+  /** The recurrence behind that date; null when no bill is scheduled. */
+  schedule: PaymentSchedule | null
+  /** Only ever populated by Plaid — there is no manual entry for this. */
   is_overdue: boolean | null
 }
+
+/**
+ * A debt payment's recurrence, in the app's only cadence vocabulary: an anchor
+ * date plus "every N days/weeks/months/years". It is a `recurring_obligations`
+ * row, so a scheduled debt payment is a bill like any other and appears on the
+ * schedule and in cash-flow forecasting.
+ *
+ * End-of-month is an anchor on a 31st: the expansion clamps 01-31 to 02-28 and
+ * returns to the 31st in March rather than drifting off it.
+ */
+export interface PaymentSchedule {
+  obligation_id: string
+  anchor_date: string
+  interval_count: number
+  interval_unit: 'day' | 'week' | 'month' | 'year'
+  /** How the rest of the UI words this cadence — "monthly", "every 2 weeks". */
+  label: string
+}
+
+/** The cadences the terms form offers. Anything the obligations model accepts is
+ *  valid; these are the ones worth a menu entry for a debt payment. */
+export const PAYMENT_CADENCES: {
+  label: string
+  interval_count: number
+  interval_unit: PaymentSchedule['interval_unit']
+}[] = [
+  { label: 'Weekly', interval_count: 1, interval_unit: 'week' },
+  { label: 'Every 2 weeks', interval_count: 2, interval_unit: 'week' },
+  { label: 'Monthly', interval_count: 1, interval_unit: 'month' },
+  { label: 'Quarterly', interval_count: 3, interval_unit: 'month' },
+  { label: 'Yearly', interval_count: 1, interval_unit: 'year' },
+]
 
 export interface ManualAsset {
   id: string
@@ -1194,6 +1368,15 @@ export interface GoalPayoff {
   monthly_payment: string
   monthly_interest: string
   /**
+   * Where the rate and payment came from. '' means nobody knows the figure, and
+   * `apr`/`monthly_payment` are then "0.00" as an arithmetic placeholder, NOT as
+   * a reading — render the difference. A schedule with `apr_source: ''` is
+   * computed interest-free, so its payoff date is the earliest possible one
+   * rather than the real one.
+   */
+  apr_source: '' | 'manual' | 'plaid'
+  payment_source: '' | 'manual' | 'plaid'
+  /**
    * The headline case: the payment is at or below the interest, so the balance
    * never falls. `months`, `total_interest` and `payoff_date` are then empty —
    * there is no schedule.
@@ -1313,7 +1496,7 @@ export interface RecurringMerchant {
   occurrences: number
   average_amount: string
   avg_gap_days: string
-  /** weekly | every 2 weeks | monthly */
+  /** weekly | every 2 weeks | monthly | every 2 months | quarterly | every 6 months | yearly */
   cadence: string
   /** Charge normalised to a per-month figure, computed server-side. */
   monthly_estimate: string
@@ -1378,7 +1561,14 @@ export interface MergeResult {
 
 /** A merchant the household has marked "not recurring". */
 export interface SuppressedRecurringMerchant {
+  /** The key the suppression is recorded under — what unsuppress takes. */
   merchant_key: string
+  /**
+   * The same key canonicalised, which is what addresses the merchant detail view.
+   * A suppression recorded against a raw descriptor before that descriptor was
+   * merged would otherwise link nowhere.
+   */
+  merchant_key_resolved: string
   merchant: string
   suppressed_at: string
 }
@@ -1735,8 +1925,6 @@ async function request<T>(
   // Tells the offline banner whether this came off the network or off disk.
   noteResponseOrigin(res)
 
-  if (res.status === 204) return undefined as T
-
   // Errors always arrive as {"error": "..."}, but a proxy or crash could still
   // produce non-JSON, so fall back to the status text rather than throwing a
   // parse error that hides the real failure.
@@ -1751,7 +1939,21 @@ async function request<T>(
     throw new ApiError(res.status, message)
   }
 
-  return (await res.json()) as T
+  // A SUCCESSFUL response with no body is not an error.
+  //
+  // This used to check only for 204, which made every body-less success on any
+  // other status look like a failure: res.json() on an empty body throws, the
+  // mutation rejects, and the UI reports that the request did not take. The
+  // "Scan for groupings" button sat behind exactly that — the endpoint answers
+  // 202 Accepted with no body because the work is queued, so the scan ran every
+  // time and the page always said it could not start.
+  //
+  // Testing the body rather than enumerating statuses means the next endpoint
+  // that returns 201 or 202 with nothing in it cannot reintroduce this.
+  const text = await res.text()
+  if (text === '') return undefined as T
+
+  return JSON.parse(text) as T
 }
 
 export const api = {
@@ -2075,6 +2277,17 @@ export const api = {
       withQuery('/api/merchants/detail', { ...params, key }),
     ),
 
+  /**
+   * One category's detail for a period. Addressed by id as a path segment, which
+   * a category can afford where a merchant cannot — a category id is a UUID,
+   * whereas a raw merchant descriptor routinely contains a slash.
+   */
+  categoryDetail: (categoryID: string, params: PeriodQuery = {}) =>
+    request<CategoryDetail>(
+      'GET',
+      withQuery(`/api/categories/${categoryID}/detail`, params),
+    ),
+
   // --- Reports ------------------------------------------------------------
   summary: (params: PeriodQuery = {}) =>
     request<Summary>('GET', withQuery('/api/reports/summary', params)),
@@ -2087,6 +2300,19 @@ export const api = {
 
   merchants: (params: PeriodQuery & { limit?: number } = {}) =>
     request<MerchantSpend[]>('GET', withQuery('/api/reports/merchants', params)),
+
+  /**
+   * Every merchant in a window, for the explorer. One request covers search,
+   * sorting, paging and every insight card, all of which happen client-side —
+   * so only the window and the category filter belong in the query key.
+   */
+  merchantExplorer: (
+    params: PeriodQuery & { category_id?: string; search?: string } = {},
+  ) =>
+    request<MerchantExplorer>(
+      'GET',
+      withQuery('/api/reports/merchant-explorer', params),
+    ),
 
   trend: (params: PeriodQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
@@ -2177,6 +2403,32 @@ export const api = {
   holdings: () => request<Holding[]>('GET', '/api/holdings'),
 
   liabilities: () => request<Liability[]>('GET', '/api/liabilities'),
+
+  /**
+   * Records the rate and monthly payment for a debt whose bank reports neither
+   * — which is most of them, since Plaid serves loan terms at a minority of
+   * institutions. Typed values always beat synced ones and survive every sync.
+   *
+   * Every field is sent on every save: the form is the whole state, so null on
+   * either one genuinely clears it and hands that figure back to whatever the
+   * institution reports. That is the only way back, precisely because manual
+   * wins otherwise.
+   */
+  setAccountTerms: (
+    accountID: string,
+    input: {
+      apr: string | null
+      minimum_payment: string | null
+      /** The recurring bill that pays this debt. Null clears it, which
+       *  deactivates the obligation rather than deleting it — a schedule
+       *  someone turned off is not the same as one that never existed. */
+      schedule: {
+        anchor_date: string
+        interval_count: number
+        interval_unit: PaymentSchedule['interval_unit']
+      } | null
+    },
+  ) => request<Liability>('PUT', `/api/accounts/${accountID}/terms`, input),
 
   manualAssets: () => request<ManualAsset[]>('GET', '/api/manual-assets'),
 

@@ -3,37 +3,17 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import {
+  WINDOWS,
+  defaultRange,
+  matchedWindow,
+  monthsInRange,
+  windowRange,
+} from '../lib/period'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { MonthlyBars } from '../components/charts/MonthlyBars'
-
-/** Default window: the trailing twelve months, ending today. */
-function defaultRange() {
-  const now = new Date()
-  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  const from = new Date(now.getFullYear(), now.getMonth() - 11, 1)
-  return { from: iso(from), to: iso(to) }
-}
-
-function iso(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate(),
-  ).padStart(2, '0')}`
-}
-
-/** Window options, longest last — a merchant's story is usually a year-shaped one. */
-const WINDOWS = [
-  { label: 'Last 3 months', months: 3 },
-  { label: 'Last 6 months', months: 6 },
-  { label: 'Last 12 months', months: 12 },
-  { label: 'Last 24 months', months: 24 },
-] as const
-
-function windowRange(months: number) {
-  const now = new Date()
-  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  const from = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1)
-  return { from: iso(from), to: iso(to) }
-}
+import { Tile } from '../components/Tile'
+import { categoryDetailPath } from '../lib/categories'
 
 /**
  * One merchant, in detail.
@@ -105,12 +85,17 @@ export function MerchantDetail() {
   const count = d.transaction_count
   // The window is what the user picked, so "per month" is over the window rather
   // than over the months that happen to have a charge — an occasional merchant
-  // should read as occasional.
-  const monthsInWindow = Math.max(d.monthly.length, 1)
+  // should read as occasional. monthsCharged is a different number, and only
+  // describes the chart below.
+  const monthsCharged = d.monthly.length
   const perMonth = Number(d.total) / monthsInRange(from, to)
 
+  // Carries the merchant through, so the list opens on this merchant's charges
+  // rather than on every charge in the window.
   const openTransactions = () =>
-    navigate(`/transactions?from=${from}&to=${to}`)
+    navigate(
+      `/transactions?merchant=${encodeURIComponent(d.merchant_key)}&from=${from}&to=${to}`,
+    )
 
   return (
     <Shell>
@@ -182,9 +167,9 @@ export function MerchantDetail() {
           <section className="glass p-6">
             <h2 className="mb-1 text-lg font-medium">Spend per month</h2>
             <p className="mb-5 text-sm text-mist-300">
-              {monthsInWindow === 1
+              {monthsCharged === 1
                 ? 'One month with charges in this window.'
-                : `${monthsInWindow} months with charges in this window.`}
+                : `${monthsCharged} months with charges in this window.`}
             </p>
             <MonthlyBars months={d.monthly} from={from} to={to} />
           </section>
@@ -197,12 +182,13 @@ export function MerchantDetail() {
                   ? 'Everything here lands in one category.'
                   : `Split across ${d.categories.length} categories.`}
               </p>
+              {/* Into the category's own breakdown rather than a filtered
+                  transaction list: "how is this filed" leads naturally to "and
+                  what else is filed there", which the list cannot answer. */}
               <CategoryBars
                 data={d.categories}
                 onSelect={(categoryID) =>
-                  navigate(
-                    `/transactions?category=${categoryID}&from=${from}&to=${to}`,
-                  )
+                  navigate(categoryDetailPath(categoryID, { from, to }))
                 }
               />
             </section>
@@ -267,8 +253,8 @@ export function MerchantDetail() {
 
             {d.transactions.length < count && (
               <p className="mt-4 text-xs text-mist-500">
-                Showing the {d.transactions.length} most recent of {count}
-                charges. The totals above cover all of them.
+                Showing the {d.transactions.length} most recent of {count} charges.
+                The totals above cover all of them.
               </p>
             )}
           </section>
@@ -301,48 +287,6 @@ export function MerchantDetail() {
   )
 }
 
-/**
- * Months spanned by the range, floored at 1. Used for the per-month average, so
- * an occasional merchant is not overstated by dividing only by the months it
- * happened to appear in — the same reasoning as GetCategoryAverages.
- */
-function monthsInRange(from: string, to: string): number {
-  const [fy, fm] = from.split('-').map(Number)
-  const [ty, tm] = to.split('-').map(Number)
-  if (!fy || !fm || !ty || !tm) return 1
-  return Math.max(1, (ty - fy) * 12 + (tm - fm) + 1)
-}
-
-/** Which preset window the current range corresponds to, for the select. */
-function matchedWindow(from: string, to: string): number {
-  const span = monthsInRange(from, to)
-  const match = WINDOWS.find((w) => w.months === span)
-  return match ? match.months : 12
-}
-
 function Shell({ children }: { children: ReactNode }) {
   return <div className="space-y-8">{children}</div>
-}
-
-function Tile({
-  label,
-  value,
-  hint,
-}: {
-  label: string
-  value: string
-  hint?: string
-}) {
-  return (
-    <div className="glass p-5">
-      <p className="text-sm text-mist-300">{label}</p>
-      <p
-        className="tabular mt-2 text-3xl font-semibold"
-        style={{ color: '#f2d492' }}
-      >
-        {value}
-      </p>
-      {hint && <p className="mt-1 text-xs text-mist-500">{hint}</p>}
-    </div>
-  )
 }

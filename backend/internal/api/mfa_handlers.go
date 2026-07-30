@@ -402,12 +402,15 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 
 	s.loginLimiter.Reset(ratelimit.ClientIP(r))
 
-	writeJSON(w, http.StatusOK, userResponse{
-		ID:          challenge.UserID,
-		HouseholdID: challenge.HouseholdID,
-		Email:       challenge.Email,
-		DisplayName: challenge.DisplayName,
-	})
+	// The challenge row carries no role, so the user is re-read here: the client
+	// caches this response as its session and needs the role to know which app
+	// to draw.
+	user, err := s.Queries.GetUserByID(ctx, challenge.UserID)
+	if err != nil {
+		s.internalError(w, "look up authenticated user", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sessionUserResponse(ctx, user))
 }
 
 func methodLabel(usedRecovery bool) string {

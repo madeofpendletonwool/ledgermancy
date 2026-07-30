@@ -8,6 +8,7 @@ import { Alerts } from './routes/Alerts'
 import { Assistant } from './routes/Assistant'
 import { Budgets } from './routes/Budgets'
 import { Categories } from './routes/Categories'
+import { CategoryDetail } from './routes/CategoryDetail'
 import { MerchantDetail } from './routes/MerchantDetail'
 import { Merchants } from './routes/Merchants'
 import { Dashboard } from './routes/Dashboard'
@@ -78,6 +79,10 @@ export default function App() {
           <Route path="/report" element={<Report />} />
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/categories" element={<Categories />} />
+          {/* Drill-down target; reached from any category name, not the nav. A
+              category id is a UUID, so unlike a merchant key it is safe in the
+              path. Registered after /categories so the literal wins. */}
+          <Route path="/categories/:categoryId" element={<CategoryDetail />} />
           <Route path="/merchants" element={<Merchants />} />
           {/* Drill-down target; reached from any merchant name, not the nav.
               The merchant travels as ?key= rather than a path segment because a

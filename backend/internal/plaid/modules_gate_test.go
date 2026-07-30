@@ -1,6 +1,7 @@
 package plaid
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -105,6 +106,66 @@ func TestNoteAccountType(t *testing.T) {
 	cashOnly.noteAccountType("depository")
 	if cashOnly.debt || cashOnly.investment {
 		t.Error("a depository-only item feeds neither optional module")
+	}
+}
+
+// Every skip must say why.
+//
+// A module that returned Skipped with nothing attached is how a household's
+// liabilities never landed on any sweep, in total silence — no error, no warning,
+// nothing in the sync summary — and the only way to discover it was to read
+// SyncLiabilities. The reason is what turns that into a log line.
+//
+// Both config-gated branches return before touching s.Queries, so a Syncer with
+// a nil Queries exercises them safely.
+func TestSkippedModulesAlwaysGiveAReason(t *testing.T) {
+	ctx := context.Background()
+
+	disabled := &Syncer{Client: newTestClient(t, []string{"transactions"}, nil)}
+	enabled := &Syncer{Client: newTestClient(t, []string{"transactions"},
+		[]string{"investments", "liabilities"})}
+
+	debt := itemAccountKinds{debt: true, investment: true}
+	nothing := itemAccountKinds{}
+
+	for _, tc := range []struct {
+		name string
+		run  func() (ModuleResult, error)
+	}{
+		{"liabilities, product disabled", func() (ModuleResult, error) {
+			return disabled.SyncLiabilities(ctx, "token", nil, debt)
+		}},
+		{"liabilities, no debt accounts", func() (ModuleResult, error) {
+			return enabled.SyncLiabilities(ctx, "token", nil, nothing)
+		}},
+		{"investments, product disabled", func() (ModuleResult, error) {
+			return disabled.SyncInvestments(ctx, "token", nil, debt)
+		}},
+		{"investments, no investment accounts", func() (ModuleResult, error) {
+			return enabled.SyncInvestments(ctx, "token", nil, nothing)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tc.run()
+			if err != nil {
+				t.Fatalf("a gated skip is not an error: %v", err)
+			}
+			if !result.Skipped {
+				t.Fatal("expected the module to skip")
+			}
+			if result.SkipReason == "" {
+				t.Error("Skipped with no SkipReason is the silent failure this guards against")
+			}
+		})
+	}
+
+	// The two liabilities causes must be distinguishable — one is an operator's
+	// decision, the other is the shape of the item, and they send whoever is
+	// debugging to different files.
+	off, _ := disabled.SyncLiabilities(ctx, "token", nil, debt)
+	empty, _ := enabled.SyncLiabilities(ctx, "token", nil, nothing)
+	if off.SkipReason == empty.SkipReason {
+		t.Errorf("both reasons are %q; the causes are different", off.SkipReason)
 	}
 }
 

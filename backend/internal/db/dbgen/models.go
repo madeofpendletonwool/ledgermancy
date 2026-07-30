@@ -44,6 +44,16 @@ type AccountContribution struct {
 	UpdatedAt             stdtime.Time `json:"updated_at"`
 }
 
+type AccountTerm struct {
+	AccountID           uuid.UUID           `json:"account_id"`
+	Apr                 decimal.NullDecimal `json:"apr"`
+	MinimumPayment      decimal.NullDecimal `json:"minimum_payment"`
+	PaymentObligationID *uuid.UUID          `json:"payment_obligation_id"`
+	UpdatedBy           *uuid.UUID          `json:"updated_by"`
+	CreatedAt           stdtime.Time        `json:"created_at"`
+	UpdatedAt           stdtime.Time        `json:"updated_at"`
+}
+
 type Alert struct {
 	ID          uuid.UUID    `json:"id"`
 	HouseholdID uuid.UUID    `json:"household_id"`

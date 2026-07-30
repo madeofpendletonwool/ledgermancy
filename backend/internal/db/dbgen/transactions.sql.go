@@ -586,6 +586,15 @@ func (q *Queries) ListQueriedTransactions(ctx context.Context, arg ListQueriedTr
 
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
 SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, a.name AS account_name, i.institution_name,
+    -- The RESOLVED merchant key, so a row can address the merchant detail view.
+    -- Raw t.merchant_key addresses one DESCRIPTOR; this addresses the BUSINESS,
+    -- collapsing every fragment the household has grouped. Without it a row
+    -- links to a merchant that no longer exists under that key — see the
+    -- canonicalisation contract at the top of merchants.sql.
+    --
+    -- merchant_aliases is UNIQUE (household_id, merchant_key), so the LEFT JOIN
+    -- cannot fan a transaction out into several rows.
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
     -- the same account for the same amount within four days — the issuer having
     -- finally delivered a charge the user already entered by hand. Computed at
@@ -601,6 +610,10 @@ FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
 JOIN users u       ON u.id = i.user_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
@@ -616,11 +629,38 @@ WHERE u.household_id = $1
   )
   -- Optional category filter (a null narg passes everything).
   AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  -- Optional canonical merchant filter, for drilling in from a merchant page.
+  --
+  -- Matched against the RESOLVED key first, so filtering by a grouped merchant
+  -- returns every descriptor's charges rather than one fragment's — the whole
+  -- point of the grouping.
+  --
+  -- The raw key is also accepted, and that second comparison is not redundant. A
+  -- descriptor belonging to a grouped merchant resolves to the entity id, so
+  -- resolved-only matching would answer "no charges" for a perfectly valid
+  -- descriptor key — the same stranded-link failure this column exists to
+  -- prevent, just one level down. With both, an entity id gives the whole
+  -- merchant and a descriptor gives that fragment, and neither ever comes back
+  -- empty for a key the household really has.
+  AND (
+    $9::text IS NULL
+    OR COALESCE(ma.entity_id::text, t.merchant_key) = $9::text
+    OR t.merchant_key = $9::text
+  )
+  -- Optional free-text search over what the user actually reads in the row: the
+  -- merchant name the UI shows, its raw name fallback, and the descriptor key.
+  -- Deliberately NOT the canonical name — a household that has renamed a merchant
+  -- still recognises the bank's text, and both forms are covered here.
+  AND (
+    $10::text IS NULL
+    OR t.merchant_key ILIKE '%' || $10::text || '%'
+    OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $10::text || '%'
+  )
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
   -- category. NULL/false narg passes everything.
   AND (
-    $9::bool IS NOT TRUE
+    $11::bool IS NOT TRUE
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
   )
@@ -637,6 +677,8 @@ type ListVisibleTransactionsParams struct {
 	Offset        int32        `json:"offset"`
 	AccountIds    []uuid.UUID  `json:"account_ids"`
 	CategoryID    *uuid.UUID   `json:"category_id"`
+	MerchantKey   *string      `json:"merchant_key"`
+	Search        *string      `json:"search"`
 	Uncategorised *bool        `json:"uncategorised"`
 }
 
@@ -666,6 +708,7 @@ type ListVisibleTransactionsRow struct {
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
+	ResolvedMerchantKey  string          `json:"resolved_merchant_key"`
 	IsPossibleDuplicate  *bool           `json:"is_possible_duplicate"`
 }
 
@@ -679,6 +722,8 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.Offset,
 		arg.AccountIds,
 		arg.CategoryID,
+		arg.MerchantKey,
+		arg.Search,
 		arg.Uncategorised,
 	)
 	if err != nil {
@@ -714,6 +759,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.UpdatedAt,
 			&i.AccountName,
 			&i.InstitutionName,
+			&i.ResolvedMerchantKey,
 			&i.IsPossibleDuplicate,
 		); err != nil {
 			return nil, err

@@ -10,6 +10,7 @@ import type {
   UpcomingObligation,
 } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import { MerchantLink } from '../components/MerchantLink'
 import { ProjectionChart } from '../components/charts/ProjectionChart'
 import { STATUS } from '../components/charts/tokens'
 
@@ -394,9 +395,9 @@ function ObligationManager({
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">Your bills</h2>
         <p className="mb-5 text-sm text-mist-300">
-          Recurring charges are detected from your transactions. Anything the
-          bank can't show — an annual premium, dues paid by cheque — has to be
-          added by hand.
+          Recurring charges are detected from your transactions, weekly through
+          yearly. Anything the bank can't show — dues paid by cheque, a bill
+          split with someone else — has to be added by hand.
         </p>
 
         {isPending ? (
@@ -448,7 +449,17 @@ function ObligationRow({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="font-medium">
-            {obligation.label}
+            {/* A detected bill IS a merchant, so its label opens that merchant.
+                The stored key is already the resolved one — the detector hands out
+                resolved keys, and a later merge re-promotes the row under the new
+                key while retiring the old. A hand-entered bill has no merchant and
+                stays plain text. */}
+            <MerchantLink
+              name={obligation.label}
+              merchantKey={
+                obligation.source === 'detected' ? obligation.merchant_key : null
+              }
+            />
             {obligation.is_personal && (
               <span className="ml-2 text-xs font-normal text-mist-500">personal</span>
             )}

@@ -401,6 +401,159 @@ func (q *Queries) GetCategoryAverages(ctx context.Context, arg GetCategoryAverag
 	return items, nil
 }
 
+const getCategoryMonthlySpend = `-- name: GetCategoryMonthlySpend :many
+SELECT
+    date_trunc('month', t.date)::date AS month,
+    SUM(t.amount)::numeric            AS total,
+    COUNT(*)::bigint                  AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND t.category_id = $5
+GROUP BY 1
+ORDER BY 1
+`
+
+type GetCategoryMonthlySpendParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	CategoryID  *uuid.UUID   `json:"category_id"`
+}
+
+type GetCategoryMonthlySpendRow struct {
+	Month            stdtime.Time    `json:"month"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// Spend per calendar month in one category. Gaps are left out rather than
+// zero-filled, matching GetMerchantMonthlySpend so both feed MonthlyBars, which
+// re-expands the range itself.
+//
+// This replaces the workaround in internal/insights/budgettrend.go, which built
+// the same series by calling GetSpendingByCategory once per month in Go.
+func (q *Queries) GetCategoryMonthlySpend(ctx context.Context, arg GetCategoryMonthlySpendParams) ([]GetCategoryMonthlySpendRow, error) {
+	rows, err := q.db.Query(ctx, getCategoryMonthlySpend,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.CategoryID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetCategoryMonthlySpendRow{}
+	for rows.Next() {
+		var i GetCategoryMonthlySpendRow
+		if err := rows.Scan(&i.Month, &i.Total, &i.TransactionCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCategorySummary = `-- name: GetCategorySummary :one
+
+SELECT
+    COALESCE(SUM(t.amount), 0)::numeric    AS total,
+    COUNT(*)::bigint                       AS transaction_count,
+    COALESCE(AVG(t.amount), 0)::numeric    AS average,
+    COALESCE(MAX(t.amount), 0)::numeric    AS largest,
+    COALESCE(MIN(t.date)::text, '')::text  AS first_seen,
+    COALESCE(MAX(t.date)::text, '')::text  AS last_seen
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND t.category_id = $5
+`
+
+type GetCategorySummaryParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	CategoryID  *uuid.UUID   `json:"category_id"`
+}
+
+type GetCategorySummaryRow struct {
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+	Average          decimal.Decimal `json:"average"`
+	Largest          decimal.Decimal `json:"largest"`
+	FirstSeen        string          `json:"first_seen"`
+	LastSeen         string          `json:"last_seen"`
+}
+
+// --------------------------------------------------------------------------
+// Category detail
+// --------------------------------------------------------------------------
+//
+// The category counterpart of the merchant detail block above, addressed by
+// category id. Every category click in the app used to land in a filtered
+// transaction list, which answers "which charges" but never "how much, how
+// often, trending which way, and to whom" — so these four exist to answer the
+// same questions about a category that the block above answers about a merchant.
+//
+// They carry the identical spending filter as the rest of the reporting layer
+// (active accounts, not excluded, not pending, not income, not a transfer,
+// outflow only), so a category's headline total equals its row in
+// GetSpendingByCategory rather than telling a second story about the same money.
+//
+// There is no GetCategoryIdentity: unlike a merchant, a category always has a
+// row of its own, so the name, colour and flags come from ListCategories.
+// The headline numbers. Returns a row of zeroes and empty strings when the
+// category matches nothing in the window, so an empty category renders as empty
+// rather than a 500 — same contract as GetMerchantSummary.
+func (q *Queries) GetCategorySummary(ctx context.Context, arg GetCategorySummaryParams) (GetCategorySummaryRow, error) {
+	row := q.db.QueryRow(ctx, getCategorySummary,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.CategoryID,
+	)
+	var i GetCategorySummaryRow
+	err := row.Scan(
+		&i.Total,
+		&i.TransactionCount,
+		&i.Average,
+		&i.Largest,
+		&i.FirstSeen,
+		&i.LastSeen,
+	)
+	return i, err
+}
+
 const getLargestTransactions = `-- name: GetLargestTransactions :many
 SELECT
     COALESCE(t.merchant_name, t.name) AS merchant,
@@ -1020,6 +1173,13 @@ WITH tx AS (
       AND t.amount > 0
       AND NOT COALESCE(c.is_income, FALSE)
       AND NOT COALESCE(c.is_transfer, FALSE)
+      -- Discretionary spend is never a subscription. Eating at the same place
+      -- on a roughly regular rhythm is a habit, not a bill, but the cadence
+      -- test cannot tell the two apart: a fast-food merchant visited a dozen
+      -- times a year passes every threshold below and lands on the calendar as
+      -- a monthly charge. Before this the only remedy was a manual "not
+      -- recurring" per merchant, one restaurant at a time.
+      AND COALESCE(c.slug, '') NOT IN ('food-and-drink', 'groceries')
       AND t.date >= $3
       AND NOT EXISTS (
           SELECT 1 FROM recurring_overrides ro
@@ -1047,8 +1207,11 @@ agg AS (
         COALESCE(MAX(merchant), '')::text                          AS merchant,
         COUNT(*)                                                   AS n,
         AVG(amount)                                                AS avg_amount,
+        MIN(amount)                                                AS min_amount,
+        MAX(amount)                                                AS max_amount,
         MAX(date)                                                  AS last_seen,
         MIN(date)                                                  AS first_seen,
+        ($4::date - MAX(date))                                     AS days_quiet,
         AVG(gap) FILTER (WHERE gap IS NOT NULL)                    AS avg_gap,
         COALESCE(STDDEV_POP(gap) FILTER (WHERE gap IS NOT NULL), 0) AS gap_stddev
     FROM gaps
@@ -1059,18 +1222,73 @@ SELECT
     merchant,
     n::bigint                       AS occurrences,
     COALESCE(avg_amount, 0)::numeric AS average_amount,
+    first_seen::date                AS first_seen,
     last_seen::date                 AS last_seen,
-    COALESCE(avg_gap, 0)::numeric    AS avg_gap_days
+    COALESCE(avg_gap, 0)::numeric    AS avg_gap_days,
+    days_quiet::int                 AS days_quiet
 FROM agg
-WHERE n >= 3
-  AND avg_gap IS NOT NULL
-  AND avg_gap BETWEEN 6 AND 40
-  AND gap_stddev <= avg_gap * 0.5
-  -- Minimum span between first and last charge (days). A real subscription
-  -- persists across cycles; a coincidental cluster of a few charges within a
-  -- few weeks does not. 45 days clears a 3-charge monthly subscription (~60-day
-  -- span) while dropping a short burst at one merchant.
-  AND (last_seen - first_seen) >= 45
+WHERE avg_gap IS NOT NULL
+  -- Three cadence bands. Each carries its own minimum span between the first and
+  -- last charge, because a real subscription persists across cycles and a
+  -- coincidental cluster does not — and how long "persists" has to be depends
+  -- entirely on how long the cycle is.
+  AND (
+      -- Weekly to monthly. This band was the only one that existed, and it is
+      -- well-calibrated, so it is unchanged. 45 days clears a 3-charge monthly
+      -- subscription (~60-day span) while dropping a short burst at one
+      -- merchant.
+         (n >= 3 AND avg_gap BETWEEN 6 AND 40
+              AND gap_stddev <= avg_gap * 0.50
+              AND (last_seen - first_seen) >= 45)
+      -- Bi-monthly through annual. Two extra demands over the band above, both
+      -- because coincidence is much easier to mistake for a cycle when the cycle
+      -- is long. First, a fifth of the spread: three shopping trips a hundred
+      -- days apart are chance, whereas a quarterly utility bill lands within a
+      -- few days of its date every single time. Second, half a year of history,
+      -- which is what separates a bill from a pair of visits that happened to
+      -- fall two months apart — and, not incidentally, what stops a subscription
+      -- split across two ALTERNATING descriptors from reading as two genuine
+      -- bi-monthly charges before the descriptors are merged.
+      OR (n >= 3 AND avg_gap BETWEEN 41 AND 400
+              AND gap_stddev <= avg_gap * 0.20
+              AND (last_seen - first_seen) >= 180)
+      -- An annual charge can only ever be observed twice in a household with a
+      -- couple of years of history, and with a single gap there is no spread to
+      -- measure — gap_stddev is trivially 0 and proves nothing. Amount identity
+      -- carries the whole burden instead: a renewal costs the same to the cent,
+      -- two coincidental visits to the same shop do not. 2% absorbs a sales-tax
+      -- or exchange-rate wobble and nothing more. With n = 2 the span IS the gap,
+      -- so the 180-day floor is expressed in the band itself.
+      OR (n = 2 AND avg_gap BETWEEN 180 AND 400
+              AND (max_amount - min_amount) <= avg_amount * 0.02)
+  )
+  -- Has it gone quiet? A cancelled or paid-off charge must stop being a bill,
+  -- but a flat day count cannot serve both a weekly childcare payment and an
+  -- annual domain renewal — which is exactly how the callers ended up with two
+  -- different numbers. Scale the tolerance to the merchant's own cadence:
+  -- roughly one and a half missed cycles, never more than 90 days past the
+  -- expected date, and never less than three weeks. That yields 21 days for a
+  -- weekly charge, 75 for a monthly one (identical to what obligation promotion
+  -- used, so the Schedule page is unchanged for the common case), 181 for
+  -- quarterly and 455 for annual.
+  --
+  -- Written as three comparisons rather than the equivalent
+  -- days_quiet <= GREATEST(LEAST(avg_gap * 2.5, avg_gap + 90), 21) because sqlc
+  -- cannot resolve an aggregate alias referenced twice inside one expression.
+  --
+  -- With lapsed = true the same test is negated, which is what makes the two
+  -- lists complements rather than two heuristics that happen to look similar.
+  AND (
+    CASE WHEN $5::bool IS TRUE THEN
+        NOT (
+             days_quiet <= 21
+          OR (days_quiet <= avg_gap * 2.5 AND days_quiet <= avg_gap + 90)
+        )
+    ELSE
+             days_quiet <= 21
+          OR (days_quiet <= avg_gap * 2.5 AND days_quiet <= avg_gap + 90)
+    END
+  )
 ORDER BY COALESCE(avg_amount, 0) * (30.0 / GREATEST(avg_gap, 1)) DESC
 `
 
@@ -1078,6 +1296,8 @@ type GetRecurringMerchantsParams struct {
 	HouseholdID uuid.UUID    `json:"household_id"`
 	UserID      uuid.UUID    `json:"user_id"`
 	Date        stdtime.Time `json:"date"`
+	Column4     stdtime.Time `json:"column_4"`
+	Lapsed      *bool        `json:"lapsed"`
 }
 
 type GetRecurringMerchantsRow struct {
@@ -1085,24 +1305,36 @@ type GetRecurringMerchantsRow struct {
 	Merchant      string          `json:"merchant"`
 	Occurrences   int64           `json:"occurrences"`
 	AverageAmount decimal.Decimal `json:"average_amount"`
+	FirstSeen     stdtime.Time    `json:"first_seen"`
 	LastSeen      stdtime.Time    `json:"last_seen"`
 	AvgGapDays    decimal.Decimal `json:"avg_gap_days"`
+	DaysQuiet     int32           `json:"days_quiet"`
 }
 
 // Heuristic subscription/recurring detection: a merchant that recurs on a
-// roughly regular weekly-to-monthly cadence. No AI — just the shape of the
-// history. Same spend definition and visibility scoping as every other report.
+// roughly regular cadence, anywhere from weekly to annual. No AI — just the
+// shape of the history. Same spend definition and visibility scoping as every
+// other report. COALESCE wraps the averaged columns so they are non-null Go
+// types — the WHERE already guarantees a value.
 //
-// A merchant qualifies when it has at least three charges over the window, the
-// average gap between them is weekly-to-monthly, those gaps are fairly regular
-// (low spread relative to the mean), and the charges span enough time that a
-// short coincidental burst does not look like a subscription (see the minimum
-// span below). COALESCE wraps the averaged columns so they are non-null Go types
-// — the WHERE already guarantees a value.
+// This query is the WHOLE definition of "recurring". It used to return
+// candidates that each caller then filtered in Go, and the copies drifted: the
+// Spending table dropped anything quiet for 45 days while obligation promotion
+// used 75, so a merchant quiet for 46-75 days appeared on the Schedule page and
+// nowhere else. Both the cadence test and the gone-quiet test now live here, so
+// there is nothing left for a caller to disagree about.
 //
 // A merchant the household has explicitly marked "not recurring" is excluded
 // outright via recurring_overrides, so every consumer of this query (report
 // table, insight producers, recap, chat) honours the suppression at once.
+//
+// The `lapsed` narg flips the gone-quiet test at the bottom instead of adding a
+// second query. NULL/false gives the live subscriptions every existing caller
+// wants; true gives their exact complement — merchants that pass the same
+// cadence bands but have stopped billing, i.e. the forgotten cancellations. Two
+// separate queries would mean two copies of the calibration below, and the last
+// time this logic was duplicated the copies drifted (see above). One definition,
+// one flag, and the two lists can never disagree about what "recurring" means.
 //
 // Charges are grouped by RESOLVED merchant (merchants.sql), which is the whole
 // point of canonicalisation: a subscription billing under two descriptors never
@@ -1113,7 +1345,13 @@ type GetRecurringMerchantsRow struct {
 // entity. Suppressions are matched on the resolved key at both ends, so an
 // override recorded against one raw descriptor silences the whole merchant.
 func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMerchantsParams) ([]GetRecurringMerchantsRow, error) {
-	rows, err := q.db.Query(ctx, getRecurringMerchants, arg.HouseholdID, arg.UserID, arg.Date)
+	rows, err := q.db.Query(ctx, getRecurringMerchants,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Column4,
+		arg.Lapsed,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1126,8 +1364,10 @@ func (q *Queries) GetRecurringMerchants(ctx context.Context, arg GetRecurringMer
 			&i.Merchant,
 			&i.Occurrences,
 			&i.AverageAmount,
+			&i.FirstSeen,
 			&i.LastSeen,
 			&i.AvgGapDays,
+			&i.DaysQuiet,
 		); err != nil {
 			return nil, err
 		}
@@ -1459,6 +1699,446 @@ func (q *Queries) GetTopMerchants(ctx context.Context, arg GetTopMerchantsParams
 	return items, nil
 }
 
+const getTopMerchantsInCategory = `-- name: GetTopMerchantsInCategory :many
+SELECT
+    COALESCE(
+        me.canonical_name,
+        (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
+    )::text                                                AS merchant,
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
+    SUM(t.amount)::numeric                                 AS total,
+    COUNT(*)::bigint                                       AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND t.category_id = $5
+GROUP BY me.canonical_name, 2
+ORDER BY total DESC
+LIMIT $6
+`
+
+type GetTopMerchantsInCategoryParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	CategoryID  *uuid.UUID   `json:"category_id"`
+	Lim         int32        `json:"lim"`
+}
+
+type GetTopMerchantsInCategoryRow struct {
+	Merchant         string          `json:"merchant"`
+	MerchantKey      string          `json:"merchant_key"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// Who the money in this category actually goes to.
+//
+// Canonicalised exactly as GetTopMerchants is — grouped by RESOLVED key, named
+// by the entity's canonical name or the most recent descriptor — so every row
+// links straight to the merchant detail view and a merchant billing under two
+// descriptors appears once. That mutual navigability is the point: a category
+// page whose merchants were dead text would answer "how much" and then stop.
+func (q *Queries) GetTopMerchantsInCategory(ctx context.Context, arg GetTopMerchantsInCategoryParams) ([]GetTopMerchantsInCategoryRow, error) {
+	rows, err := q.db.Query(ctx, getTopMerchantsInCategory,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.CategoryID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetTopMerchantsInCategoryRow{}
+	for rows.Next() {
+		var i GetTopMerchantsInCategoryRow
+		if err := rows.Scan(
+			&i.Merchant,
+			&i.MerchantKey,
+			&i.Total,
+			&i.TransactionCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCategoryTransactions = `-- name: ListCategoryTransactions :many
+SELECT
+    t.id,
+    t.date,
+    t.amount,
+    t.name,
+    COALESCE(t.merchant_name, t.name)                      AS descriptor,
+    COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
+    COALESCE(me.canonical_name, t.merchant_name, t.name)   AS merchant,
+    a.name                                                 AS account_name
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+LEFT JOIN categories c ON c.id = t.category_id
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = $1
+      AND ma.merchant_key = t.merchant_key
+      AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND t.amount > 0
+  AND t.category_id = $5
+ORDER BY t.date DESC, t.amount DESC
+LIMIT $6
+`
+
+type ListCategoryTransactionsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	CategoryID  *uuid.UUID   `json:"category_id"`
+	Lim         int32        `json:"lim"`
+}
+
+type ListCategoryTransactionsRow struct {
+	ID                  uuid.UUID       `json:"id"`
+	Date                stdtime.Time    `json:"date"`
+	Amount              decimal.Decimal `json:"amount"`
+	Name                string          `json:"name"`
+	Descriptor          string          `json:"descriptor"`
+	ResolvedMerchantKey string          `json:"resolved_merchant_key"`
+	Merchant            string          `json:"merchant"`
+	AccountName         string          `json:"account_name"`
+}
+
+// The charges behind the numbers above. Carries the RESOLVED merchant key per
+// row so each charge can link to its merchant, which is the reverse of what
+// ListMerchantTransactions does with categories.
+func (q *Queries) ListCategoryTransactions(ctx context.Context, arg ListCategoryTransactionsParams) ([]ListCategoryTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listCategoryTransactions,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.CategoryID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCategoryTransactionsRow{}
+	for rows.Next() {
+		var i ListCategoryTransactionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Date,
+			&i.Amount,
+			&i.Name,
+			&i.Descriptor,
+			&i.ResolvedMerchantKey,
+			&i.Merchant,
+			&i.AccountName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMerchantSpend = `-- name: ListMerchantSpend :many
+WITH window_spend AS (
+    SELECT
+        COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
+        COALESCE(
+            me.canonical_name,
+            (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1]
+        )::text                                     AS merchant,
+        SUM(t.amount)::numeric                      AS total,
+        COUNT(*)::bigint                            AS transaction_count,
+        (SUM(t.amount) / COUNT(*))::numeric         AS average,
+        MIN(t.date)::date                           AS first_seen,
+        MAX(t.date)::date                           AS last_seen,
+        -- Does ANY raw form this merchant bills under match the needle? A null
+        -- needle makes every row true, so bool_or passes the whole household.
+        bool_or(
+            $5::text IS NULL
+            OR t.merchant_key ILIKE '%' || $5::text || '%'
+            OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $5::text || '%'
+        )                                           AS descriptor_match
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    LEFT JOIN merchant_entities me ON me.id = ma.entity_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.amount > 0
+      -- Optional category filter. Unlike the search needle this one IS applied
+      -- before aggregation, on purpose: "what do I spend on groceries at Costco"
+      -- is a question about a slice of a merchant, and the answer should be the
+      -- slice.
+      AND ($7::uuid IS NULL OR t.category_id = $7::uuid)
+    GROUP BY me.canonical_name, 1
+),
+prior_spend AS (
+    -- The equivalent window immediately before this one, for the change column.
+    -- Same filters throughout, so a change of +18% compares like with like.
+    SELECT
+        COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
+        SUM(t.amount)::numeric                                 AS total
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $8 AND t.date <= $9
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.amount > 0
+      AND ($7::uuid IS NULL OR t.category_id = $7::uuid)
+    GROUP BY 1
+),
+seen_before AS (
+    -- Merchants that existed before the window at all, so "new" means genuinely
+    -- first-time rather than merely absent from the previous period. Unbounded
+    -- backwards on purpose: a merchant last charged three years ago is not new.
+    SELECT DISTINCT COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    LEFT JOIN categories c ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date < $3
+      AND NOT COALESCE(c.is_income, FALSE)
+      AND NOT COALESCE(c.is_transfer, FALSE)
+      AND t.amount > 0
+),
+merchant_category AS (
+    -- Spend per (merchant, category) in the window. Inner join to categories, so
+    -- an uncategorised merchant simply has no chip rather than a fake one.
+    SELECT
+        COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key,
+        c.id                   AS category_id,
+        c.name                 AS category_name,
+        c.color                AS category_color,
+        SUM(t.amount)          AS total
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    JOIN categories c  ON c.id = t.category_id
+    LEFT JOIN merchant_aliases ma
+           ON ma.household_id = $1
+          AND ma.merchant_key = t.merchant_key
+          AND ma.source <> 'suggested'
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+      AND NOT c.is_income
+      AND NOT c.is_transfer
+      AND t.amount > 0
+      AND ($7::uuid IS NULL OR t.category_id = $7::uuid)
+    GROUP BY 1, c.id, c.name, c.color
+),
+top_category AS (
+    SELECT DISTINCT ON (merchant_key)
+        merchant_key, category_id, category_name, category_color
+    FROM merchant_category
+    ORDER BY merchant_key, total DESC
+)
+SELECT
+    w.merchant_key,
+    w.merchant,
+    w.total,
+    w.transaction_count,
+    w.average,
+    w.first_seen,
+    w.last_seen,
+    COALESCE(p.total, 0)::numeric      AS prior_total,
+    (b.merchant_key IS NULL)::boolean  AS is_new,
+    tc.category_id,
+    tc.category_name,
+    tc.category_color,
+    -- The concentration denominator: everything spent in the window, unaffected
+    -- by the search needle so "your top 10 are 43% of spending" stays true while
+    -- the user is typing. Constant across rows; the handler reads it once.
+    (SELECT COALESCE(SUM(total), 0) FROM window_spend)::numeric AS window_total,
+    -- How many merchants matched, so the caller can report an honest count even
+    -- when the row limit clips the list.
+    COUNT(*) OVER ()::bigint           AS matched_count
+FROM window_spend w
+LEFT JOIN prior_spend p  ON p.merchant_key = w.merchant_key
+LEFT JOIN seen_before b  ON b.merchant_key = w.merchant_key
+LEFT JOIN top_category tc ON tc.merchant_key = w.merchant_key
+WHERE w.descriptor_match
+   OR w.merchant ILIKE '%' || $5::text || '%'
+ORDER BY w.total DESC
+LIMIT $6
+`
+
+type ListMerchantSpendParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Date        stdtime.Time `json:"date"`
+	Date_2      stdtime.Time `json:"date_2"`
+	Search      *string      `json:"search"`
+	Lim         int32        `json:"lim"`
+	CategoryID  *uuid.UUID   `json:"category_id"`
+	PriorFrom   stdtime.Time `json:"prior_from"`
+	PriorTo     stdtime.Time `json:"prior_to"`
+}
+
+type ListMerchantSpendRow struct {
+	MerchantKey      string          `json:"merchant_key"`
+	Merchant         string          `json:"merchant"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+	Average          decimal.Decimal `json:"average"`
+	FirstSeen        stdtime.Time    `json:"first_seen"`
+	LastSeen         stdtime.Time    `json:"last_seen"`
+	PriorTotal       decimal.Decimal `json:"prior_total"`
+	IsNew            bool            `json:"is_new"`
+	CategoryID       *uuid.UUID      `json:"category_id"`
+	CategoryName     *string         `json:"category_name"`
+	CategoryColor    *string         `json:"category_color"`
+	WindowTotal      decimal.Decimal `json:"window_total"`
+	MatchedCount     int64           `json:"matched_count"`
+}
+
+// Every merchant with spend in the window, canonicalised, with everything the
+// merchant explorer needs to rank and annotate a row: the window's total, the
+// equivalent prior window's total, whether the merchant is new, and the category
+// most of its spend lands in.
+//
+// Deliberately NOT paginated and NOT sorted server-side beyond total DESC. A
+// household has hundreds of merchants, not millions, so the whole window ships
+// in one response and the page searches, sorts and pages it locally — which is
+// what makes search feel instant and keeps the ranking rules in one readable
+// place instead of a CASE-per-sort-order in SQL. The caller passes a limit as a
+// backstop and reports the truncation rather than hiding it.
+//
+// GetTopMerchants stays as it is: the Dashboard's top-five card needs nothing
+// here, and two reconciliation tests pin it. A third test pins the two together
+// so this query cannot drift from it.
+//
+// The search needle is applied AFTER aggregation, and this is the whole subtlety
+// of the query. Filtering rows by descriptor first would show a grouped merchant
+// carrying only the matching fragment's total — a number that contradicts the
+// page the row links to. bool_or folds the test into the aggregate instead, so
+// matching ANY descriptor returns the merchant with ALL of its spend.
+func (q *Queries) ListMerchantSpend(ctx context.Context, arg ListMerchantSpendParams) ([]ListMerchantSpendRow, error) {
+	rows, err := q.db.Query(ctx, listMerchantSpend,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.Search,
+		arg.Lim,
+		arg.CategoryID,
+		arg.PriorFrom,
+		arg.PriorTo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMerchantSpendRow{}
+	for rows.Next() {
+		var i ListMerchantSpendRow
+		if err := rows.Scan(
+			&i.MerchantKey,
+			&i.Merchant,
+			&i.Total,
+			&i.TransactionCount,
+			&i.Average,
+			&i.FirstSeen,
+			&i.LastSeen,
+			&i.PriorTotal,
+			&i.IsNew,
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.CategoryColor,
+			&i.WindowTotal,
+			&i.MatchedCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMerchantTransactions = `-- name: ListMerchantTransactions :many
 SELECT
     t.id,
@@ -1555,19 +2235,34 @@ func (q *Queries) ListMerchantTransactions(ctx context.Context, arg ListMerchant
 }
 
 const listRecurringOverrides = `-- name: ListRecurringOverrides :many
-SELECT merchant_key, merchant_label, created_at
-FROM recurring_overrides
-WHERE household_id = $1
-ORDER BY merchant_label, merchant_key
+SELECT
+    ro.merchant_key,
+    ro.merchant_label,
+    ro.created_at,
+    COALESCE(ma.entity_id::text, ro.merchant_key)::text AS resolved_merchant_key
+FROM recurring_overrides ro
+LEFT JOIN merchant_aliases ma
+       ON ma.household_id = ro.household_id
+      AND ma.merchant_key = ro.merchant_key
+      AND ma.source <> 'suggested'
+WHERE ro.household_id = $1
+ORDER BY ro.merchant_label, ro.merchant_key
 `
 
 type ListRecurringOverridesRow struct {
-	MerchantKey   string       `json:"merchant_key"`
-	MerchantLabel string       `json:"merchant_label"`
-	CreatedAt     stdtime.Time `json:"created_at"`
+	MerchantKey         string       `json:"merchant_key"`
+	MerchantLabel       string       `json:"merchant_label"`
+	CreatedAt           stdtime.Time `json:"created_at"`
+	ResolvedMerchantKey string       `json:"resolved_merchant_key"`
 }
 
 // The household's suppressed merchants, for the "restore" UI.
+//
+// The stored key comes from GetRecurringMerchants and is therefore already
+// resolved, but it is resolved again on the way out so a row written before a
+// later merge still addresses the merchant detail view. Resolution is idempotent
+// — a resolved key is an entity id as text and is never itself aliased — so
+// doing it twice is a no-op.
 func (q *Queries) ListRecurringOverrides(ctx context.Context, householdID uuid.UUID) ([]ListRecurringOverridesRow, error) {
 	rows, err := q.db.Query(ctx, listRecurringOverrides, householdID)
 	if err != nil {
@@ -1577,7 +2272,12 @@ func (q *Queries) ListRecurringOverrides(ctx context.Context, householdID uuid.U
 	items := []ListRecurringOverridesRow{}
 	for rows.Next() {
 		var i ListRecurringOverridesRow
-		if err := rows.Scan(&i.MerchantKey, &i.MerchantLabel, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.MerchantKey,
+			&i.MerchantLabel,
+			&i.CreatedAt,
+			&i.ResolvedMerchantKey,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

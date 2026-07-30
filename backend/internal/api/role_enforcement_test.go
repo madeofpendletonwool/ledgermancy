@@ -117,6 +117,9 @@ var childRoutes = []struct{ method, path string }{
 	{"PATCH", "/api/investments/accounts/" + uuid.Nil.String() + "/tax-treatment"},
 	{"PATCH", "/api/investments/accounts/" + uuid.Nil.String() + "/beneficiary"},
 	{"GET", "/api/liabilities/"},
+	// A child must not set the rate and payment every payoff plan in the
+	// household is computed from.
+	{"PUT", "/api/accounts/" + uuid.Nil.String() + "/terms"},
 	{"GET", "/api/manual-assets/"},
 	{"POST", "/api/manual-assets/"},
 
@@ -131,6 +134,12 @@ var childRoutes = []struct{ method, path string }{
 	{"GET", "/api/reports/by-category"},
 	{"GET", "/api/reports/trend"},
 	{"GET", "/api/reports/merchants"},
+	{"GET", "/api/reports/merchant-explorer"},
+
+	// The per-category breakdown. Nested under a category id, so it is worth
+	// listing separately from /api/categories/ above: a route added inside an
+	// existing group inherits its guard, but nothing proves that until it is here.
+	{"GET", "/api/categories/" + uuid.Nil.String() + "/detail"},
 
 	// The assistant reads household data by design.
 	{"POST", "/api/chat"},

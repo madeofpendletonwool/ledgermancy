@@ -90,10 +90,14 @@ func TestReportQueriesExecute(t *testing.T) {
 
 	yearStart := mustDate(t, "2026-01-01")
 	yearEnd := mustDate(t, "2026-12-31")
+	// The clock the detector runs on. Fixed rather than time.Now() so the
+	// gone-quiet window is stable: Netflix last charged 2026-05-30, which is 26
+	// days before this, well inside a monthly charge's 75-day tolerance.
+	asOf := mustDate(t, "2026-06-25")
 
 	// 1. Recurring — the query that shipped broken. Must run and find Netflix.
 	recurring, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-		HouseholdID: householdID, UserID: userID, Date: yearStart,
+		HouseholdID: householdID, UserID: userID, Date: yearStart, Column4: asOf,
 	})
 	if err != nil {
 		t.Fatalf("GetRecurringMerchants: %v", err)
@@ -128,7 +132,7 @@ func TestReportQueriesExecute(t *testing.T) {
 		t.Fatalf("SuppressRecurringMerchant: %v", err)
 	}
 	suppressed, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-		HouseholdID: householdID, UserID: userID, Date: yearStart,
+		HouseholdID: householdID, UserID: userID, Date: yearStart, Column4: asOf,
 	})
 	if err != nil {
 		t.Fatalf("GetRecurringMerchants (suppressed): %v", err)
@@ -144,7 +148,7 @@ func TestReportQueriesExecute(t *testing.T) {
 		t.Fatalf("UnsuppressRecurringMerchant: %v", err)
 	}
 	restored, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-		HouseholdID: householdID, UserID: userID, Date: yearStart,
+		HouseholdID: householdID, UserID: userID, Date: yearStart, Column4: asOf,
 	})
 	if err != nil {
 		t.Fatalf("GetRecurringMerchants (restored): %v", err)

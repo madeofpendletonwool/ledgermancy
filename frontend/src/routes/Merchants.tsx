@@ -5,8 +5,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Merchant, MerchantAlias, MerchantKeyStat } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
-import { SINGLE_SERIES } from '../components/charts/tokens'
 import { merchantDetailPath } from '../lib/merchants'
+import { MerchantExplorer } from '../components/MerchantExplorer'
 
 /**
  * Merchants — canonical merchant management.
@@ -38,91 +38,11 @@ export function Merchants() {
         </p>
       </div>
 
-      <TopMerchants />
+      <MerchantExplorer />
       <ReviewQueue merchants={pending} isPending={merchants.isPending} />
       <ManualMerge />
       <ConfirmedMerchants merchants={confirmed} isPending={merchants.isPending} />
     </div>
-  )
-}
-
-// --- Where the money goes -------------------------------------------------
-
-/**
- * Biggest merchants over the last twelve months, as the way into the per-merchant
- * detail view.
- *
- * Sits at the top of this page because it answers the question people arrive with
- * — "where does my money actually go?" — where the rest of the page answers the
- * bookkeeping question of which descriptors belong together. It also makes the
- * grouping work visibly worthwhile: a merchant only appears here as one row once
- * its fragments have been merged.
- */
-function TopMerchants() {
-  const range = useMemo(() => {
-    const now = new Date()
-    const pad = (n: number) => String(n).padStart(2, '0')
-    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-    const from = new Date(now.getFullYear(), now.getMonth() - 11, 1)
-    return {
-      from: `${from.getFullYear()}-${pad(from.getMonth() + 1)}-01`,
-      to: `${to.getFullYear()}-${pad(to.getMonth() + 1)}-${pad(to.getDate())}`,
-    }
-  }, [])
-
-  const top = useQuery({
-    queryKey: ['merchants-top', range.from, range.to],
-    queryFn: () => api.merchants({ ...range, limit: 10 }),
-  })
-
-  const rows = top.data ?? []
-  const max = Math.max(...rows.map((m) => Number(m.total)), 0)
-
-  return (
-    <section className="glass p-6">
-      <h2 className="mb-1 text-lg font-medium">Where the money goes</h2>
-      <p className="mb-5 text-sm text-mist-300">
-        Your biggest merchants over the last twelve months. Pick one to see its
-        history, how it’s filed, and every charge.
-      </p>
-
-      {top.isPending ? (
-        <Loading />
-      ) : rows.length === 0 ? (
-        <Empty>No spending in the last twelve months.</Empty>
-      ) : (
-        <div className="space-y-2.5">
-          {rows.map((m) => {
-            const pct = max > 0 ? (Number(m.total) / max) * 100 : 0
-            return (
-              <Link
-                key={m.merchant_key || m.merchant}
-                to={merchantDetailPath(m.merchant_key, range)}
-                className="grid grid-cols-[10rem_1fr_6rem] items-center gap-3 rounded-lg py-1 hover:bg-white/5 sm:grid-cols-[14rem_1fr_7rem]"
-              >
-                <span className="truncate text-sm text-mist-100">
-                  {m.merchant}
-                </span>
-                {/* One measure across a categorical dimension is ONE series, so
-                    every bar carries the same colour — hue would encode nothing. */}
-                <span className="h-2.5 overflow-hidden rounded-full bg-white/5">
-                  <span
-                    className="block h-full rounded-full"
-                    style={{
-                      width: `${Math.max(pct, 1)}%`,
-                      backgroundColor: SINGLE_SERIES,
-                    }}
-                  />
-                </span>
-                <span className="tabular text-right text-sm text-mist-300">
-                  {formatMoney(m.total)}
-                </span>
-              </Link>
-            )
-          })}
-        </div>
-      )}
-    </section>
   )
 }
 
@@ -305,7 +225,8 @@ function SuggestionCard({
       <p className="mb-3 text-xs text-mist-400">
         Untick anything that isn’t this merchant. Ticked descriptors are grouped;
         unticked ones are remembered as a different business and offered on their
-        own next time.
+        own next time. <span className="text-mist-500">Not the same</span> means
+        none of these belong together, and won’t be suggested again.
       </p>
 
       <div className="space-y-2">
@@ -459,9 +380,11 @@ function ManualMerge() {
     const rows = (keys.data ?? []).filter((k) => k.entity_id === null)
     const needle = filter.trim().toLowerCase()
     if (!needle) return rows
+    // Both sides lowercased. The key was compared as-is against a lowercased
+    // needle, so a descriptor with any capital in it was unfindable here.
     return rows.filter(
       (k) =>
-        k.merchant_key.includes(needle) ||
+        k.merchant_key.toLowerCase().includes(needle) ||
         k.sample_name.toLowerCase().includes(needle),
     )
   }, [keys.data, filter])

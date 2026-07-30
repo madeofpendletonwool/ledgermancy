@@ -23,6 +23,14 @@ RETURNING *;
 -- Every obligation the caller can see, active first. The occurrence expansion
 -- lives in ListUpcomingObligations; this is the row-level list the management UI
 -- edits.
+--
+-- merchant_key needs no canonicalisation on the way out, unlike most reads of a
+-- stored key. A detected row's key comes from GetRecurringMerchants and is
+-- already resolved, and a later merge does not strand it: the merge changes the
+-- resolved key, so the next promotion pass writes a row under the new key and
+-- DeactivateUndetectedObligations retires the old one. The key a live detected
+-- row carries is therefore always current, and addresses the merchant detail
+-- view directly.
 SELECT * FROM recurring_obligations
 WHERE household_id = $1
   AND (user_id IS NULL OR user_id = $2 OR is_shared)
@@ -212,6 +220,37 @@ WHERE o.household_id = $1
             AND a2.source <> 'suggested'),
         o.merchant_key
       );
+
+-- name: DeactivateUndetectedObligations :execrows
+-- Retire detected bills the detector no longer returns. Promotion is an upsert
+-- and nothing else ever cleared a row, so without this a detected obligation
+-- lives forever. Two ways that goes wrong, and the second is the expensive one:
+--
+--   A merchant that simply stops recurring leaves a tombstone — a bill on the
+--   calendar predicting money that will never move.
+--
+--   Worse, merging descriptors into an entity CHANGES the resolved merchant key
+--   the detector reports. Promotion then writes a brand new row under the entity
+--   key while the row under the raw descriptor stays active, so one bill is
+--   counted twice — on the calendar, in the balance projection, and in the
+--   safe-to-spend split.
+--
+-- @detected_keys is the resolved key of every merchant promoted this pass, so
+-- "no longer detected" covers both cases with one comparison. Passing an empty
+-- array is meaningful and must retire everything: `<> ALL` over zero rows is
+-- TRUE, which is the behaviour wanted (the detector found nothing, so nothing
+-- detected should be live).
+--
+-- A user-edited row is left alone, matching UpsertDetectedObligation: once
+-- someone has corrected a bill by hand the detector no longer owns it, and
+-- silently deleting a correction is worse than carrying a stale one.
+UPDATE recurring_obligations
+SET is_active = FALSE, updated_at = now()
+WHERE household_id = @household_id
+  AND source = 'detected'
+  AND is_active
+  AND NOT user_edited
+  AND merchant_key <> ALL(@detected_keys::text[]);
 
 -- name: GetMerchantDominantCategories :many
 -- The category each recurring merchant is usually filed under, so a promoted

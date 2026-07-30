@@ -1,10 +1,12 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
-import { merchantDetailPath } from '../lib/merchants'
+import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
+import { CategoryLink } from '../components/CategoryLink'
+import { MerchantLink } from '../components/MerchantLink'
 import { TrendChart } from '../components/charts/TrendChart'
 import { CHART, STATUS } from '../components/charts/tokens'
 
@@ -30,10 +32,12 @@ export function Spending() {
   const range = { from: month.from, to: month.to }
   const navigate = useNavigate()
 
-  // Drill from a category bar into that category's transactions for the month
-  // currently in view — the Transactions page reads these same URL params.
+  // Drill from a category bar into that category's own breakdown for the month
+  // currently in view. This used to open a filtered transaction list, which is
+  // where every category click in the app dead-ended; the breakdown offers that
+  // list as one of its sections, alongside the questions the list cannot answer.
   const openCategory = (categoryID: string) =>
-    navigate(`/transactions?category=${categoryID}&from=${range.from}&to=${range.to}`)
+    navigate(categoryDetailPath(categoryID, range))
 
   const summary = useQuery({
     queryKey: ['summary', range.from, range.to],
@@ -168,12 +172,16 @@ export function Spending() {
                 <tr key={c.category_id}>
                   <td className="px-6 py-2.5">
                     <span className="flex items-center gap-2">
-                      {/* A chip beside a label: colour is redundant here. */}
-                      <span
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: c.color ?? CHART.textMuted }}
+                      {/* A chip beside a label: colour is redundant here.
+                          These figures are the trailing year, so the breakdown
+                          opens on its own default window rather than the month
+                          selected above — the numbers would not match otherwise. */}
+                      <CategoryLink
+                        name={c.name}
+                        categoryID={c.category_id}
+                        color={c.color ?? CHART.textMuted}
+                        showDot
                       />
-                      {c.name}
                       {c.is_fixed && (
                         <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-mist-500">
                           fixed
@@ -383,8 +391,9 @@ function RecurringSection() {
       <div className="px-6 pt-6">
         <h2 className="text-lg font-medium">Recurring &amp; subscriptions</h2>
         <p className="mt-1 mb-5 text-sm text-mist-300">
-          Merchants that charge you on a regular cadence, detected from the last
-          year of activity. If one is a coincidence, mark it{' '}
+          Merchants that charge you on a regular cadence — weekly through yearly
+          — detected from the last three years of activity. If one is a
+          coincidence, mark it{' '}
           <span className="text-mist-400">Not recurring</span> to hide it.
         </p>
       </div>
@@ -417,12 +426,7 @@ function RecurringSection() {
                     <span className="flex items-center gap-2">
                       {/* The detector already groups by resolved key, which is
                           exactly what addresses the merchant detail view. */}
-                      <Link
-                        className="underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
-                        to={merchantDetailPath(m.merchant_key)}
-                      >
-                        {m.merchant}
-                      </Link>
+                      <MerchantLink name={m.merchant} merchantKey={m.merchant_key} />
                       {creep && (
                         <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
                           price up
@@ -495,7 +499,14 @@ function RecurringSection() {
                   key={s.merchant_key}
                   className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-mist-300"
                 >
-                  {s.merchant || s.merchant_key}
+                  {/* merchant_key_resolved, not merchant_key: the stored key is
+                      what unsuppress acts on, but a suppression recorded before a
+                      later merge would link nowhere. */}
+                  <MerchantLink
+                    name={s.merchant || s.merchant_key}
+                    merchantKey={s.merchant_key_resolved}
+                    variant="chip"
+                  />
                   <button
                     type="button"
                     onClick={() => restore.mutate(s.merchant_key)}

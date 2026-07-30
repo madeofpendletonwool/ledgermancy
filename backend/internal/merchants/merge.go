@@ -105,9 +105,23 @@ func Merge(
 // refusal, so the next suggestion pass does not propose the same merge again and
 // the review queue actually empties.
 //
-// The rejection is recorded against every OTHER key on the entity, because
-// "these are not the same business" is a statement about the pair, and the
-// engine reasons in pairs.
+// Refusals are recorded as PAIRS, because that is how the engine reasons, and
+// which pairs depends on whether anything survives the rejection:
+//
+//   - SOME descriptors stay (a partial confirm — the user unticked two of five).
+//     Each rejected key is recorded against each key that STAYS. Nothing is
+//     recorded among the rejected keys themselves: unticking HOMEGOODS and
+//     HOMEGOODS #0265 together says they are not THE HOME DEPOT, not that they
+//     are not each other — and it is exactly that silence which lets them come
+//     back as their own proposal next pass.
+//
+//   - NOTHING stays ("Not the same" on the whole proposal). Then every pair in
+//     the group is recorded. There is no survivor to record against, and the
+//     alternative is recording nothing at all — which is what this used to do,
+//     making the button a no-op beyond clearing the queue: the identical
+//     grouping was re-proposed on the very next pass, forever. With
+//     per-descriptor selection in the UI the two intents are now distinct, so
+//     "Not the same" can mean what it says: none of these belong together.
 func Reject(ctx context.Context, q *dbgen.Queries, householdID, entityID uuid.UUID, keys []string) error {
 	keys = dedupeKeys(keys)
 	if len(keys) == 0 {
@@ -126,27 +140,44 @@ func Reject(ctx context.Context, q *dbgen.Queries, householdID, entityID uuid.UU
 		rejecting[k] = struct{}{}
 	}
 
-	for _, key := range keys {
-		for _, other := range existing {
-			if other.MerchantKey == key {
-				continue
-			}
-			// Two keys rejected in the same action say nothing about each other;
-			// the user rejected each of them against what stays behind.
-			if _, alsoRejected := rejecting[other.MerchantKey]; alsoRejected {
-				continue
-			}
-			a, b := key, other.MerchantKey
-			if b < a {
-				a, b = b, a
-			}
-			if err := q.RecordMergeRejection(ctx, dbgen.RecordMergeRejectionParams{
-				HouseholdID: householdID, KeyA: a, KeyB: b,
-			}); err != nil {
-				return fmt.Errorf("record rejection: %w", err)
+	surviving := make([]string, 0, len(existing))
+	for _, a := range existing {
+		if _, gone := rejecting[a.MerchantKey]; !gone {
+			surviving = append(surviving, a.MerchantKey)
+		}
+	}
+
+	record := func(a, b string) error {
+		if b < a {
+			a, b = b, a
+		}
+		if err := q.RecordMergeRejection(ctx, dbgen.RecordMergeRejectionParams{
+			HouseholdID: householdID, KeyA: a, KeyB: b,
+		}); err != nil {
+			return fmt.Errorf("record rejection: %w", err)
+		}
+		return nil
+	}
+
+	if len(surviving) > 0 {
+		for _, key := range keys {
+			for _, other := range surviving {
+				if err := record(key, other); err != nil {
+					return err
+				}
 			}
 		}
+	} else {
+		for i := range keys {
+			for j := i + 1; j < len(keys); j++ {
+				if err := record(keys[i], keys[j]); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
+	for _, key := range keys {
 		if err := q.DeleteMerchantAlias(ctx, dbgen.DeleteMerchantAliasParams{
 			HouseholdID: householdID, MerchantKey: key,
 		}); err != nil {

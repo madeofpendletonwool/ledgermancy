@@ -16,9 +16,11 @@ import {
   isLiability,
 } from '../lib/money'
 import { merchantDetailPath } from '../lib/merchants'
+import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
 import { InsightFeed } from '../components/InsightFeed'
+import { MerchantLink } from '../components/MerchantLink'
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
@@ -46,8 +48,11 @@ export function Dashboard() {
     const date = `${year}-${pad2(month)}-${pad2(dom)}`
     navigate(`/transactions?from=${date}&to=${date}`)
   }
+  // Into the category's own breakdown. A filtered transaction list was the only
+  // destination a category click ever had, and it cannot answer the questions the
+  // click is asking — how much, how often, trending which way, and to whom.
   const openCategory = (categoryID: string) =>
-    navigate(`/transactions?category=${categoryID}`)
+    navigate(categoryDetailPath(categoryID))
 
   // Previous calendar month, for the pace reference.
   const lm = new Date(year, now.getMonth() - 1, 1)
@@ -481,7 +486,12 @@ function RecentRow({ transaction: t }: { transaction: Transaction }) {
     <li className="flex items-center gap-4 py-3">
       <div className="w-16 shrink-0 text-xs text-mist-500">{formatDate(t.date)}</div>
       <div className="min-w-0 flex-1">
-        <p className="truncate font-medium">{t.merchant_name ?? t.name}</p>
+        <p className="truncate font-medium">
+          <MerchantLink
+            name={t.merchant_name ?? t.name}
+            merchantKey={t.merchant_key_resolved}
+          />
+        </p>
         <p className="truncate text-xs text-mist-500">{t.account_name}</p>
       </div>
       <span

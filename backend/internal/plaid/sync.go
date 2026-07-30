@@ -81,16 +81,27 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 	// why neither of those is plaid_items.products. A module failing is logged
 	// but does not fail the sync: transactions are the priority and must still
 	// land.
+	//
+	// A skip is logged rather than passed over. The modules do not know their
+	// item id, so this is the only place the two can be said together, and
+	// "which item got no liabilities, and why" is precisely the question that
+	// had no answer when a household's debts silently never arrived.
 	if mod, err := s.SyncInvestments(ctx, accessToken, accountIDs, kinds); err != nil {
 		slog.Error("investments sync", "error", err, "item_id", item.ID)
 	} else {
 		result.Holdings, result.Securities = mod.Holdings, mod.Securities
 		result.InvestmentTxns = mod.InvestmentTransactions
+		if mod.Skipped {
+			slog.Info("investments module skipped", "item_id", item.ID, "reason", mod.SkipReason)
+		}
 	}
 	if mod, err := s.SyncLiabilities(ctx, accessToken, accountIDs, kinds); err != nil {
 		slog.Error("liabilities sync", "error", err, "item_id", item.ID)
 	} else {
 		result.Liabilities = mod.Liabilities
+		if mod.Skipped {
+			slog.Info("liabilities module skipped", "item_id", item.ID, "reason", mod.SkipReason)
+		}
 	}
 
 	// Transactions are the priority product and always run.

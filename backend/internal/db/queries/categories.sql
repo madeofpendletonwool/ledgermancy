@@ -10,6 +10,16 @@ WHERE slug = $1 AND (household_id IS NULL OR household_id = $2)
 ORDER BY household_id NULLS LAST
 LIMIT 1;
 
+-- name: GetCategoryByID :one
+-- One category the caller can see, for the category detail view's identity.
+--
+-- Visibility matches ListCategories rather than UpdateCategory: a system default
+-- (household_id NULL) is readable by every household even though only a custom
+-- category is editable. Guarding this like an edit would make the built-in
+-- categories — where most spending lands — the only ones with no detail page.
+SELECT * FROM categories
+WHERE id = $1 AND (household_id IS NULL OR household_id = $2);
+
 -- name: CreateCategory :one
 INSERT INTO categories (household_id, name, slug, parent_id, icon, color, is_fixed, is_income, is_transfer, sort_order)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)

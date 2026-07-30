@@ -125,6 +125,11 @@ var tableCoverage = map[string]Coverage{
 	"liabilities":             InExport,
 	"manual_assets":           InExport,
 	"account_contributions":   InExport,
+	// account_terms is the sharper half of the pair above it. liabilities is a
+	// mirror of Plaid and a resync rebuilds it; account_terms is the APR and the
+	// monthly payment a person typed in, for the majority of institutions Plaid
+	// declines to report terms for at all. Nothing anywhere can re-supply it.
+	"account_terms": InExport,
 	"projection_assumptions":  InExport,
 
 	// --- Recurring and obligations ----------------------------------------

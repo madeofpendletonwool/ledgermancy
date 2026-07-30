@@ -74,17 +74,24 @@ type transactionResponse struct {
 	// even when MerchantName is null (it falls back to the raw name), and empty
 	// when the description carried too little signal to key on. The UI shows the
 	// "apply to all from this merchant" option exactly when this is set.
-	MerchantKey *string         `json:"merchant_key"`
-	Amount      decimal.Decimal `json:"amount"`
-	Currency    string          `json:"currency"`
-	Pending     bool            `json:"pending"`
-	AccountID   uuid.UUID       `json:"account_id"`
-	AccountName string          `json:"account_name"`
-	Institution *string         `json:"institution_name"`
-	PFCPrimary  *string         `json:"plaid_category_primary"`
-	PFCDetailed *string         `json:"plaid_category_detailed"`
-	CategoryID  *uuid.UUID      `json:"category_id"`
-	Notes       *string         `json:"notes"`
+	MerchantKey *string `json:"merchant_key"`
+	// MerchantKeyResolved addresses the BUSINESS rather than the descriptor: an
+	// entity id for a merchant the household has grouped, the raw key otherwise.
+	// This is the one the merchant detail view and the ?merchant= filter take —
+	// MerchantKey above would miss every fragment of a grouped merchant but one.
+	// Empty when the description carried too little signal to key on, in which
+	// case the UI must render the name as plain text.
+	MerchantKeyResolved string          `json:"merchant_key_resolved"`
+	Amount              decimal.Decimal `json:"amount"`
+	Currency            string          `json:"currency"`
+	Pending             bool            `json:"pending"`
+	AccountID           uuid.UUID       `json:"account_id"`
+	AccountName         string          `json:"account_name"`
+	Institution         *string         `json:"institution_name"`
+	PFCPrimary          *string         `json:"plaid_category_primary"`
+	PFCDetailed         *string         `json:"plaid_category_detailed"`
+	CategoryID          *uuid.UUID      `json:"category_id"`
+	Notes               *string         `json:"notes"`
 	// Source distinguishes hand-entered rows from aggregator feeds. The UI shows
 	// edit/delete only on 'manual' rows; Plaid rows stay read-only except for
 	// category, which has its own PATCH path.
@@ -134,6 +141,15 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		uncategorised = &t
 	}
 
+	// Optional canonical merchant filter, for drilling in from a merchant page.
+	// Matched against the resolved key in SQL, so a grouped merchant returns every
+	// descriptor's charges. A key that matches nothing yields an empty list rather
+	// than an error: a stale link should read as "no charges", not as a failure.
+	merchantKey := trimmedParam(q.Get("merchant"))
+
+	// Optional free-text merchant/description search.
+	search := trimmedParam(q.Get("q"))
+
 	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
 		HouseholdID:   identity.HouseholdID,
 		UserID:        identity.UserID,
@@ -143,6 +159,8 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		Offset:        int32(offset),
 		AccountIds:    accountIDs,
 		CategoryID:    categoryID,
+		MerchantKey:   merchantKey,
+		Search:        search,
 		Uncategorised: uncategorised,
 	})
 	if err != nil {
@@ -153,23 +171,24 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	out := make([]transactionResponse, 0, len(rows))
 	for _, t := range rows {
 		out = append(out, transactionResponse{
-			ID:                t.ID,
-			Date:              t.Date,
-			Name:              t.Name,
-			MerchantName:      t.MerchantName,
-			MerchantKey:       t.MerchantKey,
-			Amount:            t.Amount,
-			Currency:          t.Currency,
-			Pending:           t.Pending,
-			AccountID:         t.AccountID,
-			AccountName:       t.AccountName,
-			Institution:       t.InstitutionName,
-			PFCPrimary:        t.PlaidPfcPrimary,
-			PFCDetailed:       t.PlaidPfcDetailed,
-			CategoryID:        t.CategoryID,
-			Notes:             t.Notes,
-			Source:            t.Source,
-			PossibleDuplicate: t.IsPossibleDuplicate != nil && *t.IsPossibleDuplicate,
+			ID:                  t.ID,
+			Date:                t.Date,
+			Name:                t.Name,
+			MerchantName:        t.MerchantName,
+			MerchantKey:         t.MerchantKey,
+			MerchantKeyResolved: t.ResolvedMerchantKey,
+			Amount:              t.Amount,
+			Currency:            t.Currency,
+			Pending:             t.Pending,
+			AccountID:           t.AccountID,
+			AccountName:         t.AccountName,
+			Institution:         t.InstitutionName,
+			PFCPrimary:          t.PlaidPfcPrimary,
+			PFCDetailed:         t.PlaidPfcDetailed,
+			CategoryID:          t.CategoryID,
+			Notes:               t.Notes,
+			Source:              t.Source,
+			PossibleDuplicate:   t.IsPossibleDuplicate != nil && *t.IsPossibleDuplicate,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -406,6 +425,18 @@ func parseDate(raw string, fallback time.Time) time.Time {
 		return fallback
 	}
 	return parsed
+}
+
+// trimmedParam turns an optional string query parameter into a nullable filter:
+// nil when absent or blank, which every narg-based query reads as "no filter".
+// Trimming matters because a filter of " " would otherwise match nothing and read
+// as an empty result set rather than as no filter at all.
+func trimmedParam(raw string) *string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // parseUUIDList parses a comma-separated list of UUIDs, silently dropping blank

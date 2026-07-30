@@ -10,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 // sharedUser is the "representative user" passed to the reporting queries.
@@ -116,14 +117,9 @@ func (spendingSpikeProducer) Detect(ctx context.Context, q *dbgen.Queries, house
 // --------------------------------------------------------------------------
 // new_recurring — a currently-active recurring merchant. Reuses
 // GetRecurringMerchants; deduped on merchant_key so each subscription surfaces
-// once. Only merchants seen recently qualify, so a cancelled subscription does
-// not keep resurfacing.
+// once. The query only returns merchants that are still charging, so a cancelled
+// subscription does not keep resurfacing.
 // --------------------------------------------------------------------------
-
-const (
-	recurringLookbackMonths = 12
-	recurringActiveDays     = 45
-)
 
 // daysPerMonth normalises a cadence to a per-month figure, matching the
 // recurring report endpoint exactly.
@@ -136,17 +132,16 @@ func (newRecurringProducer) Kind() string { return "new_recurring" }
 func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
 	rows, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
 		HouseholdID: householdID, UserID: sharedUser,
-		Date: now.AddDate(0, -recurringLookbackMonths, 0),
+		Date:    now.AddDate(0, -obligations.RecurringLookbackMonths, 0),
+		Column4: now,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	activeCutoff := now.AddDate(0, 0, -recurringActiveDays)
-
 	var out []Candidate
 	for _, m := range rows {
-		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" {
 			continue
 		}
 
@@ -167,7 +162,7 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 				"merchant_key":     m.MerchantKey,
 				"average_amount":   avg.StringFixed(2),
 				"monthly_estimate": monthly.StringFixed(2),
-				"cadence":          cadenceLabel(m.AvgGapDays),
+				"cadence":          obligations.CadenceLabel(m.AvgGapDays),
 				"occurrences":      m.Occurrences,
 				"last_seen":        m.LastSeen.Format(time.DateOnly),
 			},
@@ -175,19 +170,6 @@ func (newRecurringProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 		})
 	}
 	return out, nil
-}
-
-// cadenceLabel mirrors the recurring report's buckets; the detection query only
-// returns gaps in the 6–40 day band.
-func cadenceLabel(avgGap decimal.Decimal) string {
-	switch days := avgGap.InexactFloat64(); {
-	case days < 10:
-		return "weekly"
-	case days < 20:
-		return "every 2 weeks"
-	default:
-		return "monthly"
-	}
 }
 
 // --------------------------------------------------------------------------

@@ -443,8 +443,8 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00035_backup_status.sql` (doc 16) is the latest.** Applied before it:
-  `00001`–`00021`, `00023`, `00024`, `00033`, `00034`.
+  **`00043_account_terms.sql` (debt-terms bugfix) is the latest.** Applied
+  before it: `00001`–`00021`, `00023`, `00024`, `00033`–`00035`.
 
   **The old `00022`–`00032` reservations are void and have been reissued
   above `00033`.** They were allocated below `00033` before doc 18's follow-up
@@ -454,6 +454,18 @@ Making it a build failure moves the discovery to the pull request.
   `goose.WithAllowMissing()` would also have silenced it and was deliberately
   **not** used: it trades away "the schema is a function of the version number"
   for a problem that renumbering solves outright.
+
+  **The `00036`–`00042` reservations (docs 22, 23, 25–29) are void for the same
+  reason** and must each be reissued above `00043` when their doc is
+  implemented. `00043_account_terms.sql` is an out-of-wave bugfix — the Goals
+  payoff picker listed no debts for a household that had three, because it gated
+  on Plaid having served loan terms rather than on the account being a debt — and
+  it had to take a number above everything applied. Renumbering the seven
+  reservations instead would have meant editing seven plan docs that name their
+  number inline, on waves this README says run in parallel; voiding them costs
+  one edit now and one edit per doc when it is actually written. **Each of those
+  docs still carries its old number in its own text: check here before writing
+  the migration, not there.**
 
   To avoid the collision class that already bit this repo once (two `00007`s),
   each doc that needs a migration has a **reserved number**. A reservation is a
@@ -471,13 +483,14 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00033_document_extractions.sql`~~ | 18 | `documents.extracted_*` — **taken** (follow-up to 18) |
   | ~~`00034_household_people_and_splits.sql`~~ | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` — **taken** |
   | ~~`00035_backup_status.sql`~~ | 16 | `backup_runs` — **taken** |
-  | `00036_merchant_baselines.sql` | 22 | `merchant_baselines` table |
-  | `00037_paystubs.sql` | 23 | `employers`, `paystubs`, `paystub_lines` |
-  | `00038_digest_entries.sql` | 25 | `digest_entries` table |
-  | `00039_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
-  | `00040_cpi_series.sql` | 27 | `cpi_series` table |
-  | `00041_scenarios.sql` | 28 | `scenarios` table |
-  | `00042_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
+  | ~~`00043_account_terms.sql`~~ | (bugfix) | `account_terms` — **taken** |
+  | ~~`00036_merchant_baselines.sql`~~ | 22 | `merchant_baselines` table — **void, reissue above `00043`** |
+  | ~~`00037_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **void, reissue above `00043`** |
+  | ~~`00038_digest_entries.sql`~~ | 25 | `digest_entries` table — **void, reissue above `00043`** |
+  | ~~`00039_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` — **void, reissue above `00043`** |
+  | ~~`00040_cpi_series.sql`~~ | 27 | `cpi_series` table — **void, reissue above `00043`** |
+  | ~~`00041_scenarios.sql`~~ | 28 | `scenarios` table — **void, reissue above `00043`** |
+  | ~~`00042_multi_currency.sql`~~ | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` — **void, reissue above `00043`** |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
   **these reservations are load-bearing** — take only your own number, and only

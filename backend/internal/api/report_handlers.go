@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 // period resolves the from/to query parameters, defaulting to the current
@@ -288,16 +290,203 @@ func (s *Server) handleTopMerchants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// recurringLookback is how far back subscription detection reads. A year is
-// enough to see an annual charge twice and a monthly one many times.
-const recurringLookbackMonths = 12
+// merchantExplorerLimit caps how many merchants one explorer response carries.
+// The page searches, sorts and pages the list locally, so the cap is a backstop
+// against a pathological household rather than a page size — and when it bites,
+// the response says so rather than quietly presenting a partial list as the whole
+// truth.
+const merchantExplorerLimit = 1000
 
-// recurringActiveDays gates out merchants that have gone quiet, so a cancelled
-// or paid-off subscription stops lingering in the recurring table. Mirrors the
-// same cutoff the subscription/new_recurring insight producers apply (they gate
-// in Go too); the detection query returns everything in the lookback window and
-// callers drop the stale rows.
-const recurringActiveDays = 45
+// lapsedMerchantLookbackMonths is how far back the gone-quiet list looks. Longer
+// than the live-recurring lookback on purpose: a subscription cancelled ten
+// months ago is exactly the one worth surfacing, and it has no charges inside a
+// twelve-month window to be detected from.
+const lapsedMerchantLookbackMonths = 30
+
+type merchantExplorerRow struct {
+	Merchant string `json:"merchant"`
+	// MerchantKey is the resolved key — it addresses the merchant detail view for
+	// a grouped merchant and a bare descriptor alike.
+	MerchantKey      string          `json:"merchant_key"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+	Average          decimal.Decimal `json:"average"`
+	FirstSeen        string          `json:"first_seen"`
+	LastSeen         string          `json:"last_seen"`
+	// PriorTotal is spend at this merchant over the equivalent preceding window,
+	// zero when there was none. The UI computes the change from the two, and must
+	// not render a percentage when this is zero — a change from nothing has no
+	// meaningful ratio, and the merchant is flagged IsNew for that case anyway.
+	PriorTotal decimal.Decimal `json:"prior_total"`
+	// IsNew means no qualifying charge at this merchant before the window at all,
+	// not merely none in the previous period.
+	IsNew bool `json:"is_new"`
+	// The category most of this merchant's spend lands in. Null for a merchant
+	// whose charges are all uncategorised.
+	CategoryID    *uuid.UUID `json:"category_id"`
+	CategoryName  *string    `json:"category_name"`
+	CategoryColor *string    `json:"category_color"`
+}
+
+type lapsedMerchantResponse struct {
+	Merchant    string `json:"merchant"`
+	MerchantKey string `json:"merchant_key"`
+	// TypicalAmount and Cadence describe what the charge used to look like, so the
+	// UI can say "~$17/mo" without doing arithmetic on money.
+	TypicalAmount   decimal.Decimal `json:"typical_amount"`
+	MonthlyEstimate decimal.Decimal `json:"monthly_estimate"`
+	Cadence         string          `json:"cadence"`
+	LastSeen        string          `json:"last_seen"`
+	DaysQuiet       int32           `json:"days_quiet"`
+}
+
+type merchantExplorerResponse struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	PriorFrom string `json:"prior_from"`
+	PriorTo   string `json:"prior_to"`
+	// WindowTotal is everything spent in the window, unaffected by the search
+	// needle, so the concentration headline stays true while the user types.
+	WindowTotal decimal.Decimal `json:"window_total"`
+	// MerchantCount is how many merchants matched, which can exceed len(Merchants)
+	// when the row cap bites. Truncated says whether it did.
+	MerchantCount int64                    `json:"merchant_count"`
+	Truncated     bool                     `json:"truncated"`
+	Merchants     []merchantExplorerRow    `json:"merchants"`
+	Lapsed        []lapsedMerchantResponse `json:"lapsed"`
+}
+
+// handleMerchantExplorer answers the merchant explorer with one round trip: every
+// merchant in the window plus the gone-quiet list.
+//
+// The prior window is derived here rather than accepted from the caller, so the
+// comparison is always like-for-like: the same number of days immediately before
+// `from`. A caller-supplied prior window would let a one-month period be compared
+// against a year and the resulting percentage would be nonsense.
+func (s *Server) handleMerchantExplorer(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+	from, to := period(r)
+
+	// Inclusive day count, so the prior window spans the same number of days and
+	// ends the day before this one starts.
+	span := to.Sub(from)
+	priorTo := from.AddDate(0, 0, -1)
+	priorFrom := priorTo.Add(-span)
+
+	var categoryID *uuid.UUID
+	if v := r.URL.Query().Get("category_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			categoryID = &id
+		}
+	}
+
+	search := trimmedParam(r.URL.Query().Get("search"))
+
+	params := dbgen.ListMerchantSpendParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+		PriorFrom:   priorFrom,
+		PriorTo:     priorTo,
+		Search:      search,
+		CategoryID:  categoryID,
+		Lim:         merchantExplorerLimit,
+	}
+	rows, err := s.Queries.ListMerchantSpend(r.Context(), params)
+	if err != nil {
+		s.internalError(w, "merchant explorer", err)
+		return
+	}
+
+	out := merchantExplorerResponse{
+		From:      from.Format(time.DateOnly),
+		To:        to.Format(time.DateOnly),
+		PriorFrom: priorFrom.Format(time.DateOnly),
+		PriorTo:   priorTo.Format(time.DateOnly),
+		Merchants: make([]merchantExplorerRow, 0, len(rows)),
+		Lapsed:    []lapsedMerchantResponse{},
+	}
+
+	for _, m := range rows {
+		// window_total and matched_count are constant across every row, so they are
+		// read off whichever row comes last.
+		out.WindowTotal = m.WindowTotal
+		out.MerchantCount = m.MatchedCount
+
+		// A merchant with no key cannot be addressed, so a row for it would render
+		// as a link to nowhere. Skipping matches how the Dashboard's top-merchant
+		// card already guards, and such rows carry too little signal to be useful.
+		if m.MerchantKey == "" {
+			continue
+		}
+		out.Merchants = append(out.Merchants, merchantExplorerRow{
+			Merchant:         m.Merchant,
+			MerchantKey:      m.MerchantKey,
+			Total:            m.Total,
+			TransactionCount: m.TransactionCount,
+			Average:          m.Average.Round(2),
+			FirstSeen:        m.FirstSeen.Format(time.DateOnly),
+			LastSeen:         m.LastSeen.Format(time.DateOnly),
+			PriorTotal:       m.PriorTotal,
+			IsNew:            m.IsNew,
+			CategoryID:       m.CategoryID,
+			CategoryName:     m.CategoryName,
+			CategoryColor:    m.CategoryColor,
+		})
+	}
+	out.Truncated = out.MerchantCount > int64(len(rows))
+
+	// window_total rides on the returned rows, so a needle that matches nothing
+	// leaves it at zero — and it is meant to be the window's whole spend, needle or
+	// no needle. Recover it with one unfiltered call, only in that case, so the
+	// figure never silently contradicts its own contract.
+	if len(rows) == 0 && search != nil {
+		params.Search = nil
+		if all, err := s.Queries.ListMerchantSpend(r.Context(), params); err != nil {
+			slog.Error("merchant explorer window total", "error", err)
+		} else if len(all) > 0 {
+			out.WindowTotal = all[0].WindowTotal
+		}
+	}
+
+	// The gone-quiet list is the exact complement of the live recurring list, from
+	// the same query, so the two can never disagree about what "recurring" means.
+	// A failure here is not worth failing the whole page over: the explorer is
+	// still useful without the card, so it degrades to empty.
+	now := time.Now()
+	lapsed := true
+	quiet, err := s.Queries.GetRecurringMerchants(r.Context(), dbgen.GetRecurringMerchantsParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        now.AddDate(0, -lapsedMerchantLookbackMonths, 0),
+		Column4:     now,
+		Lapsed:      &lapsed,
+	})
+	if err != nil {
+		slog.Error("lapsed merchants", "error", err)
+	}
+	for _, m := range quiet {
+		if m.MerchantKey == "" {
+			continue
+		}
+		var monthly decimal.Decimal
+		if m.AvgGapDays.IsPositive() {
+			monthly = m.AverageAmount.Mul(daysPerMonth).Div(m.AvgGapDays).Round(2)
+		}
+		out.Lapsed = append(out.Lapsed, lapsedMerchantResponse{
+			Merchant:        m.Merchant,
+			MerchantKey:     m.MerchantKey,
+			TypicalAmount:   m.AverageAmount.Round(2),
+			MonthlyEstimate: monthly,
+			Cadence:         obligations.CadenceLabel(m.AvgGapDays),
+			LastSeen:        m.LastSeen.Format(time.DateOnly),
+			DaysQuiet:       m.DaysQuiet,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
 
 // daysPerMonth is the average calendar month, used only to normalise a
 // merchant's cadence into an estimated monthly cost for display.
@@ -317,13 +506,13 @@ type recurringResponse struct {
 func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 	now := time.Now()
-	since := now.AddDate(0, -recurringLookbackMonths, 0)
-	activeCutoff := now.AddDate(0, 0, -recurringActiveDays)
+	since := now.AddDate(0, -obligations.RecurringLookbackMonths, 0)
 
 	rows, err := s.Queries.GetRecurringMerchants(r.Context(), dbgen.GetRecurringMerchantsParams{
 		HouseholdID: identity.HouseholdID,
 		UserID:      identity.UserID,
 		Date:        since,
+		Column4:     now,
 	})
 	if err != nil {
 		s.internalError(w, "recurring merchants", err)
@@ -332,11 +521,10 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]recurringResponse, 0, len(rows))
 	for _, m := range rows {
-		// Drop merchants that have gone quiet: a paid-off or cancelled charge
-		// should not linger in the table for months. Also skip rows without a
-		// merchant_key — suppression is keyed by it, so an unkeyed row could not
-		// be acted on anyway.
-		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
+		// Skip rows without a merchant_key — suppression is keyed by it, so an
+		// unkeyed row could not be acted on anyway. Merchants that have gone
+		// quiet are already excluded by the query.
+		if m.MerchantKey == "" {
 			continue
 		}
 		// Normalise the charge to a monthly figure: amount * (month / gap).
@@ -350,7 +538,7 @@ func (s *Server) handleRecurring(w http.ResponseWriter, r *http.Request) {
 			Occurrences:     m.Occurrences,
 			AverageAmount:   m.AverageAmount.Round(2),
 			AvgGapDays:      m.AvgGapDays.Round(1),
-			Cadence:         cadenceLabel(m.AvgGapDays),
+			Cadence:         obligations.CadenceLabel(m.AvgGapDays),
 			MonthlyEstimate: monthly,
 			LastSeen:        m.LastSeen.Format(time.DateOnly),
 		})
@@ -420,9 +608,14 @@ func (s *Server) handleUnsuppressRecurring(w http.ResponseWriter, r *http.Reques
 }
 
 type suppressedRecurringResponse struct {
-	MerchantKey  string `json:"merchant_key"`
-	Merchant     string `json:"merchant"`
-	SuppressedAt string `json:"suppressed_at"`
+	// MerchantKey is the key suppression is recorded under — what unsuppress
+	// takes. MerchantKeyResolved is the same key canonicalised, which is what
+	// addresses the merchant detail view: a suppression recorded against a raw
+	// descriptor before that descriptor was merged would otherwise link nowhere.
+	MerchantKey         string `json:"merchant_key"`
+	MerchantKeyResolved string `json:"merchant_key_resolved"`
+	Merchant            string `json:"merchant"`
+	SuppressedAt        string `json:"suppressed_at"`
 }
 
 func (s *Server) handleListSuppressedRecurring(w http.ResponseWriter, r *http.Request) {
@@ -437,24 +630,11 @@ func (s *Server) handleListSuppressedRecurring(w http.ResponseWriter, r *http.Re
 	out := make([]suppressedRecurringResponse, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, suppressedRecurringResponse{
-			MerchantKey:  m.MerchantKey,
-			Merchant:     m.MerchantLabel,
-			SuppressedAt: m.CreatedAt.UTC().Format(time.RFC3339),
+			MerchantKey:         m.MerchantKey,
+			MerchantKeyResolved: m.ResolvedMerchantKey,
+			Merchant:            m.MerchantLabel,
+			SuppressedAt:        m.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// cadenceLabel turns an average day-gap into a human word. The detection query
-// only returns gaps in the 6–40 day band, so three buckets cover it.
-func cadenceLabel(avgGap decimal.Decimal) string {
-	days := avgGap.InexactFloat64()
-	switch {
-	case days < 10:
-		return "weekly"
-	case days < 20:
-		return "every 2 weeks"
-	default:
-		return "monthly"
-	}
 }

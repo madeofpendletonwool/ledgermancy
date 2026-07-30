@@ -15,6 +15,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 const (
@@ -35,11 +36,6 @@ const (
 	// baselineFloor keeps small categories quiet: a few dollars over a tiny
 	// baseline is noise, not a story.
 	baselineFloor = 25
-	// recurringLookbackMonths is how far back GetRecurringMerchants scans for a
-	// cadence; recurringActiveDays then gates out anything that has gone quiet, so
-	// a paid-off subscription stops counting toward the recurring total.
-	recurringLookbackMonths = 12
-	recurringActiveDays     = 45
 )
 
 // formatUSD renders a decimal as a display-ready dollar figure with a leading
@@ -235,9 +231,9 @@ func buildAboveBaseline(
 }
 
 // buildRecurringTotal sums the monthly-normalised cost of the household's
-// recurring charges that are still active (seen within recurringActiveDays), so
-// a cancelled or paid-off subscription no longer inflates the figure. Returns ""
-// when nothing qualifies.
+// recurring charges. GetRecurringMerchants returns only merchants that are still
+// charging, so a cancelled or paid-off subscription no longer inflates the
+// figure. Returns "" when nothing qualifies.
 func buildRecurringTotal(
 	ctx context.Context,
 	q *dbgen.Queries,
@@ -246,20 +242,18 @@ func buildRecurringTotal(
 ) string {
 	rows, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
 		HouseholdID: householdID, UserID: userID,
-		Date: asOf.AddDate(0, -recurringLookbackMonths, 0),
+		Date:    asOf.AddDate(0, -obligations.RecurringLookbackMonths, 0),
+		Column4: asOf,
 	})
 	if err != nil {
 		return ""
 	}
-	cutoff := asOf.AddDate(0, 0, -recurringActiveDays)
 	total := decimal.Zero
 	for _, r := range rows {
-		if r.LastSeen.Before(cutoff) {
-			continue
-		}
-		// avg_gap_days is guaranteed 6–40 by the query, so this normalisation
+		// avg_gap_days is guaranteed positive by the query, so this normalisation
 		// turns a per-charge average into an estimated monthly cost without any
-		// divide-by-zero risk.
+		// divide-by-zero risk. A quarterly or annual charge is normalised the same
+		// way, which is what makes the total comparable month to month.
 		if !r.AvgGapDays.IsPositive() {
 			continue
 		}

@@ -102,6 +102,14 @@ type ModuleResult struct {
 	// Skipped is true when the module did not run: not enabled, nothing for it
 	// to read, or Plaid declined to serve it for this Item.
 	Skipped bool
+	// SkipReason says WHY it did not run.
+	//
+	// Skipped with no reason attached was the failure mode this field exists to
+	// prevent. A household's liabilities never landed, on every sweep, in total
+	// silence, and the only way to discover that was to read this function —
+	// there was no log line, no error, and nothing in the sync summary. Anything
+	// that sets Skipped must set this too.
+	SkipReason string
 }
 
 // investmentTransactionLookback is how far back investment transactions are
@@ -120,15 +128,24 @@ const investmentTransactionLookback = 730 * 24 * time.Hour
 // enabled the Investments product and the item has investment accounts.
 func (s *Syncer) SyncInvestments(ctx context.Context, accessToken string, accountIDs map[string]uuid.UUID, kinds itemAccountKinds) (ModuleResult, error) {
 	var result ModuleResult
-	if !HasProduct(s.Client.SyncProducts(), ProductInvestments) || !kinds.investment {
-		result.Skipped = true
+	// Split rather than combined, so the two causes are distinguishable in the
+	// log. "Not enabled" is an operator's decision; "no investment accounts" is
+	// simply the shape of this item, and reading one as the other sends whoever
+	// is debugging to the wrong file.
+	if !HasProduct(s.Client.SyncProducts(), ProductInvestments) {
+		result.Skipped, result.SkipReason = true, "investments product not enabled"
+		return result, nil
+	}
+	if !kinds.investment {
+		result.Skipped, result.SkipReason = true, "item has no investment or brokerage accounts"
 		return result, nil
 	}
 
 	page, err := s.Client.GetHoldings(ctx, accessToken)
 	if err != nil {
 		if productUnavailable(err) {
-			result.Skipped = true
+			result.Skipped, result.SkipReason = true, err.Error()
+			slog.Info("investments declined by plaid", "reason", err)
 			return result, nil
 		}
 		return result, err
@@ -283,15 +300,29 @@ func (s *Syncer) syncInvestmentTransactions(
 // enabled the Liabilities product and the item has credit or loan accounts.
 func (s *Syncer) SyncLiabilities(ctx context.Context, accessToken string, accountIDs map[string]uuid.UUID, kinds itemAccountKinds) (ModuleResult, error) {
 	var result ModuleResult
-	if !HasProduct(s.Client.SyncProducts(), ProductLiabilities) || !kinds.debt {
-		result.Skipped = true
+	if !HasProduct(s.Client.SyncProducts(), ProductLiabilities) {
+		result.Skipped, result.SkipReason = true, "liabilities product not enabled"
+		return result, nil
+	}
+	if !kinds.debt {
+		result.Skipped, result.SkipReason = true, "item has no credit or loan accounts"
 		return result, nil
 	}
 
 	liabilities, err := s.Client.GetLiabilities(ctx, accessToken)
 	if err != nil {
 		if productUnavailable(err) {
-			result.Skipped = true
+			// Expected: most institutions do not serve this product. Info rather
+			// than Warn or Error, because it recurs on every sweep for every such
+			// item and an Error here would train the operator to ignore the log
+			// — see the note on productUnavailable.
+			//
+			// But it must be SAID. Silence reads as "liabilities are working",
+			// and a household with three debts and no rates on any of them had
+			// no way to learn otherwise.
+			result.Skipped, result.SkipReason = true, err.Error()
+			slog.Info("liabilities declined by plaid",
+				"reason", err, "debt_accounts", len(accountIDs))
 			return result, nil
 		}
 		return result, err

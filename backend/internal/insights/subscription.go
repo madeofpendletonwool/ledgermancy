@@ -10,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
 // subscription — the noteworthy recurring charges, on top of the plain
@@ -39,10 +40,10 @@ type subscriptionProducer struct{}
 func (subscriptionProducer) Kind() string { return "subscription" }
 
 func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
-	since := now.AddDate(0, -recurringLookbackMonths, 0)
+	since := now.AddDate(0, -obligations.RecurringLookbackMonths, 0)
 
 	recurring, err := q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
-		HouseholdID: householdID, UserID: sharedUser, Date: since,
+		HouseholdID: householdID, UserID: sharedUser, Date: since, Column4: now,
 	})
 	if err != nil {
 		return nil, err
@@ -62,13 +63,10 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 	}
 
 	zombieCeiling := decimal.NewFromInt(zombieMaxMonthlyDollars)
-	activeCutoff := now.AddDate(0, 0, -recurringActiveDays)
 
 	var out []Candidate
 	for _, m := range recurring {
-		// Only currently-active subscriptions, so a cancelled one stops
-		// resurfacing — same gate new_recurring uses.
-		if m.MerchantKey == "" || m.LastSeen.Before(activeCutoff) {
+		if m.MerchantKey == "" {
 			continue
 		}
 		key := m.MerchantKey
@@ -88,7 +86,7 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 		data := map[string]any{
 			"merchant":         m.Merchant,
 			"merchant_key":     key,
-			"cadence":          cadenceLabel(m.AvgGapDays),
+			"cadence":          obligations.CadenceLabel(m.AvgGapDays),
 			"typical_amount":   avg.StringFixed(2),
 			"monthly_estimate": monthly.StringFixed(2),
 			"category":         "", // AI classification hook; see file header.
@@ -120,7 +118,7 @@ func (subscriptionProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 			title = fmt.Sprintf("Easy-to-forget charge from %s", m.Merchant)
 			body = fmt.Sprintf(
 				"%s charges about %s %s — roughly %s a month. Small enough to slip by unnoticed.",
-				m.Merchant, money(avg), cadenceLabel(m.AvgGapDays), money(monthly))
+				m.Merchant, money(avg), obligations.CadenceLabel(m.AvgGapDays), money(monthly))
 		}
 
 		out = append(out, Candidate{

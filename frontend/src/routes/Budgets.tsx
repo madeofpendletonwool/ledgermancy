@@ -11,6 +11,7 @@ import type {
 } from '../lib/api'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { formatMoney } from '../lib/money'
+import { CategoryLink } from '../components/CategoryLink'
 import { STATUS } from '../components/charts/tokens'
 
 /** Month options: the current month plus the previous eleven. */
@@ -349,11 +350,15 @@ function BudgetRow({
     <div className="rounded-xl border border-white/5 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="flex items-center gap-2 font-medium">
-          <span
-            className="inline-block h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: budget.color ?? STATUS.good }}
+          {/* The budget's own window, so the breakdown opens on the period the
+              numbers beside it are measured over. */}
+          <CategoryLink
+            name={budget.name}
+            categoryID={budget.category_id}
+            color={budget.color ?? STATUS.good}
+            range={{ from: budget.period_start, to: budget.period_end }}
+            showDot
           />
-          {budget.name}
           {budget.period !== 'monthly' && (
             <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-mist-400">
               {periodLabel}

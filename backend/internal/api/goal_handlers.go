@@ -62,12 +62,12 @@ type goalResponse struct {
 // when it ends. Every figure is deterministic — the model never sees this
 // before it is finished.
 type payoffResponse struct {
-	// Available is false when there is no schedule to show: the goal's account
-	// is unlinked, has no liabilities row, or the liability reports no payment.
-	// Reason says which, so the UI explains itself rather than rendering a
-	// confident row of zeros. required_monthly and target_reachable stay
-	// meaningful even then — "you'd need $X a month to clear this by then" does
-	// not depend on knowing the current payment.
+	// Available is false when there is no schedule to show: the goal's account is
+	// unlinked, or nobody — neither the bank nor the household — has supplied a
+	// monthly payment. Reason says which, so the UI explains itself rather than
+	// rendering a confident row of zeros. required_monthly and target_reachable
+	// stay meaningful even then — "you'd need $X a month to clear this by then"
+	// does not depend on knowing the current payment.
 	Available bool   `json:"available"`
 	Reason    string `json:"reason"`
 
@@ -77,6 +77,13 @@ type payoffResponse struct {
 	APR             string `json:"apr"`
 	MonthlyPayment  string `json:"monthly_payment"`
 	MonthlyInterest string `json:"monthly_interest"`
+
+	// Where the rate and the payment came from: "manual", "plaid", or "" when
+	// nobody knows. The UI says which, so a schedule built on a rate the user
+	// typed is never mistaken for one the bank confirmed — and so an absent rate
+	// reads as "add one" rather than as 0.00%.
+	APRSource     string `json:"apr_source"`
+	PaymentSource string `json:"payment_source"`
 
 	// NeverPaysOff is the case worth shouting about: the payment is at or below
 	// the interest, so the balance never falls. Months, total_interest and
@@ -223,12 +230,19 @@ func (s *Server) fillPayoffStanding(ctx context.Context, g dbgen.Goal, resp goal
 		return resp, nil
 	}
 
-	balance, err := s.Queries.GetGoalAccountBalance(ctx, dbgen.GetGoalAccountBalanceParams{
+	// One read for the balance and both sets of terms. ErrNoRows here means the
+	// account is not visible to this household at all — a hard error, not the
+	// "no terms" case. That distinction used to be blurred: the old
+	// GetGoalLiability returned ErrNoRows both for an invisible account and for
+	// the ordinary situation of Plaid not reporting terms, and treating the
+	// latter as an error is what kept every debt out of the payoff picker.
+	row, err := s.Queries.GetGoalDebtTerms(ctx, dbgen.GetGoalDebtTermsParams{
 		ID: *g.AccountID, HouseholdID: g.HouseholdID,
 	})
 	if err != nil {
 		return goalResponse{}, err
 	}
+	balance := row.Balance
 
 	// Debt retired so far. Floored at zero so a balance that has grown past the
 	// captured original renders an empty bar rather than a negative one.
@@ -238,27 +252,11 @@ func (s *Server) fillPayoffStanding(ctx context.Context, g dbgen.Goal, resp goal
 	}
 	resp.CurrentAmount = progress.StringFixed(2)
 
-	apr, payment := decimal.Zero, decimal.Zero
-	liab, err := s.Queries.GetGoalLiability(ctx, dbgen.GetGoalLiabilityParams{
-		AccountID: *g.AccountID, HouseholdID: g.HouseholdID,
-	})
-	hasLiability := err == nil
-	switch {
-	case hasLiability:
-		// Cards report apr; student loans and mortgages report a rate instead.
-		if liab.Apr.Valid {
-			apr = liab.Apr.Decimal
-		} else if liab.InterestRatePercentage.Valid {
-			apr = liab.InterestRatePercentage.Decimal
-		}
-		if liab.MinimumPayment.Valid {
-			payment = liab.MinimumPayment.Decimal
-		}
-	case errors.Is(err, pgx.ErrNoRows):
-		// Linked to an account the institution reports no loan terms for.
-	default:
-		return goalResponse{}, err
-	}
+	terms := mergeDebtTerms(
+		row.ManualApr, row.Apr, row.InterestRatePercentage,
+		row.ObligationAmount, row.ManualMinimumPayment, row.MinimumPayment,
+	)
+	apr, payment := terms.APR, terms.Payment
 
 	f := goals.ComputePayoff(balance, apr, payment, g.TargetDate, now)
 
@@ -284,17 +282,32 @@ func (s *Server) fillPayoffStanding(ctx context.Context, g dbgen.Goal, resp goal
 	p.TotalInterest = f.TotalInterest.StringFixed(2)
 	p.RequiredMonthly = f.RequiredMonthly.StringFixed(2)
 	p.TargetReachable = f.TargetReachable
+	p.APRSource = terms.APRSource
+	p.PaymentSource = terms.PaymentSource
 	if f.PayoffDate != nil {
 		d := f.PayoffDate.Format(time.DateOnly)
 		p.PayoffDate = &d
 	}
 
+	// What is missing decides the sentence, and both branches point at the fix.
+	// Most institutions report no terms at all, so this is the ordinary state of
+	// a new payoff goal rather than an error — the copy has to read as an
+	// invitation, not a fault.
 	switch {
-	case !hasLiability:
-		p.Reason = "This account doesn't report loan terms, so there's no interest rate or payment to build a schedule from."
-	case !payment.IsPositive():
-		p.Reason = "This account doesn't report a monthly payment, so there's no schedule to project."
+	case terms.PaymentSource == termSourceNone && terms.APRSource == termSourceNone:
+		p.Reason = "We don't have a rate or a monthly payment for this account — most banks don't report them. " +
+			"Add them on the Accounts page and this becomes a full payoff schedule with a date and a total interest cost."
+	case terms.PaymentSource == termSourceNone:
+		p.Reason = "We don't have a monthly payment for this account. " +
+			"Add what you pay each month on the Accounts page to see a payoff date."
 	default:
+		// A known payment with no rate is a real, complete answer, not a
+		// degraded one: ComputePayoff treats a zero APR as interest-free, which
+		// is correct arithmetic for an interest-free debt and a floor for any
+		// other. The UI notes the caveat off apr_source. This branch existed
+		// before but was effectively unreachable, because a liabilities row
+		// without an APR is rare; it is now the common case for a household
+		// that types a payment and leaves the rate blank.
 		p.Available = true
 	}
 	return resp, nil
@@ -391,12 +404,19 @@ func validateGoalBody(req upsertGoalRequest) (amount decimal.Decimal, date *time
 }
 
 // resolvePayoffTarget prepares a debt-payoff goal for creation: it insists on a
-// linked account that actually carries loan terms, and captures the balance to
-// eliminate when the client didn't supply one.
+// linked account that is actually a debt, and captures the balance to eliminate
+// when the client didn't supply one.
 //
-// Capturing here rather than in the browser is what keeps progress honest. The
-// target is the *original* balance; if it were re-read on every request,
-// progress would sit at zero forever no matter how much had been paid.
+// The gate is the account TYPE, not whether Plaid served loan terms for it. It
+// used to be the latter, which is a different question with a different answer:
+// Plaid serves the Liabilities product for a minority of institutions, so a
+// household with a mortgage and two credit cards could not create a single
+// payoff goal. An account with no reported rate is still a debt, and
+// fillPayoffStanding degrades honestly rather than refusing.
+//
+// Capturing the balance here rather than in the browser is what keeps progress
+// honest. The target is the *original* balance; if it were re-read on every
+// request, progress would sit at zero forever no matter how much had been paid.
 //
 // Returns a non-empty bad string for anything the caller can fix, and err only
 // for a genuine database failure — the two get different status codes.
@@ -404,28 +424,28 @@ func (s *Server) resolvePayoffTarget(ctx context.Context, req *upsertGoalRequest
 	if req.AccountID == nil {
 		return "a debt payoff goal must link the account it's paying off", nil
 	}
-	if _, err := s.Queries.GetGoalLiability(ctx, dbgen.GetGoalLiabilityParams{
-		AccountID: *req.AccountID, HouseholdID: householdID,
-	}); err != nil {
+
+	row, err := s.Queries.GetGoalDebtTerms(ctx, dbgen.GetGoalDebtTermsParams{
+		ID: *req.AccountID, HouseholdID: householdID,
+	})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Does not exist, or belongs to another household. One answer for
+			// both: telling them apart leaks whether an id is real.
 			return "that account isn't a debt account — pick a credit card or loan", nil
 		}
 		return "", err
 	}
+	if !isDebtAccountType(row.Type) {
+		return "that account isn't a debt account — pick a credit card or loan", nil
+	}
 	if req.TargetAmount != "" {
 		return "", nil
 	}
-
-	balance, err := s.Queries.GetGoalAccountBalance(ctx, dbgen.GetGoalAccountBalanceParams{
-		ID: *req.AccountID, HouseholdID: householdID,
-	})
-	if err != nil {
-		return "", err
-	}
-	if !balance.IsPositive() {
+	if !row.Balance.IsPositive() {
 		return "that account has nothing owed on it, so there's nothing to pay off", nil
 	}
-	req.TargetAmount = balance.StringFixed(2)
+	req.TargetAmount = row.Balance.StringFixed(2)
 	return "", nil
 }
 

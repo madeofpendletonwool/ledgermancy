@@ -1,9 +1,17 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import type { Goal, GoalInput, GoalKind, GoalPayoff, GoalProposal } from '../lib/api'
-import { formatDate, formatMoney } from '../lib/money'
+import type {
+  Goal,
+  GoalInput,
+  GoalKind,
+  GoalPayoff,
+  GoalProposal,
+  Liability,
+} from '../lib/api'
+import { formatDate, formatMoney, isLiability } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
 import { STATUS } from '../components/charts/tokens'
 
@@ -175,7 +183,11 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
   if (!payoff.available) {
     return (
       <div className="mt-3 rounded-lg bg-white/5 px-3 py-2 text-xs text-mist-400">
-        {payoff.reason}
+        {payoff.reason}{' '}
+        <Link to="/accounts" className="underline">
+          Go to Accounts
+        </Link>
+        .
         {payoff.target_reachable && (
           <>
             {' '}
@@ -234,12 +246,30 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
         {formatMoney(payoff.total_interest)}
       </PayoffFact>
       <PayoffFact label="Paying">
-        {formatMoney(payoff.monthly_payment)}/mo at {payoff.apr}% APR
+        {formatMoney(payoff.monthly_payment)}/mo
+        {payoff.apr_source === ''
+          ? ''
+          : payoff.apr_source === 'manual'
+            ? ` at the ${payoff.apr}% you entered`
+            : ` at ${payoff.apr}% APR`}
       </PayoffFact>
       {payoff.target_reachable && (
         <PayoffFact label="To hit your date">
           {formatMoney(payoff.required_monthly)}/mo
         </PayoffFact>
+      )}
+      {/* A schedule with no rate is arithmetically sound but optimistic — every
+          date above is the earliest possible one. Saying so is the difference
+          between a floor and a promise. */}
+      {payoff.apr_source === '' && (
+        <p className="text-mist-500 sm:col-span-2">
+          No rate on file, so this assumes the debt is interest-free — the real
+          payoff date is later.{' '}
+          <Link to="/accounts" className="underline">
+            Add the APR
+          </Link>{' '}
+          for a true schedule.
+        </p>
       )}
     </div>
   )
@@ -360,25 +390,52 @@ function useCreateGoal(onDone?: () => void) {
 }
 
 /**
- * useDebtAccounts is the account list a payoff goal may link to: accounts with a
- * `liabilities` row, which is where the APR and the minimum payment live. An
- * account without one has no terms to amortize, so the server rejects it — the
- * picker offers only what will actually be accepted.
+ * useDebtAccounts is the account list a payoff goal may link to: credit cards
+ * and loans with something owed on them.
+ *
+ * It filters on account TYPE, matching the server's gate in resolvePayoffTarget
+ * exactly. It used to filter on "has a liabilities row" — i.e. "did Plaid serve
+ * loan terms for this account?" — which is a different question with a different
+ * answer. Plaid supports its Liabilities product at a minority of institutions,
+ * so for a household with a mortgage and two credit cards the answer was no
+ * three times and this picker was empty.
+ *
+ * The balance check mirrors the server's too: an account with nothing owed is
+ * rejected on submit, so offering it would be a trap.
+ *
+ * Terms are fetched alongside, to hint when a chosen debt has none, but they
+ * never decide what is offered — and `isPending` deliberately ignores that query
+ * so the picker renders as soon as the accounts arrive.
  */
 function useDebtAccounts() {
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
   const liabilities = useQuery({ queryKey: ['liabilities'], queryFn: api.liabilities })
 
-  const debtAccountIDs = new Set((liabilities.data ?? []).map((l) => l.account_id))
+  const all = accounts.data ?? []
+  const termsByAccount = new Map<string, Liability>(
+    (liabilities.data ?? []).map((l) => [l.account_id, l]),
+  )
   return {
-    accounts: accounts.data ?? [],
-    debts: (accounts.data ?? []).filter((a) => debtAccountIDs.has(a.id)),
-    isPending: accounts.isPending || liabilities.isPending,
+    accounts: all,
+    debts: all.filter(
+      (a) => isLiability(a.type) && Number(a.current_balance ?? 0) > 0,
+    ),
+    // Separated from `debts` so the empty state can tell "you have no debts" from
+    // "your debts are all paid off" — two very different things to be told.
+    hasDebtAccounts: all.some((a) => isLiability(a.type)),
+    termsByAccount,
+    isPending: accounts.isPending,
   }
 }
 
 function CreateGoal() {
-  const { accounts, debts, isPending: accountsPending } = useDebtAccounts()
+  const {
+    accounts,
+    debts,
+    hasDebtAccounts,
+    termsByAccount,
+    isPending: accountsPending,
+  } = useDebtAccounts()
   const categories = useQuery({ queryKey: ['categories'], queryFn: api.categories })
 
   const [kind, setKind] = useState<GoalKind>('savings')
@@ -487,10 +544,28 @@ function CreateGoal() {
                 </option>
               ))}
             </select>
+            {/* Two distinct empty states. "You have no debts" and "your debts
+                are all cleared" want opposite reactions from the reader, and
+                showing the first to somebody who just paid off their card reads
+                as the app having lost track of it. */}
             {!accountsPending && debts.length === 0 && (
               <p className="mt-1.5 text-xs text-mist-500">
-                No linked credit cards or loans yet — connect one to track a
-                payoff.
+                {hasDebtAccounts
+                  ? 'Your credit cards and loans are all at a zero balance — nothing to pay off.'
+                  : 'No linked credit cards or loans yet — connect one to track a payoff.'}
+              </p>
+            )}
+            {/* Most banks report no rate, so this is the ordinary case rather
+                than an error. Say what it costs and where to fix it, and make
+                clear the goal still works without it. */}
+            {accountID && termsByAccount.get(accountID)?.apr_source === '' && (
+              <p className="mt-1.5 text-xs text-mist-500">
+                No rate on file for this one —{' '}
+                <Link to="/accounts" className="underline">
+                  add it on Accounts
+                </Link>{' '}
+                to get a payoff date and interest total. You can still set the
+                goal without it.
               </p>
             )}
           </div>

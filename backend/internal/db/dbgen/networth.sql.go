@@ -126,6 +126,35 @@ func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetPa
 	return i, err
 }
 
+const deleteAccountTerms = `-- name: DeleteAccountTerms :exec
+DELETE FROM account_terms t
+USING accounts a, plaid_items i, users u
+WHERE t.account_id = a.id
+  AND i.id = a.plaid_item_id
+  AND u.id = i.user_id
+  AND a.id = $1
+  AND u.household_id = $2
+  AND (i.user_id = $3 OR i.is_shared)
+`
+
+type DeleteAccountTermsParams struct {
+	AccountID   uuid.UUID `json:"account_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+}
+
+// Clearing both fields removes the row rather than storing an all-NULL one, so
+// "the household has said nothing about this debt" stays a single state rather
+// than two that have to be told apart everywhere downstream. The table's
+// account_terms_not_empty CHECK makes that an invariant rather than a habit.
+//
+// Same strict visibility rule as UpsertAccountTerms: clearing someone's terms is
+// a write.
+func (q *Queries) DeleteAccountTerms(ctx context.Context, arg DeleteAccountTermsParams) error {
+	_, err := q.db.Exec(ctx, deleteAccountTerms, arg.AccountID, arg.HouseholdID, arg.UserID)
+	return err
+}
+
 const deleteHoldingsNotIn = `-- name: DeleteHoldingsNotIn :exec
 DELETE FROM holdings
 WHERE account_id = $1 AND NOT (security_id = ANY($2::uuid[]))
@@ -157,6 +186,41 @@ func (q *Queries) DeleteManualAsset(ctx context.Context, arg DeleteManualAssetPa
 	return err
 }
 
+const getAccountTerms = `-- name: GetAccountTerms :one
+SELECT t.account_id, t.apr, t.minimum_payment, t.payment_obligation_id, t.updated_by, t.created_at, t.updated_at
+FROM account_terms t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE t.account_id = $1
+  AND u.household_id = $2
+  AND (i.user_id = $3 OR i.is_shared)
+`
+
+type GetAccountTermsParams struct {
+	AccountID   uuid.UUID `json:"account_id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+}
+
+// The stored terms for one account, used to find an existing payment obligation
+// before deciding whether to create one or edit it in place. Scoped like the
+// write path, not the read path: this answers a question only a writer asks.
+func (q *Queries) GetAccountTerms(ctx context.Context, arg GetAccountTermsParams) (AccountTerm, error) {
+	row := q.db.QueryRow(ctx, getAccountTerms, arg.AccountID, arg.HouseholdID, arg.UserID)
+	var i AccountTerm
+	err := row.Scan(
+		&i.AccountID,
+		&i.Apr,
+		&i.MinimumPayment,
+		&i.PaymentObligationID,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getLatestNetWorthSnapshot = `-- name: GetLatestNetWorthSnapshot :one
 SELECT id, household_id, as_of, assets_total, liabilities_total, net_worth, breakdown, created_at FROM net_worth_snapshots
 WHERE household_id = $1
@@ -176,6 +240,91 @@ func (q *Queries) GetLatestNetWorthSnapshot(ctx context.Context, householdID uui
 		&i.NetWorth,
 		&i.Breakdown,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getVisibleLiability = `-- name: GetVisibleLiability :one
+SELECT
+    a.id   AS account_id,
+    a.name AS account_name,
+    a.mask,
+    a.type,
+    a.subtype,
+    a.current_balance,
+    i.institution_name,
+    l.apr,
+    l.interest_rate_percentage,
+    l.minimum_payment,
+    l.next_payment_due_date,
+    l.is_overdue,
+    t.apr             AS manual_apr,
+    t.minimum_payment AS manual_minimum_payment,
+    -- The scheduled bill's amount, when one is linked. It outranks
+    -- account_terms.minimum_payment so the payment has ONE source of truth:
+    -- editing the bill on the schedule page must not leave the payoff maths
+    -- quoting a figure the calendar disagrees with.
+    o.amount          AS obligation_amount
+FROM accounts a
+JOIN plaid_items i        ON i.id = a.plaid_item_id
+JOIN users u              ON u.id = i.user_id
+LEFT JOIN liabilities l   ON l.account_id = a.id
+LEFT JOIN account_terms t ON t.account_id = a.id
+LEFT JOIN recurring_obligations o
+       ON o.id = t.payment_obligation_id AND o.is_active
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND a.type IN ('credit', 'loan')
+  AND a.id = $3
+`
+
+type GetVisibleLiabilityParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	UserID      uuid.UUID `json:"user_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type GetVisibleLiabilityRow struct {
+	AccountID              uuid.UUID           `json:"account_id"`
+	AccountName            string              `json:"account_name"`
+	Mask                   *string             `json:"mask"`
+	Type                   string              `json:"type"`
+	Subtype                *string             `json:"subtype"`
+	CurrentBalance         decimal.NullDecimal `json:"current_balance"`
+	InstitutionName        *string             `json:"institution_name"`
+	Apr                    decimal.NullDecimal `json:"apr"`
+	InterestRatePercentage decimal.NullDecimal `json:"interest_rate_percentage"`
+	MinimumPayment         decimal.NullDecimal `json:"minimum_payment"`
+	NextPaymentDueDate     *stdtime.Time       `json:"next_payment_due_date"`
+	IsOverdue              *bool               `json:"is_overdue"`
+	ManualApr              decimal.NullDecimal `json:"manual_apr"`
+	ManualMinimumPayment   decimal.NullDecimal `json:"manual_minimum_payment"`
+	ObligationAmount       decimal.NullDecimal `json:"obligation_amount"`
+}
+
+// One debt account with its merged terms: the ListVisibleLiabilities projection
+// narrowed to a single account, so a write can answer with the merged result
+// rather than making the client refetch the whole list to see its own edit.
+func (q *Queries) GetVisibleLiability(ctx context.Context, arg GetVisibleLiabilityParams) (GetVisibleLiabilityRow, error) {
+	row := q.db.QueryRow(ctx, getVisibleLiability, arg.HouseholdID, arg.UserID, arg.ID)
+	var i GetVisibleLiabilityRow
+	err := row.Scan(
+		&i.AccountID,
+		&i.AccountName,
+		&i.Mask,
+		&i.Type,
+		&i.Subtype,
+		&i.CurrentBalance,
+		&i.InstitutionName,
+		&i.Apr,
+		&i.InterestRatePercentage,
+		&i.MinimumPayment,
+		&i.NextPaymentDueDate,
+		&i.IsOverdue,
+		&i.ManualApr,
+		&i.ManualMinimumPayment,
+		&i.ObligationAmount,
 	)
 	return i, err
 }
@@ -248,6 +397,96 @@ func (q *Queries) ListNetWorthSnapshots(ctx context.Context, arg ListNetWorthSna
 			&i.Breakdown,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNextPaymentDueDates = `-- name: ListNextPaymentDueDates :many
+WITH linked AS (
+    SELECT t.account_id, o.anchor_date, o.interval_count, o.interval_unit, o.end_date
+    FROM account_terms t
+    JOIN recurring_obligations o ON o.id = t.payment_obligation_id
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN plaid_items i ON i.id = a.plaid_item_id
+    JOIN users u       ON u.id = i.user_id
+    WHERE u.household_id = $1
+      AND (i.user_id = $2 OR i.is_shared)
+      AND a.is_active
+      AND o.is_active
+),
+bounded AS (
+    SELECT
+        linked.account_id, linked.anchor_date, linked.interval_count, linked.interval_unit, linked.end_date,
+        CASE interval_unit
+            WHEN 'day'   THEN (($3::date + 400) - anchor_date) / interval_count
+            WHEN 'week'  THEN (($3::date + 400) - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM $3::date + 400)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM $3::date + 400)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM $3::date + 400)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM linked
+)
+SELECT DISTINCT ON (b.account_id)
+    b.account_id,
+    d.due_date::date AS due_date
+FROM bounded b
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    SELECT b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ) AS due_date
+) d
+WHERE d.due_date >= $3::date
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+ORDER BY b.account_id, d.due_date
+`
+
+type ListNextPaymentDueDatesParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Column3     stdtime.Time `json:"column_3"`
+}
+
+type ListNextPaymentDueDatesRow struct {
+	AccountID uuid.UUID    `json:"account_id"`
+	DueDate   stdtime.Time `json:"due_date"`
+}
+
+// The next payment date for every debt whose bill the household has scheduled.
+//
+// The occurrence arithmetic is the same as ListUpcomingObligations and is here
+// for the same reason: Postgres interval addition clamps month ends the way a
+// person reads them (2025-01-31 + interval '1 month' = 2025-02-28) and Go's
+// time.AddDate does not. Each occurrence is anchor_date + n whole periods rather
+// than the previous occurrence plus one, so a payment due on the 31st clamps in
+// February and returns to the 31st in March instead of drifting off it forever.
+//
+// The 400-day bound covers one period of every unit the cadence permits — the
+// longest is a year — so the earliest occurrence at or after $3 is always inside
+// it. DISTINCT ON then takes exactly that one.
+func (q *Queries) ListNextPaymentDueDates(ctx context.Context, arg ListNextPaymentDueDatesParams) ([]ListNextPaymentDueDatesRow, error) {
+	rows, err := q.db.Query(ctx, listNextPaymentDueDates, arg.HouseholdID, arg.UserID, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNextPaymentDueDatesRow{}
+	for rows.Next() {
+		var i ListNextPaymentDueDatesRow
+		if err := rows.Scan(&i.AccountID, &i.DueDate); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -335,18 +574,37 @@ func (q *Queries) ListVisibleHoldings(ctx context.Context, arg ListVisibleHoldin
 
 const listVisibleLiabilities = `-- name: ListVisibleLiabilities :many
 SELECT
-    l.id, l.account_id, l.kind, l.apr, l.apr_type, l.balance, l.minimum_payment, l.last_payment_amount, l.last_payment_date, l.next_payment_due_date, l.origination_date, l.origination_principal, l.interest_rate_percentage, l.is_overdue, l.raw, l.created_at, l.updated_at,
+    a.id   AS account_id,
     a.name AS account_name,
     a.mask,
-    i.institution_name
-FROM liabilities l
-JOIN accounts a    ON a.id = l.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+    a.type,
+    a.subtype,
+    a.current_balance,
+    i.institution_name,
+    l.apr,
+    l.interest_rate_percentage,
+    l.minimum_payment,
+    l.next_payment_due_date,
+    l.is_overdue,
+    t.apr             AS manual_apr,
+    t.minimum_payment AS manual_minimum_payment,
+    -- The scheduled bill's amount, when one is linked. It outranks
+    -- account_terms.minimum_payment so the payment has ONE source of truth:
+    -- editing the bill on the schedule page must not leave the payoff maths
+    -- quoting a figure the calendar disagrees with.
+    o.amount          AS obligation_amount
+FROM accounts a
+JOIN plaid_items i        ON i.id = a.plaid_item_id
+JOIN users u              ON u.id = i.user_id
+LEFT JOIN liabilities l   ON l.account_id = a.id
+LEFT JOIN account_terms t ON t.account_id = a.id
+LEFT JOIN recurring_obligations o
+       ON o.id = t.payment_obligation_id AND o.is_active
 WHERE u.household_id = $1
   AND (i.user_id = $2 OR i.is_shared)
   AND a.is_active
-ORDER BY l.balance DESC NULLS LAST
+  AND a.type IN ('credit', 'loan')
+ORDER BY a.current_balance DESC NULLS LAST
 `
 
 type ListVisibleLiabilitiesParams struct {
@@ -355,28 +613,48 @@ type ListVisibleLiabilitiesParams struct {
 }
 
 type ListVisibleLiabilitiesRow struct {
-	ID                     uuid.UUID           `json:"id"`
 	AccountID              uuid.UUID           `json:"account_id"`
-	Kind                   string              `json:"kind"`
-	Apr                    decimal.NullDecimal `json:"apr"`
-	AprType                *string             `json:"apr_type"`
-	Balance                decimal.NullDecimal `json:"balance"`
-	MinimumPayment         decimal.NullDecimal `json:"minimum_payment"`
-	LastPaymentAmount      decimal.NullDecimal `json:"last_payment_amount"`
-	LastPaymentDate        *stdtime.Time       `json:"last_payment_date"`
-	NextPaymentDueDate     *stdtime.Time       `json:"next_payment_due_date"`
-	OriginationDate        *stdtime.Time       `json:"origination_date"`
-	OriginationPrincipal   decimal.NullDecimal `json:"origination_principal"`
-	InterestRatePercentage decimal.NullDecimal `json:"interest_rate_percentage"`
-	IsOverdue              *bool               `json:"is_overdue"`
-	Raw                    []byte              `json:"raw"`
-	CreatedAt              stdtime.Time        `json:"created_at"`
-	UpdatedAt              stdtime.Time        `json:"updated_at"`
 	AccountName            string              `json:"account_name"`
 	Mask                   *string             `json:"mask"`
+	Type                   string              `json:"type"`
+	Subtype                *string             `json:"subtype"`
+	CurrentBalance         decimal.NullDecimal `json:"current_balance"`
 	InstitutionName        *string             `json:"institution_name"`
+	Apr                    decimal.NullDecimal `json:"apr"`
+	InterestRatePercentage decimal.NullDecimal `json:"interest_rate_percentage"`
+	MinimumPayment         decimal.NullDecimal `json:"minimum_payment"`
+	NextPaymentDueDate     *stdtime.Time       `json:"next_payment_due_date"`
+	IsOverdue              *bool               `json:"is_overdue"`
+	ManualApr              decimal.NullDecimal `json:"manual_apr"`
+	ManualMinimumPayment   decimal.NullDecimal `json:"manual_minimum_payment"`
+	ObligationAmount       decimal.NullDecimal `json:"obligation_amount"`
 }
 
+// Every debt account the caller can see, with whatever terms are known for it.
+//
+// Account TYPE decides what is a debt — not the presence of a liabilities row.
+// This used to select FROM liabilities, which asked "did Plaid serve loan terms
+// for this?" when the question is "is this a debt?". Plaid serves the Liabilities
+// product for a minority of institutions, so for most households the answer to
+// the first question is no for every debt they have, and this list came back
+// empty: no rows in the Net Worth debt table, none in the printed report, none
+// in the AI goal parser's debt list, and an empty payoff-goal picker.
+//
+// The rule here is the same one ComputeNetWorth uses to decide which side of the
+// ledger a balance falls on, and the same one frontend/src/lib/money.ts
+// isLiability() uses. All three must stay in step; a household seeing a debt
+// total above a table that lists no debts is the bug this replaced.
+//
+// BALANCE is the ACCOUNT's current balance, never liabilities.balance. The
+// latter is a card's last STATEMENT balance, which disagrees with the Accounts
+// page and with the Liabilities tile sitting directly above the table this
+// feeds. Two balances on one screen are two answers.
+//
+// l.kind is deliberately NOT selected. It is NOT NULL on its own table, so under
+// a LEFT JOIN sqlc would generate a non-pointer field and the scan would fail on
+// every account without a liabilities row — which is most of them. The label is
+// derived in Go from subtype/type instead (see debtKindLabel), which also gets
+// 'auto' right: a value liabilities.kind's CHECK does not permit.
 func (q *Queries) ListVisibleLiabilities(ctx context.Context, arg ListVisibleLiabilitiesParams) ([]ListVisibleLiabilitiesRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleLiabilities, arg.HouseholdID, arg.UserID)
 	if err != nil {
@@ -387,26 +665,21 @@ func (q *Queries) ListVisibleLiabilities(ctx context.Context, arg ListVisibleLia
 	for rows.Next() {
 		var i ListVisibleLiabilitiesRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.AccountID,
-			&i.Kind,
-			&i.Apr,
-			&i.AprType,
-			&i.Balance,
-			&i.MinimumPayment,
-			&i.LastPaymentAmount,
-			&i.LastPaymentDate,
-			&i.NextPaymentDueDate,
-			&i.OriginationDate,
-			&i.OriginationPrincipal,
-			&i.InterestRatePercentage,
-			&i.IsOverdue,
-			&i.Raw,
-			&i.CreatedAt,
-			&i.UpdatedAt,
 			&i.AccountName,
 			&i.Mask,
+			&i.Type,
+			&i.Subtype,
+			&i.CurrentBalance,
 			&i.InstitutionName,
+			&i.Apr,
+			&i.InterestRatePercentage,
+			&i.MinimumPayment,
+			&i.NextPaymentDueDate,
+			&i.IsOverdue,
+			&i.ManualApr,
+			&i.ManualMinimumPayment,
+			&i.ObligationAmount,
 		); err != nil {
 			return nil, err
 		}
@@ -505,6 +778,72 @@ func (q *Queries) UpdateManualAsset(ctx context.Context, arg UpdateManualAssetPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PersonID,
+	)
+	return i, err
+}
+
+const upsertAccountTerms = `-- name: UpsertAccountTerms :one
+INSERT INTO account_terms (account_id, apr, minimum_payment, payment_obligation_id, updated_by)
+SELECT a.id,
+       $1::numeric,
+       $2::numeric,
+       $3::uuid,
+       $4
+FROM accounts a
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+WHERE a.id = $5
+  AND u.household_id = $6
+  AND (i.user_id = $4 OR i.is_shared)
+  AND a.is_active
+  AND a.type IN ('credit', 'loan')
+ON CONFLICT (account_id) DO UPDATE SET
+    apr                   = EXCLUDED.apr,
+    minimum_payment       = EXCLUDED.minimum_payment,
+    payment_obligation_id = EXCLUDED.payment_obligation_id,
+    updated_by            = EXCLUDED.updated_by,
+    updated_at            = now()
+RETURNING account_id, apr, minimum_payment, payment_obligation_id, updated_by, created_at, updated_at
+`
+
+type UpsertAccountTermsParams struct {
+	Apr                 decimal.NullDecimal `json:"apr"`
+	MinimumPayment      decimal.NullDecimal `json:"minimum_payment"`
+	PaymentObligationID *uuid.UUID          `json:"payment_obligation_id"`
+	UpdatedBy           *uuid.UUID          `json:"updated_by"`
+	AccountID           uuid.UUID           `json:"account_id"`
+	HouseholdID         uuid.UUID           `json:"household_id"`
+}
+
+// Records what the household says a debt costs, for the majority of institutions
+// Plaid reports no terms for.
+//
+// INSERT ... SELECT with the guard inside the SELECT, so an account in another
+// household, a private item another member linked, an inactive account, or one
+// that is not a debt at all simply produces zero rows and pgx.ErrNoRows. It can
+// never produce a write. Same shape as CreateGoalContribution.
+//
+// The visibility rule here is the STRICTER one (mine, or explicitly shared),
+// matching SetAccountTaxTreatment. Reads are household-wide; setting the rate
+// every payoff goal in the household is computed from is not.
+func (q *Queries) UpsertAccountTerms(ctx context.Context, arg UpsertAccountTermsParams) (AccountTerm, error) {
+	row := q.db.QueryRow(ctx, upsertAccountTerms,
+		arg.Apr,
+		arg.MinimumPayment,
+		arg.PaymentObligationID,
+		arg.UpdatedBy,
+		arg.AccountID,
+		arg.HouseholdID,
+	)
+	var i AccountTerm
+	err := row.Scan(
+		&i.AccountID,
+		&i.Apr,
+		&i.MinimumPayment,
+		&i.PaymentObligationID,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

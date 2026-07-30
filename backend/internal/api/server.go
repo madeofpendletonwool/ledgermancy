@@ -314,6 +314,11 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/accounts", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListAccounts)
+			// The rate and monthly payment for a debt the institution reports
+			// none for — which is most of them. Adult-only, matching every other
+			// account mutation: a child must not set the figures the household's
+			// payoff plans are computed from.
+			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
 		})
 
 		r.Route("/transactions", func(r chi.Router) {
@@ -372,6 +377,11 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Post("/", s.handleCreateCategory)
 			r.Put("/{categoryID}", s.handleUpdateCategory)
 			r.Delete("/{categoryID}", s.handleDeleteCategory)
+			// The per-category breakdown, the counterpart of /merchants/detail.
+			// A category id is a UUID, so it can travel as a path segment — a raw
+			// merchant descriptor cannot, which is why that one takes a query
+			// parameter instead.
+			r.Get("/{categoryID}/detail", s.handleCategoryDetail)
 		})
 
 		r.Route("/budgets", func(r chi.Router) {
@@ -503,6 +513,11 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
 			r.Get("/merchants", s.handleTopMerchants)
+			// The whole merchant list for the explorer, where /merchants is the
+			// top-N card. Separate rather than a mode of the same endpoint: this
+			// one carries a per-row prior period and an envelope, and the
+			// Dashboard's card wants neither.
+			r.Get("/merchant-explorer", s.handleMerchantExplorer)
 			r.Get("/recurring", s.handleRecurring)
 			r.Post("/recurring/suppress", s.handleSuppressRecurring)
 			r.Delete("/recurring/suppress", s.handleUnsuppressRecurring)

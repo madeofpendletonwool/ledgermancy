@@ -40,6 +40,7 @@ export function MonthlyBars({
   from,
   to,
   onSelect,
+  label = 'Spend per month at this merchant',
 }: {
   months: MonthlyPoint[]
   /** Range start, "YYYY-MM-DD". */
@@ -48,6 +49,12 @@ export function MonthlyBars({
   to: string
   /** Clicking a month calls this with its "YYYY-MM-DD" first-of-month. */
   onSelect?: (month: string) => void
+  /**
+   * The chart's accessible name. Defaulted to the merchant wording this chart was
+   * built for, so the category view can say what it is actually showing instead of
+   * telling a screen reader about a merchant that is not on the page.
+   */
+  label?: string
 }) {
   const [active, setActive] = useState<number | null>(null)
 
@@ -78,7 +85,7 @@ export function MonthlyBars({
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         className="w-full min-w-[560px]"
         role="img"
-        aria-label="Spend per month at this merchant"
+        aria-label={label}
         onMouseLeave={() => setActive(null)}
       >
         {/* Recessive grid + y labels. */}

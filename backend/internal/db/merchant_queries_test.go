@@ -150,6 +150,10 @@ func (f *merchantFixture) recurring(t *testing.T, ctx context.Context) []dbgen.G
 	t.Helper()
 	rows, err := f.q.GetRecurringMerchants(ctx, dbgen.GetRecurringMerchantsParams{
 		HouseholdID: f.householdID, UserID: f.userID, Date: mustDate(t, "2026-01-01"),
+		// A fixed clock, because the detector drops merchants that have gone
+		// quiet relative to it. The fixture's last charge is 2026-06-05, well
+		// inside a monthly charge's tolerance from here.
+		Column4: mustDate(t, "2026-06-30"),
 	})
 	if err != nil {
 		t.Fatalf("GetRecurringMerchants: %v", err)
