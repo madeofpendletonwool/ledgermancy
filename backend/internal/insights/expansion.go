@@ -132,9 +132,24 @@ func (monthEndProjectionProducer) Detect(ctx context.Context, q *dbgen.Queries, 
 
 // --------------------------------------------------------------------------
 // large_transaction — a single purchase far above the household's typical one.
-// Reuses GetLargestTransactions for the recent window and compares each charge
-// to GetAverageSpendingTransaction in Go; both figures are authoritative from
-// SQL, the producer only picks a threshold.
+// Compares each recent charge to GetAverageSpendingTransaction in Go; both
+// figures are authoritative from SQL, the producer only picks a threshold.
+//
+// This producer is HALF of a behaviour. Where a merchant has enough history to
+// have a baseline, merchantOutlierProducer (anomaly.go) says something strictly
+// better — "Netflix normally charges $15.99, this one is $900" beats "above your
+// typical purchase of about $55", and that gap is the point of the feature — so
+// this one yields on those merchants and the two never both fire on one charge.
+//
+// It is not redundant, though, and must not be deleted. Where no baseline exists
+// — a first-ever charge at a new merchant, which is where most genuine fraud
+// lands — the household-wide comparison is the only signal available.
+//
+// The hand-off is why this reads candidates from ListMerchantOutlierCandidates
+// rather than GetLargestTransactions: one query, one transaction universe, and
+// the sample count that decides ownership comes from the same place both
+// producers get their figures. GetLargestTransactions still serves the monthly
+// recap (reporting/summary.go).
 // --------------------------------------------------------------------------
 
 const (
@@ -166,9 +181,19 @@ func (largeTransactionProducer) Detect(ctx context.Context, q *dbgen.Queries, ho
 		threshold = floor
 	}
 
-	txns, err := q.GetLargestTransactions(ctx, dbgen.GetLargestTransactionsParams{
-		HouseholdID: householdID, UserID: sharedUser,
-		Date: now.AddDate(0, 0, -largeTxnRecentDays), Date_2: now, Limit: largeTxnLimit,
+	txns, err := q.ListMerchantOutlierCandidates(ctx, dbgen.ListMerchantOutlierCandidatesParams{
+		HouseholdID:  householdID,
+		UserID:       sharedUser,
+		BaselineFrom: now.AddDate(0, -anomalyBaselineMonths, 0),
+		RecentFrom:   now.AddDate(0, 0, -largeTxnRecentDays),
+		RecentTo:     now,
+		// Fetch the wider anomaly window rather than largeTxnLimit. The rows this
+		// producer skips are still rows, so limiting the QUERY to the emit cap
+		// would mean a household whose five largest recent charges all have
+		// baselines reports nothing at all — including a sixth charge at a brand
+		// new merchant, which is exactly the case this producer exists for. The
+		// cap belongs on what is emitted, below.
+		MaxCandidates: anomalyMaxCandidates,
 	})
 	if err != nil {
 		return nil, err
@@ -176,10 +201,20 @@ func (largeTransactionProducer) Detect(ctx context.Context, q *dbgen.Queries, ho
 
 	var out []Candidate
 	for _, t := range txns {
-		// GetLargestTransactions is amount-descending, so the first under-threshold
-		// row means the rest are too.
+		if len(out) >= largeTxnLimit {
+			break
+		}
+		// Candidates arrive amount-descending, so the first under-threshold row
+		// means the rest are too.
 		if t.Amount.LessThan(threshold) {
 			break
+		}
+		// This merchant has a baseline, so merchantOutlierProducer owns it and
+		// will judge the charge against what the merchant itself normally bills.
+		// Gated on the LOWEST minSamples across all sensitivities, so tightening
+		// the household's setting cannot open a gap where neither producer speaks.
+		if t.SampleCount >= outlierMinSamplesFloor {
+			continue
 		}
 		dateStr := t.Date.Format(time.DateOnly)
 		body := fmt.Sprintf(

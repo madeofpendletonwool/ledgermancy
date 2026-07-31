@@ -361,7 +361,21 @@ function ProjectionPanel({
         </p>
       )}
 
-      <ProjectionChart series={series} />
+      <ProjectionChart series={series} estimate={projection.estimate} />
+
+      {projection.estimate.has_income_history ? (
+        <p className="text-xs text-mist-500">
+          The dashed line adds your typical income and spending, estimated from
+          the trailing {projection.estimate.income_months} month
+          {projection.estimate.income_months === 1 ? '' : 's'} — an estimate,
+          not a guarantee. The solid line above stays known-bills-only.
+        </p>
+      ) : (
+        <p className="text-xs text-mist-500">
+          Not enough income history yet to add an estimated line — once a few
+          months of income show up, this chart will add one.
+        </p>
+      )}
 
       {/* Per-account lines can only show bills someone assigned to an account.
           Saying so is better than quietly understating the drop. */}

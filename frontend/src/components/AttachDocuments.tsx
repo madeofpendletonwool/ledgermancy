@@ -68,7 +68,13 @@ export function AttachDocuments({
   )
 }
 
-function AttachPanel({
+/**
+ * The popover on its own, without the paperclip. Exported so a surface that
+ * already has a menu (the transactions row) can offer "Documents" as one item
+ * among several rather than adding another button to the row. Callers own the
+ * positioning context and dismissal.
+ */
+export function AttachPanel({
   target,
   onClose,
 }: {
@@ -116,7 +122,7 @@ function AttachPanel({
   const candidates = (all.data ?? []).filter((d) => !attachedIds.has(d.id))
 
   return (
-    <div className="absolute right-0 top-full z-30 mt-2 w-80 rounded-xl border border-white/10 bg-ink-850 p-4 shadow-xl">
+    <div className="absolute right-0 top-full z-40 mt-2 w-80 rounded-xl border border-white/10 bg-ink-850 p-4 shadow-xl">
       {uploading ? (
         <QuickUpload
           target={target}
@@ -281,7 +287,7 @@ function QuickUpload({
   )
 }
 
-function PaperclipIcon() {
+export function PaperclipIcon() {
   return (
     <svg
       className="h-3.5 w-3.5"

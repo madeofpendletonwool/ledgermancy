@@ -45,6 +45,15 @@ WHERE household_id = $1
   )
 ORDER BY priority DESC, created_at DESC;
 
+-- name: GetInsight :one
+-- One insight, scoped to the household so a caller cannot read another
+-- household's row by id. Used by the "this is normal" action, which reads the
+-- merchant back out of the stored data payload rather than taking it from the
+-- client — the key is a detail of how the insight was raised, not something the
+-- browser should be able to assert.
+SELECT * FROM insights
+WHERE id = $1 AND household_id = $2;
+
 -- name: MarkInsightRead :exec
 UPDATE insights
 SET read_at = now()

@@ -29,3 +29,11 @@ ORDER BY key;
 -- Single-key lookup used by the notifier (03) and digest (10) per user.
 SELECT value FROM preferences
 WHERE scope = 'user' AND user_id = $1 AND key = $2;
+
+-- name: GetHouseholdPreference :one
+-- Single-key lookup for a household-scoped setting, used by insight producers
+-- that read a household knob (anomaly.sensitivity) during detection. The
+-- household mirror of GetUserPreference; callers must treat pgx.ErrNoRows as
+-- "not set" and fall back to the code default rather than failing detection.
+SELECT value FROM preferences
+WHERE scope = 'household' AND household_id = $1 AND key = $2;

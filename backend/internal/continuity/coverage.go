@@ -136,6 +136,13 @@ var tableCoverage = map[string]Coverage{
 	"recurring_obligations": InExport,
 	"recurring_overrides":   InExport,
 
+	// --- Anomaly detection ------------------------------------------------
+	// The same kind of thing as recurring_overrides: the record of a household
+	// saying "this merchant is fine, stop telling me". Nothing can re-derive it,
+	// and losing it means making every dismissal again, one merchant at a time,
+	// as the detectors re-raise all of them on the next sweep.
+	"anomaly_overrides": InExport,
+
 	// --- Allowances -------------------------------------------------------
 	"allowances":        InExport,
 	"allowance_entries": InExport,

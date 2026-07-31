@@ -98,6 +98,15 @@ type AllowanceEntry struct {
 	CreatedAt  stdtime.Time    `json:"created_at"`
 }
 
+type AnomalyOverride struct {
+	ID            uuid.UUID    `json:"id"`
+	HouseholdID   uuid.UUID    `json:"household_id"`
+	MerchantKey   string       `json:"merchant_key"`
+	MerchantLabel string       `json:"merchant_label"`
+	Scope         string       `json:"scope"`
+	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
 type AssetPrice struct {
 	ID        uuid.UUID       `json:"id"`
 	Ticker    string          `json:"ticker"`

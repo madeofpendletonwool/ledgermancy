@@ -146,6 +146,9 @@ var childRoutes = []struct{ method, path string }{
 
 	// The household insight feed and alerts.
 	{"GET", "/api/insights/"},
+	{"GET", "/api/insights/anomaly/suppressed"},
+	{"POST", "/api/insights/anomaly/suppress"},
+	{"DELETE", "/api/insights/anomaly/suppress"},
 	{"GET", "/api/alerts/"},
 	{"POST", "/api/alerts/"},
 	{"GET", "/api/alerts/events"},

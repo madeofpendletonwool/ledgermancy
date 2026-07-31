@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, type Insight } from '../lib/api'
-import { formatRelative } from '../lib/money'
+import { formatMoney, formatRelative } from '../lib/money'
 
 /**
  * The proactive-insight feed. Renders in two shapes off one data source:
@@ -32,6 +32,14 @@ export function InsightFeed({
   }
   const read = useMutation({ mutationFn: api.markInsightRead, onSuccess: invalidate })
   const dismiss = useMutation({ mutationFn: api.dismissInsight, onSuccess: invalidate })
+  const markNormal = useMutation({
+    mutationFn: api.markInsightNormal,
+    onSuccess: () => {
+      invalidate()
+      // The restore list in Settings is now one merchant longer.
+      qc.invalidateQueries({ queryKey: ['suppressed-anomalies'] })
+    },
+  })
 
   const all = feed.data ?? []
   // The card only surfaces things not yet dismissed; the page decides via state.
@@ -57,7 +65,8 @@ export function InsightFeed({
               insight={i}
               onRead={() => read.mutate(i.id)}
               onDismiss={() => dismiss.mutate(i.id)}
-              busy={read.isPending || dismiss.isPending}
+              onMarkNormal={() => markNormal.mutate(i.id)}
+              busy={read.isPending || dismiss.isPending || markNormal.isPending}
             />
           ))}
         </ul>
@@ -84,7 +93,8 @@ export function InsightFeed({
           insight={i}
           onRead={() => read.mutate(i.id)}
           onDismiss={() => dismiss.mutate(i.id)}
-          busy={read.isPending || dismiss.isPending}
+          onMarkNormal={() => markNormal.mutate(i.id)}
+          busy={read.isPending || dismiss.isPending || markNormal.isPending}
         />
       ))}
     </ul>
@@ -95,15 +105,18 @@ function InsightRow({
   insight,
   onRead,
   onDismiss,
+  onMarkNormal,
   busy,
 }: {
   insight: Insight
   onRead: () => void
   onDismiss: () => void
+  onMarkNormal: () => void
   busy: boolean
 }) {
   const dismissed = insight.dismissed_at != null
   const unread = insight.read_at == null && !dismissed
+  const anomaly = ANOMALY_KINDS.has(insight.kind)
   return (
     <li
       className={`rounded-xl border p-4 transition ${
@@ -126,6 +139,7 @@ function InsightRow({
           </div>
           <p className="mt-2 font-medium text-mist-100">{insight.title}</p>
           <p className="mt-1 text-sm text-mist-300">{insight.body}</p>
+          <AnomalyDetail insight={insight} />
           <p className="mt-1.5 text-xs text-mist-500">{formatRelative(insight.created_at)}</p>
         </div>
         {!dismissed && (
@@ -137,6 +151,16 @@ function InsightRow({
                 disabled={busy}
               >
                 Mark read
+              </button>
+            )}
+            {anomaly && (
+              <button
+                className="whitespace-nowrap text-xs text-mist-500 transition hover:text-mist-100 disabled:opacity-50"
+                onClick={onMarkNormal}
+                disabled={busy}
+                title="Stop flagging this merchant"
+              >
+                This is normal
               </button>
             )}
             <button
@@ -153,6 +177,73 @@ function InsightRow({
   )
 }
 
+const ANOMALY_KINDS = new Set(['merchant_outlier', 'duplicate_charge'])
+
+/**
+ * Inline detail for the anomaly kinds — the only insights that render anything
+ * out of `insight.data`.
+ *
+ * "Unusual" with no baseline shown is unactionable: the whole claim is a
+ * comparison, so the comparison has to be visible. Every field is guarded and
+ * the strip disappears rather than half-renders, so an insight row stored
+ * before a payload change degrades to title-and-body instead of breaking the
+ * feed.
+ *
+ * Deliberately kind-switched rather than a generic key/value dump — the other
+ * kinds have no designed presentation, and dumping their payloads would leak
+ * internal field names into the UI.
+ */
+function AnomalyDetail({ insight }: { insight: Insight }) {
+  const d = insight.data ?? {}
+  const str = (k: string): string | null => {
+    const v = d[k]
+    return typeof v === 'string' && v !== '' ? v : null
+  }
+  const num = (k: string): number | null => {
+    const v = d[k]
+    return typeof v === 'number' ? v : null
+  }
+
+  let cells: { label: string; value: string }[] = []
+
+  if (insight.kind === 'merchant_outlier') {
+    const amount = str('amount')
+    const typical = str('typical')
+    const samples = num('sample_count')
+    if (amount && typical && samples !== null) {
+      cells = [
+        { label: 'This charge', value: formatMoney(amount) },
+        { label: 'Typical here', value: formatMoney(typical) },
+        { label: 'Based on', value: `${samples} charge${samples === 1 ? '' : 's'}` },
+      ]
+    }
+  } else if (insight.kind === 'duplicate_charge') {
+    const amount = str('amount')
+    const total = str('total')
+    const count = num('charge_count')
+    if (amount && total && count !== null) {
+      cells = [
+        { label: 'Each charge', value: formatMoney(amount) },
+        { label: 'Times charged', value: String(count) },
+        { label: 'Total', value: formatMoney(total) },
+      ]
+    }
+  }
+
+  if (cells.length === 0) return null
+
+  return (
+    <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+      {cells.map((c) => (
+        <div key={c.label}>
+          <dt className="text-[10px] uppercase tracking-wide text-mist-500">{c.label}</dt>
+          <dd className="text-sm font-medium tabular-nums text-mist-100">{c.value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 const KIND_LABELS: Record<string, string> = {
   spending_spike: 'Spending',
   new_recurring: 'Recurring',
@@ -164,6 +255,16 @@ const KIND_LABELS: Record<string, string> = {
   savings_milestone: 'Milestone',
   budget_trend: 'Budget',
   upcoming_bill: 'Bill due',
+  merchant_outlier: 'Unusual charge',
+  duplicate_charge: 'Possible duplicate',
+  // These kinds all shipped without a label and fell through to the
+  // underscore-stripping fallback, which rendered "alert explanation".
+  subscription: 'Subscription',
+  forecast: 'Forecast',
+  goal: 'Goal',
+  alert_explanation: 'Alert',
+  document_expiry: 'Document',
+  receipt_match: 'Receipt',
 }
 
 function kindLabel(kind: string): string {

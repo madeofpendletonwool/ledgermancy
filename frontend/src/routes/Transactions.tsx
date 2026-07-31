@@ -9,9 +9,9 @@ import {
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
-import { AttachDocuments } from '../components/AttachDocuments'
+import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
 import { MerchantLink } from '../components/MerchantLink'
-import { SplitTransaction } from '../components/SplitTransaction'
+import { SplitPanel } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 
@@ -469,8 +469,8 @@ function TransactionRow({
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-2 truncate font-medium">
           {/* An inline link, not a whole-row one: this row already holds the
-              category button, the paperclip, the split control and edit/delete,
-              and nesting those inside a link is neither valid nor usable.
+              category button, the ⋯ menu and edit/delete, and nesting those
+              inside a link is neither valid nor usable.
               merchant_key_resolved, never merchant_key — the raw descriptor would
               strand every fragment of a grouped merchant but one. */}
           <MerchantLink
@@ -549,22 +549,22 @@ function TransactionRow({
         {amount.text}
       </div>
 
-      {/* Receipts, invoices and warranties belong next to the charge they
-          explain, so the vault is reachable from the row rather than only from
-          the Documents page. */}
-      <AttachDocuments
-        target={{ kind: 'transaction', id: t.id }}
-        count={documentCount}
-        label="Attach a receipt"
-      />
+      {/* A row-level count of attachments, so the vault is still visible at a
+          glance now that the paperclip itself lives in the menu. */}
+      {documentCount > 0 && (
+        <span
+          className="flex shrink-0 items-center gap-1 text-xs text-mist-400"
+          title={`${documentCount} attached`}
+        >
+          <PaperclipIcon />
+          <span className="tabular">{documentCount}</span>
+        </span>
+      )}
 
-      {/* Whose share this charge was. An attribution overlay — it never changes
-          what the household spent. */}
-      <SplitTransaction transactionId={t.id} amount={t.amount} />
-
-      {/* How this row counts, as opposed to what it says. Applies to synced rows
-          too — a loan payoff arrives from Plaid. */}
-      <CountingFlags transaction={t} />
+      {/* Everything that acts on this row — splitting, documents, and how it
+          counts — behind one ⋯ so the row stays scannable. Applies to synced
+          rows too: a loan payoff arrives from Plaid. */}
+      <RowMenu transaction={t} documentCount={documentCount} />
 
       {/* Edit/delete only on hand-entered rows. Plaid rows stay read-only
           except category, which has its own path. */}
@@ -589,8 +589,15 @@ function TransactionRow({
   )
 }
 
-// CountingFlags toggles how a transaction is counted, without changing anything
-// it says.
+// RowMenu is the row's single ⋯ control: splitting, documents, and the counting
+// flags. They used to be three separate buttons on every row, which made a list
+// of fifty transactions read as a wall of controls rather than a ledger — the
+// row's job is to show what happened, and acting on it is the rare case.
+//
+// The two popovers are rendered here rather than by their own trigger buttons,
+// so all three share one anchor and only one can be open at a time.
+//
+// On the counting flags:
 //
 // "One-time" is the one that matters. Ledgermancy predicts a typical month by
 // averaging trailing ones, and a genuine but non-repeating event — a loan
@@ -602,16 +609,26 @@ function TransactionRow({
 // "Exclude" is the stronger, rarer claim: this did not really happen to us.
 // Excluded rows drop out of the ledger too, which is why the list has a "Show
 // excluded" filter — without it the flag would be a one-way door.
-function CountingFlags({ transaction: t }: { transaction: Transaction }) {
+function RowMenu({
+  transaction: t,
+  documentCount,
+}: {
+  transaction: Transaction
+  documentCount: number
+}) {
   const qc = useQueryClient()
   const online = useOnline()
-  const [open, setOpen] = useState(false)
+  // Which popover this row is showing, if any — the menu itself or one of the
+  // two it opens.
+  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | null>(null)
+  const open = panel !== null
+  const close = () => setPanel(null)
 
   const set = useMutation({
     mutationFn: (flags: { is_one_time?: boolean; excluded_from_reports?: boolean }) =>
       api.setTransactionFlags(t.id, flags),
     onSuccess: () => {
-      setOpen(false)
+      close()
       // Both flags move report totals, so every surface computed from them has
       // to refetch — including safe-to-spend, whose whole point here is to stop
       // reflecting the outlier.
@@ -634,33 +651,79 @@ function CountingFlags({ transaction: t }: { transaction: Transaction }) {
       <button
         type="button"
         className="btn-ghost px-2 py-1 text-xs text-mist-400"
-        disabled={!online}
-        title={online ? 'How this counts' : OFFLINE_WRITE_HINT}
+        title="Split, documents, and how this counts"
+        aria-label="Row actions"
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setPanel((p) => (p === null ? 'menu' : null))}
       >
         ⋯
       </button>
 
       {open && (
+        /* Click-away layer. Sits under the menu and both popovers but over
+           everything else, so the next click anywhere closes rather than
+           acting on the page. */
+        <div className="fixed inset-0 z-30" onClick={close} aria-hidden />
+      )}
+
+      {panel === 'split' && (
+        <SplitPanel transactionId={t.id} amount={t.amount} onClose={close} />
+      )}
+
+      {panel === 'documents' && (
+        <AttachPanel target={{ kind: 'transaction', id: t.id }} onClose={close} />
+      )}
+
+      {panel === 'menu' && (
         <>
-          {/* Click-away layer. Sits under the menu but over everything else, so
-              the next click anywhere closes rather than acting on the page. */}
-          <div
-            className="fixed inset-0 z-30"
-            onClick={() => setOpen(false)}
-            aria-hidden
-          />
           <div
             role="menu"
             className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
           >
+            {/* Whose share this charge was. An attribution overlay — it never
+                changes what the household spent. */}
             <button
               type="button"
               role="menuitem"
               className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={set.isPending}
+              disabled={!online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
+              onClick={() => setPanel('split')}
+            >
+              <span className="block font-medium text-mist-100">Split…</span>
+              <span className="block text-mist-500">
+                Record whose share this was.
+              </span>
+            </button>
+
+            {/* Receipts, invoices and warranties belong next to the charge they
+                explain, so the vault is reachable from the row rather than only
+                from the Documents page. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5"
+              onClick={() => setPanel('documents')}
+            >
+              <span className="block font-medium text-mist-100">
+                {documentCount > 0 ? `Documents (${documentCount})` : 'Attach a receipt…'}
+              </span>
+              <span className="block text-mist-500">
+                {documentCount > 0
+                  ? 'See or change what is attached.'
+                  : 'Keep the paperwork with the charge.'}
+              </span>
+            </button>
+
+            <div className="my-1 border-t border-white/10" role="none" />
+
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={set.isPending || !online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onClick={() => set.mutate({ is_one_time: !t.is_one_time })}
             >
               <span className="block font-medium text-mist-100">
@@ -677,7 +740,8 @@ function CountingFlags({ transaction: t }: { transaction: Transaction }) {
               type="button"
               role="menuitem"
               className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={set.isPending}
+              disabled={set.isPending || !online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
               onClick={() =>
                 set.mutate({ excluded_from_reports: !t.excluded_from_reports })
               }

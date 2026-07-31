@@ -2,19 +2,20 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, isAdult, isOwner } from '../lib/api'
-import type { PreferenceWrite } from '../lib/api'
+import type { AnomalyScope, PreferenceWrite } from '../lib/api'
 import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
 import { Continuity } from './Continuity'
 
-type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'household' | 'continuity'
+type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'anomalies' | 'household' | 'continuity'
 
 const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
   { id: 'notifications', label: 'Notifications', adultOnly: true },
   { id: 'digest', label: 'Digest', adultOnly: true },
+  { id: 'anomalies', label: 'Anomalies', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
   // Operator surface: the instance's recovery posture, not the household's
   // data. Owner-only, and enforced server-side by auth.RequireOwner.
@@ -68,6 +69,7 @@ export function Settings() {
       {activeTab === 'security' && <Security />}
       {activeTab === 'notifications' && <NotificationsSection />}
       {activeTab === 'digest' && <DigestSection />}
+      {activeTab === 'anomalies' && <AnomaliesSection />}
       {activeTab === 'household' && <Household />}
       {activeTab === 'continuity' && <Continuity />}
     </div>
@@ -391,6 +393,128 @@ function DigestSection() {
                 </span>
               )}
             </div>
+          </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+const SENSITIVITY_HELP: Record<string, string> = {
+  conservative:
+    'Only the clearest cases. Needs a longer history at a merchant and a much bigger departure from it before saying anything.',
+  balanced: 'The default. Flags a charge around 3× what a merchant normally bills, above $50.',
+  sensitive:
+    'Speaks up more often — around 2× the usual charge, above $25. Expect some charges you already know about.',
+}
+
+/**
+ * Anomaly detection settings: how eagerly the two detectors speak, plus the
+ * restore list for merchants marked normal.
+ *
+ * Household-scoped, not per-user: sensitivity changes what everyone's feed says,
+ * so it should not be something one member can quietly tighten for the others.
+ * The server enforces that only an adult can write a household preference.
+ */
+function AnomaliesSection() {
+  const qc = useQueryClient()
+  const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
+  const save = useSavePreferences()
+
+  const [sensitivity, setSensitivity] = useState('balanced')
+
+  useEffect(() => {
+    const h = prefs.data?.household
+    if (!h) return
+    setSensitivity(asString(h['anomaly.sensitivity'], 'balanced'))
+  }, [prefs.data])
+
+  const suppressed = useQuery({
+    queryKey: ['suppressed-anomalies'],
+    queryFn: api.suppressedAnomalies,
+  })
+  const restore = useMutation({
+    mutationFn: ({ key, scope }: { key: string; scope: AnomalyScope }) =>
+      api.unsuppressAnomaly(key, scope),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['suppressed-anomalies'] })
+      qc.invalidateQueries({ queryKey: ['insights'] })
+    },
+  })
+
+  const onSave = () =>
+    save.mutate([{ scope: 'household', key: 'anomaly.sensitivity', value: sensitivity }])
+
+  const rows = suppressed.data ?? []
+
+  return (
+    <Section
+      title="Anomalies"
+      description="Unusual charges and possible duplicate charges are compared against what each merchant normally bills you. Detection is arithmetic over your own history — no AI decides what counts as unusual."
+    >
+      {prefs.isPending ? (
+        <Loading />
+      ) : (
+        <div className="space-y-5">
+          <div>
+            <label className="label" htmlFor="anomaly-sensitivity">
+              Sensitivity
+            </label>
+            <select
+              id="anomaly-sensitivity"
+              className="field"
+              value={sensitivity}
+              onChange={(e) => setSensitivity(e.target.value)}
+            >
+              <option value="conservative">Conservative</option>
+              <option value="balanced">Balanced</option>
+              <option value="sensitive">Sensitive</option>
+            </select>
+            <p className="mt-2 text-sm text-mist-500">
+              {SENSITIVITY_HELP[sensitivity] ?? SENSITIVITY_HELP.balanced}
+            </p>
+          </div>
+
+          <SaveRow save={save} onSave={onSave} />
+
+          <div className="border-t border-white/10 pt-4">
+            <h3 className="text-sm font-medium text-mist-100">Merchants marked normal</h3>
+            <p className="mt-1 text-sm text-mist-500">
+              Marking an insight “This is normal” stops that detector flagging the merchant.
+              Restore one to start hearing about it again.
+            </p>
+            {suppressed.isPending ? (
+              <Loading />
+            ) : rows.length === 0 ? (
+              <p className="mt-3 text-sm text-mist-500">Nothing suppressed.</p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {rows.map((m) => (
+                  <li
+                    key={`${m.merchant_key}:${m.scope}`}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2"
+                  >
+                    <span className="min-w-0 truncate text-sm text-mist-100">
+                      {m.merchant || m.merchant_key}
+                      <span className="ml-2 text-xs text-mist-500">
+                        {m.scope === 'all'
+                          ? 'all anomalies'
+                          : m.scope === 'outlier'
+                            ? 'unusual charges'
+                            : 'duplicates'}
+                      </span>
+                    </span>
+                    <button
+                      className="shrink-0 text-xs text-mist-500 transition hover:text-mist-100 disabled:opacity-50"
+                      disabled={restore.isPending}
+                      onClick={() => restore.mutate({ key: m.merchant_key, scope: m.scope })}
+                    >
+                      Restore
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       )}

@@ -75,5 +75,11 @@ func DefaultProducers() []Producer {
 		// Document vault (documentexpiry.go, receiptmatch.go).
 		documentExpiryProducer{},
 		receiptMatchProducer{},
+		// Anomaly detection (anomaly.go). merchantOutlierProducer and
+		// largeTransactionProducer above are two halves of one behaviour: this
+		// one claims any merchant with a usable baseline, that one covers
+		// everything else. Neither is complete alone.
+		merchantOutlierProducer{},
+		duplicateChargeProducer{},
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
 // The bill calendar's HTTP surface. Every figure here is finished server-side in
@@ -389,6 +390,10 @@ type projectionPointResponse struct {
 	Date    string `json:"date"`
 	Balance string `json:"balance"`
 	Due     string `json:"due"`
+	// EstimatedBalance layers a trailing-median income/spending estimate on top
+	// of Balance. Absent when the household has no income history to estimate
+	// from — see EstimatedProjection.HasIncomeHistory.
+	EstimatedBalance string `json:"estimated_balance,omitempty"`
 }
 
 type accountProjectionResponse struct {
@@ -403,9 +408,22 @@ type accountProjectionResponse struct {
 	Points          []projectionPointResponse `json:"points"`
 }
 
-// balanceProjectionResponse is deliberately explicit that this is a projection
-// from KNOWN obligations. unassigned_total is part of that honesty: it is the
-// money the per-account lines cannot show because no account was named.
+// projectionEstimateResponse is the trailing-median estimate layered on top of
+// the known-obligations line — see EstimatedProjection. income_months lets the
+// UI caveat a thin history the same way Safe to Spend does; has_income_history
+// tells it when to not draw the estimate line at all.
+type projectionEstimateResponse struct {
+	ExpectedMonthlyIncome string `json:"expected_monthly_income"`
+	ExtraMonthlySpend     string `json:"extra_monthly_spend"`
+	IncomeMonths          int    `json:"income_months"`
+	HasIncomeHistory      bool   `json:"has_income_history"`
+}
+
+// balanceProjectionResponse is deliberately explicit that combined/accounts is
+// a projection from KNOWN obligations. unassigned_total is part of that
+// honesty: it is the money the per-account lines cannot show because no
+// account was named. estimate and each point's estimated_balance are the
+// separate, clearly-labeled guess layered on top — see projectionEstimateResponse.
 type balanceProjectionResponse struct {
 	From            string                      `json:"from"`
 	To              string                      `json:"to"`
@@ -413,42 +431,57 @@ type balanceProjectionResponse struct {
 	Accounts        []accountProjectionResponse `json:"accounts"`
 	UnassignedTotal string                      `json:"unassigned_total"`
 	TotalDue        string                      `json:"total_due"`
+	Estimate        projectionEstimateResponse  `json:"estimate"`
 }
 
 func (s *Server) handleObligationProjection(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
-	proj, err := obligations.Project(r.Context(), s.Queries,
+	est, err := reporting.BuildEstimatedProjection(r.Context(), s.Queries,
 		identity.HouseholdID, identity.UserID, time.Now(), horizonDays(r))
 	if err != nil {
 		s.internalError(w, "project balances", err)
 		return
 	}
+	proj := est.Known
 
 	accounts := make([]accountProjectionResponse, 0, len(proj.Accounts))
 	for _, a := range proj.Accounts {
 		id := a.AccountID
-		accounts = append(accounts, buildAccountProjection(&id, a))
+		accounts = append(accounts, buildAccountProjection(&id, a, est.EstimatedAccounts[a.AccountID]))
 	}
 
 	writeJSON(w, http.StatusOK, balanceProjectionResponse{
 		From:            proj.From.Format(time.DateOnly),
 		To:              proj.To.Format(time.DateOnly),
-		Combined:        buildAccountProjection(nil, proj.Combined),
+		Combined:        buildAccountProjection(nil, proj.Combined, est.EstimatedCombined),
 		Accounts:        accounts,
 		UnassignedTotal: proj.UnassignedTotal.StringFixed(2),
 		TotalDue:        proj.TotalDue.StringFixed(2),
+		Estimate: projectionEstimateResponse{
+			ExpectedMonthlyIncome: est.ExpectedMonthlyIncome.StringFixed(2),
+			ExtraMonthlySpend:     est.ExtraMonthlySpend.StringFixed(2),
+			IncomeMonths:          est.IncomeMonths,
+			HasIncomeHistory:      est.HasIncomeHistory,
+		},
 	})
 }
 
-func buildAccountProjection(id *uuid.UUID, a obligations.AccountProjection) accountProjectionResponse {
+// buildAccountProjection zips a's known Points with the parallel estimated
+// balances BuildEstimatedProjection computed for the same series (nil, or
+// shorter than Points, when there's no income history to estimate from).
+func buildAccountProjection(id *uuid.UUID, a obligations.AccountProjection, estimated []decimal.Decimal) accountProjectionResponse {
 	points := make([]projectionPointResponse, 0, len(a.Points))
-	for _, p := range a.Points {
-		points = append(points, projectionPointResponse{
+	for i, p := range a.Points {
+		point := projectionPointResponse{
 			Date:    p.Date.Format(time.DateOnly),
 			Balance: p.Balance.StringFixed(2),
 			Due:     p.Due.StringFixed(2),
-		})
+		}
+		if i < len(estimated) {
+			point.EstimatedBalance = estimated[i].StringFixed(2)
+		}
+		points = append(points, point)
 	}
 	return accountProjectionResponse{
 		AccountID:       id,

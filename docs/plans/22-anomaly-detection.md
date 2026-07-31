@@ -2,6 +2,80 @@
 
 *(TODO.md "Next major initiatives" #2.)*
 
+**Shipped.** Migration `00046_anomaly_overrides.sql` is taken. Two producers,
+`merchant_outlier` and `duplicate_charge`, in `insights/anomaly.go` over
+`db/queries/anomaly.sql`.
+
+Six things anyone touching this should know, because five of them are places the
+plan below was wrong against the code.
+
+**There is no `merchant_baselines` table, and there should not be one.** The
+baseline has to be *leave-one-out* — computed excluding the charge being judged —
+or `PERCENTILE_DISC(0.95)` over a merchant whose largest-ever charge IS the
+candidate returns the candidate, `amount >= p95` is trivially true for every new
+maximum, and the detector fires on everything. A stored table cannot supply that:
+mean and count are subtractable so leave-one-out is recoverable from them, but
+**median and p95 are order statistics and are not**, so the candidate can never be
+backed out afterwards. The table this doc specified would have been a cache that
+is *wrong*, not merely redundant. `GetMerchantSpendBaseline` already knew this —
+it takes an `exclude_tx` parameter for exactly this reason. Baselines are computed
+on demand in a `CROSS JOIN LATERAL`, which also means no rebuild job and no
+`Derived` continuity entry.
+
+**`largeTransactionProducer` and `merchantOutlierProducer` are two halves of one
+behaviour**, and the doc did not notice they collide. `large_transaction` fires at
+priority 4 (which pushes) for any charge over max(4× the household-wide average,
+$150), so without a hand-off every large charge at a known merchant raised two
+insights and pushed twice. The rule: **`merchant_outlier` claims any merchant with
+5+ prior charges; `large_transaction` covers everything else.** Where a baseline
+exists the per-merchant message strictly dominates — "Netflix normally charges
+$15.99, this one is $900" beats "above your typical purchase of about $55" — and
+where none exists, which is where most genuine fraud lands, the household-wide
+gate is the only signal there is. `large_transaction` keeps its kind, priority,
+wording and **its exact dedupe key**, so feed rows raised before this shipped
+still match. The gate is `outlierMinSamplesFloor`, the *lowest* `minSamples`
+across all sensitivities, so tightening the household setting cannot open a gap
+where neither producer speaks; `TestNoSensitivityDropsBelowTheHandoffFloor`
+asserts that.
+
+**`transactions.date` is a `DATE`.** So is `authorized_date`. There is no
+time-of-day anywhere in the schema, and this doc's "within a short window
+(24–48h)" was unimplementable as written. The window is `ABS(b.date - a.date) <= 1`.
+
+**Amount equality does not solve the two-coffees problem** — two $5.75 lattes
+*are* exactly equal, so the doc's remedy was no remedy. What works is the dollar
+floor plus a **habitual-repeat check**: if a merchant on that card has ever
+produced a same-amount adjacent-day pair before the recent window, doubling up is
+what it does there and it is silenced permanently. That covers transit fares,
+vending, parking and the fixed-price daily coffee. Two guards the doc did not
+list also matter: matching within `account_id` (one institution linked twice
+reports the same charge on two cards) and `is_spend()` dropping reversals by
+sign. The recurring-cadence guard the doc asks for is **vacuous** at a ±1 day
+window — the tightest cadence `obligations.CadenceForGapDays` recognises is
+weekly — so it is documented in the query rather than coded.
+
+**Dismissal already survived regeneration before this shipped**, because
+`UpsertInsight` deliberately omits `dismissed_at` from its `DO UPDATE SET`. The
+thing that actually needed asserting is **dedupe-key stability**, which is why
+both kinds key on a transaction id rather than the `merchant:date:amount` shape
+`large_transaction` uses: transaction UUIDs are stable across syncs, whereas a
+merchant-keyed key changes the moment the user merges that merchant — silently
+resurrecting an insight they had already dismissed.
+`TestAnomalyDedupeKeySurvivesAMerchantMerge` is the guard.
+
+**"Frontend mostly free" was wrong.** No insight kind read `insight.data`
+anywhere in the app; `InsightRow` rendered only a chip, title, body and
+timestamp. The inline comparison is the first consumer of that field and is
+net-new component work (`AnomalyDetail`). It is kind-switched and guards every
+field, so an insight stored before a payload change degrades to title-and-body
+rather than breaking the feed.
+
+One thing the doc got right and is worth restating: the merchant key falls back
+to `'name:' || lower(name)` when `merchant_key` is NULL. Plaid populates that
+column; CSV imports and manual entries have no key at all, and requiring one (as
+`GetRecurringMerchants` does) would have silently dropped that whole population
+from `large_transaction` too, which used to cover it.
+
 ## Context
 
 **First, a correction to TODO #2's framing.** It lists "price creep" as new work.

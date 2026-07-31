@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { AccountProjection } from '../../lib/api'
+import type { AccountProjection, ProjectionEstimate } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CHART, SINGLE_SERIES, STATUS } from './tokens'
 
@@ -10,21 +10,37 @@ const PAD = { top: 16, right: 16, bottom: 28, left: 72 }
 const PLOT_W = WIDTH - PAD.left - PAD.right
 const PLOT_H = HEIGHT - PAD.top - PAD.bottom
 
+/** The estimate line's color: a de-emphasis gray, not a second categorical hue —
+ * this is the same balance measure under a guessed assumption, not a different
+ * entity, so it recedes rather than competing with the known line. */
+const ESTIMATE_COLOR = CHART.textSecondary
+const ESTIMATE_DASH = '5 4'
+
 /**
- * One account's balance carried forward through its known bills.
+ * One account's balance carried forward through its known bills, plus an
+ * optional second line for the trailing-median income/spending estimate.
  *
- * Three decisions worth stating, because they are what make this chart honest:
+ * Decisions worth stating, because they are what make this chart honest:
  *
- *  - ONE series at a time. The caller picks which account to show rather than
- *    overlaying every one, so hue never has to identify more accounts than the
- *    validated palette has slots for.
+ *  - ONE known series at a time. The caller picks which account to show
+ *    rather than overlaying every one, so hue never has to identify more
+ *    accounts than the validated palette has slots for.
  *  - Zero is always on the axis and always drawn, whether or not the balance
  *    goes near it. A projected dip below zero is the entire point of this chart,
  *    and a truncated axis would hide how close it came.
- *  - The line is a step function, not a smooth curve. A bill clears on one day;
- *    interpolating between days would draw a balance that never existed.
+ *  - The known line is a step function, not a smooth curve. A bill clears on
+ *    one day; interpolating between days would draw a balance that never
+ *    existed. The estimate line has no such discontinuity — it drifts a
+ *    little every day — so it is drawn as a plain connected line, dashed and
+ *    muted so it never reads as fact the way the known line does.
  */
-export function ProjectionChart({ series }: { series: AccountProjection }) {
+export function ProjectionChart({
+  series,
+  estimate,
+}: {
+  series: AccountProjection
+  estimate?: ProjectionEstimate
+}) {
   const [active, setActive] = useState<number | null>(null)
 
   const points = series.points
@@ -36,8 +52,15 @@ export function ProjectionChart({ series }: { series: AccountProjection }) {
     )
   }
 
+  const hasEstimate =
+    !!estimate?.has_income_history && points.every((p) => p.estimated_balance !== undefined)
+
   const values = points.map((p) => Number(p.balance))
-  const { ticks, min, max } = axisRange(Math.min(...values, 0), Math.max(...values, 0))
+  const estimatedValues = hasEstimate ? points.map((p) => Number(p.estimated_balance)) : []
+  const { ticks, min, max } = axisRange(
+    Math.min(...values, ...estimatedValues, 0),
+    Math.max(...values, ...estimatedValues, 0),
+  )
 
   const x = (i: number) => PAD.left + (i / (points.length - 1)) * PLOT_W
   const y = (v: number) =>
@@ -55,6 +78,12 @@ export function ProjectionChart({ series }: { series: AccountProjection }) {
         : `${cmd} ${x(i)} ${y(here)}`
     })
     .join(' ')
+
+  // Plain connected line: the estimate drifts a little every day, so unlike
+  // the known line there is no flat-then-drop discontinuity to preserve.
+  const estimatedPath = hasEstimate
+    ? estimatedValues.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ')
+    : ''
 
   const zeroY = y(0)
   const point = active !== null ? points[active] : null
@@ -130,6 +159,16 @@ export function ProjectionChart({ series }: { series: AccountProjection }) {
           />
         )}
 
+        {hasEstimate && (
+          <path
+            d={estimatedPath}
+            fill="none"
+            stroke={ESTIMATE_COLOR}
+            strokeWidth={2}
+            strokeDasharray={ESTIMATE_DASH}
+          />
+        )}
+
         <path d={path} fill="none" stroke={SINGLE_SERIES} strokeWidth={2} />
 
         {/* Days a bill clears get a marker, so the drops are attributable. */}
@@ -153,6 +192,17 @@ export function ProjectionChart({ series }: { series: AccountProjection }) {
             cy={y(Number(points[active].balance))}
             r={5}
             fill={SINGLE_SERIES}
+            stroke={CHART.surface}
+            strokeWidth={2}
+          />
+        )}
+
+        {active !== null && hasEstimate && (
+          <circle
+            cx={x(active)}
+            cy={y(estimatedValues[active])}
+            r={4}
+            fill={ESTIMATE_COLOR}
             stroke={CHART.surface}
             strokeWidth={2}
           />
@@ -189,6 +239,40 @@ export function ProjectionChart({ series }: { series: AccountProjection }) {
               Bills due <span className="tabular ml-1 text-mist-100">{formatMoney(point.due)}</span>
             </p>
           )}
+          {hasEstimate && point.estimated_balance !== undefined && (
+            <p className="mt-1 border-t border-white/10 pt-1" style={{ color: ESTIMATE_COLOR }}>
+              Estimated{' '}
+              <span className="tabular ml-1 text-mist-100">
+                {formatMoney(point.estimated_balance)}
+              </span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {hasEstimate && (
+        <div className="mt-2 flex flex-wrap gap-4 text-xs" style={{ color: CHART.textMuted }}>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-0.5 w-4"
+              style={{ backgroundColor: SINGLE_SERIES }}
+            />
+            Known bills
+          </span>
+          <span className="flex items-center gap-1.5">
+            <svg width="16" height="2" aria-hidden="true">
+              <line
+                x1="0"
+                y1="1"
+                x2="16"
+                y2="1"
+                stroke={ESTIMATE_COLOR}
+                strokeWidth={2}
+                strokeDasharray={ESTIMATE_DASH}
+              />
+            </svg>
+            With typical income &amp; spending (estimate)
+          </span>
         </div>
       )}
     </div>

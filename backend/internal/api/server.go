@@ -544,8 +544,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/insights", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListInsights)
+			// Anomaly suppression (anomaly_handlers.go). Declared above the
+			// {insightID} routes so this file stays diffable against
+			// role_enforcement_test.go by eye; chi resolves static segments
+			// before params regardless of order.
+			r.Get("/anomaly/suppressed", s.handleListSuppressedAnomalies)
+			r.Post("/anomaly/suppress", s.handleSuppressAnomaly)
+			r.Delete("/anomaly/suppress", s.handleUnsuppressAnomaly)
 			r.Post("/{insightID}/read", s.handleMarkInsightRead)
 			r.Post("/{insightID}/dismiss", s.handleDismissInsight)
+			r.Post("/{insightID}/normal", s.handleMarkInsightNormal)
 		})
 
 		r.Route("/alerts", func(r chi.Router) {

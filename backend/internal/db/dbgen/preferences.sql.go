@@ -11,6 +11,27 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const getHouseholdPreference = `-- name: GetHouseholdPreference :one
+SELECT value FROM preferences
+WHERE scope = 'household' AND household_id = $1 AND key = $2
+`
+
+type GetHouseholdPreferenceParams struct {
+	HouseholdID *uuid.UUID `json:"household_id"`
+	Key         string     `json:"key"`
+}
+
+// Single-key lookup for a household-scoped setting, used by insight producers
+// that read a household knob (anomaly.sensitivity) during detection. The
+// household mirror of GetUserPreference; callers must treat pgx.ErrNoRows as
+// "not set" and fall back to the code default rather than failing detection.
+func (q *Queries) GetHouseholdPreference(ctx context.Context, arg GetHouseholdPreferenceParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getHouseholdPreference, arg.HouseholdID, arg.Key)
+	var value []byte
+	err := row.Scan(&value)
+	return value, err
+}
+
 const getUserPreference = `-- name: GetUserPreference :one
 SELECT value FROM preferences
 WHERE scope = 'user' AND user_id = $1 AND key = $2

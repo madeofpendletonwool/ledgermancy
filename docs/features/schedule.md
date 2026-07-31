@@ -47,14 +47,25 @@ horizon. A **Lowest point** tile names the day the line bottoms out, and if any
 account is projected to run out, a banner says so outright — *and notes that it
 is before any day-to-day spending*.
 
-Three things this deliberately does not do:
+A second, dashed line lays a trailing-median estimate of income and typical
+spending on top of the same known-obligations series — the same math Safe to
+Spend uses (six trailing months, median rather than mean, so one bonus or
+one-off payoff can't skew it), spread evenly across each day. It is drawn
+visually recessive on purpose and labeled "estimate" everywhere it appears: it
+answers "roughly where does this go if life carries on as usual," not "what
+will happen." A tracked obligation is never double-counted — its known-obligation
+cost is netted out of the trailing spend median before the remainder is added
+as "extra" spending. The line is omitted entirely for a household with no
+income history yet to estimate from.
+
+Three things the solid, known-obligations line deliberately does not do:
 
 - **Only depository accounts are projected** (checking, savings). Running the
   projection over a credit card would subtract the card's own bills from the
   balance they make up, which is nonsense.
 - **Known obligations only.** The line is the floor, not a prediction of what you
-  will actually spend. A discretionary forecast would be a guess wearing a
-  number's clothes.
+  will actually spend. That's what the dashed estimate line above is for — and
+  the two are never blended into one number.
 - **Bills that name no account stay out of a single account's line** (they are
   still in the *All cash accounts* total), and the page says so — quietly
   understating the drop is worse than naming the gap.
@@ -104,7 +115,8 @@ the budget figure — so they can never disagree about a due date.
 ## Not included
 
 - **Paying bills.** The app never moves money.
-- **Predicting discretionary spending.** Known obligations only.
+- **A guarantee of the estimate line.** It's a trailing median, not a forecast
+  of what you will actually earn or spend next month.
 - **Raising Plaid's history window.** A detected cadence is only as deep as the
   transaction history behind it; for institutions that cap history, the
   [CSV importer](transactions.md#importing-a-csv) is how you backfill further.

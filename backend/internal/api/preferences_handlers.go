@@ -19,6 +19,19 @@ var reservedUserPreferenceDefaults = map[string]json.RawMessage{
 	"digest.cadence":    json.RawMessage(`"weekly"`),
 }
 
+// The household-scoped equivalent. A setting belongs here rather than above
+// when changing it changes what the WHOLE household's feed says — anomaly
+// sensitivity does, so one member cannot quietly make everyone else's detectors
+// stricter without it showing up as a household setting.
+//
+// These defaults exist so Settings renders the right control before anything has
+// been saved. They are NOT the authority: insights.balancedSensitivity() is,
+// because a producer runs in a job and must never depend on this handler having
+// been called. Keep the two in step.
+var reservedHouseholdPreferenceDefaults = map[string]json.RawMessage{
+	"anomaly.sensitivity": json.RawMessage(`"balanced"`),
+}
+
 type preferencesResponse struct {
 	User      map[string]json.RawMessage `json:"user"`
 	Household map[string]json.RawMessage `json:"household"`
@@ -51,7 +64,10 @@ func (s *Server) handleGetPreferences(w http.ResponseWriter, r *http.Request) {
 		user[row.Key] = json.RawMessage(row.Value)
 	}
 
-	household := make(map[string]json.RawMessage, len(householdRows))
+	household := make(map[string]json.RawMessage, len(reservedHouseholdPreferenceDefaults)+len(householdRows))
+	for k, v := range reservedHouseholdPreferenceDefaults {
+		household[k] = v
+	}
 	for _, row := range householdRows {
 		household[row.Key] = json.RawMessage(row.Value)
 	}

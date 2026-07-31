@@ -291,8 +291,12 @@ func TestPayoffGoalEndpoints(t *testing.T) {
 			t.Errorf("sources = %q/%q, want manual/manual",
 				g.Payoff.APRSource, g.Payoff.PaymentSource)
 		}
-		if g.Payoff.APR != "6.50" || g.Payoff.MonthlyPayment != "1200.00" {
-			t.Errorf("terms = %s%% paying %s, want 6.50 / 1200.00",
+		// THREE decimals, because this account is a loan: note rates are quoted
+		// in eighths, so rounding to two places renders a 6.775% mortgage as
+		// "6.78%" — a figure on no statement the household read it off of. See
+		// aprDecimals (debt_terms.go) and payoffResponse.APR's comment.
+		if g.Payoff.APR != "6.500" || g.Payoff.MonthlyPayment != "1200.00" {
+			t.Errorf("terms = %s%% paying %s, want 6.500 / 1200.00",
 				g.Payoff.APR, g.Payoff.MonthlyPayment)
 		}
 		if g.Payoff.PayoffDate == nil || g.Payoff.Months == 0 {

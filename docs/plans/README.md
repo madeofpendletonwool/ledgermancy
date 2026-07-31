@@ -343,10 +343,17 @@ archive and `ENCRYPTION_KEY` all agree.
 
 ### Wave 5 — depend on waves 3–4
 
-- **[22-anomaly-detection.md](22-anomaly-detection.md)** — per-merchant
-  baselines, outlier charges, duplicate detection. *TODO #2 — note price creep
-  is already shipped; don't rebuild it.* **17 has shipped**, so build baselines
-  per resolved merchant; read 17's notes above before choosing a key.
+- **[22-anomaly-detection.md](22-anomaly-detection.md)** — **shipped.**
+  Per-merchant outliers and duplicate charges, on the existing insight spine.
+  Migration `00046_anomaly_overrides.sql` is taken. *TODO #2.*
+
+  Read that doc's shipped notes before touching this area — five of its own
+  claims were wrong against the code and are corrected there. The two that reach
+  outside the doc: **there is no `merchant_baselines` table** (a stored median or
+  p95 cannot be made leave-one-out, so the baseline is computed on demand, and
+  nothing downstream should expect a cached one), and **`large_transaction` now
+  yields to `merchant_outlier`** on any merchant with 5+ prior charges, so the
+  two are halves of one behaviour rather than independent producers.
 - **[23-paystub-income.md](23-paystub-income.md)** — the biggest hole in the
   data model: 30–45% of gross income is invisible today. Paystub schema, three
   ingest paths, paycheck breakdown, contribution limits, tax-prep summary.
@@ -443,8 +450,11 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00043_account_terms.sql` (debt-terms bugfix) is the latest.** Applied
-  before it: `00001`–`00021`, `00023`, `00024`, `00033`–`00035`.
+  **`00046_anomaly_overrides.sql` (doc 22) is the latest.** Applied before it:
+  `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, and `00043`–`00045`
+  (`00043_account_terms`, `00044_loan_account_outflow`,
+  `00045_one_time_transactions` — the last two are out-of-wave bugfixes that
+  landed after this table was last written).
 
   **The old `00022`–`00032` reservations are void and have been reissued
   above `00033`.** They were allocated below `00033` before doc 18's follow-up
@@ -456,8 +466,8 @@ Making it a build failure moves the discovery to the pull request.
   for a problem that renumbering solves outright.
 
   **The `00036`–`00042` reservations (docs 22, 23, 25–29) are void for the same
-  reason** and must each be reissued above `00043` when their doc is
-  implemented. `00043_account_terms.sql` is an out-of-wave bugfix — the Goals
+  reason** and must each be reissued above the highest applied version when their
+  doc is implemented. Doc 22 has done so and took `00046`; the rest still owe it. `00043_account_terms.sql` is an out-of-wave bugfix — the Goals
   payoff picker listed no debts for a household that had three, because it gated
   on Plaid having served loan terms rather than on the account being a debt — and
   it had to take a number above everything applied. Renumbering the seven
@@ -484,7 +494,7 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00034_household_people_and_splits.sql`~~ | 21 | `household_people`, `users.role`, `accounts.beneficiary_person_id`, `manual_assets.person_id`, `allowances`, `allowance_entries`, `goal_contributions`, `transaction_splits`, `goals.person_id` — **taken** |
   | ~~`00035_backup_status.sql`~~ | 16 | `backup_runs` — **taken** |
   | ~~`00043_account_terms.sql`~~ | (bugfix) | `account_terms` — **taken** |
-  | ~~`00036_merchant_baselines.sql`~~ | 22 | `merchant_baselines` table — **void, reissue above `00043`** |
+  | ~~`00046_anomaly_overrides.sql`~~ | 22 | `anomaly_overrides` table — **taken**. Note the scope changed: no `merchant_baselines` table ships, because a stored median/p95 cannot be made leave-one-out. See doc 22's shipped notes. |
   | ~~`00037_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **void, reissue above `00043`** |
   | ~~`00038_digest_entries.sql`~~ | 25 | `digest_entries` table — **void, reissue above `00043`** |
   | ~~`00039_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` — **void, reissue above `00043`** |

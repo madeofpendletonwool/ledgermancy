@@ -28,6 +28,41 @@ func (q *Queries) DismissInsight(ctx context.Context, arg DismissInsightParams) 
 	return err
 }
 
+const getInsight = `-- name: GetInsight :one
+SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at FROM insights
+WHERE id = $1 AND household_id = $2
+`
+
+type GetInsightParams struct {
+	ID          uuid.UUID `json:"id"`
+	HouseholdID uuid.UUID `json:"household_id"`
+}
+
+// One insight, scoped to the household so a caller cannot read another
+// household's row by id. Used by the "this is normal" action, which reads the
+// merchant back out of the stored data payload rather than taking it from the
+// client — the key is a detail of how the insight was raised, not something the
+// browser should be able to assert.
+func (q *Queries) GetInsight(ctx context.Context, arg GetInsightParams) (Insight, error) {
+	row := q.db.QueryRow(ctx, getInsight, arg.ID, arg.HouseholdID)
+	var i Insight
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.Kind,
+		&i.Priority,
+		&i.Title,
+		&i.Body,
+		&i.Data,
+		&i.Period,
+		&i.DedupeKey,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.DismissedAt,
+	)
+	return i, err
+}
+
 const listInsights = `-- name: ListInsights :many
 SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at FROM insights
 WHERE household_id = $1

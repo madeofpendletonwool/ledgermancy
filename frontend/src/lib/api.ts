@@ -829,6 +829,12 @@ export interface ProjectionPoint {
   balance: string
   /** What falls due on this day — zero on most of them. */
   due: string
+  /**
+   * `balance` plus a trailing-median estimate of income and typical spending.
+   * A GUESS, not a known figure — absent when the household has no income
+   * history to estimate from (see `BalanceProjection.estimate.has_income_history`).
+   */
+  estimated_balance?: string
 }
 
 export interface AccountProjection {
@@ -844,11 +850,23 @@ export interface AccountProjection {
   points: ProjectionPoint[]
 }
 
+/** The trailing-median estimate layered on top of the known-obligations line. */
+export interface ProjectionEstimate {
+  expected_monthly_income: string
+  extra_monthly_spend: string
+  /** How many of the trailing months had any income — caveat a thin history. */
+  income_months: number
+  /** False when there's no income history at all; don't draw the estimate line. */
+  has_income_history: boolean
+}
+
 /**
  * Balances carried forward through KNOWN obligations only. It is not a
  * prediction of discretionary spending and must not be presented as one.
  * `unassigned_total` is the money the per-account lines cannot show because no
- * account was named on those bills.
+ * account was named on those bills. `estimate` (and each point's
+ * `estimated_balance`) is a separate, clearly-labeled guess layered on top —
+ * never blend it into the known figures above it.
  */
 export interface BalanceProjection {
   from: string
@@ -857,6 +875,7 @@ export interface BalanceProjection {
   accounts: AccountProjection[]
   unassigned_total: string
   total_due: string
+  estimate: ProjectionEstimate
 }
 
 export interface PeriodQuery {
@@ -1617,6 +1636,23 @@ export interface SuppressedRecurringMerchant {
    */
   merchant_key_resolved: string
   merchant: string
+  suppressed_at: string
+}
+
+/**
+ * Which anomaly detector a suppression silences. "this merchant charges odd
+ * amounts" and "this merchant bills me twice" are different claims, so
+ * silencing one does not silence the other; 'all' covers both.
+ */
+export type AnomalyScope = 'all' | 'outlier' | 'duplicate'
+
+export interface SuppressedAnomalyMerchant {
+  /** The key the suppression is recorded under — what unsuppress takes. */
+  merchant_key: string
+  /** The same key canonicalised, which is what addresses the merchant detail view. */
+  merchant_key_resolved: string
+  merchant: string
+  scope: AnomalyScope
   suppressed_at: string
 }
 
@@ -2652,6 +2688,33 @@ export const api = {
 
   dismissInsight: (id: string) =>
     request<void>('POST', `/api/insights/${id}/dismiss`),
+
+  /**
+   * "This is normal": suppress the merchant for whichever detector raised this
+   * insight, and dismiss it, in one request. The merchant key is read off the
+   * stored insight server-side rather than sent from here.
+   */
+  markInsightNormal: (id: string) =>
+    request<void>('POST', `/api/insights/${id}/normal`),
+
+  /** Stop the anomaly detectors flagging a merchant. */
+  suppressAnomaly: (merchantKey: string, merchant: string, scope: AnomalyScope = 'all') =>
+    request<void>('POST', '/api/insights/anomaly/suppress', {
+      merchant_key: merchantKey,
+      merchant,
+      scope,
+    }),
+
+  /** Restore a previously-suppressed merchant to the anomaly detectors. */
+  unsuppressAnomaly: (merchantKey: string, scope: AnomalyScope = 'all') =>
+    request<void>(
+      'DELETE',
+      withQuery('/api/insights/anomaly/suppress', { merchant_key: merchantKey, scope }),
+    ),
+
+  /** The household's anomaly suppressions, for the restore list. */
+  suppressedAnomalies: () =>
+    request<SuppressedAnomalyMerchant[]>('GET', '/api/insights/anomaly/suppressed'),
 
   recurring: () =>
     request<RecurringMerchant[]>('GET', '/api/reports/recurring'),
