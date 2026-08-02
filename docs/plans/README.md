@@ -7,9 +7,12 @@ Waves 0–2 (docs 00–12) expanded Ledgermancy's AI beyond chat and are **shipp
 — they remain here as the reference for how the insight engine, preferences, and
 notification contracts work.
 
-Waves 3–6 (docs 13–29) cover **everything remaining in
+Waves 3–7 (docs 13–33) cover **everything remaining in
 [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md)**: all sixteen "Next major initiatives" plus the two
-small known gaps. **Waves 3 and 4 are complete; wave 5 is the current cycle.**
+small known gaps, the advisor initiative (wave 6), and the capstone scenario
+engine. **Waves 3 and 4 are complete; wave 5 is the current cycle.** Wave 6
+(the Advisor) begins after wave 5's honesty foundations land — it consumes
+their inputs.
 
 Within waves 0–2, implement in order; later docs depend on earlier ones. Waves
 3+ are mostly parallel — most docs have no prerequisites at all. Read the
@@ -341,7 +344,14 @@ archive and `ENCRYPTION_KEY` all agree.
   counting it as household retirement savings overstates the position by the
   whole balance — in the flattering direction, which is why nobody catches it.
 
-### Wave 5 — depend on waves 3–4
+### Wave 5 — foundations & honesty (no advisor yet)
+
+Every downstream projection must be trustworthy before it advises on it. This
+wave is the honesty/income/manual-accounts layer the advisor (wave 6) builds
+on. **Doc 24 (the proactive advisor) is held for wave 6** by user direction —
+"wave 5 done before the proactive advisor is touched" — so the ranker and the
+allocation planner both land on real contribution headroom (23), non-drifting
+asset values (26), and honest long-horizon dollars (27).
 
 - **[22-anomaly-detection.md](22-anomaly-detection.md)** — **shipped.**
   Per-merchant outliers and duplicate charges, on the existing insight spine.
@@ -359,9 +369,6 @@ archive and `ENCRYPTION_KEY` all agree.
   ingest paths, paycheck breakdown, contribution limits, tax-prep summary.
   *TODO #8.* **18 has shipped**, so its dependency is met — read 18's notes
   above before choosing where paystub files live.
-- **[24-proactive-advisor.md](24-proactive-advisor.md)** — ranked, deterministic
-  options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
-  15.**
 - **[25-in-app-digest.md](25-in-app-digest.md)** — persist and surface the
   digest that already exists but only ever becomes a push. *TODO #10.* Soft deps
   on 13 and 24.
@@ -378,8 +385,48 @@ archive and `ENCRYPTION_KEY` all agree.
 - **[27-inflation-adjusted-views.md](27-inflation-adjusted-views.md)** — a CPI
   series and a real/nominal toggle. *TODO #12.* Small and self-contained; good
   candidate to bundle with 14 or 15.
+- **[30-manual-accounts.md](30-manual-accounts.md)** — accounts without Plaid,
+  per-holding manual investment tracking with full Investments-page parity
+  (TWR/MWR, allocation, dividends, snapshots), and auto-posting scheduled
+  transactions that also adjust the manual balance. Closes the gap docs 12, 13,
+  and 26 deliberately left open: a manual Voya retirement account can replace a
+  broken Plaid link end-to-end. Migration `00047_manual_accounts.sql` is taken.
+  No prerequisites beyond the shipped docs 12, 13, 14.
 
-### Wave 6 — capstone / far future
+### Wave 6 — the Advisor
+
+The advisor initiative: turn the `Assistant` route into an `Advisor` route,
+expose the existing deterministic engines to the chat, ship the proactive
+ranker, and build the multi-bucket allocation planner with a Monte Carlo
+likelihood layer. Built on wave 5's honest inputs. The whole initiative has a
+visual companion — **[advisor-overview.html](advisor-overview.html)** — with
+live demos of the options ranker and the bucket allocator.
+
+The four docs sequence W1→W4 within the wave: surface first (cheap, biggest
+coverage gain), then the ranker, then the allocator, then the likelihood layer.
+
+- **[24-proactive-advisor.md](24-proactive-advisor.md)** — ranked, deterministic
+  options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
+  15** (both shipped) and the wave-5 honesty docs for its allocation-flavoured
+  options. The single-pick ranker ("you have $X — here are the options") and
+  the multi-debt avalanche/snowball strategy ship here.
+- **[31-advisor-surface.md](31-advisor-surface.md)** — rename Assistant →
+  Advisor, expose ~12 existing engines as chat tools (no new math), build the
+  Briefing/Horizon/Assumptions/Threads shell around the chat, add household
+  profile fields and conversation/action-item persistence. The cheapest,
+  highest-leverage doc in the wave.
+- **[32-allocation-planner.md](32-allocation-planner.md)** — the multi-bucket
+  allocator: split a lump and/or monthly surplus across Roth/529/brokerage/
+  debt/EF with per-bucket projection, contribution-cap enforcement
+  (`limits.go`), goal-mapping, cash-drag detection, asset-location, and
+  college-cost projection. The thing a real advisor does that the app can't.
+- **[33-likelihood-layer.md](33-likelihood-layer.md)** — Monte Carlo over
+  return distributions (generalizes doc 15's engine to allocation plans),
+  P10/P50/P90 + success rates, a documented guardrail rule that lets the AI
+  name a top pick from computed likelihoods, and plan-vs-actual tracking that
+  closes the loop.
+
+### Wave 7 — capstone / far future
 
 - **[28-decision-modeling.md](28-decision-modeling.md)** — the what-if scenario
   engine: rent-vs-buy with opportunity cost, retirement stress tests,
@@ -495,6 +542,10 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00035_backup_status.sql`~~ | 16 | `backup_runs` — **taken** |
   | ~~`00043_account_terms.sql`~~ | (bugfix) | `account_terms` — **taken** |
   | ~~`00046_anomaly_overrides.sql`~~ | 22 | `anomaly_overrides` table — **taken**. Note the scope changed: no `merchant_baselines` table ships, because a stored median/p95 cannot be made leave-one-out. See doc 22's shipped notes. |
+  | ~~`00047_manual_accounts.sql`~~ | 30 | `accounts.source`/`user_id`/`is_shared`/`household_id`, `account_balance_history`, `securities.source`/`ticker_key`, `investment_transactions.source`, `recurring_obligations.auto_post`/`last_posted_date`/`posting_account_id` — **taken** |
+  | `00048_advisor_surface.sql` | 31 | `households.state`/`filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items` |
+  | `00049_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans` |
+  | `00050_likelihood_layer.sql` | 33 | `plan_trackings` |
   | ~~`00037_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **void, reissue above `00043`** |
   | ~~`00038_digest_entries.sql`~~ | 25 | `digest_entries` table — **void, reissue above `00043`** |
   | ~~`00039_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` — **void, reissue above `00043`** |

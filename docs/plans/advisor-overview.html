@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Ledgermancy Advisor — Wave 6 Plan</title>
+<style>
+  :root {
+    --ink-950:#07060d; --ink-900:#0d0b16; --ink-850:#12101f;
+    --ink-800:#191630; --ink-700:#241f45; --ink-600:#322b5e;
+    --arcane-400:#a78bfa; --arcane-500:#8b5cf6; --arcane-600:#7c3aed;
+    --rune-300:#f2d492; --rune-400:#e8b962; --rune-500:#d99e3a;
+    --mist-100:#e8e6f5; --mist-300:#b3aed0; --mist-500:#7b749c;
+    --verdant:#4ade80; --ember:#fb7185; --frost:#7dd3fc;
+    --bg:var(--ink-950); --surface:rgba(18,16,31,.6); --rule:rgba(255,255,255,.08);
+    --ink:var(--mist-100); --ink-soft:var(--mist-300); --ink-faint:var(--mist-500);
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; background:var(--bg); color-scheme:dark}
+  body{
+    margin:0; font-family:var(--sans); font-size:16px; line-height:1.6;
+    color:var(--ink); -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(ellipse 80% 55% at 50% -10%, color-mix(in oklab, var(--arcane-600) 20%, transparent), transparent),
+      radial-gradient(ellipse 60% 45% at 90% 100%, color-mix(in oklab, var(--rune-500) 7%, transparent), transparent);
+    background-attachment:fixed; min-height:100vh;
+  }
+  .shell{display:grid; grid-template-columns:250px minmax(0,1fr); max-width:1320px; margin:0 auto}
+  nav.toc{position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto; padding:2rem 1.25rem; border-right:1px solid var(--rule); font-size:.84rem; background:rgba(7,6,13,.5); backdrop-filter:blur(8px)}
+  nav.toc .brand{display:flex; align-items:center; gap:.5rem; font-weight:600; color:var(--mist-100); margin-bottom:.4rem; cursor:pointer}
+  nav.toc .glyph{color:var(--arcane-400)}
+  nav.toc .sub{font-size:.7rem; color:var(--ink-faint); margin-bottom:1.4rem; padding-left:1.7rem}
+  nav.toc ol{list-style:none; padding:0; margin:0}
+  nav.toc li{margin:.1rem 0}
+  nav.toc a{color:var(--ink-faint); text-decoration:none; display:block; padding:.28rem .5rem; border-radius:6px; line-height:1.3; border-left:2px solid transparent; transition:.15s}
+  nav.toc a:hover{color:var(--mist-100); background:rgba(255,255,255,.03)}
+  nav.toc a.active{color:var(--arcane-400); border-left-color:var(--arcane-500); background:rgba(139,92,246,.08)}
+  nav.toc .nav-label{font-size:.66rem; text-transform:uppercase; letter-spacing:.1em; color:var(--ink-faint); margin:1rem 0 .35rem; padding-left:.5rem; font-weight:600}
+  main{padding:3rem 3rem 6rem; min-width:0}
+
+  h1{font-size:2.7rem; line-height:1.06; letter-spacing:-.02em; margin:0 0 .5rem; font-weight:650}
+  h1 .gold{color:var(--rune-400)}
+  h2{font-size:1.7rem; line-height:1.2; letter-spacing:-.01em; margin:3.5rem 0 1rem; font-weight:620; scroll-margin-top:1rem; display:flex; align-items:baseline; gap:.7rem}
+  h2 .n{color:var(--arcane-400); font-variant-numeric:tabular-nums; opacity:.8; font-size:1.3rem}
+  h3{font-size:1.13rem; margin:2rem 0 .6rem; font-weight:600; color:var(--mist-100)}
+  p{margin:.7rem 0; color:var(--ink-soft)}
+  p.lede{font-size:1.14rem; color:var(--mist-100); line-height:1.55; max-width:64ch}
+  strong{color:var(--mist-100); font-weight:600}
+  em{color:var(--rune-300); font-style:normal; font-weight:500}
+  code{font-family:var(--mono); font-size:.85em; background:rgba(139,92,246,.12); color:var(--arcane-400); padding:.1em .35em; border-radius:4px}
+  .mono{font-family:var(--mono)}
+
+  header.lead{margin-bottom:2.5rem; padding-bottom:2rem; border-bottom:1px solid var(--rule)}
+  .eyebrow{font-size:.76rem; text-transform:uppercase; letter-spacing:.14em; color:var(--rune-400); margin-bottom:.75rem; font-weight:600}
+  .tldr{margin-top:1.5rem; padding:1.1rem 1.3rem; border-radius:12px; background:linear-gradient(180deg, rgba(139,92,246,.1), rgba(139,92,246,.04)); border:1px solid rgba(139,92,246,.25); font-size:.97rem; color:var(--mist-100)}
+  .tldr strong{color:var(--rune-300)}
+  .docref{display:inline-flex; gap:.4rem; align-items:center; font-family:var(--mono); font-size:.78rem; color:var(--arcane-400); background:rgba(139,92,246,.1); border:1px solid rgba(139,92,246,.25); padding:.15rem .5rem; border-radius:5px}
+
+  .glass{background:var(--surface); border:1px solid var(--rule); border-radius:16px; backdrop-filter:blur(12px); box-shadow:0 1px 0 0 rgba(255,255,255,.05) inset, 0 20px 60px -20px rgba(0,0,0,.7)}
+
+  .pill{display:inline-flex; align-items:center; gap:.35rem; font-size:.68rem; font-weight:600; padding:.16rem .5rem; border-radius:99px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; border:1px solid transparent}
+  .pill::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor}
+  .pill.ready{color:var(--verdant); background:rgba(74,222,128,.1); border-color:rgba(74,222,128,.25)}
+  .pill.partial{color:var(--rune-400); background:rgba(232,185,98,.1); border-color:rgba(232,185,98,.25)}
+  .pill.new{color:var(--arcane-400); background:rgba(167,139,250,.1); border-color:rgba(167,139,250,.25)}
+  .pill.blocked{color:var(--ember); background:rgba(251,113,133,.1); border-color:rgba(251,113,133,.25)}
+
+  table.shift{width:100%; border-collapse:collapse; margin-top:1rem; font-size:.94rem}
+  table.shift th,table.shift td{padding:.65rem .9rem; text-align:left; border-bottom:1px solid var(--rule); vertical-align:top}
+  table.shift th{font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); font-weight:600}
+  table.shift td.gap{color:var(--ember); font-weight:500; width:34%}
+
+  .tabs{display:flex; flex-wrap:wrap; gap:.4rem; margin:1.25rem 0 1.5rem; padding:.5rem; background:rgba(13,11,22,.6); border:1px solid var(--rule); border-radius:12px}
+  .tab{appearance:none; border:1px solid transparent; background:transparent; color:var(--ink-faint); font:inherit; font-size:.82rem; font-weight:500; padding:.45rem .8rem; border-radius:8px; cursor:pointer; transition:.15s; display:inline-flex; align-items:center; gap:.4rem; white-space:nowrap}
+  .tab:hover{color:var(--mist-100); background:rgba(255,255,255,.04)}
+  .tab.active{color:var(--mist-100); background:rgba(139,92,246,.16); border-color:rgba(139,92,246,.3)}
+  .tab .count{font-size:.68rem; color:var(--ink-faint); font-variant-numeric:tabular-nums}
+  .tab.active .count{color:var(--arcane-400)}
+
+  .qgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:.8rem}
+  .qcard{padding:1rem 1.1rem; border-radius:12px; background:rgba(18,16,31,.55); border:1px solid var(--rule); border-left:3px solid var(--ink-600)}
+  .qcard.ready{border-left-color:var(--verdant)}
+  .qcard.partial{border-left-color:var(--rune-400)}
+  .qcard.new{border-left-color:var(--arcane-500)}
+  .qcard.blocked{border-left-color:var(--ember)}
+  .qcard .q{color:var(--mist-100); font-weight:500; font-size:.93rem; line-height:1.4; margin:0 0 .5rem}
+  .qcard .meta{display:flex; flex-wrap:wrap; align-items:center; gap:.35rem .55rem; font-size:.76rem; color:var(--ink-faint)}
+  .qcard .engine{font-family:var(--mono); color:var(--arcane-400); font-size:.74rem}
+
+  .wrap-table{overflow-x:auto; border:1px solid var(--rule); border-radius:12px; background:rgba(13,11,22,.4)}
+  table.tools{width:100%; border-collapse:collapse; font-size:.88rem}
+  table.tools th,table.tools td{padding:.55rem .8rem; text-align:left; border-bottom:1px solid var(--rule); vertical-align:top}
+  table.tools th{font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); font-weight:600; position:sticky; top:0; background:var(--ink-900)}
+  table.tools td.tool{font-family:var(--mono); color:var(--arcane-400); font-size:.82rem; white-space:nowrap}
+  table.tools td.wrap{color:var(--mist-300); font-size:.83rem}
+  table.tools tr:hover td{background:rgba(255,255,255,.02)}
+
+  .arch{display:grid; grid-template-columns:repeat(auto-fill,minmax(285px,1fr)); gap:.9rem; margin-top:1.25rem}
+  .arch .a{padding:1.1rem 1.2rem; border-radius:12px; background:rgba(18,16,31,.55); border:1px solid var(--rule); position:relative}
+  .arch .a .num{position:absolute; top:-.6rem; left:1.05rem; font-size:.66rem; font-weight:700; color:var(--ink-950); background:var(--rune-400); padding:.13rem .48rem; border-radius:5px; letter-spacing:.05em}
+  .arch .a h4{margin:.4rem 0 .35rem; font-size:.98rem; color:var(--mist-100); font-weight:600}
+  .arch .a p{margin:.25rem 0 0; font-size:.83rem; color:var(--ink-soft); line-height:1.5}
+  .arch .a .tag{font-size:.68rem; color:var(--arcane-400); font-family:var(--mono); margin-top:.5rem; display:block}
+
+  .flow-wrap{overflow-x:auto; padding:.5rem 0}
+  svg.flow{display:block; min-width:780px; width:100%; height:auto}
+  .flow text{font-family:var(--sans); fill:var(--mist-300)}
+  .flow .title{fill:var(--ink-faint); font-size:10px; text-transform:uppercase; letter-spacing:.08em; font-weight:600}
+  .flow .lbl{fill:var(--mist-100); font-size:11px; font-weight:500}
+  .flow .sub{fill:var(--ink-faint); font-size:9.5px}
+  .flow .mono-l{font-family:var(--mono); fill:var(--arcane-400); font-size:10px}
+  .flow .node{fill:rgba(18,16,31,.85); stroke:var(--rule)}
+  .flow .engine{stroke:rgba(139,92,246,.45)}
+  .flow .surface{stroke:rgba(232,185,98,.4)}
+  .flow .core{fill:rgba(139,92,246,.14); stroke:var(--arcane-500); stroke-width:1.5}
+  .flow .alloc{fill:rgba(232,185,98,.12); stroke:var(--rune-400); stroke-width:1.5}
+  .flow .arr{stroke:var(--ink-600); stroke-width:1.3; fill:none; marker-end:url(#ah)}
+
+  /* demo shared */
+  .demo-grid{display:grid; grid-template-columns:320px 1fr; gap:1.25rem; margin-top:1.25rem}
+  @media(max-width:900px){.demo-grid{grid-template-columns:1fr}}
+  .demo-inputs{padding:1.25rem}
+  .demo-inputs h4{margin:0 0 1rem; font-size:.95rem; color:var(--mist-100); display:flex; align-items:center; gap:.5rem}
+  .demo-inputs h4 .dot{width:7px;height:7px;border-radius:50%;background:var(--arcane-400)}
+  .field{margin-bottom:.85rem}
+  .field label{display:flex; justify-content:space-between; font-size:.76rem; color:var(--ink-soft); margin-bottom:.25rem}
+  .field label .v{color:var(--rune-400); font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .field input[type=range]{width:100%; accent-color:var(--arcane-500); height:4px}
+  .field input[type=number]{width:100%; background:rgba(7,6,13,.7); border:1px solid var(--rule); color:var(--mist-100); border-radius:8px; padding:.4rem .55rem; font:inherit; font-size:.82rem; font-family:var(--mono)}
+  .field input[type=number]:focus{outline:none; border-color:var(--arcane-500)}
+  .field-group{font-size:.66rem; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-faint); margin:1rem 0 .3rem; font-weight:600}
+
+  /* allocator specific */
+  .alloc-bucket{margin-bottom:.6rem; padding:.6rem .7rem; border-radius:8px; background:rgba(7,6,13,.4); border:1px solid var(--rule)}
+  .alloc-bucket .bh{display:flex; justify-content:space-between; align-items:center; font-size:.8rem; margin-bottom:.3rem}
+  .alloc-bucket .bh .bn{color:var(--mist-100); font-weight:500}
+  .alloc-bucket .bh .bp{color:var(--rune-400); font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .alloc-bucket input[type=range]{accent-color:var(--rune-500)}
+  .alloc-bucket .cap{font-size:.66rem; color:var(--ember); margin-top:.2rem}
+  .alloc-bucket .cap.ok{color:var(--verdant)}
+  .alloc-sum{margin-top:.6rem; padding:.55rem .7rem; border-radius:8px; background:rgba(232,185,98,.06); border:1px solid rgba(232,185,98,.2); display:flex; justify-content:space-between; font-size:.78rem}
+  .alloc-sum .bad{color:var(--ember)}
+
+  .out-cols{display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem}
+  @media(max-width:640px){.out-cols{grid-template-columns:1fr}}
+  .out-card{padding:.9rem 1rem; border-radius:10px; background:rgba(18,16,31,.6); border:1px solid var(--rule)}
+  .out-card .oc-h{font-size:.72rem; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.06em; margin-bottom:.3rem}
+  .out-card .oc-v{font-size:1.5rem; color:var(--rune-400); font-family:var(--mono); font-variant-numeric:tabular-nums; font-weight:600; line-height:1.1}
+  .out-card .oc-v.green{color:var(--verdant)}
+  .out-card .oc-sub{font-size:.72rem; color:var(--ink-faint); margin-top:.2rem}
+
+  .bucket-out{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.6rem; margin:.6rem 0}
+  .bo{padding:.7rem .8rem; border-radius:8px; background:rgba(7,6,13,.4); border:1px solid var(--rule); border-top:3px solid var(--ink-600)}
+  .bo.roth{border-top-color:var(--arcane-500)}
+  .bo.b529{border-top-color:var(--frost)}
+  .bo.brok{border-top-color:var(--verdant)}
+  .bo.debt{border-top-color:var(--ember)}
+  .bo.ef{border-top-color:var(--rune-400)}
+  .bo .bn{font-size:.72rem; color:var(--ink-soft); margin-bottom:.15rem}
+  .bo .bv{font-size:1.05rem; color:var(--mist-100); font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .bo .bg{font-size:.68rem; color:var(--verdant); margin-top:.1rem}
+  .bo .bg.neg{color:var(--ember)}
+
+  .fan{margin:.8rem 0; padding:.8rem; background:rgba(7,6,13,.4); border-radius:8px; border:1px solid var(--rule)}
+  .fan .fan-h{font-size:.74rem; color:var(--ink-faint); margin-bottom:.4rem; display:flex; justify-content:space-between}
+  .fan svg{width:100%; height:90px; display:block}
+
+  .demo-note{font-size:.76rem; color:var(--ink-faint); margin-top:.8rem; font-style:italic; line-height:1.5}
+
+  /* roadmap */
+  .road{position:relative; margin-top:1.5rem}
+  .wrow{display:grid; grid-template-columns:140px 1fr; gap:1.25rem; margin-bottom:1.4rem; align-items:start}
+  @media(max-width:680px){.wrow{grid-template-columns:1fr; gap:.4rem}}
+  .wtag{padding:.5rem .7rem; border-radius:8px; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; text-align:center; border:1px solid; height:fit-content}
+  .wtag.w5{color:var(--frost); border-color:rgba(125,211,252,.35); background:rgba(125,211,252,.06)}
+  .wtag.w6{color:var(--rune-400); border-color:rgba(232,185,98,.35); background:rgba(232,185,98,.06)}
+  .wtag.w7{color:var(--ink-faint); border-color:var(--rule); background:rgba(255,255,255,.02)}
+  .wtag .stat{display:block; font-size:.62rem; font-weight:500; opacity:.8; margin-top:.15rem; text-transform:none; letter-spacing:0}
+  .wbody h4{margin:0 0 .35rem; font-size:1.02rem; color:var(--mist-100)}
+  .wbody p{margin:.3rem 0; font-size:.88rem}
+  .wbody ul{margin:.3rem 0 0; padding-left:1.15rem; color:var(--ink-soft)}
+  .wbody li{font-size:.85rem; margin:.18rem 0}
+  .wbody .docs{margin-top:.4rem; display:flex; flex-wrap:wrap; gap:.3rem}
+  .wbody .gain{color:var(--verdant); font-size:.8rem; font-weight:500; margin-top:.3rem; display:block}
+
+  .seam{padding:1.15rem 1.35rem; border-radius:12px; background:rgba(18,16,31,.55); border:1px solid var(--rule); margin-top:.9rem}
+  .seam h4{margin:0 0 .5rem; font-size:1.02rem; color:var(--mist-100)}
+  .seam.decided{border-color:rgba(74,222,128,.3)}
+  .seam .dec{font-size:.74rem; color:var(--verdant); font-weight:600; text-transform:uppercase; letter-spacing:.04em; float:right}
+  .seam p{margin:.4rem 0; font-size:.9rem}
+  .stances{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.6rem; margin-top:.6rem}
+  .stance{padding:.65rem .8rem; border-radius:8px; border:1px solid var(--rule); font-size:.81rem; background:rgba(7,6,13,.4)}
+  .stance.picked{border-color:rgba(74,222,128,.4); background:rgba(74,222,128,.05)}
+  .stance .s-name{font-weight:600; color:var(--mist-100); display:block; margin-bottom:.15rem}
+  .stance p{margin:.15rem 0 0; font-size:.79rem; color:var(--ink-soft); line-height:1.4}
+
+  table.risk{width:100%; border-collapse:collapse; margin-top:1rem; font-size:.87rem}
+  table.risk th,table.risk td{padding:.55rem .8rem; text-align:left; border-bottom:1px solid var(--rule); vertical-align:top}
+  table.risk th{font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); font-weight:600}
+  table.risk td.rn{color:var(--mist-100); font-weight:500; width:26%}
+  table.risk td.mit{color:var(--ink-soft); font-size:.82rem}
+  .sev{font-size:.66rem; font-weight:600; padding:.13rem .45rem; border-radius:5px; text-transform:uppercase; letter-spacing:.04em}
+  .sev.crit{color:var(--ember); background:rgba(251,113,133,.12); border:1px solid rgba(251,113,133,.3)}
+  .sev.high{color:var(--rune-400); background:rgba(232,185,98,.1); border:1px solid rgba(232,185,98,.25)}
+  .sev.med{color:var(--arcane-400); background:rgba(167,139,250,.1); border:1px solid rgba(167,139,250,.25)}
+
+  .oos{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:.6rem; margin-top:1rem}
+  .oos .o{padding:.8rem 1rem; border-radius:10px; background:rgba(251,113,133,.05); border:1px solid rgba(251,113,133,.18)}
+  .oos .o h4{margin:0 0 .2rem; font-size:.9rem; color:var(--ember)}
+  .oos .o p{margin:0; font-size:.81rem; color:var(--ink-soft); line-height:1.45}
+  .oos .o .perm{font-size:.66rem; color:var(--ember); text-transform:uppercase; letter-spacing:.05em; font-weight:600}
+
+  .principles{display:grid; gap:.6rem; margin-top:1rem; counter-reset:pr}
+  .principle{display:grid; grid-template-columns:auto 1fr; gap:1rem; align-items:start; padding:.95rem 1.15rem; border-radius:10px; background:rgba(18,16,31,.5); border:1px solid var(--rule); border-left:3px solid var(--arcane-500); counter-increment:pr}
+  .principle::before{content:counter(pr,decimal-leading-zero); font-family:var(--mono); color:var(--arcane-400); font-size:.82rem; font-weight:600}
+  .principle h4{margin:0 0 .2rem; font-size:.98rem; color:var(--mist-100)}
+  .principle p{margin:0; font-size:.85rem; color:var(--ink-soft); line-height:1.5}
+
+  .faq details{padding:.95rem 1.15rem; border-radius:10px; background:rgba(18,16,31,.5); border:1px solid var(--rule); margin-bottom:.5rem}
+  .faq details[open]{background:rgba(139,92,246,.06); border-color:rgba(139,92,246,.25)}
+  .faq summary{cursor:pointer; font-weight:500; color:var(--mist-100); list-style:none; font-size:.93rem}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::before{content:"+"; color:var(--arcane-400); font-weight:600; margin-right:.5rem}
+  .faq details[open] summary::before{content:"−"}
+  .faq details p{margin:.5rem 0 0; font-size:.88rem; color:var(--ink-soft); line-height:1.55}
+
+  .profile-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:.7rem; margin-top:1rem}
+  .pf{padding:.85rem 1rem; border-radius:10px; background:rgba(18,16,31,.5); border:1px solid var(--rule); border-left:3px solid var(--arcane-500)}
+  .pf.have{border-left-color:var(--verdant)}
+  .pf.new{border-left-color:var(--rune-400)}
+  .pf h4{margin:0 0 .2rem; font-size:.92rem; color:var(--mist-100)}
+  .pf p{margin:.15rem 0 0; font-size:.8rem; color:var(--ink-soft); line-height:1.45}
+  .pf .eng{font-size:.68rem; color:var(--arcane-400); font-family:var(--mono); margin-top:.35rem; display:block}
+
+  footer.foot{margin-top:3.5rem; padding-top:2rem; border-top:1px solid var(--rule); color:var(--ink-faint); font-size:.8rem}
+  footer.foot p{color:var(--ink-faint)}
+
+  @media(max-width:900px){.shell{grid-template-columns:1fr} nav.toc{position:relative; height:auto; border-right:none; border-bottom:1px solid var(--rule)} nav.toc ol{display:none} nav.toc.open ol{display:block} main{padding:2rem 1.25rem 4rem} h1{font-size:2rem}}
+  .legend{display:flex; flex-wrap:wrap; gap:.8rem; margin:.4rem 0 1.25rem; font-size:.76rem; color:var(--ink-faint)}
+  .legend span{display:inline-flex; align-items:center; gap:.35rem}
+  .legend i{width:10px; height:10px; border-radius:3px; display:inline-block}
+</style>
+</head>
+<body>
+<div class="shell">
+<nav class="toc" id="toc">
+  <div class="brand"><span class="glyph">✦</span> Ledgermancy</div>
+  <div class="sub">Wave 6 — the Advisor</div>
+  <div class="nav-label">Overview</div>
+  <ol>
+    <li><a href="#shift">0 · The shift</a></li>
+    <li><a href="#questions">1 · Questions</a></li>
+    <li><a href="#tools">2 · Tools to expose</a></li>
+    <li><a href="#page">3 · The page</a></li>
+    <li><a href="#flow">4 · How it fits</a></li>
+  </ol>
+  <div class="nav-label">Live demos</div>
+  <ol>
+    <li><a href="#ranker">5 · Options ranker</a></li>
+    <li><a href="#allocator">6 · Bucket allocator</a></li>
+  </ol>
+  <div class="nav-label">Plan</div>
+  <ol>
+    <li><a href="#profile">7 · Household profile</a></li>
+    <li><a href="#additions">8 · Six additions</a></li>
+    <li><a href="#roadmap">9 · Roadmap</a></li>
+    <li><a href="#seams">10 · Decisions</a></li>
+    <li><a href="#risk">11 · Risks</a></li>
+    <li><a href="#scope">12 · Out of scope</a></li>
+    <li><a href="#principles">13 · Principles</a></li>
+    <li><a href="#faq">14 · FAQ</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="lead">
+  <div class="eyebrow">Wave 6 plan · assistant → advisor · docs 24 + 31 + 32 + 33</div>
+  <h1>The Ledgermancy <span class="gold">Advisor</span></h1>
+  <p class="lede">From a reactive Q&amp;A terminal over transactions into a full financial advisor — one that opens with a briefing, surfaces ranked options for spare cash, splits a lump or monthly surplus across Roth / 529 / brokerage / debt / emergency fund with per-bucket projections, and tells you — grounded in Monte Carlo likelihoods — which plan most reliably meets your goals. Every engine it needs already exists in the backend. The work is exposure, surface, the proactive ranker, and the allocation planner.</p>
+  <div class="tldr">
+    <strong>The thesis.</strong> The assistant today answers past-tense questions about transactions. A real advisor comes prepared, says “you have <em>$X</em> — here’s how to split it across your Roth, 529, and brokerage, and here’s what each path does to your goals,” and works across every horizon from next Tuesday to retirement. This wave turns the <code>Assistant</code> route into the <code>Advisor</code> route, exposes ~17 existing deterministic engines as chat tools, ships doc 24’s proactive ranker, and builds a multi-bucket allocation planner with a Monte Carlo likelihood layer. <strong>No new math is invented</strong> — FIRE, debt, goal, safe-to-spend, returns, obligations, and contribution-limit engines all already exist. The one line held throughout: the app presents computed tradeoffs, and where the math is unambiguous it may <em>note</em> it; it never substitutes opinion for arithmetic.
+  </div>
+  <p style="margin-top:1rem; font-size:.82rem">This is the visual companion to the wave-6 plan docs: <span class="docref">24 proactive engine</span> <span class="docref">31 advisor surface</span> <span class="docref">32 allocation planner</span> <span class="docref">33 likelihood layer</span>.</p>
+</header>
+
+<!-- 0 -->
+<section id="shift">
+<h2><span class="n">0</span> The shift</h2>
+<p>The current assistant is a <strong>reactive Q&amp;A terminal</strong> — 12 tools, all retrospective transaction queries plus net worth and recurring charges. It waits to be asked. A real advisor meeting differs in four structural ways:</p>
+<table class="shift">
+  <thead><tr><th>What an advisor does</th><th>What the assistant does today</th><th>The gap</th></tr></thead>
+  <tbody>
+    <tr><td>Comes in with a briefing already prepared</td><td>Waits to be asked</td><td class="gap">No state-of-the-household summary on load</td></tr>
+    <tr><td>“You have $X — here’s how to split it across buckets”</td><td>Cannot compute options or allocations</td><td class="gap">No ranker (doc 24) or allocator (doc 32)</td></tr>
+    <tr><td>Works across horizons — next month, 5 years, retirement</td><td>Strictly retrospective</td><td class="gap">Projection / feasibility engines not exposed to chat</td></tr>
+    <tr><td>Proposes what-ifs and tells you which most reliably meets your goals</td><td>No scenario engine, no likelihood layer</td><td class="gap">Docs 28 + 33 unbuilt; advisor is the discovery layer</td></tr>
+  </tbody>
+</table>
+<p>Every engine needed already exists and is exact-decimal deterministic: <code>reporting/safetospend.go</code>, <code>goals/payoff.go</code>, <code>goals/goals.go</code>, <code>networth/retirement.go</code>, <code>networth/montecarlo.go</code>, <code>reporting/returns.go</code>, the <code>obligations</code> projection, and <code>networth/limits.go</code> (which already handles Roth/401k/HSA caps with catch-ups and <em>honestly declines</em> to cap a 529). None are reachable from the chat today.</p>
+</section>
+
+<!-- 1 -->
+<section id="questions">
+<h2><span class="n">1</span> Questions the advisor answers</h2>
+<p>Working backwards from the advisor meeting, organized by horizon. Each names the engine that answers it and a readiness state.</p>
+<div class="legend">
+  <span><i style="background:var(--verdant)"></i>Ready — engine exists, needs a chat wrapper</span>
+  <span><i style="background:var(--rune-400)"></i>Partial — works today, fuller with doc 23</span>
+  <span><i style="background:var(--arcane-500)"></i>New — new engine in this wave</span>
+  <span><i style="background:var(--ember)"></i>Blocked — needs doc 23 or 28 first</span>
+</div>
+<div class="tabs" id="qtabs">
+  <button class="tab active" data-tab="now">Right now <span class="count">6</span></button>
+  <button class="tab" data-tab="short">Short · &lt;1yr <span class="count">5</span></button>
+  <button class="tab" data-tab="medium">Medium · 1–10y <span class="count">6</span></button>
+  <button class="tab" data-tab="long">Long · FIRE <span class="count">5</span></button>
+  <button class="tab" data-tab="inv">Investing <span class="count">6</span></button>
+  <button class="tab" data-tab="cross">Cross-cutting <span class="count">3</span></button>
+</div>
+
+<div class="qpane" data-pane="now">
+<div class="qgrid">
+  <div class="qcard ready"><p class="q">What’s safe to spend between now and payday?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">safe_to_spend</span></div></div>
+  <div class="qcard ready"><p class="q">Will I overdraft before next Tuesday?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">project_balance · obligations</span></div></div>
+  <div class="qcard ready"><p class="q">What’s coming out over the next 14 days, day by day?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">upcoming_obligations</span></div></div>
+  <div class="qcard new"><p class="q">$14k of my savings earns 0.4% while my HYSA pays 4.5% — what’s that costing me?</p><div class="meta"><span class="pill new">New</span><span class="engine">idle_cash · doc 32 (cash-drag)</span></div></div>
+  <div class="qcard ready"><p class="q">Which subscriptions could I cut to free up $50/mo?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">recurring_charges</span></div></div>
+  <div class="qcard new"><p class="q">I have $487 left this month — what’s the highest-value thing to do with it?</p><div class="meta"><span class="pill new">New</span><span class="engine">advisor_options · doc 24</span></div></div>
+</div>
+</div>
+
+<div class="qpane" data-pane="short" hidden>
+<div class="qgrid">
+  <div class="qcard ready"><p class="q">When will my emergency fund hit 3 months of expenses?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">goal_solve</span></div></div>
+  <div class="qcard ready"><p class="q">Which of my goals am I behind on, and by how much?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">goal_status</span></div></div>
+  <div class="qcard ready"><p class="q">Extra $200/mo at the card — when does it die, interest saved?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">debt_payoff · goals/payoff.go</span></div></div>
+  <div class="qcard new"><p class="q">Fastest path out of debt — avalanche vs snowball?</p><div class="meta"><span class="pill new">New</span><span class="engine">debt_strategy · doc 24</span></div></div>
+  <div class="qcard ready"><p class="q">How much interest will I pay this year across all debts?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">debt_summary</span></div></div>
+</div>
+</div>
+
+<div class="qpane" data-pane="medium" hidden>
+<div class="qgrid">
+  <div class="qcard new"><p class="q">I have $30k sitting in savings — how should I split it across Roth, 529, and brokerage?</p><div class="meta"><span class="pill new">New</span><span class="engine">allocation_plan · doc 32</span></div></div>
+  <div class="qcard new"><p class="q">$1,800/mo surplus — where does it go for the next 17 years to fund college and retire on time?</p><div class="meta"><span class="pill new">New</span><span class="engine">allocation_plan · doc 32</span></div></div>
+  <div class="qcard new"><p class="q">Will my 529 fully fund my kid’s college? What’s the shortfall?</p><div class="meta"><span class="pill new">New</span><span class="engine">college_projection · doc 32</span></div></div>
+  <div class="qcard new"><p class="q">Which asset class should go in which account type for tax efficiency?</p><div class="meta"><span class="pill new">New</span><span class="engine">asset_location · doc 32</span></div></div>
+  <div class="qcard blocked"><p class="q">Should I rent or buy?</p><div class="meta"><span class="pill blocked">Doc 28</span><span class="engine">scenario: major_purchase</span></div></div>
+  <div class="qcard blocked"><p class="q">What does a 6-month sabbatical do to my FI age?</p><div class="meta"><span class="pill blocked">Doc 28</span><span class="engine">scenario: life_event</span></div></div>
+</div>
+</div>
+
+<div class="qpane" data-pane="long" hidden>
+<div class="qgrid">
+  <div class="qcard ready"><p class="q">When can I retire?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">retirement_projection</span></div></div>
+  <div class="qcard ready"><p class="q">Am I on track to retire at 60?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">retirement_projection</span></div></div>
+  <div class="qcard ready"><p class="q">What savings rate gets me to FI by 55?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">retirement_solve</span></div></div>
+  <div class="qcard new"><p class="q">If the market drops 30% my first year retired, what are the odds I still make it?</p><div class="meta"><span class="pill new">New</span><span class="engine">retirement_stress + MC success rate · doc 33</span></div></div>
+  <div class="qcard partial"><p class="q">Am I on track to max my 401(k) this year?</p><div class="meta"><span class="pill partial">Partial</span><span class="engine">contribution_room · limits.go (full w/ doc 23)</span></div></div>
+</div>
+</div>
+
+<div class="qpane" data-pane="inv" hidden>
+<div class="qgrid">
+  <div class="qcard ready"><p class="q">How am I doing vs the market over 5 years?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">investment_performance · TWR/MWR</span></div></div>
+  <div class="qcard ready"><p class="q">What’s my asset allocation?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">asset_allocation</span></div></div>
+  <div class="qcard ready"><p class="q">How much am I losing to fees?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">fees_summary</span></div></div>
+  <div class="qcard new"><p class="q">Given my risk tolerance, which of these three allocation plans has the highest success rate?</p><div class="meta"><span class="pill new">New</span><span class="engine">plan_likelihood · doc 33</span></div></div>
+  <div class="qcard new"><p class="q">Six months ago I picked Plan A — did I actually follow it? Am I on track?</p><div class="meta"><span class="pill new">New</span><span class="engine">plan_tracker · doc 33</span></div></div>
+  <div class="qcard partial"><p class="q">Which lots should I harvest for tax losses?</p><div class="meta"><span class="pill partial">Partial</span><span class="engine">tax_lots (full w/ doc 23)</span></div></div>
+</div>
+</div>
+
+<div class="qpane" data-pane="cross" hidden>
+<div class="qgrid">
+  <div class="qcard new"><p class="q">Give me a quarterly review — what changed, where I stand, what to consider.</p><div class="meta"><span class="pill new">New</span><span class="engine">advisor_briefing · doc 31</span></div></div>
+  <div class="qcard ready"><p class="q">Why did the advisor rank option X above option Y?</p><div class="meta"><span class="pill ready">Ready</span><span class="engine">“show the arithmetic” — every option expands</span></div></div>
+  <div class="qcard new"><p class="q">Are my beneficiaries current? My Roth beneficiary is 8 years old.</p><div class="meta"><span class="pill new">New</span><span class="engine">beneficiary nudge · doc 31</span></div></div>
+</div>
+</div>
+</section>
+
+<!-- 2 -->
+<section id="tools">
+<h2><span class="n">2</span> Tools to expose to the model</h2>
+<p>The chat handler enforces one rule: <strong>tools compute, the model narrates, arithmetic is never model-generated</strong>. These follow the same pattern — each wraps an existing engine, returns finished <code>StringFixed(2)</code> strings, carries the household/user scope.</p>
+<div class="wrap-table">
+<table class="tools">
+<thead><tr><th>Tool</th><th>Wraps</th><th>New code</th><th>Doc</th></tr></thead>
+<tbody>
+<tr><td class="tool">safe_to_spend</td><td class="wrap">reporting/safetospend.go</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">project_balance</td><td class="wrap">obligations projection</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">upcoming_obligations</td><td class="wrap">obligation_handlers.go</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">debt_summary</td><td class="wrap">liabilities + account_terms</td><td><span class="pill new">Query</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">debt_payoff</td><td class="wrap">goals/payoff.go + extra-payment</td><td><span class="pill ready">Ext.</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">debt_strategy</td><td class="wrap">avalanche/snowball across debts</td><td><span class="pill new">Engine</span></td><td class="wrap">24</td></tr>
+<tr><td class="tool">goal_status / goal_solve</td><td class="wrap">goals.Compute</td><td><span class="pill ready">Loop</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">retirement_projection</td><td class="wrap">networth/retirement.go</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">retirement_solve</td><td class="wrap">bisection in retirement.go</td><td><span class="pill ready">Param</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">retirement_stress</td><td class="wrap">montecarlo + sequence path</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">33</td></tr>
+<tr><td class="tool">investment_performance</td><td class="wrap">reporting/returns.go</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">asset_allocation / fees_summary</td><td class="wrap">reporting/investments.go</td><td><span class="pill ready">Wrapper</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">contribution_room</td><td class="wrap">limits.go + YTD</td><td><span class="pill partial">Partial</span></td><td class="wrap">31 / 23</td></tr>
+<tr><td class="tool">advisor_briefing</td><td class="wrap">composed digest</td><td><span class="pill new">Comp.</span></td><td class="wrap">31</td></tr>
+<tr><td class="tool">advisor_options</td><td class="wrap">doc 24 ranked pass</td><td><span class="pill new">Engine</span></td><td class="wrap">24</td></tr>
+<tr><td class="tool">allocation_plan</td><td class="wrap">NEW allocation package</td><td><span class="pill new">Engine</span></td><td class="wrap">32</td></tr>
+<tr><td class="tool">idle_cash / asset_location / college_projection</td><td class="wrap">NEW allocation sub-engines</td><td><span class="pill new">Engine</span></td><td class="wrap">32</td></tr>
+<tr><td class="tool">plan_likelihood</td><td class="wrap">MC over return distributions</td><td><span class="pill new">Engine</span></td><td class="wrap">33</td></tr>
+<tr><td class="tool">plan_tracker</td><td class="wrap">plan-vs-actual reconciler</td><td><span class="pill new">Engine</span></td><td class="wrap">33</td></tr>
+</tbody>
+</table>
+</div>
+<p style="margin-top:1rem"><strong>Scope invariant on every query:</strong> <code>household_id = $1 AND (user_id = $2 OR is_shared)</code>. A leak in <code>allocation_plan</code> would expose a spouse’s full position — test per tool.</p>
+</section>
+
+<!-- 3 -->
+<section id="page">
+<h2><span class="n">3</span> The Advisor page</h2>
+<p>The chat stays — but becomes one mode among several. A real advisor page has <strong>glance, explore, and ask</strong> modes:</p>
+<div class="arch">
+  <div class="a"><span class="num">01</span><h4>The Briefing</h4><p>Always-on state-of-the-household strip: net worth, slack, FI age, debt-free date, EF runway. Top three “worth your attention this week.” The elevator pitch before the deep dive.</p><span class="tag">deterministic · doc 31</span></div>
+  <div class="a"><span class="num">02</span><h4>Options panel</h4><p>When slack clears threshold, ranked option cards from doc 24 — each with computed outcome + expandable “show the arithmetic.” Dismiss per-option. “Model this as an allocation” deep-link.</p><span class="tag">doc 24 · threshold-gated</span></div>
+  <div class="a"><span class="num">03</span><h4>Bucket allocator</h4><p>The killer feature. Split a lump and/or monthly surplus across Roth / 529 / brokerage / debt / EF. Per-bucket projection, contribution-cap enforcement, goal-mapping. Try it live below.</p><span class="tag">doc 32 · interactive</span></div>
+  <div class="a"><span class="num">04</span><h4>Horizon view</h4><p>Short / medium / long tabs grouping goals and obligations by horizon. Each item: target vs projected completion. How advisors frame the conversation.</p><span class="tag">doc 31</span></div>
+  <div class="a"><span class="num">05</span><h4>Scenario launchpad</h4><p>Pre-baked tiles — buy a house, job offer, retire early, sabbatical, kid. Lights up when doc 28 lands; advisor is its discovery layer.</p><span class="tag">doc 28 · discovery</span></div>
+  <div class="a"><span class="num">06</span><h4>Saved plans &amp; threads</h4><p>Named allocation plans (input_versioned, recompute against live baseline) and conversation threads. The advisor relationship, not a snapshot.</p><span class="tag">docs 32/31</span></div>
+  <div class="a"><span class="num">07</span><h4>Action items + plan tracker</h4><p>Advisor proposes; you accept; it’s tracked. Plan-vs-actual reconciliation closes the loop. Never executed — transfers are permanently out — but the decision is tracked.</p><span class="tag">doc 33 · tracked, not executed</span></div>
+  <div class="a"><span class="num">08</span><h4>Assumptions panel</h4><p>Always visible and editable — real return per bucket, inflation, withdrawal rate, target age, risk tolerance. Everything reflects these; edits ripple live.</p><span class="tag">doc 31 · doc 15 rule</span></div>
+  <div class="a"><span class="num">09</span><h4>Show the math, everywhere</h4><p>Every number expandable into components. The advisor’s whole credibility proposition — separates the feature from a horoscope.</p><span class="tag">design principle</span></div>
+  <div class="a"><span class="num">10</span><h4>Periodic advisor report</h4><p>Quarterly auto-generated review: what changed, where you stand, what to consider. The digest (doc 25) rendered as a document.</p><span class="tag">doc 25</span></div>
+</div>
+</section>
+
+<!-- 4 -->
+<section id="flow">
+<h2><span class="n">4</span> How it fits together</h2>
+<p>Wave-5 foundations (honesty + income + manual accounts) feed the engines. The advisor core consumes them: doc 24 ranks single-pick options; doc 32 plans multi-bucket allocations; doc 33 adds likelihood. Surfaces through the insight feed, dashboard panel, advisor page, and (later) scenarios.</p>
+<div class="flow-wrap">
+<svg class="flow" viewBox="0 0 860 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Data flow">
+  <defs><marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="var(--ink-600)"/></marker></defs>
+  <text x="20" y="22" class="title">Wave 5 foundations</text>
+  <text x="250" y="22" class="title">Engines (existing)</text>
+  <text x="500" y="22" class="title">Wave 6 advisor core</text>
+  <text x="760" y="22" class="title">Surfaces</text>
+  <g class="node">
+    <rect x="10" y="45" width="200" height="26" rx="6"/><text x="110" y="62" text-anchor="middle" class="lbl">doc 23 paystub income</text>
+    <rect x="10" y="79" width="200" height="26" rx="6"/><text x="110" y="96" text-anchor="middle" class="lbl">doc 27 inflation (CPI)</text>
+    <rect x="10" y="113" width="200" height="26" rx="6"/><text x="110" y="130" text-anchor="middle" class="lbl">doc 26 real-asset reval</text>
+    <rect x="10" y="147" width="200" height="26" rx="6"/><text x="110" y="164" text-anchor="middle" class="lbl">doc 30 manual accounts</text>
+  </g>
+  <g class="node engine">
+    <rect x="250" y="45" width="180" height="24" rx="6"/><text x="340" y="61" text-anchor="middle" class="mono-l">reporting/safetospend</text>
+    <rect x="250" y="77" width="180" height="24" rx="6"/><text x="340" y="93" text-anchor="middle" class="mono-l">obligations projection</text>
+    <rect x="250" y="109" width="180" height="24" rx="6"/><text x="340" y="125" text-anchor="middle" class="mono-l">goals · payoff · Compute</text>
+    <rect x="250" y="141" width="180" height="24" rx="6"/><text x="340" y="157" text-anchor="middle" class="mono-l">networth/retirement + MC</text>
+    <rect x="250" y="173" width="180" height="24" rx="6"/><text x="340" y="189" text-anchor="middle" class="mono-l">networth/limits.go</text>
+    <rect x="250" y="205" width="180" height="24" rx="6"/><text x="340" y="221" text-anchor="middle" class="mono-l">reporting/returns</text>
+  </g>
+  <path class="arr" d="M210,58 L248,58"/><path class="arr" d="M210,92 L248,92"/><path class="arr" d="M210,126 L248,126"/><path class="arr" d="M210,160 L248,160"/><path class="arr" d="M210,194 L248,178"/>
+
+  <g>
+    <rect class="core" x="500" y="80" width="200" height="56" rx="10"/>
+    <text x="600" y="103" text-anchor="middle" class="lbl">Proactive ranker</text>
+    <text x="600" y="119" text-anchor="middle" class="mono-l">doc 24 · single-pick options</text>
+  </g>
+  <g>
+    <rect class="alloc" x="500" y="155" width="200" height="56" rx="10"/>
+    <text x="600" y="178" text-anchor="middle" class="lbl">Allocation planner</text>
+    <text x="600" y="194" text-anchor="middle" class="mono-l">doc 32 · multi-bucket split</text>
+  </g>
+  <g>
+    <rect class="alloc" x="500" y="230" width="200" height="56" rx="10"/>
+    <text x="600" y="253" text-anchor="middle" class="lbl">Likelihood layer</text>
+    <text x="600" y="269" text-anchor="middle" class="mono-l">doc 33 · MC + guardrail AI</text>
+  </g>
+  <path class="arr" d="M430,58 C465,58 465,100 498,108"/>
+  <path class="arr" d="M430,126 C465,126 465,112 498,112"/>
+  <path class="arr" d="M430,157 C465,157 465,178 498,180"/>
+  <path class="arr" d="M430,189 C465,189 465,186 498,184"/>
+  <path class="arr" d="M600,136 L600,153"/>
+  <path class="arr" d="M600,211 L600,228"/>
+
+  <g class="node surface">
+    <rect x="750" y="45" width="105" height="24" rx="6"/><text x="802" y="61" text-anchor="middle" class="lbl">Insight feed</text>
+    <rect x="750" y="79" width="105" height="24" rx="6"/><text x="802" y="95" text-anchor="middle" class="lbl">Dashboard</text>
+    <rect x="750" y="113" width="105" height="40" rx="6"/><text x="802" y="130" text-anchor="middle" class="lbl">Advisor page</text><text x="802" y="145" text-anchor="middle" class="sub">briefing·alloc·chat</text>
+    <rect x="750" y="161" width="105" height="24" rx="6"/><text x="802" y="177" text-anchor="middle" class="lbl">Scenarios</text>
+    <rect x="750" y="195" width="105" height="24" rx="6"/><text x="802" y="211" text-anchor="middle" class="lbl">Digest</text>
+  </g>
+  <path class="arr" d="M700,108 C725,108 725,57 748,57"/>
+  <path class="arr" d="M700,112 C725,112 725,91 748,91"/>
+  <path class="arr" d="M700,180 C725,180 725,133 748,133"/>
+  <path class="arr" d="M700,258 C725,258 725,173 748,173" stroke-dasharray="3 3"/>
+  <text x="20" y="540" class="sub">Purple = existing engines · Gold = advisor core (docs 24/32/33) · Dashed = scenario discovery (doc 28, wave 7)</text>
+</svg>
+</div>
+</section>
+
+<!-- 5 OPTIONS RANKER -->
+<section id="ranker">
+<h2><span class="n">5</span> Live: the options ranker <span class="docref" style="font-size:.7rem">doc 24</span></h2>
+<p>The single-pick ranker — “you have $X this month, what’s the highest-value thing to do with it.” Guaranteed return first (debt APR), then goals, then assumed-return investing. This is doc 24’s surface; real numbers flow from <code>BuildSafeToSpend</code>, <code>liabilities.apr</code>, <code>goals.Compute</code>.</p>
+<div class="glass demo-grid">
+  <div class="demo-inputs">
+    <h4><span class="dot"></span> This month’s slack</h4>
+    <div class="field"><label>Cash available <span class="v" id="slackV">$500</span></label><input type="range" id="slack" min="100" max="2000" step="25" value="500"></div>
+    <div class="field-group">Household state</div>
+    <div class="field"><label>Card balance <span class="v" id="lb1">$</span></label><input type="number" id="cardBal" value="4200" min="0" step="50"></div>
+    <div class="field"><label>Card APR (%) <span class="v" id="lb2"></span></label><input type="number" id="cardApr" value="22" min="0" max="40" step="0.5"></div>
+    <div class="field"><label>Min payment / mo <span class="v" id="lb3">$</span></label><input type="number" id="cardMin" value="120" min="0" step="5"></div>
+    <div class="field"><label>EF: current <span class="v" id="lb4">$</span></label><input type="number" id="efNow" value="9000" min="0" step="100"></div>
+    <div class="field"><label>EF: target <span class="v" id="lb5">$</span></label><input type="number" id="efGoal" value="15000" min="0" step="500"></div>
+    <div class="field"><label>EF monthly <span class="v" id="lb6">$</span></label><input type="number" id="efMo" value="300" min="0" step="25"></div>
+    <div class="field"><label>Assumed real return (%) <span class="v" id="lb7"></span></label><input type="number" id="realRet" value="5" min="0" max="12" step="0.25"></div>
+    <div class="field"><label>Years to retirement <span class="v" id="lb8"></span></label><input type="number" id="years" value="25" min="1" max="50" step="1"></div>
+  </div>
+  <div style="padding:1.25rem; min-width:0">
+    <div id="options"></div>
+    <p class="demo-note">Same amortization / compounding math the Go engines run server-side. The ranking rule is deterministic and stated in code; “the model decided” is never an acceptable answer to why one option ranked above another.</p>
+  </div>
+</div>
+</section>
+
+<!-- 6 ALLOCATOR -->
+<section id="allocator">
+<h2><span class="n">6</span> Live: the bucket allocator <span class="docref" style="font-size:.7rem">doc 32</span></h2>
+<p>The killer feature — the thing your real advisor does that the app can’t yet. Split a <strong>lump sum</strong> and/or a <strong>monthly recurring</strong> across buckets. Each bucket carries its real contribution cap and an assumed real return. The Monte Carlo row (doc 33) samples annual returns to give a success rate and a P10/P50/P90 range against your target. Adjust the sliders — the math is live.</p>
+<div class="glass demo-grid">
+  <div class="demo-inputs">
+    <h4><span class="dot" style="background:var(--rune-400)"></span> Money &amp; horizon</h4>
+    <div class="field"><label>Lump sum to deploy <span class="v" id="aLumpV">$30,000</span></label><input type="range" id="aLump" min="0" max="100000" step="1000" value="30000"></div>
+    <div class="field"><label>Monthly surplus <span class="v" id="aMoV">$1,800</span></label><input type="range" id="aMo" min="0" max="5000" step="50" value="1800"></div>
+    <div class="field"><label>Horizon (years) <span class="v" id="aHorV">17</span></label><input type="range" id="aHor" min="1" max="40" step="1" value="17"></div>
+    <div class="field"><label>Target nest-egg at horizon <span class="v" id="aTgtV">$300,000</span></label><input type="range" id="aTgt" min="50000" max="2000000" step="10000" value="300000"></div>
+    <div class="field"><label>Return volatility (σ) <span class="v" id="aVolV">15%</span></label><input type="range" id="aVol" min="5" max="30" step="1" value="15"></div>
+
+    <div class="field-group">Allocation split (auto-normalizes)</div>
+    <div class="alloc-bucket"><div class="bh"><span class="bn">Roth IRA</span><span class="bp" id="pRothV">25%</span></div><input type="range" id="pRoth" min="0" max="100" step="5" value="25"><div class="cap" id="capRoth"></div></div>
+    <div class="alloc-bucket"><div class="bh"><span class="bn">529 (per kid)</span><span class="bp" id="p529V">20%</span></div><input type="range" id="p529" min="0" max="100" step="5" value="20"></div>
+    <div class="alloc-bucket"><div class="bh"><span class="bn">Taxable brokerage</span><span class="bp" id="pBrokV">35%</span></div><input type="range" id="pBrok" min="0" max="100" step="5" value="35"></div>
+    <div class="alloc-bucket"><div class="bh"><span class="bn">Debt paydown (22% card)</span><span class="bp" id="pDebtV">10%</span></div><input type="range" id="pDebt" min="0" max="100" step="5" value="10"></div>
+    <div class="alloc-bucket"><div class="bh"><span class="bn">Emergency fund (HYSA 4.5%)</span><span class="bp" id="pEFV">10%</span></div><input type="range" id="pEF" min="0" max="100" step="5" value="10"></div>
+    <div class="alloc-sum"><span>Total split</span><span id="allocTotal">100%</span></div>
+  </div>
+  <div style="padding:1.25rem; min-width:0">
+    <div class="out-cols">
+      <div class="out-card"><div class="oc-h">Projected value at horizon</div><div class="oc-v" id="oTotal">$0</div><div class="oc-sub" id="oTotalSub">contributed + growth</div></div>
+      <div class="out-card"><div class="oc-h">Monte Carlo success rate</div><div class="oc-v green" id="oSuccess">—</div><div class="oc-sub" id="oSuccessSub">meets $0 target · 1000 sims</div></div>
+    </div>
+    <div class="bucket-out" id="bucketOut"></div>
+    <div class="fan">
+      <div class="fan-h"><span>Projected balance distribution (doc 33 likelihood layer)</span><span id="fanLabel">P10 / P50 / P90</span></div>
+      <svg id="fanSvg" viewBox="0 0 400 90" preserveAspectRatio="none"></svg>
+    </div>
+    <p class="demo-note">Roth capped at $7,500 (2026, under 50) — lump above the cap spills to the next bucket. 529 has no federal annual cap (limits.go declines to invent one). Debt paydown returns a <em>guaranteed</em> 22%. Monte Carlo samples annual returns ~ N(μ, σ) per bucket; same seed → identical result (production uses historical return distributions when enabled).</p>
+  </div>
+</div>
+</section>
+
+<!-- 7 PROFILE -->
+<section id="profile">
+<h2><span class="n">7</span> The household profile</h2>
+<p>An advisor knows you before advising. The app already asks for birthday; profile only what an engine <em>consumes</em> — nothing speculative. Kids and dependents are already modeled in <code>household_people</code> (birthdate + <code>is_dependent</code>), so “number of kids” is largely answerable today.</p>
+<div class="profile-grid">
+  <div class="pf have"><h4>Birthdate / age</h4><p>Drives catch-up limits (50+), super-catchup (60–63), FI target, horizon.</p><span class="eng">limits.go · retirement.go</span></div>
+  <div class="pf have"><h4>Kids + ages</h4><p>529 beneficiary horizon, college-cost projection, dependent care. Already in household_people.</p><span class="eng">account_contributions · doc 32</span></div>
+  <div class="pf have"><h4>Salary + employer match</h4><p>Match is % of salary; a match with no salary is refused. Per-account.</p><span class="eng">account_contributions</span></div>
+  <div class="pf have"><h4>Target retirement age</h4><p>FIRE target. Already in projection_assumptions.</p><span class="eng">projection_assumptions</span></div>
+  <div class="pf have"><h4>Assumed real return + inflation</h4><p>Per-bucket, editable. CPI series arrives with doc 27.</p><span class="eng">projection_assumptions · doc 27</span></div>
+  <div class="pf new"><h4>Risk tolerance</h4><p>Max drawdown floor + near-term liquidity needs. The personal layer of the guardrail rule — without it, the top-pick is generic.</p><span class="eng">preferences · doc 33 guardrail</span></div>
+  <div class="pf new"><h4>State of residence</h4><p>529 state caps, tax brackets, state-tax treatment of retirement contributions.</p><span class="eng">doc 23 tax math · doc 32</span></div>
+  <div class="pf new"><h4>Filing status</h4><p>Married-joint vs single shifts IRA deduction phase-outs, contribution limits, brackets.</p><span class="eng">doc 23</span></div>
+  <div class="pf new"><h4>Housing situation</h4><p>Own/rent, home value, mortgage, plan-to-move horizon. Seeds the major-purchase scenario and the net-worth baseline.</p><span class="eng">manual_assets · doc 28</span></div>
+</div>
+</section>
+
+<!-- 8 ADDITIONS -->
+<section id="additions">
+<h2><span class="n">8</span> Six additions that close the gap</h2>
+<p>What takes the advisor from “answers questions” to “covers every computable domain a CFP® covers.”</p>
+<div class="arch">
+  <div class="a"><span class="num">1</span><h4>Idle-cash / cash-drag detection</h4><p>Detect cash earning 0.4% in checking when the HYSA pays 4.5%. The on-ramp to every allocation conversation. Needs a small APY addition (user-entered; Plaid doesn’t serve it reliably).</p><span class="tag">doc 32</span></div>
+  <div class="a"><span class="num">2</span><h4>Plan tracking &amp; feedback loop</h4><p>You accept Plan A; six months later the advisor reconciles actual contributions vs the plan and re-runs against live state. A relationship, not a calculator.</p><span class="tag">doc 33</span></div>
+  <div class="a"><span class="num">3</span><h4>College-cost projection</h4><p>529 grows; “will it fully fund college?” needs a tuition target. College inflation ~5–6%/yr, not CPI. Turns the 529 bucket from “grows” into “on track / shortfall.”</p><span class="tag">doc 32</span></div>
+  <div class="a"><span class="num">4</span><h4>Asset-location / tax placement</h4><p>Bonds in tax-advantaged, equities in taxable, Roth growing tax-free. Same dollars, different home — where real tax alpha lives. accounts.tax_treatment already tagged.</p><span class="tag">doc 32</span></div>
+  <div class="a"><span class="num">5</span><h4>Risk-tolerance input</h4><p>“Plan A meets goals in 94% of sims but has a 38% worst-case drawdown; your floor is 25% → Plan A fails your guardrail.” Without it the top-pick is generic; with it, it’s yours.</p><span class="tag">preferences · doc 33</span></div>
+  <div class="a"><span class="num">6</span><h4>Horizon-aware bucket assignment</h4><p>Money needed in 2 yrs stays liquid; 30-yr money in equities; 529 de-risks as enrollment nears. A principle the allocator enforces, not just a feature.</p><span class="tag">doc 32</span></div>
+</div>
+</section>
+
+<!-- 9 ROADMAP -->
+<section id="roadmap">
+<h2><span class="n">9</span> Roadmap</h2>
+<p>Wave 5 (foundations/honesty) completes first — the user’s hard requirement that all prereqs land before the proactive advisor is touched. Wave 6 is the advisor, built on that foundation. Wave 7 is the capstone scenario engine, for which the advisor becomes the discovery layer.</p>
+<div class="road">
+  <div class="wrow">
+    <div class="wtag w5">Wave 5<span class="stat">foundations · first</span></div>
+    <div class="wbody">
+      <h4>Honesty &amp; income — no advisor yet</h4>
+      <p>Every downstream projection must be trustworthy before it advises on it. Per the user: <em>“wave 5 done before the proactive advisor is touched.”</em> Doc 24 moves out of this wave into wave 6.</p>
+      <ul>
+        <li><strong>doc 23</strong> paystub income — contribution-limit headroom, tax math (the biggest hole in the data model)</li>
+        <li><strong>doc 27</strong> inflation-adjusted views — real vs nominal dollars (bundled here per user)</li>
+        <li><strong>doc 26</strong> real-asset revaluation — home/vehicle/bond values stop drifting (bundled here per user)</li>
+        <li><strong>doc 30</strong> manual accounts — Voya-style accounts without Plaid (just added)</li>
+        <li><strong>doc 25</strong> in-app digest — surfaces the digest that only pushes today</li>
+      </ul>
+      <div class="docs"><span class="docref">23</span><span class="docref">25</span><span class="docref">26</span><span class="docref">27</span><span class="docref">30</span></div>
+    </div>
+  </div>
+
+  <div class="wrow">
+    <div class="wtag w6">Wave 6<span class="stat">the Advisor</span></div>
+    <div class="wbody">
+      <h4>The advisor initiative — four docs, sequenced W1→W4</h4>
+      <p><strong>W1 · doc 31 Advisor surface.</strong> Rename Assistant → Advisor. Expose ~12 existing engines as chat tools (no new math). Build the Briefing, Horizon view, Assumptions panel, saved threads, beneficiary nudge. Biggest question-coverage gain, lowest risk.</p>
+      <p><strong>W2 · doc 24 Proactive engine.</strong> The single-pick ranker (you have $X — here are the options). Slack from <code>BuildSafeToSpend</code> (reused, never reimplemented). Multi-debt avalanche/snowball ships here. The agreement test: advisor slack == Budgets safe-to-spend, exact decimal.</p>
+      <p><strong>W3 · doc 32 Allocation planner.</strong> Multi-bucket split (lump + monthly across Roth/529/brokerage/debt/EF). Per-bucket projection via <code>ProjectByAccount</code>, cap enforcement via <code>limits.go</code>, goal-mapping, cash-drag detection, asset-location, college-cost, horizon-aware assignment.</p>
+      <p><strong>W4 · doc 33 Likelihood layer.</strong> Monte Carlo over return distributions → P10/P50/P90 + success rates. Guardrail-based AI top-pick (“based on the math, Plan A — here’s why”). Plan-vs-actual tracking closes the loop.</p>
+      <div class="docs"><span class="docref">24</span><span class="docref">31</span><span class="docref">32</span><span class="docref">33</span></div>
+    </div>
+  </div>
+
+  <div class="wrow">
+    <div class="wtag w7">Wave 7<span class="stat">capstone</span></div>
+    <div class="wbody">
+      <h4>Scenarios &amp; beyond</h4>
+      <p><strong>doc 28 Decision modeling</strong> — the what-if engine (rent-vs-buy, retirement stress, job offer, life events). The advisor’s scenario launchpad lights up here; advisor is its discovery layer. Ship one family at a time.</p>
+      <p><strong>doc 29 Multi-currency</strong> — deprioritized indefinitely (user: “I still don’t care about multi currency”).</p>
+      <div class="docs"><span class="docref">28</span><span class="docref">29</span></div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- 10 SEAMS -->
+<section id="seams">
+<h2><span class="n">10</span> Decisions (locked)</h2>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>The recommendation line → math-grounded</h4>
+  <p>When the math is unambiguous, the advisor may <em>note</em> it. “Paying the 22% card returns a guaranteed 22%; investing at an assumed 5% does not” is a computation, not advice. The guardrail rule is documented and deterministic; the AI names the top pick and explains it in terms of the computed likelihoods — it never substitutes opinion for arithmetic.</p>
+</div>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>Past performance → Monte Carlo over return distributions</h4>
+  <p>Not naive “this returned 12% last year, assume 12%.” The rigorous cousin: sample from return distributions to produce P10/P50/P90 and success rates. <code>networth/montecarlo.go</code> exists (gated off). When historical series are enabled they seed the distribution; until then, the user’s assumed return + volatility parameterize it. Same seed → identical result.</p>
+</div>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>Wave 5 before proactive advisor; 26+27 bundled into wave 5</h4>
+  <p>Docs 26 (real-asset reval) and 27 (inflation) join 23 in the foundations wave. The advisor (24/31/32/33) is wave 6, built on honest inputs. Cheap honesty insurance for the expensive feature.</p>
+</div>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>Page identity → rename Assistant → Advisor</h4>
+  <p>The chat is retained and remains the centerpiece. No clean separation worth two routes; “Advisor” is the honest name for the surface.</p>
+</div>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>Plan split → three new docs (31/32/33) layered on 24</h4>
+  <p>Doc 24 stays the proactive engine. New docs cover surface (31), allocation planner (32), likelihood layer (33). Each scoped so a single implementer can pick it up cold.</p>
+</div>
+<div class="seam decided">
+  <span class="dec">decided</span>
+  <h4>Conversation persistence + action items → in scope</h4>
+  <p>Saved/named threads and tracked action items ship in wave 6. The closest the app gets to “doing” without crossing the no-transfer line. Household-scoped; shared/private follows existing account rules.</p>
+</div>
+</section>
+
+<!-- 11 RISK -->
+<section id="risk">
+<h2><span class="n">11</span> Risk register</h2>
+<div class="wrap-table">
+<table class="risk">
+<thead><tr><th>Risk</th><th>Severity</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td class="rn">Scope creep into recommendations</td><td><span class="sev high">High</span></td><td class="mit">Hard rule in the extended prompt; “show the arithmetic” mandate; guardrail rule documented and deterministic; security-level recs permanently out.</td></tr>
+<tr><td class="rn">Two surfaces disagree on slack</td><td><span class="sev crit">Critical</span></td><td class="mit">Single most important test in doc 24: advisor slack == Budgets safe-to-spend, exact decimal. Reuse <code>BuildSafeToSpend</code>, never reimplement.</td></tr>
+<tr><td class="rn">Allocation plan mutates real data</td><td><span class="sev crit">Critical</span></td><td class="mit">Override application is pure, no side effects; snapshot every relevant table before/after, assert identical (doc 28’s rule, inherited by 32).</td></tr>
+<tr><td class="rn">Visibility invariant breach in new tools</td><td><span class="sev crit">Critical</span></td><td class="mit">Every new query carries <code>household_id AND (user_id OR is_shared)</code>. <code>allocation_plan</code> leaks a full household position — test per tool.</td></tr>
+<tr><td class="rn">Monte Carlo as crystal ball</td><td><span class="sev high">High</span></td><td class="mit">MC is “illustrative under stated assumptions,” never a prediction. Always label the distribution basis; same seed → identical result; show percentiles, never just the median.</td></tr>
+<tr><td class="rn">AI cost inflation (many tools)</td><td><span class="sev med">Med</span></td><td class="mit">Tool-result caching; <code>maxToolIterations</code> already 6. Engines deterministic and cacheable; narration is the only AI cost.</td></tr>
+<tr><td class="rn">Saved thread / plan leak across household</td><td><span class="sev high">High</span></td><td class="mit">Reuse household visibility; shared/private follows existing account rules. A spouse seeing the other’s “should we divorce” thread would be catastrophic.</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<!-- 12 SCOPE -->
+<section id="scope">
+<h2><span class="n">12</span> Out of scope</h2>
+<div class="oos">
+  <div class="o"><h4>Executing transfers or payments</h4><p>No money ever moves on the app’s instruction. Action items are tracked, not executed.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Security-level / investment-selection recs</h4><p>Which stock to buy, specific product selection. Regulated advice; out permanently.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Insurance product recommendations</h4><p>Needs-estimate (term-life multiple, disability gap) may ship as a doc 28 scenario; product selection never.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Estate legal advice</h4><p>Wills/trusts/POA are legal work. Beneficiary currency nudges yes; drafting no.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Tax preparation / CPA advice</h4><p>Surfaces tax implications; does not file, generate forms, or give CPA-level guidance. Doc 23’s line.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Real-time market data for modeling</h4><p>Forward modeling uses user-set assumed returns (+ historical distributions when enabled). <code>asset_prices</code> is historical reporting.</p><div class="perm">Permanent</div></div>
+  <div class="o"><h4>Multi-currency (doc 29)</h4><p>Deprioritized indefinitely per user.</p><div class="perm">Deferred</div></div>
+  <div class="o"><h4>The scenario engine itself (docs 31–33)</h4><p>Doc 28 is wave 7. The advisor’s scenario launchpad is its discovery layer when 28 lands.</p><div class="perm">Wave 7</div></div>
+</div>
+</section>
+
+<!-- 13 PRINCIPLES -->
+<section id="principles">
+<h2><span class="n">13</span> Principles</h2>
+<p>Six rules, drawn from <code>chat_handlers.go</code> and docs 24/28, extended across the whole surface. These stop a feature that <em>looks</em> like advice from becoming advice.</p>
+<div class="principles">
+  <div class="principle"><div><h4>Deterministic computes, AI narrates</h4><p>Every figure computed in exact decimal server-side. The model receives finished numbers and writes prose. It never invents an option, never reorders, never computes. Extend the existing prompt; don’t write a new one.</p></div></div>
+  <div class="principle"><div><h4>Show the arithmetic</h4><p>Every number expandable into its components: the slack pieces, the APR, the term, the assumption, the distribution basis. Separates the feature from a horoscope.</p></div></div>
+  <div class="principle"><div><h4>Works with no AI key</h4><p>Every advisor feature renders with <code>ErrDisabled</code>. Engines produce results; AI only phrases. A blank <code>AI_API_KEY</code> degrades to plain deterministic lists — never an error screen.</p></div></div>
+  <div class="principle"><div><h4>Scope invariant on every query</h4><p><code>household_id AND (user_id OR is_shared)</code> on every new tool. A forgotten scope leaks a spouse’s full position. Test per tool.</p></div></div>
+  <div class="principle"><div><h4>Surfaces appear only when there’s something to say</h4><p>An advisor that fires on $12 of slack trains the user to ignore it. Options, insights, and push all clear a meaningful threshold. Silence beats noise.</p></div></div>
+  <div class="principle"><div><h4>Two surfaces must agree</h4><p>If Budgets shows $487 of safe-to-spend and Advisor shows $512, trust in both is destroyed. Reuse the same engines; assert agreement at exact decimal.</p></div></div>
+</div>
+</section>
+
+<!-- 14 FAQ -->
+<section id="faq">
+<h2><span class="n">14</span> FAQ</h2>
+<div class="faq">
+  <details><summary>Is this giving me financial advice?</summary><p>No. Computed tradeoffs, not recommendations. The math-grounded stance lets the advisor <em>note</em> an unambiguous spread, and doc 33’s guardrail lets the AI name a top pick <em>in terms of the computed likelihoods</em> — but the rule is documented and deterministic. Security-level and product recommendations are permanently out (regulated advice).</p></details>
+  <details><summary>How does the AI pick the “top” plan without guessing?</summary><p>The guardrail rule is written down, not vibes: “prefer the plan that meets all stated goals with the highest success rate, subject to the user’s drawdown floor; break ties by lower volatility.” The AI receives each plan’s computed percentiles, success rate, and goal-fit, plus the rule, and explains the pick in those terms. Same inputs → same pick → same explanation.</p></details>
+  <details><summary>Will it work without an AI key?</summary><p>Yes. Every engine is deterministic; AI only phrases. With <code>AI_API_KEY</code> blank, the briefing, options, allocator, and likelihoods all render as plain lists/figures with no narration and no error. Same discipline as the current assistant.</p></details>
+  <details><summary>How is this different from doc 24?</summary><p>Doc 24 is the single-pick proactive engine (one slack amount → ranked single options). Doc 31 is the surface (the page + chat exposure). Doc 32 is the multi-bucket allocator (split across buckets with caps + projections). Doc 33 is the likelihood layer (Monte Carlo + guardrail AI + plan tracking). They compose.</p></details>
+  <details><summary>Do I need docs 23/26/27?</summary><p>Yes — that’s why they’re wave 5 and the advisor is wave 6. Doc 23 makes contribution headroom real; 26 keeps asset values from drifting; 27 makes long-horizon dollars honest. The allocator and likelihood layers inherit their inputs.</p></details>
+  <details><summary>What stops the model inventing numbers?</summary><p>The system prompt in <code>chat_handlers.go</code> already forbids it: every figure from a tool call, the model never does arithmetic. New tools inherit those rules verbatim. <code>StringFixed(2)</code> results make a quoted figure trivially auditable — it matches a tool output or it doesn’t.</p></details>
+  <details><summary>Can my spouse see my plans/threads?</summary><p>Household-scoped, following the same shared/private rules as accounts. A shared-finances plan is visible; a private-account question is not. The scope invariant on every query is what enforces this — and why a leak there is a critical-severity risk.</p></details>
+</div>
+</section>
+
+<footer class="foot">
+  <p>Ledgermancy · the Advisor (wave 6) · visual companion to plan docs 24, 31, 32, 33. Self-contained HTML; demos compute locally; production figures flow from the Go engines in exact decimal.</p>
+</footer>
+</main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $=function(id){return document.getElementById(id);}
+  var money=function(n){return '$'+Math.round(n).toLocaleString('en-US');};
+  var pct=function(n,d){d=d==null?0:d;return n.toFixed(d)+'%';}
+
+  // TOC
+  var links=Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  var secs=links.map(function(a){return document.querySelector(a.getAttribute('href'));});
+  function onScroll(){var y=window.scrollY+130,idx=0;for(var i=0;i<secs.length;i++){if(secs[i]&&secs[i].offsetTop<=y)idx=i;}links.forEach(function(l,i){l.classList.toggle('active',i===idx);});}
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+  var toc=document.getElementById('toc');toc.querySelector('.brand').addEventListener('click',function(){toc.classList.toggle('open');});
+
+  // tabs
+  var tabs=Array.prototype.slice.call(document.querySelectorAll('#qtabs .tab'));
+  var panes=Array.prototype.slice.call(document.querySelectorAll('.qpane'));
+  tabs.forEach(function(t){t.addEventListener('click',function(){var k=t.getAttribute('data-tab');tabs.forEach(function(x){x.classList.toggle('active',x===t);});panes.forEach(function(p){p.hidden=p.getAttribute('data-pane')!==k;});});});
+
+  // ===== OPTIONS RANKER (doc 24) =====
+  function amort(bal,apr,pmt){var r=apr/100/12;if(r<=0)return{months:bal>0&&pmt>0?Math.ceil(bal/pmt):0,interest:0};if(pmt<=bal*r)return{months:Infinity,interest:Infinity};var n=-Math.log(1-bal*r/pmt)/Math.log(1+r);return{months:Math.ceil(n),interest:pmt*n-bal};}
+  function mLbl(m){if(m===Infinity)return'never (payment ≤ interest)';var y=Math.floor(m/12),mo=m%12;if(y&&mo)return y+'y '+mo+'m';if(y)return y+'y';return mo+'m';}
+  function renderRanker(){
+    var slack=+$('slack').value,cardBal=+$('cardBal').value||0,cardApr=+$('cardApr').value||0,cardMin=+$('cardMin').value||0;
+    var efNow=+$('efNow').value||0,efGoal=+$('efGoal').value||0,efMo=+$('efMo').value||0,realRet=+$('realRet').value||0,years=+$('years').value||0;
+    $('slackV').textContent=money(slack);
+    $('lb1').textContent=money(cardBal);$('lb2').textContent=pct(cardApr);$('lb3').textContent=money(cardMin);
+    $('lb4').textContent=money(efNow);$('lb5').textContent=money(efGoal);$('lb6').textContent=money(efMo);$('lb7').textContent=pct(realRet);$('lb8').textContent=years+'y';
+    var out=$('options');out.innerHTML='';
+    var opts=[];
+    if(cardBal>0&&cardMin>0){
+      var b=amort(cardBal,cardApr,cardMin),bo=amort(cardBal,cardApr,cardMin+slack);
+      var saved=b.interest-bo.interest;var ms=(b.months!==Infinity&&bo.months!==Infinity)?b.months-bo.months:null;
+      opts.push({r:1,t:'Put '+money(slack)+' toward the '+pct(cardApr)+' card',o:'Saves <em>'+money(Math.max(0,saved))+'</em> in interest'+(ms?' and pays it off <em>'+mLbl(ms)+' sooner</em>':'')+'.',b:'Guaranteed '+pct(cardApr)+' return — no market assumption',m:'<span class="k">amort('+money(cardBal)+', '+pct(cardApr)+', '+money(cardMin)+')</span> → '+mLbl(b.months)+', <span class="neg">'+money(Math.round(b.interest))+'</span><br><span class="k">amort(..., '+money(cardMin+slack)+')</span> → '+mLbl(bo.months)+', <span class="neg">'+money(Math.round(bo.interest))+'</span><br>Δ avoided = <span class="pos">'+money(Math.max(0,Math.round(saved)))+'</span>'});
+    }
+    if(efGoal>efNow&&efMo>0){var need=efGoal-efNow;var mb=Math.ceil(need/efMo),mbo=Math.ceil(need/(efMo+slack)),mf=Math.max(0,mb-mbo);
+      opts.push({r:2,t:'Put '+money(slack)+'/mo toward the emergency fund',o:'Brings it from <em>'+money(efNow)+'</em> to <em>'+money(efGoal)+'</em> in <em>'+mLbl(mbo)+'</em> instead of <em>'+mLbl(mb)+'</em>.',b:mf>0?mLbl(mf)+' sooner':'already on pace',m:'<span class="k">need</span> = '+money(efGoal)+' − '+money(efNow)+' = '+money(need)+'<br><span class="k">at '+money(efMo)+'/mo</span> → '+mLbl(mb)+'<br><span class="k">at '+money(efMo+slack)+'/mo</span> → '+mLbl(mbo)+'<br>Δ = <span class="pos">'+mLbl(mf)+'</span> sooner'});}
+    if(years>0){var r=realRet/100;var fv=slack*Math.pow(1+r,years);var g=fv-slack;var rm=r/12;var mfv=slack*((Math.pow(1+rm,years*12)-1)/rm);
+      opts.push({r:3,t:'Invest '+money(slack)+(slack===0?'':'/mo')+' at assumed '+pct(realRet)+' real',o:'A one-time '+money(slack)+' compounds to ~<em>'+money(Math.round(fv))+'</em> ('+money(Math.round(g))+' growth). Monthly '+money(slack)+' → ~<em>'+money(Math.round(mfv))+'</em>.',b:'Assumed '+pct(realRet)+' — not guaranteed; FI-age movement needs the full engine',m:'<span class="k">lump · '+money(slack)+' × (1+'+pct(realRet)+')^'+years+'</span> = '+money(Math.round(fv))+' <span class="pos">(+'+money(Math.round(g))+')</span><br><span class="k">monthly · '+money(slack)+'/mo for '+years+'y</span> ≈ '+money(Math.round(mfv))});}
+    if(!opts.length){out.innerHTML='<div style="padding:1rem"><h5>No options</h5><p style="color:var(--ink-soft)">Set a card balance, EF gap, or horizon.</p></div>';return;}
+    opts.sort(function(a,b){return a.r-b.r;});
+    opts.forEach(function(o){var d=document.createElement('div');d.className='opt';d.innerHTML='<div style="display:flex;justify-content:space-between"><div><h5 style="margin:.2rem 0;font-size:.98rem;color:var(--mist-100)">'+o.t+'</h5><p style="font-size:.9rem;color:var(--mist-300);margin:.3rem 0">'+o.o+'</p><span style="font-size:.72rem;color:var(--verdant);background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.25);padding:.1rem .45rem;border-radius:5px">'+o.b+'</span></div><span style="font-size:.66rem;font-weight:700;background:'+(o.r===1?'var(--rune-400)':'var(--ink-600)')+';color:'+(o.r===1?'var(--ink-950)':'var(--mist-100)')+';padding:.15rem .45rem;border-radius:5px">#'+o.r+'</span></div><details style="margin-top:.5rem"><summary style="color:var(--arcane-400);cursor:pointer;font-size:.76rem">Show the arithmetic</summary><div style="margin-top:.4rem;padding:.5rem .65rem;background:rgba(7,6,13,.5);border-radius:8px;font-family:var(--mono);font-size:.73rem;color:var(--mist-300);line-height:1.7;border:1px solid var(--rule)">'+o.m+'</div></details>';d.querySelector('details summary')&&0;out.appendChild(d);});
+  }
+  var rIds=['slack','cardBal','cardApr','cardMin','efNow','efGoal','efMo','realRet','years'];
+  rIds.forEach(function(id){$(id).addEventListener('input',renderRanker);});
+
+  // ===== ALLOCATOR (doc 32) + MONTE CARLO (doc 33) =====
+  // 2026 limits (under 50)
+  var ROTH_CAP=7500;
+  var BUCKETS=[
+    {key:'roth',name:'Roth IRA',ret:7,vol:14,color:'var(--arcane-500)',cls:'roth'},
+    {key:'529',name:'529 (per kid)',ret:6,vol:12,color:'var(--frost)',cls:'b529'},
+    {key:'brok',name:'Taxable brokerage',ret:7,vol:15,color:'var(--verdant)',cls:'brok'},
+    {key:'debt',name:'Debt (22% card)',ret:22,vol:0,color:'var(--ember)',cls:'debt'},
+    {key:'ef',name:'Emergency fund (HYSA)',ret:4.5,vol:0,color:'var(--rune-400)',cls:'ef'}
+  ];
+  function allocNorm(){
+    var keys=['Roth','529','Brok','Debt','EF'];
+    var raw={};keys.forEach(function(k){raw[k]=+$('p'+k).value;});var sum=keys.reduce(function(s,k){return s+raw[k];},0)||1;
+    var n={};keys.forEach(function(k){n[k]=raw[k]/sum;});
+    keys.forEach(function(k){$('p'+k+'V').textContent=pct(n[k]*100,0);});
+    var total=n.Roth+n['529']+n.Brok+n.Debt+n.EF; // always 1 after norm, but show input sum
+    var inputSum=keys.reduce(function(s,k){return s+raw[k];},0);
+    $('allocTotal').textContent=pct(inputSum,0)+(inputSum===100?'':' ⚠ re-normalized');
+    $('allocTotal').className=inputSum===100?'':'bad';
+    return n;
+  }
+  // deterministic PRNG (mulberry32) so demos are reproducible
+  function mulberry32(a){return function(){var t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;};}
+  function gauss(rng){var u=rng(),v=rng();return Math.sqrt(-2*Math.log(u||1e-12))*Math.cos(2*Math.PI*v);}
+  function renderAlloc(){
+    var n=allocNorm();
+    var lump=+$('aLump').value,mo=+$('aMo').value,hor=+$('aHor').value,tgt=+$('aTgt').value,vol=+$('aVol').value/100;
+    $('aLumpV').textContent=money(lump);$('aMoV').textContent=money(mo);$('aHorV').textContent=hor+'y';$('aTgtV').textContent=money(tgt);$('aVolV').textContent=pct(vol*100,0);
+
+    // Roth cap enforcement on the lump (spill to brokerage)
+    var rothLump=Math.min(lump*n.Roth,ROTH_CAP);
+    var rothExcess=Math.max(0,lump*n.Roth-ROTH_CAP);
+    var brokLump=lump*n.Brok+rothExcess;
+    var lumpAlloc={roth:rothLump,'529':lump*n['529'],brok:brokLump,debt:lump*n.Debt,ef:lump*n.EF};
+    var moAlloc={roth:mo*n.Roth,'529':mo*n['529'],brok:mo*n.Brok,debt:mo*n.Debt,ef:mo*n.EF};
+    // note: monthly Roth also caps at ROTH_CAP/12 informally; we show annual note instead
+
+    var capEl=$('capRoth');
+    if(rothExcess>0){capEl.className='cap';capEl.textContent='⚠ lump capped at '+money(ROTH_CAP)+' ('+money(rothExcess)+' spilled to brokerage)';}
+    else if(lump*n.Roth>0){capEl.className='cap ok';capEl.textContent='within '+money(ROTH_CAP)+' annual Roth cap';}
+    else{capEl.className='cap ok';capEl.textContent='';}
+
+    // deterministic projection (P50 = compound at assumed return)
+    function project(lumpAmt,moAmt,retPct,years){var r=retPct/100;var fv=lumpAmt*Math.pow(1+r,years);if(moAmt>0&&r>0){var rm=r/12;fv+=moAmt*((Math.pow(1+rm,years*12)-1)/rm);}else if(moAmt>0){fv+=moAmt*years*12;}return fv;}
+    var contributed=lump+mo*hor*12;
+    var bucketProj=[];
+    var totalProj=0;
+    BUCKETS.forEach(function(b){
+      var lp=lumpAlloc[b.key],mp=moAlloc[b.key];
+      var contrib=lp+mp*hor*12;
+      var fv=project(lp,mp,b.ret,hor);
+      totalProj+=fv;
+      bucketProj.push({name:b.name,cls:b.cls,color:b.color,contrib:contrib,fv:fv,growth:fv-contrib,ret:b.ret});
+    });
+
+    $('oTotal').textContent=money(totalProj);
+    $('oTotalSub').textContent=money(contributed)+' contributed + '+money(totalProj-contributed)+' growth';
+
+    // bucket out cards
+    var bo=$('bucketOut');bo.innerHTML='';
+    bucketProj.forEach(function(b){
+      var d=document.createElement('div');d.className='bo '+b.cls;
+      d.innerHTML='<div class="bn">'+b.name+' · '+pct(b.ret)+'</div><div class="bv">'+money(b.fv)+'</div><div class="bg'+(b.growth<0?' neg':'')+'">'+(b.growth>=0?'+':'')+money(b.growth)+' growth</div>';
+      bo.appendChild(d);
+    });
+
+    // ===== Monte Carlo (doc 33) =====
+    var SIMS=1000,seed=12345;
+    var rng=mulberry32(seed);
+    var finals=[];
+    for(var s=0;s<SIMS;s++){
+      var port=0;
+      BUCKETS.forEach(function(b){
+        var lp=lumpAlloc[b.key],mp=moAlloc[b.key];
+        // sample this bucket's annual returns with its own vol (debt/EF vol=0 → deterministic)
+        var bv=b.vol/100*1.0; // bucket base vol
+        var val=lp;
+        for(var y=0;y<hor;y++){
+          var ar=(b.ret/100)+ (bv>0? gauss(rng)*bv : 0);
+          val*=(1+ar);
+          val+=mp*12; // add monthly through the year (approx as year-end)
+        }
+        // grow monthly contributions made through the period at avg
+        // (approximation for demo; production compounds monthly with sampled returns)
+        port+=val;
+      });
+      finals.push(port);
+    }
+    finals.sort(function(a,b){return a-b;});
+    var p10=finals[Math.floor(SIMS*0.10)],p50=finals[Math.floor(SIMS*0.50)],p90=finals[Math.floor(SIMS*0.90)];
+    var success=finals.filter(function(v){return v>=tgt;}).length/SIMS*100;
+    $('oSuccess').textContent=pct(success,0);
+    $('oSuccessSub').textContent='meets '+money(tgt)+' target · '+SIMS+' sims · P50 '+money(p50);
+
+    // fan chart
+    var svg=$('fanSvg');svg.innerHTML='';
+    var ns='http://www.w3.org/2000/svg';
+    var lo=Math.min(p10,p50,p90,contributed*0.5),hi=Math.max(p90,tgt)*1.05;
+    function Y(v){return 85-((v-lo)/(hi-lo))*78;}
+    // P10-P90 band
+    var band=document.createElementNS(ns,'polygon');
+    band.setAttribute('points','0,'+Y(p10)+' 400,'+Y(p10)+' 400,'+Y(p90)+' 0,'+Y(p90));
+    band.setAttribute('fill','rgba(139,92,246,.18)');
+    svg.appendChild(band);
+    // P50 line
+    [p10,p50,p90].forEach(function(v,c){
+      var l=document.createElementNS(ns,'line');
+      l.setAttribute('x1','0');l.setAttribute('x2','400');l.setAttribute('y1',Y(v));l.setAttribute('y2',Y(v));
+      l.setAttribute('stroke',c===1?'var(--rune-400)':'var(--arcane-400)');
+      l.setAttribute('stroke-width',c===1?'1.6':'1');l.setAttribute('stroke-dasharray',c===1?'':'4 3');
+      svg.appendChild(l);
+    });
+    // target line
+    var tl=document.createElementNS(ns,'line');
+    tl.setAttribute('x1','0');tl.setAttribute('x2','400');tl.setAttribute('y1',Y(tgt));tl.setAttribute('y2',Y(tgt));
+    tl.setAttribute('stroke','var(--ember)');tl.setAttribute('stroke-width','1.4');tl.setAttribute('stroke-dasharray','5 3');
+    svg.appendChild(tl);
+    // labels
+    function lbl(v,x,fill){var t=document.createElementNS(ns,'text');t.setAttribute('x',x);t.setAttribute('y',Y(v)-3);t.setAttribute('fill',fill);t.setAttribute('font-size','9');t.setAttribute('font-family','var(--mono)');t.textContent=money(v);svg.appendChild(t);}
+    lbl(p10,4,'var(--arcane-400)');lbl(p50,4,'var(--rune-400)');lbl(p90,360,'var(--arcane-400)');lbl(tgt,360,'var(--ember)');
+  }
+  var aIds=['aLump','aMo','aHor','aTgt','aVol','pRoth','p529','pBrok','pDebt','pEF'];
+  aIds.forEach(function(id){$(id).addEventListener('input',renderAlloc);});
+
+  // init
+  renderRanker();
+  renderAlloc();
+})();
+</script>
+</body>
+</html>
