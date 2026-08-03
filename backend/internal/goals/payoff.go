@@ -16,6 +16,29 @@ import (
 // as NeverPaysOff rather than as a number nobody should read.
 const payoffHorizonMonths = 1200
 
+// SchedulePoint is one month of a debt-payoff amortization schedule: the
+// interest charged that month and the balance remaining after the month's
+// payment is applied. The chart this feeds (item #10, MAD-34) plots a declining
+// balance line with the interest portion shaded — the mirror image of the
+// Schedule page's accumulation ProjectionChart.
+//
+// Every figure is the exact decimal the underlying simulation already computed
+// to produce Months and TotalInterest; nothing is re-derived for the chart, so
+// the curve and the headline cannot disagree.
+type SchedulePoint struct {
+	// Month is the 1-based payment number: 1 is the first payment after `now`,
+	// Months is the final (possibly partial) one.
+	Month int `json:"month"`
+	// Interest is the interest charged this month, rounded to the cent — what a
+	// lender actually posts. Summed across the schedule it equals TotalInterest.
+	Interest decimal.Decimal `json:"interest"`
+	// Balance is what is still owed after this month's payment is applied. The
+	// final point's balance is zero (or a fractional cent below it, the
+	// overshoot a last partial payment covers), so a declining line to zero is
+	// the honest shape.
+	Balance decimal.Decimal `json:"balance"`
+}
+
 // PayoffFeasibility is the computed standing of one debt-payoff goal. It is the
 // debt-side counterpart to Feasibility: same "money is exact decimal, the model
 // only phrases the result" contract, different arithmetic.
@@ -43,6 +66,11 @@ type PayoffFeasibility struct {
 	// PayoffDate is now plus Months months; nil when the debt never pays off or
 	// is already clear.
 	PayoffDate *time.Time
+	// Schedule is the per-month series behind Months and TotalInterest, present
+	// only when the debt amortizes (NeverPaysOff false and the starting balance
+	// was positive). Nil otherwise, so the chart renders its empty state rather
+	// than a curve that contradicts "never".
+	Schedule []SchedulePoint
 
 	// OpenEnded is true when the goal has no target date: there is a payoff date
 	// but no deadline to miss, so RequiredMonthly is zero and OnTrack tracks
@@ -107,12 +135,13 @@ func ComputePayoff(balance, apr, monthlyPayment decimal.Decimal, targetDate *tim
 
 	f.MonthlyInterest = balance.Mul(rate).Round(2)
 
-	months, interest, ok := simulatePayoff(balance, rate, monthlyPayment)
+	months, interest, schedule, ok := simulatePayoffSchedule(balance, rate, monthlyPayment)
 	if !ok {
 		f.NeverPaysOff = true
 	} else {
 		f.Months = months
 		f.TotalInterest = interest
+		f.Schedule = schedule
 		payoff := now.AddDate(0, months, 0)
 		f.PayoffDate = &payoff
 	}
@@ -151,6 +180,11 @@ func monthlyRate(apr decimal.Decimal) decimal.Decimal {
 // Interest is rounded to the cent each month because that is what a lender
 // posts: a statement charges whole cents, and compounding an unrounded figure
 // would drift from the balance the user can see on their card.
+//
+// This is the totals-only entry point; requiredPayment's bisection and the
+// existing tests call it. ComputePayoff uses simulatePayoffSchedule, which
+// records each step so the schedule's curve and the headline totals come from
+// one simulation and cannot disagree.
 func simulatePayoff(balance, rate, payment decimal.Decimal) (months int, totalInterest decimal.Decimal, ok bool) {
 	totalInterest = decimal.Zero
 	if !payment.IsPositive() {
@@ -174,6 +208,45 @@ func simulatePayoff(balance, rate, payment decimal.Decimal) (months int, totalIn
 		}
 	}
 	return 0, decimal.Zero, false
+}
+
+// simulatePayoffSchedule is simulatePayoff that also records each month's
+// interest and post-payment balance. The recorded interest series sums exactly
+// to the returned totalInterest, and the final point's balance is zero (or a
+// fractional cent below), so a chart plotting the schedule cannot drift from
+// the Months/TotalInterest headlines — they come from the same loop.
+func simulatePayoffSchedule(balance, rate, payment decimal.Decimal) (months int, totalInterest decimal.Decimal, schedule []SchedulePoint, ok bool) {
+	totalInterest = decimal.Zero
+	if !payment.IsPositive() {
+		return 0, totalInterest, nil, false
+	}
+	if payment.LessThanOrEqual(balance.Mul(rate).Round(2)) {
+		return 0, totalInterest, nil, false
+	}
+
+	schedule = make([]SchedulePoint, 0, 64)
+	for months = 1; months <= payoffHorizonMonths; months++ {
+		interest := balance.Mul(rate).Round(2)
+		totalInterest = totalInterest.Add(interest)
+		balance = balance.Add(interest).Sub(payment)
+		if !balance.IsPositive() {
+			// The final payment retires the debt exactly: a lender does not
+			// report a negative balance, so the schedule ends at zero rather
+			// than at the cent-and-a-half of overshoot the arithmetic leaves.
+			schedule = append(schedule, SchedulePoint{
+				Month:    months,
+				Interest: interest,
+				Balance:  decimal.Zero,
+			})
+			return months, totalInterest, schedule, true
+		}
+		schedule = append(schedule, SchedulePoint{
+			Month:    months,
+			Interest: interest,
+			Balance:  balance,
+		})
+	}
+	return 0, decimal.Zero, nil, false
 }
 
 // requiredPayment bisects for the smallest whole-cent monthly payment that

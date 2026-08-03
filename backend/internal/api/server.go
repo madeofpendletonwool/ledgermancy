@@ -515,6 +515,10 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/by-day", s.handleSpendingByDay)
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
+			// The category × month matrix behind the spending heatmap (item #8)
+			// and the category-mix small multiples (item #12). One endpoint,
+			// two renderings; the clients pivot differently.
+			r.Get("/heatmap", s.handleSpendingHeatmap)
 			r.Get("/merchants", s.handleTopMerchants)
 			// The whole merchant list for the explorer, where /merchants is the
 			// top-N card. Separate rather than a mode of the same endpoint: this

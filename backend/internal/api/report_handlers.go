@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -163,6 +165,12 @@ type trendPoint struct {
 	Income   decimal.Decimal `json:"income"`
 	Spending decimal.Decimal `json:"spending"`
 	Leftover decimal.Decimal `json:"leftover"`
+	// FixedSpending and DiscretionarySpending decompose Spending into the same
+	// two buckets GetSpendingSummary reports for a single period — same FILTER
+	// clauses in SQL, so a month's two buckets sum to that month's Spending to
+	// the cent. Drives the fixed-vs-discretionary stacked bars (item #9).
+	FixedSpending         decimal.Decimal `json:"fixed_spending"`
+	DiscretionarySpending decimal.Decimal `json:"discretionary_spending"`
 }
 
 // handleTrend returns income/spending/leftover per month. Defaults to the
@@ -192,10 +200,12 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 	out := make([]trendPoint, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, trendPoint{
-			Month:    m.Month.Format("2006-01"),
-			Income:   m.Income,
-			Spending: m.Spending,
-			Leftover: m.Income.Sub(m.Spending),
+			Month:                 m.Month.Format("2006-01"),
+			Income:                m.Income,
+			Spending:              m.Spending,
+			Leftover:              m.Income.Sub(m.Spending),
+			FixedSpending:         m.FixedSpending,
+			DiscretionarySpending: m.DiscretionarySpending,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -641,4 +651,192 @@ func (s *Server) handleListSuppressedRecurring(w http.ResponseWriter, r *http.Re
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// heatmapMonthLimit caps how many months the matrix spans. The chart this feeds
+// is the last-twelve-months view, and a longer window stops reading as
+// "seasonality" and starts reading as a wall of numbers. Twelve matches the
+// trend chart beside it, so the two agree on what "trailing" means.
+const heatmapMonthLimit = 12
+
+// heatmapCategoryLimit is the row cap the heatmap folds to "Other" past. The
+// chart's cells are compact, so this is a touch above the bar chart's 8 — the
+// app's fold-to-Other rule is "past ~8", and a heatmap carries no per-row bar
+// art so a couple more fit without crowding. The small-multiples chart that
+// rides the same payload caps itself client-side at 8 (item #12).
+const heatmapCategoryLimit = 10
+
+type heatmapCategory struct {
+	CategoryID string  `json:"category_id"`
+	Name       string  `json:"name"`
+	Slug       string  `json:"slug"`
+	Color      *string `json:"color"`
+	IsFixed    bool    `json:"is_fixed"`
+	// Total is the category's whole-range spend, used for ordering and for the
+	// "Other" fold. Decimal string; never summed in the client for a headline.
+	Total string `json:"total"`
+	// Cells maps "YYYY-MM" to that month's spend as a decimal string. Only
+	// months with spend appear; the client fills the gaps with zero so an empty
+	// month is indistinguishable from a month outside the data — same contract
+	// as GetMerchantMonthlySpend.
+	Cells map[string]string `json:"cells"`
+}
+
+type spendingHeatmapResponse struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Months is the full "YYYY-MM" axis across [From, To], ascending. Built
+	// server-side so every client renders the same columns even when a month
+	// had no spend in any category.
+	Months []string `json:"months"`
+	// Categories is sorted by Total descending; the heatmap renders the top
+	// heatmapCategoryLimit and folds the remainder into a synthetic "Other" row
+	// client-side, matching CategoryBars' foldToOther rule. Returned in full so
+	// the small-multiples chart (item #12) can pick its own top-N.
+	Categories []heatmapCategory `json:"categories"`
+}
+
+// handleSpendingHeatmap answers the spending-by-category-by-month matrix behind
+// the category × month heatmap (item #8) and the category-mix small multiples
+// (item #12). One endpoint, two renderings — the rows pivot into either.
+//
+// Defaults to the trailing twelve months to match the trend chart the heatmap
+// sits beside. The pivot itself — building the month axis, ranking categories,
+// keying cells by month — is in buildHeatmap, kept separate so it is testable
+// without a database (see report_handlers_heatmap_test.go).
+func (s *Server) handleSpendingHeatmap(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	now := time.Now()
+	end := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, -1)
+	start := end.AddDate(0, -(heatmapMonthLimit - 1), 0)
+	start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	q := r.URL.Query()
+	from, to := parseDate(q.Get("from"), start), parseDate(q.Get("to"), end)
+
+	rows, err := s.Queries.GetCategoryMonthMatrix(r.Context(), dbgen.GetCategoryMonthMatrixParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	})
+	if err != nil {
+		s.internalError(w, "category month matrix", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildHeatmap(from, to, rows))
+}
+
+// buildHeatmap pivots the per-(category, month) rows into the matrix response.
+// Kept separate from the handler so the pivot — month axis, ranking, cell keys —
+// is unit-testable without a database.
+//
+// Rows arrive ordered by category id then month, but the pivot does not rely on
+// that ordering: it indexes categories by id and accumulates both the per-month
+// cells and the whole-range total in one pass, then sorts by total descending
+// so the heatmap's top rows are its biggest categories.
+func buildHeatmap(from, to time.Time, rows []dbgen.GetCategoryMonthMatrixRow) spendingHeatmapResponse {
+	months := monthsBetween(from, to)
+
+	type acc struct {
+		id    string
+		name  string
+		slug  string
+		color *string
+		fixed bool
+		total decimal.Decimal
+		cells map[string]string
+	}
+
+	byID := make(map[string]*acc)
+	order := make([]string, 0) // first-seen order, so the sort has a stable tiebreak
+	for _, r := range rows {
+		key := r.CategoryID.String()
+		a, ok := byID[key]
+		if !ok {
+			a = &acc{
+				id:    key,
+				name:  r.CategoryName,
+				slug:  r.CategorySlug,
+				color: r.CategoryColor,
+				fixed: r.IsFixed,
+				cells: make(map[string]string),
+			}
+			byID[key] = a
+			order = append(order, key)
+		}
+		monthKey := r.Month.Format("2006-01")
+		// Accumulate across duplicate (category, month) rows in decimal, then
+		// store the canonical string. date_trunc('month') already groups in SQL,
+		// so this is normally a single assignment — but summing here keeps the
+		// pivot correct if a future caller feeds it pre-grouped data, and the
+		// cell total then agrees with the accumulator's whole-range total.
+		existing := decimal.Zero
+		if v, ok := a.cells[monthKey]; ok {
+			existing, _ = decimal.NewFromString(v)
+		}
+		a.cells[monthKey] = existing.Add(r.Total).String()
+		a.total = a.total.Add(r.Total)
+	}
+
+	// Rank by total descending. The order slice preserves first-seen ordering
+	// for ties (which is stable category-id ordering, since the SQL groups by
+	// id), so two categories with identical totals keep their relative position
+	// across runs rather than swapping on map iteration.
+	ranked := make([]*acc, 0, len(order))
+	for _, k := range order {
+		ranked = append(ranked, byID[k])
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].total.GreaterThan(ranked[j].total)
+	})
+
+	cats := make([]heatmapCategory, 0, len(ranked))
+	for _, a := range ranked {
+		cats = append(cats, heatmapCategory{
+			CategoryID: a.id,
+			Name:       a.name,
+			Slug:       a.slug,
+			Color:      a.color,
+			IsFixed:    a.fixed,
+			Total:      a.total.String(),
+			Cells:      a.cells,
+		})
+	}
+
+	return spendingHeatmapResponse{
+		From:       from.Format(time.DateOnly),
+		To:         to.Format(time.DateOnly),
+		Months:     months,
+		Categories: cats,
+	}
+}
+
+// monthsBetween returns every "YYYY-MM" from `from`'s month through `to`'s month
+// inclusive, ascending. Built from the calendar parts of the two dates rather
+// than by stepping a time.Time, so a UTC midnight at month end cannot flip a
+// boundary month in a negative-offset timezone. Mirrors the frontend
+// monthsBetween in MonthlyBars so the two axes agree to the month.
+func monthsBetween(from, to time.Time) []string {
+	y, m := from.Year(), int(from.Month())
+	ty, tm := to.Year(), int(to.Month())
+	if y > ty || (y == ty && m > tm) {
+		return nil
+	}
+
+	out := make([]string, 0, (ty-y)*12+tm-m+1)
+	for {
+		out = append(out, fmt.Sprintf("%04d-%02d", y, m))
+		if y == ty && m == tm {
+			break
+		}
+		m++
+		if m > 12 {
+			m = 1
+			y++
+		}
+	}
+	return out
 }

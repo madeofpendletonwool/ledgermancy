@@ -94,14 +94,28 @@ GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
 
 -- name: GetMonthlyTrend :many
--- Income, spending and leftover per calendar month across a range. Drives the
--- rolling-twelve chart and the month-over-month comparison.
+-- Income, spending, leftover AND the fixed/discretionary split per calendar
+-- month across a range. Drives the rolling-twelve chart, the month-over-month
+-- comparison, and the fixed-vs-discretionary stacked bars (item #9, MAD-34).
+--
+-- The fixed/discretionary FILTER clauses mirror GetSpendingSummary exactly, so
+-- a month's two buckets sum to that month's spending to the cent — the stacked
+-- bar is a decomposition of the headline, never a second story about the same
+-- money. `is_fixed` deliberately omits the income/transfer guards the other
+-- buckets carry because the API forces is_fixed = false for those categories
+-- (isFixedFor in category_handlers.go), so the combination cannot arise.
 SELECT
     date_trunc('month', t.date)::date AS month,
     COALESCE(SUM(-t.amount) FILTER (WHERE c.is_income), 0)::numeric AS income,
     COALESCE(SUM(ABS(t.amount))  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
                                      AND NOT COALESCE(c.is_transfer, FALSE)
-                                     AND is_spend(t.amount, a.type)), 0)::numeric AS spending
+                                     AND is_spend(t.amount, a.type)), 0)::numeric AS spending,
+    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE COALESCE(c.is_fixed, FALSE)
+                                     AND is_spend(t.amount, a.type)), 0)::numeric AS fixed_spending,
+    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
+                                     AND NOT COALESCE(c.is_transfer, FALSE)
+                                     AND NOT COALESCE(c.is_fixed, FALSE)
+                                     AND is_spend(t.amount, a.type)), 0)::numeric AS discretionary_spending
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN plaid_items i ON i.id = a.plaid_item_id
@@ -159,6 +173,48 @@ WHERE u.household_id = $1
   AND is_spend(t.amount, a.type)
 GROUP BY c.id, 2
 ORDER BY c.id, 2;
+
+-- name: GetCategoryMonthMatrix :many
+-- Spend per (spending category, calendar month) across a range. One row per
+-- category-month that had spend; the handler pivots the rows into the matrix
+-- the spending heatmap (item #8, MAD-34) and the category-mix small multiples
+-- (item #12) both consume — one endpoint, two renderings.
+--
+-- Same spending definition and visibility scoping as every other report:
+-- money out (is_spend), no income, no transfers, active accounts, not excluded,
+-- not pending. exclude_one_time is False here on purpose: this is a REAL PERIOD
+-- report ("what actually happened each month"), and a one-time charge — a loan
+-- payoff, an annual true-up — is spend in the month it landed. Only queries
+-- feeding a TRAILING BASELINE pass true; this is not one of them.
+--
+-- Ordered by category id then month only so the rows are stable; the handler
+-- re-sorts by total to rank categories and builds the month axis itself, so the
+-- SQL ordering carries no ranking meaning.
+SELECT
+    c.id                              AS category_id,
+    c.name                            AS category_name,
+    c.slug                            AS category_slug,
+    c.color                           AS category_color,
+    c.is_fixed,
+    date_trunc('month', t.date)::date AS month,
+    SUM(ABS(t.amount))::numeric       AS total
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT c.is_income
+  AND NOT c.is_transfer
+  AND is_spend(t.amount, a.type)
+GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed, 5
+ORDER BY c.id, 5;
 
 -- name: GetSpendingByDay :many
 -- Spending per calendar day across a range. Drives the dashboard's

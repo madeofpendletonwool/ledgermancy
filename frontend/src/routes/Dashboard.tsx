@@ -19,6 +19,7 @@ import { merchantDetailPath } from '../lib/merchants'
 import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
+import { SpendSparkline } from '../components/charts/SpendSparkline'
 import { InsightFeed } from '../components/InsightFeed'
 import { MerchantLink } from '../components/MerchantLink'
 
@@ -61,6 +62,7 @@ export function Dashboard() {
   const daysInLastMonth = new Date(lm.getFullYear(), lm.getMonth() + 1, 0).getDate()
 
   const summary = useQuery({ queryKey: ['summary', 'current'], queryFn: () => api.summary() })
+  const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
   const byDayThis = useQuery({ queryKey: ['by-day', 'current'], queryFn: () => api.byDay() })
   const byDayLast = useQuery({
     queryKey: ['by-day', lastFrom, lastTo],
@@ -176,6 +178,11 @@ export function Dashboard() {
             s && Number(s.income) > 0
               ? `${formatMoney(s.income)} in this month`
               : 'Money out this month'
+          }
+          footer={
+            trend.data && trend.data.length >= 2 ? (
+              <SpendSparkline data={trend.data} />
+            ) : null
           }
         />
       </div>
@@ -407,11 +414,13 @@ function StatTile({
   value,
   hint,
   tone = 'default',
+  footer,
 }: {
   label: string
   value: string
   hint: string
   tone?: 'default' | 'warn'
+  footer?: ReactNode
 }) {
   return (
     <div className="glass p-5">
@@ -424,6 +433,7 @@ function StatTile({
         {value}
       </p>
       <p className="mt-1 text-xs text-mist-500">{hint}</p>
+      {footer}
     </div>
   )
 }

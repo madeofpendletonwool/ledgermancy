@@ -12,6 +12,7 @@ import type {
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { formatMoney } from '../lib/money'
 import { CategoryLink } from '../components/CategoryLink'
+import { BurnDown } from '../components/charts/BurnDown'
 import { STATUS } from '../components/charts/tokens'
 
 /** Month options: the current month plus the previous eleven. */
@@ -53,6 +54,10 @@ export function Budgets() {
   const categories = useQuery({
     queryKey: ['categories'],
     queryFn: api.categories,
+  })
+  const byDay = useQuery({
+    queryKey: ['by-day', range.from, range.to],
+    queryFn: () => api.byDay(range),
   })
 
   const invalidate = () =>
@@ -133,6 +138,26 @@ export function Budgets() {
           tone={Number(totalRemaining) < 0 ? 'critical' : 'good'}
         />
       </div>
+
+      {rows.length > 0 && (
+        <section className="glass p-6">
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-lg font-medium">Burn-down</h2>
+            <span className="text-sm text-mist-300">{month.label}</span>
+          </div>
+          <p className="mb-5 text-sm text-mist-300">
+            Cumulative spend against an even pace. The static bars above
+            can&rsquo;t show whether you are ahead of or behind for how far through
+            the month you are &mdash; this does.
+          </p>
+          <BurnDown
+            year={Number(monthValue.slice(0, 4))}
+            month={Number(monthValue.slice(5, 7))}
+            days={byDay.data ?? []}
+            budgeted={Number(totalBudgeted)}
+          />
+        </section>
+      )}
 
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">Category budgets</h2>

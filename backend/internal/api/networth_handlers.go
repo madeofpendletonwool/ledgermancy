@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -50,6 +51,14 @@ type snapshotResponse struct {
 	AssetsTotal      decimal.Decimal `json:"assets_total"`
 	LiabilitiesTotal decimal.Decimal `json:"liabilities_total"`
 	NetWorth         decimal.Decimal `json:"net_worth"`
+	// Breakdown carries the per-snapshot composition (cash / investments / debts
+	// etc.) recorded the day the snapshot was taken, so the make-up of a past
+	// month survives account closures and re-linking. Drives the net-worth
+	// composition stacked area (item #11, MAD-34). Nil only when the stored
+	// breakdown would not unmarshal — every snapshot since 00004 has at least
+	// `{}`, which decodes to a zero-valued struct, so this is a backstop rather
+	// than a live case.
+	Breakdown *networth.Breakdown `json:"breakdown,omitempty"`
 }
 
 // handleNetWorthHistory returns the recorded trend, defaulting to two years.
@@ -77,9 +86,29 @@ func (s *Server) handleNetWorthHistory(w http.ResponseWriter, r *http.Request) {
 			AssetsTotal:      s.AssetsTotal,
 			LiabilitiesTotal: s.LiabilitiesTotal,
 			NetWorth:         s.NetWorth,
+			// The breakdown is stored as JSONB alongside each snapshot (see
+			// UpsertNetWorthSnapshot). Decode it here so the client gets the
+			// composition per point in the same response, not via a second
+			// call. A malformed row is reported but does not fail the whole
+			// trend — one bad point among many is still a useful chart.
+			Breakdown: decodeBreakdown(s.Breakdown),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// decodeBreakdown parses the JSONB breakdown column a snapshot carries. Returns
+// nil on a failure so the history handler can ship the point without its
+// composition rather than dropping the whole trend — the line still renders.
+func decodeBreakdown(raw []byte) *networth.Breakdown {
+	if len(raw) == 0 {
+		return nil
+	}
+	var b networth.Breakdown
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil
+	}
+	return &b
 }
 
 // handleSnapshotNow records today's figure on demand, so a user does not have
@@ -160,8 +189,8 @@ type liabilityResponse struct {
 	ID uuid.UUID `json:"id"`
 	// AccountID is what makes this list usable as a filter: a debt-payoff goal
 	// links an account, and the picker needs to know which accounts are debts.
-	AccountID       uuid.UUID `json:"account_id"`
-	Kind            string    `json:"kind"`
+	AccountID uuid.UUID `json:"account_id"`
+	Kind      string    `json:"kind"`
 	// AccountType is the raw 'credit' or 'loan', alongside Kind's display label.
 	// A revolving debt and an amortizing one are not described the same way — on
 	// a card the rate IS the APR, on a loan the APR is a disclosure figure and
@@ -169,10 +198,10 @@ type liabilityResponse struct {
 	// apart. Kind cannot answer that: it is Plaid's free-form subtype, and
 	// enumerating which of its values revolve would be a second, guessier copy
 	// of the rule isLiability() and ComputeNetWorth already share.
-	AccountType     string    `json:"account_type"`
-	AccountName     string    `json:"account_name"`
-	Mask            *string   `json:"mask"`
-	InstitutionName *string   `json:"institution_name"`
+	AccountType     string           `json:"account_type"`
+	AccountName     string           `json:"account_name"`
+	Mask            *string          `json:"mask"`
+	InstitutionName *string          `json:"institution_name"`
 	APR             *decimal.Decimal `json:"apr"`
 	// Balance is what is owed NOW — the account's current balance, not the last
 	// statement balance liabilities.balance carries. This is the figure the
@@ -183,7 +212,7 @@ type liabilityResponse struct {
 	// Which source each figure came from: "manual", "plaid", or "" when nobody
 	// knows it. The UI uses these to offer the entry form rather than rendering
 	// an absent rate as a confident zero.
-	APRSource string `json:"apr_source"`
+	APRSource     string `json:"apr_source"`
 	PaymentSource string `json:"payment_source"`
 	// NextPaymentDueDate is the household's own scheduled bill where one exists,
 	// falling back to whatever the institution reported. Derived from the
@@ -224,14 +253,14 @@ type debtRow struct {
 	AccountType     string
 	CurrentBalance  decimal.NullDecimal
 
-	ManualAPR              decimal.NullDecimal
-	PlaidAPR               decimal.NullDecimal
-	PlaidRate              decimal.NullDecimal
-	ObligationAmount       decimal.NullDecimal
-	ManualPayment          decimal.NullDecimal
-	PlaidPayment           decimal.NullDecimal
+	ManualAPR               decimal.NullDecimal
+	PlaidAPR                decimal.NullDecimal
+	PlaidRate               decimal.NullDecimal
+	ObligationAmount        decimal.NullDecimal
+	ManualPayment           decimal.NullDecimal
+	PlaidPayment            decimal.NullDecimal
 	PlaidNextPaymentDueDate *time.Time
-	IsOverdue              *bool
+	IsOverdue               *bool
 }
 
 // liabilityFromRow renders one debt account with its merged terms.

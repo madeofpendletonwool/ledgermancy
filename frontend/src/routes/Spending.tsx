@@ -8,6 +8,10 @@ import { CategoryBars } from '../components/charts/CategoryBars'
 import { CategoryLink } from '../components/CategoryLink'
 import { MerchantLink } from '../components/MerchantLink'
 import { TrendChart } from '../components/charts/TrendChart'
+import { SavingsRateChart } from '../components/charts/SavingsRateChart'
+import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
+import { SpendingHeatmap } from '../components/charts/SpendingHeatmap'
+import { CategoryMultiples } from '../components/charts/CategoryMultiples'
 import { CHART, STATUS } from '../components/charts/tokens'
 
 /** Month options: the current month plus the previous eleven. */
@@ -48,6 +52,12 @@ export function Spending() {
     queryFn: () => api.byCategory(range),
   })
   const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
+  // The category × month matrix is the trailing twelve months the trend chart
+  // uses, fetched once and rendered two ways (heatmap + small multiples).
+  const heatmap = useQuery({
+    queryKey: ['heatmap'],
+    queryFn: () => api.spendingHeatmap(),
+  })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
   const capabilities = useQuery({
     queryKey: ['capabilities'],
@@ -145,6 +155,59 @@ export function Spending() {
         <h2 className="mb-1 text-lg font-medium">Income vs spending</h2>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
         {trend.isPending ? <Loading /> : <TrendChart data={trend.data ?? []} />}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Savings rate</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          What share of income was left over each month — the arc, not just this
+          month&rsquo;s number.
+        </p>
+        {trend.isPending ? <Loading /> : <SavingsRateChart data={trend.data ?? []} />}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Fixed vs discretionary</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Each month&rsquo;s spending split into the bills you can&rsquo;t flex
+          and everything you can. The two segments sum to the month&rsquo;s
+          total — the same split the period summary reports.
+        </p>
+        {trend.isPending ? <Loading /> : <FixedDiscretionaryChart data={trend.data ?? []} />}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Where it goes, when</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Spend by category across the last twelve months. Darker cells are
+          bigger months; the ramp is one hue, so colour carries magnitude, not
+          identity. Seasonality and creep show as a row darkening left to right.
+        </p>
+        {heatmap.isPending ? (
+          <Loading />
+        ) : (
+          <SpendingHeatmap
+            months={heatmap.data?.months ?? []}
+            categories={heatmap.data?.categories ?? []}
+          />
+        )}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Category mix over time</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          The top categories one panel each, each on its own scale — so a
+          category&rsquo;s seasonal swing reads against its own range, not
+          against a global max that flattens the rest.
+        </p>
+        {heatmap.isPending ? (
+          <Loading />
+        ) : (
+          <CategoryMultiples
+            months={heatmap.data?.months ?? []}
+            categories={heatmap.data?.categories ?? []}
+          />
+        )}
       </section>
 
       <section className="glass overflow-hidden">

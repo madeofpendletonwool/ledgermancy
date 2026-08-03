@@ -7,6 +7,7 @@ import type { Category, LapsedMerchant, MerchantExplorerRow } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { WINDOWS, matchedWindow, windowRange } from '../lib/period'
 import { SINGLE_SERIES, STATUS } from './charts/tokens'
+import { MerchantPareto } from './charts/MerchantPareto'
 import { MerchantLink } from './MerchantLink'
 import { CategoryLink } from './CategoryLink'
 import { merchantDetailPath } from '../lib/merchants'
@@ -131,7 +132,7 @@ export function MerchantExplorer() {
         </select>
       </div>
 
-      {rows.length > 0 && <ParetoStrip rows={rows} windowTotal={windowTotal} />}
+      {rows.length > 0 && <MerchantPareto rows={rows} windowTotal={windowTotal} />}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input
@@ -417,59 +418,6 @@ function Concentration({
         </>
       )}
     </p>
-  )
-}
-
-/**
- * The concentration curve as one stacked bar: each of the top merchants as its
- * share of the window, then everything else.
- *
- * A single bar rather than a cumulative line because the question is "how much of
- * my spending is a handful of businesses?", and a stacked share answers that at a
- * glance where a Pareto curve asks to be read.
- */
-function ParetoStrip({
-  rows,
-  windowTotal,
-}: {
-  rows: MerchantExplorerRow[]
-  windowTotal: number
-}) {
-  if (windowTotal <= 0) return null
-  const top = rows.slice(0, CONCENTRATION_TOP_N)
-  const topTotal = top.reduce((sum, m) => sum + Number(m.total), 0)
-  const rest = Math.max(0, windowTotal - topTotal)
-
-  return (
-    <div className="mb-5">
-      <div className="flex h-3 gap-px overflow-hidden rounded-full bg-white/5">
-        {top.map((m, i) => (
-          <span
-            key={m.merchant_key}
-            className="h-full first:rounded-l-full"
-            style={{
-              width: `${(Number(m.total) / windowTotal) * 100}%`,
-              // One series, stepped only in opacity so the segments read as
-              // ranked slices of one measure rather than as different things.
-              backgroundColor: SINGLE_SERIES,
-              opacity: 1 - i * 0.07,
-            }}
-            title={`${m.merchant} · ${formatMoney(m.total)}`}
-          />
-        ))}
-        {rest > 0 && (
-          <span
-            className="h-full rounded-r-full bg-white/10"
-            style={{ width: `${(rest / windowTotal) * 100}%` }}
-            title={`Everyone else · ${formatMoney(String(rest))}`}
-          />
-        )}
-      </div>
-      <p className="mt-1.5 text-[11px] text-mist-500">
-        Each segment is one of your biggest merchants; the pale tail is everyone
-        else.
-      </p>
-    </div>
   )
 }
 

@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney, isAmortizingDebt } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
-import { CHART, SERIES, STATUS } from '../components/charts/tokens'
+import { NetWorthComposition } from '../components/charts/NetWorthComposition'
+import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 export function NetWorth() {
   const qc = useQueryClient()
@@ -59,6 +60,17 @@ export function NetWorth() {
           the day Ledgermancy did.
         </p>
         <NetWorthChart data={history.data ?? []} />
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Composition over time</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Assets above the line, liabilities below — the gap between the two
+          stacks is the net worth plotted above. Each snapshot carries the
+          breakdown it was recorded with, so the make-up of a past month
+          survives even after accounts are closed or re-linked.
+        </p>
+        <NetWorthComposition data={history.data ?? []} />
       </section>
 
       <ByPerson />
@@ -204,6 +216,28 @@ function ByPerson() {
   )
   if (!people?.length) return null
 
+  // A single stacked bar makes the household split scannable. Colour is
+  // redundant here — identity rides on the list below (the app's own
+  // AllocationList rule) — so every person wears the single-series hue stepped
+  // only in opacity, and the unassigned remainder recedes.
+  const grandTotal = Number(byPerson.data?.total ?? 0)
+  const segments = [
+    ...people.map((p, i) => ({
+      key: p.person_id,
+      label: p.person_name,
+      value: Number(p.total),
+      opacity: Math.max(0.35, 1 - i * 0.12),
+      muted: false,
+    })),
+    {
+      key: '__unassigned__',
+      label: 'Not assigned to anyone',
+      value: Number(byPerson.data?.unassigned ?? 0),
+      opacity: 1,
+      muted: true,
+    },
+  ].filter((s) => s.value > 0)
+
   return (
     <section className="glass p-6">
       <h2 className="mb-1 text-lg font-medium">Whose money</h2>
@@ -211,6 +245,29 @@ function ByPerson() {
         A breakdown of the assets above, not an extra total. Anything not held
         for a specific person shows as unassigned.
       </p>
+
+      {grandTotal > 0 && segments.length > 0 && (
+        <div className="mb-5">
+          <div className="flex h-4 gap-px overflow-hidden rounded-md bg-white/5">
+            {segments.map((s) => (
+              <span
+                key={s.key}
+                className="h-full"
+                style={{
+                  width: `${(s.value / grandTotal) * 100}%`,
+                  backgroundColor: s.muted ? CHART.axis : SINGLE_SERIES,
+                  opacity: s.muted ? 1 : s.opacity,
+                }}
+                title={`${s.label} · ${formatMoney(String(s.value))}`}
+              />
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] text-mist-500">
+            Each segment is one person&rsquo;s share; the pale tail is unassigned.
+            Names and amounts in the list below.
+          </p>
+        </div>
+      )}
 
       <ul className="divide-y divide-white/5">
         {people.map((p) => (

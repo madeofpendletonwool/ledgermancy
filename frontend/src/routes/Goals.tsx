@@ -13,6 +13,7 @@ import type {
 } from '../lib/api'
 import { formatDate, formatMoney, isAmortizingDebt, isLiability } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { PayoffScheduleChart } from '../components/charts/PayoffScheduleChart'
 import { STATUS } from '../components/charts/tokens'
 
 export function Goals() {
@@ -237,44 +238,55 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
   }
 
   return (
-    <div className="mt-3 grid gap-x-6 gap-y-1.5 rounded-lg bg-white/5 px-3 py-2.5 text-xs sm:grid-cols-2">
-      <PayoffFact label="Paid off">
-        {payoff.payoff_date ? formatDate(payoff.payoff_date) : '—'}
-        <span className="ml-1.5 text-mist-500">
-          ({payoff.months} {payoff.months === 1 ? 'payment' : 'payments'})
-        </span>
-      </PayoffFact>
-      <PayoffFact label="Interest to come">
-        {formatMoney(payoff.total_interest)}
-      </PayoffFact>
-      <PayoffFact label="Paying">
-        {formatMoney(payoff.monthly_payment)}/mo
-        {payoff.apr_source === ''
-          ? ''
-          : payoff.apr_source === 'manual'
-            ? ` at the ${payoff.apr}% you entered`
-            : ` at ${payoff.apr}% ${
-                isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'
-              }`}
-      </PayoffFact>
-      {payoff.target_reachable && (
-        <PayoffFact label="To hit your date">
-          {formatMoney(payoff.required_monthly)}/mo
+    <div className="mt-3 space-y-3">
+      {payoff.schedule && payoff.schedule.length > 0 && (
+        <div className="rounded-lg bg-white/5 px-3 py-3">
+          <PayoffScheduleChart
+            schedule={payoff.schedule}
+            startBalance={payoff.balance}
+            monthlyPayment={payoff.monthly_payment}
+          />
+        </div>
+      )}
+      <div className="grid gap-x-6 gap-y-1.5 rounded-lg bg-white/5 px-3 py-2.5 text-xs sm:grid-cols-2">
+        <PayoffFact label="Paid off">
+          {payoff.payoff_date ? formatDate(payoff.payoff_date) : '—'}
+          <span className="ml-1.5 text-mist-500">
+            ({payoff.months} {payoff.months === 1 ? 'payment' : 'payments'})
+          </span>
         </PayoffFact>
-      )}
-      {/* A schedule with no rate is arithmetically sound but optimistic — every
-          date above is the earliest possible one. Saying so is the difference
-          between a floor and a promise. */}
-      {payoff.apr_source === '' && (
-        <p className="text-mist-500 sm:col-span-2">
-          No rate on file, so this assumes the debt is interest-free — the real
-          payoff date is later.{' '}
-          <Link to="/accounts" className="underline">
-            Add the APR
-          </Link>{' '}
-          for a true schedule.
-        </p>
-      )}
+        <PayoffFact label="Interest to come">
+          {formatMoney(payoff.total_interest)}
+        </PayoffFact>
+        <PayoffFact label="Paying">
+          {formatMoney(payoff.monthly_payment)}/mo
+          {payoff.apr_source === ''
+            ? ''
+            : payoff.apr_source === 'manual'
+              ? ` at the ${payoff.apr}% you entered`
+              : ` at ${payoff.apr}% ${
+                  isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'
+                }`}
+        </PayoffFact>
+        {payoff.target_reachable && (
+          <PayoffFact label="To hit your date">
+            {formatMoney(payoff.required_monthly)}/mo
+          </PayoffFact>
+        )}
+        {/* A schedule with no rate is arithmetically sound but optimistic — every
+            date above is the earliest possible one. Saying so is the difference
+            between a floor and a promise. */}
+        {payoff.apr_source === '' && (
+          <p className="text-mist-500 sm:col-span-2">
+            No rate on file, so this assumes the debt is interest-free — the real
+            payoff date is later.{' '}
+            <Link to="/accounts" className="underline">
+              Add the APR
+            </Link>{' '}
+            for a true schedule.
+          </p>
+        )}
+      </div>
     </div>
   )
 }

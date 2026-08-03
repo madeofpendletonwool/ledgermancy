@@ -516,6 +516,15 @@ export interface TrendPoint {
   income: string
   spending: string
   leftover: string
+  /**
+   * Spending decomposed into its fixed and discretionary buckets — same split
+   * the period summary reports, per month. The two sum to `spending` to the
+   * cent (computed server-side in exact decimal), which is what makes the
+   * fixed-vs-discretionary stacked bar a decomposition of the headline rather
+   * than a second story about the same money. Drives item #9 (MAD-34).
+   */
+  fixed_spending: string
+  discretionary_spending: string
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -526,6 +535,36 @@ export interface CategoryAverage extends CategorySpend {
 export interface DaySpend {
   day: string
   spending: string
+}
+
+/**
+ * The category × month spending matrix. Returned by the heatmap endpoint so two
+ * charts can render from one round trip: the intensity heatmap (item #8) and
+ * the category-mix small multiples (item #12).
+ *
+ * `months` is the full axis across the range; `categories[i].cells` carries
+ * only the months that had spend, so a missing key reads as zero (the same
+ * contract GetMerchantMonthlySpend uses).
+ */
+export interface SpendingHeatmap {
+  from: string
+  to: string
+  /** "YYYY-MM" strings, ascending, across [from, to]. */
+  months: string[]
+  /** Sorted by whole-range `total` descending. */
+  categories: SpendingHeatmapCategory[]
+}
+
+export interface SpendingHeatmapCategory {
+  category_id: string
+  name: string
+  slug: string
+  color: string | null
+  is_fixed: boolean
+  /** Whole-range spend as a decimal string; the ranking key. */
+  total: string
+  /** "YYYY-MM" → spend that month, decimal string. Only non-zero months. */
+  cells: Record<string, string>
 }
 
 export interface MerchantSpend {
@@ -931,6 +970,14 @@ export interface NetWorthPoint {
   assets_total: string
   liabilities_total: string
   net_worth: string
+  /**
+   * The composition recorded the day this snapshot was taken. Present on every
+   * snapshot the app has ever written (the column is NOT NULL DEFAULT '{}'),
+   * so the stacked-area composition chart (item #11, MAD-34) can plot assets vs
+   * liabilities across the whole trend. Omitted only when a stored row would
+   * not decode — a backstop, not a live case.
+   */
+  breakdown?: NetWorthBreakdown
 }
 
 export interface Holding {
@@ -1449,6 +1496,28 @@ export interface GoalPayoff {
   /** Smallest payment that clears the balance by the target date. */
   required_monthly: string
   target_reachable: boolean
+  /**
+   * The per-month balance + interest series behind `months` and
+   * `total_interest`, present only when the debt amortizes. Drives the
+   * amortization curve (item #10, MAD-34): a declining balance line to zero
+   * with the interest portion shaded. Omitted when there is no schedule —
+   * never_pays_off, achieved, or no terms — so the chart renders its empty
+   * state rather than a curve that contradicts the headline.
+   */
+  schedule?: PayoffSchedulePoint[]
+}
+
+/** One month of a debt-payoff amortization schedule. Decimal strings — never
+ *  touched as floats in the browser. */
+export interface PayoffSchedulePoint {
+  /** 1-based payment number; 1 is the first payment after now. */
+  month: number
+  /** Interest charged this month. Summed across the schedule it equals
+   *  `total_interest`. */
+  interest: string
+  /** Balance still owed after this month's payment. The final point is "0.00";
+   *  the series never goes negative. */
+  balance: string
 }
 
 /**
@@ -2414,6 +2483,16 @@ export const api = {
 
   trend: (params: PeriodQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
+
+  /**
+   * The category × month spending matrix behind the heatmap (item #8) and the
+   * category-mix small multiples (item #12). One endpoint, two renderings: the
+   * heatmap folds to "Other" past its row cap, the small multiples cap
+   * themselves at eight. Every money field is a decimal string — the only
+   * arithmetic in the client is display-side intensity scaling.
+   */
+  spendingHeatmap: (params: PeriodQuery = {}) =>
+    request<SpendingHeatmap>('GET', withQuery('/api/reports/heatmap', params)),
 
   averages: (params: PeriodQuery = {}) =>
     request<CategoryAverage[]>('GET', withQuery('/api/reports/averages', params)),

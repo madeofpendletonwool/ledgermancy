@@ -11,6 +11,7 @@ import {
   type TaxTreatment,
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import { DividendBars } from '../components/charts/DividendBars'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 const PERIODS: { value: InvestmentPeriod; label: string }[] = [
@@ -235,14 +236,9 @@ export function Investments() {
                   <p className="mt-1 text-sm text-mist-300">
                     received over the last two years
                   </p>
-                  <ul className="mt-4 space-y-1.5">
-                    {dividends.data.months.slice(-6).map((m) => (
-                      <li key={m.month} className="flex justify-between text-sm">
-                        <span className="text-mist-300">{m.month}</span>
-                        <span className="tabular">{formatMoney(m.total)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="mt-5">
+                    <DividendBars months={dividends.data.months} />
+                  </div>
                 </>
               ) : (
                 <p className="mt-3 text-sm text-mist-300">
