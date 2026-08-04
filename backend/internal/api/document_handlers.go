@@ -330,13 +330,20 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 // visibility. Every handler that touches a specific document starts here; a
 // miss is written as 404 and the bool is false.
 func (s *Server) loadDocument(w http.ResponseWriter, r *http.Request) (dbgen.Document, bool) {
-	identity := auth.MustFromContext(r.Context())
-
 	id, err := uuid.Parse(chi.URLParam(r, "documentID"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
 		return dbgen.Document{}, false
 	}
+	return s.loadDocumentByID(w, r, id)
+}
+
+// loadDocumentByID is loadDocument for a caller that already has the id — the
+// paystub importer, which takes it from a request body rather than a path.
+// Split out rather than duplicated so there is exactly one place the vault's
+// visibility predicate lives.
+func (s *Server) loadDocumentByID(w http.ResponseWriter, r *http.Request, id uuid.UUID) (dbgen.Document, bool) {
+	identity := auth.MustFromContext(r.Context())
 
 	doc, err := s.Queries.GetDocument(r.Context(), dbgen.GetDocumentParams{
 		ID:          id,

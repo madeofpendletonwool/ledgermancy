@@ -78,6 +78,34 @@ var childRoutes = []struct{ method, path string }{
 	{"GET", "/api/obligations/"},
 	{"POST", "/api/obligations/"},
 
+	// Payroll. A child has no salary in this app and no business reading a
+	// parent's — and unlike the goals group below there is no read a child is
+	// entitled to here, so the whole group is refused.
+	//
+	// Adult-only is not the whole access story for these routes: a paystub is
+	// private to the person whose pay it is, and one adult reading another's is
+	// refused per row in SQL rather than by this guard.
+	{"GET", "/api/payroll/taxonomy"},
+	{"GET", "/api/payroll/years"},
+	{"GET", "/api/payroll/summary"},
+	{"GET", "/api/payroll/savings-rate"},
+	{"GET", "/api/payroll/tax-summary"},
+	{"POST", "/api/payroll/parse"},
+	{"POST", "/api/payroll/parse-document"},
+	{"GET", "/api/payroll/employers"},
+	{"POST", "/api/payroll/employers"},
+	{"PUT", "/api/payroll/employers/" + uuid.Nil.String()},
+	{"DELETE", "/api/payroll/employers/" + uuid.Nil.String()},
+	{"GET", "/api/payroll/paystubs"},
+	{"POST", "/api/payroll/paystubs"},
+	{"GET", "/api/payroll/paystubs/" + uuid.Nil.String()},
+	{"PUT", "/api/payroll/paystubs/" + uuid.Nil.String()},
+	{"DELETE", "/api/payroll/paystubs/" + uuid.Nil.String()},
+	{"POST", "/api/payroll/paystubs/" + uuid.Nil.String() + "/confirm"},
+	{"PATCH", "/api/payroll/paystubs/" + uuid.Nil.String() + "/sharing"},
+	{"GET", "/api/payroll/paystubs/" + uuid.Nil.String() + "/deposit-matches"},
+	{"PUT", "/api/payroll/paystubs/" + uuid.Nil.String() + "/deposit"},
+
 	// Goals: reads are visibility-scoped and allowed; writes are not.
 	{"POST", "/api/goals/"},
 	{"POST", "/api/goals/parse"},

@@ -155,6 +155,76 @@ again". This is a privacy property as much as a performance one: without the
 cache, matching a receipt to a charge that posted three days later would mean
 uploading it a second time.
 
+## Paystubs raise the sensitivity ceiling of the database
+
+Paystub tracking stores gross salary, an employer, and — optionally — an EIN.
+That is a step up in sensitivity from anything else the app holds, and the
+schema is built around three consequences.
+
+**Paystubs are private by default, and this is the one place the app inverts its
+sharing default.** Linked institutions (`plaid_items.is_shared`) and vault
+documents (`documents.is_shared`) both default to *shared*, because a
+household's accounts and paperwork are normally joint. A salary is not. In a
+two-earner household, the other member learning what you make has to be a
+decision somebody made, never the consequence of a column default — so
+`paystubs.is_shared` defaults to **false** and every read is scoped to
+`(owner OR shared)`. The adult-only route guard does nothing about this; it is
+enforced per row, in SQL.
+
+Seeing a shared stub is also not permission to change it. Confirming, editing,
+deleting and linking a deposit all resolve the row through an owner-scoped
+query, and a stub belonging to another member returns **404** rather than 403 —
+the distinction would confirm that it exists.
+
+**An EIN is sealed with `ENCRYPTION_KEY`,** the same key that protects Plaid
+tokens and vault documents, so it is not readable from a database dump alone and
+is excluded from the portable JSON export by type. It is returned in full by
+exactly one endpoint — the annual tax summary, the only place it is needed —
+and every other response shows `**-***6789`. The same consequence applies as for
+the vault: losing the key loses this column, which is the right trade for a
+field you can retype off a W-2 in ten seconds.
+
+**Personal identifiers are stripped before storage, not before display.** Any
+text taken off a stub — a line label, an unclassified row — is redacted of
+anything matching an SSN or a masked account number on the way *in*. A database
+that has never contained an SSN is a materially different thing to back up, to
+export, and to lose.
+
+### Paystub PDFs never leave the host
+
+There is no AI path for paystubs, deliberately.
+
+A PDF stub from a payroll provider is a **generated** document: the text is
+already in the file, in a fixed layout, so reading it is a parsing problem
+rather than a perception one. The importer pulls that text layer out locally
+(`internal/payroll/pdftext.go`) with no network call and no model. A scanned or
+photographed stub has no text layer, and the app says so and asks you to type it
+in — which is the fallback that has to work anyway.
+
+That is a stronger position than the receipt OCR above rather than a weaker one,
+and it is not an accident of scope. A paystub is *more* sensitive than the tax
+documents the OCR allowlist already refuses to send, so widening
+`ocrEligibleTypes` to include one would have been a single line and exactly the
+wrong line. Local extraction is also simply more accurate: transcribing a known
+field out of a text layer cannot misread a digit, and a misread year-to-date
+figure flowing into a tax summary is the expensive failure here.
+
+Reading a stub already in the vault is the same local parse over decrypted
+bytes, so it involves no third party either, and is not gated on
+`DOCUMENTS_OCR_ENABLED` — that switch decides what may be *uploaded* somewhere,
+which is a different question.
+
+### Unconfirmed paystubs are inert
+
+A paystub that has not been reviewed contributes to **no reported figure**: not
+the savings rate, not the effective tax rate, not contribution totals, not the
+tax summary. The filter lives in SQL, once, so no consumer can forget it.
+
+Confirmation additionally requires the stub to reconcile — gross minus the
+deductions must equal net, within a cent. A stub that does not balance can be
+saved as a draft but never confirmed, because silently storing a mis-entry would
+put its gap into every figure derived from it.
+
 ## Registration
 
 **Invite-only after the first account.** The first account creates the

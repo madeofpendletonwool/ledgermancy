@@ -19,6 +19,7 @@ import { Investments } from './routes/Investments'
 import { Transactions } from './routes/Transactions'
 import { Login } from './routes/Login'
 import { NetWorth } from './routes/NetWorth'
+import { Paystubs } from './routes/Paystubs'
 import { Spending } from './routes/Spending'
 import { Register } from './routes/Register'
 import { Report } from './routes/Report'
@@ -89,6 +90,7 @@ export default function App() {
               raw descriptor can contain a slash. */}
           <Route path="/merchants/detail" element={<MerchantDetail />} />
           <Route path="/documents" element={<Documents />} />
+          <Route path="/paystubs" element={<Paystubs />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/assistant" element={<Assistant />} />
           <Route path="/settings" element={<Settings />} />

@@ -405,11 +405,47 @@ live demos of the options ranker and the bucket allocator.
 The four docs sequence W1→W4 within the wave: surface first (cheap, biggest
 coverage gain), then the ranker, then the allocator, then the likelihood layer.
 
+**All four docs were reviewed against the code before wave 5 started, and all
+four were corrected.** The review found two classes of problem worth naming
+here, because they generalize:
+
+**Named APIs that did not exist.** Doc 32 twice instructed the implementer to
+delegate to `ProjectByAccount`, which is not in the tree — the real engine is
+`networth.ProjectRetirement`, whose `RetirementPoint.ByAccount` map supplies
+the per-account series. It also called `limitGroup` from a new package, but
+that function is unexported. A doc whose load-bearing instruction is "call this
+exact function, do not fork it" is only as good as the name, and neither had
+been checked.
+
+**Assumptions that flatter.** Three of them, all in doc 33, all moving the
+headline number in the direction that makes a plan look good: independent
+per-bucket return draws (which under-counts correlated equity risk and inflates
+every success rate), an arithmetic-vs-geometric mean gap that would have put
+doc 32's and doc 33's "P50" ~15% apart on the same card, and a worst-case
+drawdown defined as a maximum over runs — an unstable statistic that would let
+the run count change which plan the guardrail picks. Each is now fixed in the
+doc with a test that fails if the flattering version is implemented.
+
+The largest *capability* gap the review found was not a bug in any doc but an
+absence across all four: **unclaimed employer match**, the highest guaranteed
+return available to most households and computable from data the app already
+holds (`annualMatch`, `retirement.go:394`). It is now tier 2 of doc 24's
+waterfall. The second was **contribution eligibility** — `AnnualLimitFor`
+returns a cap, and a cap is not permission; a household over the Roth MAGI
+phase-out was going to be shown a $7,500/yr plan it is not allowed to execute.
+Doc 32 now owns an eligibility table beside `limits.go`, and doc 31's
+`households.filing_status` exists to key it.
+
 - **[24-proactive-advisor.md](24-proactive-advisor.md)** — ranked, deterministic
   options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
   15** (both shipped) and the wave-5 honesty docs for its allocation-flavoured
   options. The single-pick ranker ("you have $X — here are the options") and
-  the multi-debt avalanche/snowball strategy ship here.
+  the multi-debt avalanche/snowball strategy ship here. Its ranking rule is now
+  an explicit **waterfall** (starter EF → employer match → debt above a hurdle
+  derived from the household's own assumed return → full EF → expiring
+  tax-advantaged headroom → goals → everything below the hurdle as a stated
+  tradeoff). The first draft's "guaranteed return first" would have paid down a
+  3.5% mortgage ahead of a Roth and drained an emergency fund into a card.
 - **[31-advisor-surface.md](31-advisor-surface.md)** — rename Assistant →
   Advisor, expose ~12 existing engines as chat tools (no new math), build the
   Briefing/Horizon/Assumptions/Threads shell around the chat, add household
@@ -421,10 +457,12 @@ coverage gain), then the ranker, then the allocator, then the likelihood layer.
   (`limits.go`), goal-mapping, cash-drag detection, asset-location, and
   college-cost projection. The thing a real advisor does that the app can't.
 - **[33-likelihood-layer.md](33-likelihood-layer.md)** — Monte Carlo over
-  return distributions (generalizes doc 15's engine to allocation plans),
+  return distributions (sharing doc 15's seeding/RNG machinery, though the
+  accumulation loop is genuinely new rather than a generalization),
   P10/P50/P90 + success rates, a documented guardrail rule that lets the AI
   name a top pick from computed likelihoods, and plan-vs-actual tracking that
-  closes the loop.
+  closes the loop. **Also hard-depends on doc 30** — `Reconcile` reads
+  `account_balance_history` — which the first draft did not list.
 
 ### Wave 7 — capstone / far future
 
@@ -512,17 +550,22 @@ Making it a build failure moves the discovery to the pull request.
   **not** used: it trades away "the schema is a function of the version number"
   for a problem that renumbering solves outright.
 
-  **The `00036`–`00042` reservations (docs 22, 23, 25–29) are void for the same
-  reason** and must each be reissued above the highest applied version when their
-  doc is implemented. Doc 22 has done so and took `00046`; the rest still owe it. `00043_account_terms.sql` is an out-of-wave bugfix — the Goals
-  payoff picker listed no debts for a household that had three, because it gated
-  on Plaid having served loan terms rather than on the account being a debt — and
-  it had to take a number above everything applied. Renumbering the seven
-  reservations instead would have meant editing seven plan docs that name their
-  number inline, on waves this README says run in parallel; voiding them costs
-  one edit now and one edit per doc when it is actually written. **Each of those
-  docs still carries its old number in its own text: check here before writing
-  the migration, not there.**
+  **The `00036`–`00042` reservations (docs 22, 23, 25–29) were void for the same
+  reason, and have now all been reissued** in the table below. Doc 22 went first
+  and took `00046`. `00043_account_terms.sql` is an out-of-wave bugfix — the
+  Goals payoff picker listed no debts for a household that had three, because it
+  gated on Plaid having served loan terms rather than on the account being a
+  debt — and it had to take a number above everything applied.
+
+  **Leaving them un-numbered turned out to be the more expensive choice, and it
+  nearly collided.** Wave 6 (docs 31–33) reserved `00048`–`00050` while wave 5's
+  reissues were still unassigned — and wave 5 ships first, so the first wave-5
+  implementer to need a migration would have reasonably taken `00048` and landed
+  on doc 31. Every remaining doc now has a concrete number, allocated in ship
+  order: wave 5 takes `00047`–`00051`, wave 6 takes `00052`–`00054`, wave 7 takes
+  `00055`–`00056`. **Docs 23 and 25–29 still carry their old numbers inline in
+  their own text; this table is authoritative — check here before writing a
+  migration, not there.**
 
   To avoid the collision class that already bit this repo once (two `00007`s),
   each doc that needs a migration has a **reserved number**. A reservation is a
@@ -543,15 +586,15 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00043_account_terms.sql`~~ | (bugfix) | `account_terms` — **taken** |
   | ~~`00046_anomaly_overrides.sql`~~ | 22 | `anomaly_overrides` table — **taken**. Note the scope changed: no `merchant_baselines` table ships, because a stored median/p95 cannot be made leave-one-out. See doc 22's shipped notes. |
   | ~~`00047_manual_accounts.sql`~~ | 30 | `accounts.source`/`user_id`/`is_shared`/`household_id`, `account_balance_history`, `securities.source`/`ticker_key`, `investment_transactions.source`, `recurring_obligations.auto_post`/`last_posted_date`/`posting_account_id` — **taken** |
-  | `00048_advisor_surface.sql` | 31 | `households.state`/`filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items` |
-  | `00049_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans` |
-  | `00050_likelihood_layer.sql` | 33 | `plan_trackings` |
-  | ~~`00037_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **void, reissue above `00043`** |
-  | ~~`00038_digest_entries.sql`~~ | 25 | `digest_entries` table — **void, reissue above `00043`** |
-  | ~~`00039_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` — **void, reissue above `00043`** |
-  | ~~`00040_cpi_series.sql`~~ | 27 | `cpi_series` table — **void, reissue above `00043`** |
-  | ~~`00041_scenarios.sql`~~ | 28 | `scenarios` table — **void, reissue above `00043`** |
-  | ~~`00042_multi_currency.sql`~~ | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` — **void, reissue above `00043`** |
+  | ~~`00048_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **taken**. Two additions to the schema doc 23 prints, both load-bearing: `paystub_lines.is_employer` (without it a 401(k) match is summed as a deduction and every stub carrying one fails the doc's *own* `gross − Σdeductions = net` rule) and `employers.pay_frequency` (the "N pay periods left" figure divides by it, and inferring a cadence from stub gaps fails hardest on a new job — which is when the question matters most). `employers.ein` is stored sealed, as `ein_encrypted BYTEA`. **This landing before `00047` means doc 30 must ship first or renumber above it** — see doc 23's shipped notes. |
+  | `00049_digest_entries.sql` | 25 | `digest_entries` table |
+  | `00050_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
+  | `00051_cpi_series.sql` | 27 | `cpi_series` table |
+  | `00052_advisor_surface.sql` | 31 | `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) |
+  | `00053_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans` |
+  | `00054_likelihood_layer.sql` | 33 | `plan_trackings` |
+  | `00055_scenarios.sql` | 28 | `scenarios` table |
+  | `00056_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
   **these reservations are load-bearing** — take only your own number, and only

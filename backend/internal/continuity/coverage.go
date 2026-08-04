@@ -129,8 +129,8 @@ var tableCoverage = map[string]Coverage{
 	// mirror of Plaid and a resync rebuilds it; account_terms is the APR and the
 	// monthly payment a person typed in, for the majority of institutions Plaid
 	// declines to report terms for at all. Nothing anywhere can re-supply it.
-	"account_terms": InExport,
-	"projection_assumptions":  InExport,
+	"account_terms":          InExport,
+	"projection_assumptions": InExport,
 
 	// --- Recurring and obligations ----------------------------------------
 	"recurring_obligations": InExport,
@@ -152,6 +152,21 @@ var tableCoverage = map[string]Coverage{
 	// see blobStores below, which is why that registry exists at all.
 	"documents":      InExport,
 	"document_links": InExport,
+
+	// --- Payroll ----------------------------------------------------------
+	// Sharper than it first looks. A paystub is not re-syncable from anywhere:
+	// Plaid reports the deposit, never the withholding behind it, and an
+	// employer's self-service portal keeps two years at best and vanishes with
+	// the job. Every line was typed in or read off a PDF the household still has
+	// to find again, and the YTD figures a tax summary is built from cannot be
+	// reconstructed from the ledger at any price.
+	//
+	// The EIN column is bytea, so IsSensitive withholds it from the portable
+	// export by type while the dump still carries it — the same treatment as
+	// every other sealed value, and the reason that rule is a type rule.
+	"employers":     InExport,
+	"paystubs":      InExport,
+	"paystub_lines": InExport,
 
 	// --- Alerts -----------------------------------------------------------
 	// The rules are the user's; the events are the engine's output.

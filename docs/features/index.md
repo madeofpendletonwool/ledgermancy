@@ -26,6 +26,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
     - [:material-swap-horizontal: Transactions](transactions.md) — search, filter, recategorise, CSV import
     - [:material-tag-multiple: Categories](categories.md) — typing, rules, colours
     - [:material-file-lock-outline: Documents](documents.md) — encrypted vault for receipts, tax and policies
+    - [:material-cash-multiple: Paystubs](paystubs.md) — gross pay, withholding, contribution room, tax summary
     - [:material-chart-line: Net worth](net-worth.md) — trend, holdings, debt, projections
     - [:material-finance: Investments](investments.md) — returns, allocation, holdings, dividends
     - [:material-account-tie: Retirement](retirement.md) — account-aware FIRE projections, FI age, savings-rate solve

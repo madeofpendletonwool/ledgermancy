@@ -2033,6 +2033,288 @@ export interface ReceiptExtraction {
   matches: ReceiptMatch[]
 }
 
+// --- Payroll ---------------------------------------------------------------
+//
+// The pre-tax side of the ledger. Two things are worth stating once, because
+// getting either wrong would quietly put a wrong number on screen:
+//
+//   * Every money field is a decimal STRING computed server-side, like the rest
+//     of this file. Never sum one in JavaScript.
+//   * `confirmed` is not cosmetic. An unconfirmed paystub contributes to no
+//     reported figure anywhere — the filter lives in SQL — so the review queue
+//     is the only place an unconfirmed stub's numbers mean anything at all.
+
+/** How often an employer pays. Drives the "N pay periods left" figure. */
+export type PayFrequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly'
+
+export interface Employer {
+  id: string
+  name: string
+  address: string | null
+  pay_frequency: PayFrequency
+  /** Scoped to what the caller can see, never another member's private stubs. */
+  paystub_count: number
+  has_ein: boolean
+  /** "**-***6789". The full EIN is only ever returned by the tax summary. */
+  ein_masked: string | null
+}
+
+export interface EmployerInput {
+  name: string
+  /**
+   * Three-valued, and the API depends on it: omit to leave the stored EIN
+   * alone, send "" to remove it, send digits to replace it. A sealed column
+   * cannot be read back and compared, so there is no fourth option.
+   */
+  ein?: string
+  address?: string
+  pay_frequency: PayFrequency
+}
+
+/** A deduction category, as the server's taxonomy defines it. */
+export interface PayrollCategory {
+  category: string
+  label: string
+  /** tax | retirement | health | insurance | other */
+  group: string
+  is_tax: boolean
+  pre_tax_by_default: boolean
+  employer_only: boolean
+  /**
+   * True when pre-tax status is not the user's to choose — a tax is not a
+   * pre-tax deduction of itself, and a Roth deferral is post-tax by definition.
+   * The form omits the toggle rather than offering a choice the server rejects.
+   */
+  pre_tax_locked: boolean
+  /** "401k" | "ira" | "hsa" | "" — the shared IRS cap this counts against. */
+  limit_group: string
+}
+
+export interface PayrollTaxonomy {
+  categories: PayrollCategory[]
+  pay_frequencies: {
+    value: PayFrequency
+    label: string
+    periods_per_year: number
+  }[]
+}
+
+export interface PaystubLine {
+  id: string
+  category: string
+  /** The employer's own wording. */
+  label: string
+  /** The taxonomy's name for the category. */
+  category_label: string
+  group: string
+  amount: string
+  ytd_amount: string | null
+  pre_tax: boolean
+  is_employer: boolean
+  is_tax: boolean
+}
+
+export interface PaystubDeposit {
+  transaction_id: string
+  date: string
+  /** Positive: money in. Plaid's sign convention is handled server-side. */
+  amount: string
+}
+
+export interface PaystubBand {
+  group: string
+  label: string
+  amount: string
+}
+
+export interface Paystub {
+  id: string
+  employer_id: string
+  employer_name: string
+  pay_frequency: PayFrequency
+  period_start: string
+  period_end: string
+  pay_date: string
+  gross: string
+  net: string
+  ytd_gross: string | null
+  ytd_net: string | null
+  /** manual | pdf | plaid */
+  source: string
+  confirmed: boolean
+  confirmed_at: string | null
+  is_shared: boolean
+  /** False for a household member's shared stub: visible, not editable. */
+  is_own: boolean
+  document_id: string | null
+  deposit: PaystubDeposit | null
+  lines: PaystubLine[]
+  tax_total: string
+  /** A fraction, 0–1. Null when gross was zero. */
+  effective_tax_rate: string | null
+  employer_total: string
+  total_compensation: string
+  /** gross − deductions − net, within a cent. Confirmation requires it. */
+  balances: boolean
+  residual: string
+  breakdown: PaystubBand[]
+}
+
+export interface PaystubLineInput {
+  category: string
+  label: string
+  amount: string
+  ytd_amount?: string
+  pre_tax: boolean
+  is_employer: boolean
+}
+
+export interface PaystubInput {
+  employer_id: string
+  period_start: string
+  period_end: string
+  pay_date: string
+  gross: string
+  net: string
+  ytd_gross?: string
+  ytd_net?: string
+  source?: 'manual' | 'pdf'
+  /** Honoured only when the stub balances; the server refuses otherwise. */
+  confirm: boolean
+  is_shared: boolean
+  document_id?: string
+  lines: PaystubLineInput[]
+}
+
+/**
+ * A paystub read off a PDF's text layer. Every field is a SUGGESTION.
+ *
+ * Nothing was sent anywhere to produce this: the extraction is a local parse of
+ * the text a payroll provider already put in the file. A scanned stub has no
+ * text layer and comes back as a 422 telling the user to type it in.
+ */
+export interface PaystubProposal {
+  employer_name_hint: string
+  pay_date: string | null
+  period_start: string | null
+  period_end: string | null
+  gross: string | null
+  net: string | null
+  ytd_gross: string | null
+  ytd_net: string | null
+  lines: {
+    category: string
+    category_label: string
+    group: string
+    label: string
+    amount: string
+    ytd_amount: string | null
+    pre_tax: boolean
+    is_employer: boolean
+  }[]
+  /** Money-bearing lines the parser could not classify, for the user to assign. */
+  unmatched: string[]
+  warnings: string[]
+  balances: boolean
+  residual: string
+  source: 'pdf'
+  document_id: string | null
+}
+
+export interface DepositMatch {
+  transaction_id: string
+  date: string
+  amount: string
+  label: string
+  account_name: string
+  /** How far this deposit is from the stub's net pay. Zero is exact. */
+  delta: string
+  exact: boolean
+}
+
+export interface ContributionHeadroom {
+  /** The SHARED limit group — a traditional and a Roth 401(k) are one cap. */
+  group: string
+  label: string
+  contributed: string
+  limit: string
+  remaining: string
+  /** Non-zero means an excess deferral, which has to be withdrawn. */
+  over_by: string
+  periods_left: number | null
+  per_period: string | null
+}
+
+export interface PayrollSummary {
+  tax_year: number
+  has_data: boolean
+  paystub_count: number
+  unconfirmed_count: number
+  gross: string
+  net: string
+  tax_total: string
+  effective_tax_rate: string | null
+  employer_total: string
+  total_compensation: string
+  employers: {
+    employer_id: string
+    name: string
+    pay_frequency: PayFrequency
+    paystub_count: number
+    gross: string
+    net: string
+    last_pay_date: string | null
+  }[]
+  categories: {
+    category: string
+    label: string
+    group: string
+    amount: string
+    is_tax: boolean
+    is_employer: boolean
+  }[]
+  headroom: ContributionHeadroom[]
+  /** False when the app has no IRS limits for this year. Say so; never guess. */
+  limits_configured: boolean
+  latest_limit_year: number
+  /** False when no birthdate is known, so no catch-up was applied. */
+  age_known: boolean
+}
+
+/**
+ * Both savings rates, side by side.
+ *
+ * The net one is the app's existing figure and is unchanged. The gross one is
+ * the honest one and is normally a good deal lower, because 30–45% of gross
+ * never reaches an account at all.
+ */
+export interface GrossSavingsRate {
+  from: string
+  to: string
+  net_income: string
+  spending: string
+  leftover: string
+  savings_rate_net: string | null
+  gross_pay: string | null
+  savings_rate_gross: string | null
+  paystub_count: number
+  /** Non-empty when the paystubs on file only partly cover the window. */
+  coverage: string
+}
+
+export interface TaxSummary {
+  tax_year: number
+  employers: {
+    employer_id: string
+    employer_name: string
+    address: string | null
+    ein: string | null
+    boxes: { box: string; code: string; label: string; amount: string }[]
+  }[]
+  /** Rendered wherever this is shown or exported. It is not a W-2. */
+  disclaimer: string
+}
+
 /** One turn in a chatbot conversation. */
 export interface ChatTurn {
   role: 'user' | 'assistant'
@@ -2965,11 +3247,127 @@ export const api = {
   documentPreviewURL: (id: string, previewType: string) =>
     documentObjectURL(id, previewType),
 
+  // --- Payroll --------------------------------------------------------------
+
+  payrollTaxonomy: () =>
+    request<PayrollTaxonomy>('GET', '/api/payroll/taxonomy'),
+
+  paystubYears: () => request<number[]>('GET', '/api/payroll/years'),
+
+  payrollSummary: (year?: number, familyHSA?: boolean) =>
+    request<PayrollSummary>(
+      'GET',
+      withQuery('/api/payroll/summary', {
+        year,
+        family_hsa: familyHSA ? 'true' : undefined,
+      }),
+    ),
+
+  payrollSavingsRate: (params: PeriodQuery) =>
+    request<GrossSavingsRate>(
+      'GET',
+      withQuery('/api/payroll/savings-rate', params),
+    ),
+
+  payrollTaxSummary: (year: number) =>
+    request<TaxSummary>('GET', withQuery('/api/payroll/tax-summary', { year })),
+
+  employers: () => request<Employer[]>('GET', '/api/payroll/employers'),
+
+  createEmployer: (input: EmployerInput) =>
+    request<Employer>('POST', '/api/payroll/employers', input),
+
+  updateEmployer: (id: string, input: EmployerInput) =>
+    request<Employer>('PUT', `/api/payroll/employers/${id}`, input),
+
+  deleteEmployer: (id: string) =>
+    request<void>('DELETE', `/api/payroll/employers/${id}`),
+
+  paystubs: (year?: number) =>
+    request<Paystub[]>('GET', withQuery('/api/payroll/paystubs', { year })),
+
+  paystub: (id: string) =>
+    request<Paystub>('GET', `/api/payroll/paystubs/${id}`),
+
+  createPaystub: (input: PaystubInput) =>
+    request<Paystub>('POST', '/api/payroll/paystubs', input),
+
+  updatePaystub: (id: string, input: PaystubInput) =>
+    request<Paystub>('PUT', `/api/payroll/paystubs/${id}`, input),
+
+  deletePaystub: (id: string) =>
+    request<void>('DELETE', `/api/payroll/paystubs/${id}`),
+
+  // Refused with a 422 naming the gap when the stub does not balance. That is
+  // the point of the endpoint, not an edge case to swallow.
+  confirmPaystub: (id: string, confirmed: boolean) =>
+    request<Paystub>('POST', `/api/payroll/paystubs/${id}/confirm`, {
+      confirmed,
+    }),
+
+  setPaystubSharing: (id: string, isShared: boolean) =>
+    request<Paystub>('PATCH', `/api/payroll/paystubs/${id}/sharing`, {
+      is_shared: isShared,
+    }),
+
+  paystubDepositMatches: (id: string) =>
+    request<DepositMatch[]>(
+      'GET',
+      `/api/payroll/paystubs/${id}/deposit-matches`,
+    ),
+
+  // Null unlinks. Nothing else writes this field — the matcher only proposes.
+  linkPaystubDeposit: (id: string, transactionID: string | null) =>
+    request<Paystub>('PUT', `/api/payroll/paystubs/${id}/deposit`, {
+      transaction_id: transactionID,
+    }),
+
+  parsePaystubPDF: (file: File) => parsePaystubUpload(file),
+
+  parsePaystubDocument: (documentID: string) =>
+    request<PaystubProposal>('POST', '/api/payroll/parse-document', {
+      document_id: documentID,
+    }),
+
   // The chat endpoint streams its answer as Server-Sent Events: one
   // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
   // onDelta is called as text arrives so the UI can render it live.
   chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
     streamChat(messages, onDelta),
+}
+
+/**
+ * Posts a paystub PDF for local extraction.
+ *
+ * Bypasses `request` for the same reason uploadDocument does: the body is a
+ * FormData and setting a Content-Type by hand would omit the multipart
+ * boundary. Nothing is stored — the response is a proposal and the bytes are
+ * dropped.
+ */
+async function parsePaystubUpload(file: File): Promise<PaystubProposal> {
+  const form = new FormData()
+  form.set('file', file)
+
+  assertOnline()
+
+  const res = await fetch('/api/payroll/parse', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+    credentials: 'include',
+    body: form,
+  })
+
+  if (!res.ok) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+  return (await res.json()) as PaystubProposal
 }
 
 /**

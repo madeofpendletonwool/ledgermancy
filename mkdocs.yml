@@ -100,6 +100,7 @@ nav:
       - Categories: features/categories.md
       - Merchants: features/merchants.md
       - Documents: features/documents.md
+      - Paystubs: features/paystubs.md
       - Accounts & Plaid: features/accounts.md
       - Alerts: features/alerts.md
       - Assistant: features/assistant.md

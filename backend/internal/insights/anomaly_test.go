@@ -764,7 +764,7 @@ func TestAnomalyInsightsAreStableAndStayDismissed(t *testing.T) {
 	}
 	generateAnomalies(t, ctx, f)
 
-	rows, err := f.q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: f.householdID})
+	rows, err := f.q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: f.householdID, AsOf: anomalyNow()})
 	if err != nil {
 		t.Fatalf("list insights: %v", err)
 	}

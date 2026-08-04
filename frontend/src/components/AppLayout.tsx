@@ -49,6 +49,10 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/categories', label: 'Categories' },
       { to: '/merchants', label: 'Merchants' },
       { to: '/documents', label: 'Documents' },
+      // Under Accounts rather than Analyze: a paystub is a record the household
+      // keeps, alongside its transactions and its paperwork, not a derived view
+      // of one.
+      { to: '/paystubs', label: 'Paystubs' },
       { to: '/net-worth', label: 'Net worth' },
       { to: '/investments', label: 'Investments' },
     ],

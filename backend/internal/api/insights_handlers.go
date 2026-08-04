@@ -61,6 +61,7 @@ func (s *Server) handleListInsights(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Queries.ListInsights(r.Context(), dbgen.ListInsightsParams{
 		HouseholdID:      identity.HouseholdID,
 		IncludeDismissed: r.URL.Query().Get("state") == "all",
+		AsOf:             time.Now(),
 	})
 	if err != nil {
 		s.internalError(w, "list insights", err)

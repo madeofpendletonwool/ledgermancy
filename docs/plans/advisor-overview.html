@@ -501,7 +501,7 @@
 <!-- 5 OPTIONS RANKER -->
 <section id="ranker">
 <h2><span class="n">5</span> Live: the options ranker <span class="docref" style="font-size:.7rem">doc 24</span></h2>
-<p>The single-pick ranker — “you have $X this month, what’s the highest-value thing to do with it.” Guaranteed return first (debt APR), then goals, then assumed-return investing. This is doc 24’s surface; real numbers flow from <code>BuildSafeToSpend</code>, <code>liabilities.apr</code>, <code>goals.Compute</code>.</p>
+<p>The single-pick ranker — “you have $X this month, what’s the highest-value thing to do with it.” Ranked by the documented waterfall: starter EF, then unclaimed employer match, then debt above the household&rsquo;s return hurdle, then goals. This is doc 24’s surface; real numbers flow from <code>BuildSafeToSpend</code>, <code>liabilities.apr</code>, <code>goals.Compute</code>.</p>
 <div class="glass demo-grid">
   <div class="demo-inputs">
     <h4><span class="dot"></span> This month’s slack</h4>
@@ -617,7 +617,7 @@
       <h4>The advisor initiative — four docs, sequenced W1→W4</h4>
       <p><strong>W1 · doc 31 Advisor surface.</strong> Rename Assistant → Advisor. Expose ~12 existing engines as chat tools (no new math). Build the Briefing, Horizon view, Assumptions panel, saved threads, beneficiary nudge. Biggest question-coverage gain, lowest risk.</p>
       <p><strong>W2 · doc 24 Proactive engine.</strong> The single-pick ranker (you have $X — here are the options). Slack from <code>BuildSafeToSpend</code> (reused, never reimplemented). Multi-debt avalanche/snowball ships here. The agreement test: advisor slack == Budgets safe-to-spend, exact decimal.</p>
-      <p><strong>W3 · doc 32 Allocation planner.</strong> Multi-bucket split (lump + monthly across Roth/529/brokerage/debt/EF). Per-bucket projection via <code>ProjectByAccount</code>, cap enforcement via <code>limits.go</code>, goal-mapping, cash-drag detection, asset-location, college-cost, horizon-aware assignment.</p>
+      <p><strong>W3 · doc 32 Allocation planner.</strong> Multi-bucket split (lump + monthly across Roth/529/brokerage/debt/EF). Per-bucket projection via <code>ProjectRetirement</code>, cap enforcement via <code>limits.go</code>, goal-mapping, cash-drag detection, asset-location, college-cost, horizon-aware assignment.</p>
       <p><strong>W4 · doc 33 Likelihood layer.</strong> Monte Carlo over return distributions → P10/P50/P90 + success rates. Guardrail-based AI top-pick (“based on the math, Plan A — here’s why”). Plan-vs-actual tracking closes the loop.</p>
       <div class="docs"><span class="docref">24</span><span class="docref">31</span><span class="docref">32</span><span class="docref">33</span></div>
     </div>
@@ -826,8 +826,24 @@
     else if(lump*n.Roth>0){capEl.className='cap ok';capEl.textContent='within '+money(ROTH_CAP)+' annual Roth cap';}
     else{capEl.className='cap ok';capEl.textContent='';}
 
-    // deterministic projection (P50 = compound at assumed return)
-    function project(lumpAmt,moAmt,retPct,years){var r=retPct/100;var fv=lumpAmt*Math.pow(1+r,years);if(moAmt>0&&r>0){var rm=r/12;fv+=moAmt*((Math.pow(1+rm,years*12)-1)/rm);}else if(moAmt>0){fv+=moAmt*years*12;}return fv;}
+    // Deterministic projection: value at the assumed return. Deliberately NOT
+    // labelled "P50" -- doc 33's median simulated outcome is a different
+    // statistic and lands ~15% lower at typical sigma. See doc 33, "Two P50s".
+    //
+    // Monthly compounding at r/12 for BOTH the lump and the contribution
+    // stream, matching networth.ProjectRetirement (retirement.go:266-270),
+    // which divides the annual real rate by twelve rather than taking a
+    // compounded monthly equivalent. This demo previously compounded the lump
+    // ANNUALLY at (1+r)^years while compounding the stream at r/12 -- two
+    // conventions in one function, neither matching the backend. An
+    // implementer following this page landed 3-4% off the engine.
+    function project(lumpAmt,moAmt,retPct,years){
+      var r=retPct/100, n=years*12, rm=r/12;
+      if(rm<=0) return lumpAmt+(moAmt>0?moAmt*n:0);
+      var fv=lumpAmt*Math.pow(1+rm,n);
+      if(moAmt>0) fv+=moAmt*((Math.pow(1+rm,n)-1)/rm);
+      return fv;
+    }
     var contributed=lump+mo*hor*12;
     var bucketProj=[];
     var totalProj=0;

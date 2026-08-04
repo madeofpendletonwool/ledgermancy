@@ -223,6 +223,17 @@ type DocumentLink struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+type Employer struct {
+	ID           uuid.UUID    `json:"id"`
+	HouseholdID  uuid.UUID    `json:"household_id"`
+	Name         string       `json:"name"`
+	EinEncrypted []byte       `json:"ein_encrypted"`
+	Address      *string      `json:"address"`
+	PayFrequency string       `json:"pay_frequency"`
+	CreatedAt    stdtime.Time `json:"created_at"`
+	UpdatedAt    stdtime.Time `json:"updated_at"`
+}
+
 type Goal struct {
 	ID           uuid.UUID       `json:"id"`
 	HouseholdID  uuid.UUID       `json:"household_id"`
@@ -441,6 +452,38 @@ type NetWorthSnapshot struct {
 	NetWorth         decimal.Decimal `json:"net_worth"`
 	Breakdown        []byte          `json:"breakdown"`
 	CreatedAt        stdtime.Time    `json:"created_at"`
+}
+
+type Paystub struct {
+	ID            uuid.UUID           `json:"id"`
+	UserID        uuid.UUID           `json:"user_id"`
+	EmployerID    uuid.UUID           `json:"employer_id"`
+	PeriodStart   stdtime.Time        `json:"period_start"`
+	PeriodEnd     stdtime.Time        `json:"period_end"`
+	PayDate       stdtime.Time        `json:"pay_date"`
+	Gross         decimal.Decimal     `json:"gross"`
+	Net           decimal.Decimal     `json:"net"`
+	YtdGross      decimal.NullDecimal `json:"ytd_gross"`
+	YtdNet        decimal.NullDecimal `json:"ytd_net"`
+	Source        string              `json:"source"`
+	ConfirmedAt   *stdtime.Time       `json:"confirmed_at"`
+	IsShared      bool                `json:"is_shared"`
+	TransactionID *uuid.UUID          `json:"transaction_id"`
+	DocumentID    *uuid.UUID          `json:"document_id"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+	UpdatedAt     stdtime.Time        `json:"updated_at"`
+}
+
+type PaystubLine struct {
+	ID         uuid.UUID           `json:"id"`
+	PaystubID  uuid.UUID           `json:"paystub_id"`
+	Category   string              `json:"category"`
+	Label      string              `json:"label"`
+	Amount     decimal.Decimal     `json:"amount"`
+	YtdAmount  decimal.NullDecimal `json:"ytd_amount"`
+	PreTax     bool                `json:"pre_tax"`
+	IsEmployer bool                `json:"is_employer"`
+	CreatedAt  stdtime.Time        `json:"created_at"`
 }
 
 type PfcCategoryMap struct {

@@ -374,6 +374,45 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Delete("/{documentID}/links/{linkID}", s.handleUnlinkDocument)
 		})
 
+		// Payroll: the pre-tax side of the ledger. Adult-only like every other
+		// financial surface, but note that adult-only is NOT the whole access
+		// story here — a paystub is private to the person whose pay it is, and
+		// the group guard does nothing about one adult reading another's
+		// salary. That is enforced per row, in SQL. See queries/payroll.sql.
+		//
+		// /parse and /parse-document read a PDF's text layer locally and return
+		// a proposal. Neither sends anything to an AI provider; see
+		// payroll_import_handlers.go before changing that.
+		r.Route("/payroll", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+
+			r.Get("/taxonomy", s.handlePayrollTaxonomy)
+			r.Get("/years", s.handleListPaystubYears)
+			r.Get("/summary", s.handlePayrollSummary)
+			r.Get("/savings-rate", s.handlePayrollSavingsRate)
+			r.Get("/tax-summary", s.handlePayrollTaxSummary)
+
+			r.Post("/parse", s.handleParsePaystubUpload)
+			r.Post("/parse-document", s.handleParsePaystubDocument)
+
+			r.Get("/employers", s.handleListEmployers)
+			r.Post("/employers", s.handleCreateEmployer)
+			r.Put("/employers/{employerID}", s.handleUpdateEmployer)
+			r.Delete("/employers/{employerID}", s.handleDeleteEmployer)
+
+			r.Get("/paystubs", s.handleListPaystubs)
+			r.Post("/paystubs", s.handleCreatePaystub)
+			r.Get("/paystubs/{paystubID}", s.handleGetPaystub)
+			r.Put("/paystubs/{paystubID}", s.handleUpdatePaystub)
+			r.Delete("/paystubs/{paystubID}", s.handleDeletePaystub)
+			r.Post("/paystubs/{paystubID}/confirm", s.handleConfirmPaystub)
+			r.Patch("/paystubs/{paystubID}/sharing", s.handleSetPaystubSharing)
+			// The match only ever proposes; the PUT is where a human's choice
+			// is recorded.
+			r.Get("/paystubs/{paystubID}/deposit-matches", s.handleMatchPaystubDeposit)
+			r.Put("/paystubs/{paystubID}/deposit", s.handleLinkPaystubDeposit)
+		})
+
 		r.Route("/categories", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListCategories)

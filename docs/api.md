@@ -99,6 +99,46 @@ used to probe whether an id exists in another household. All routes report
 | POST | `/api/documents/{id}/extract` | ✓ | Receipt OCR. **Suggestions only** — returns fields plus candidate transactions and writes no ledger data. `403` unless `DOCUMENTS_OCR_ENABLED`, **and `403` for any `doc_type` other than `receipt`**, checked before the file is decrypted. `415` for a non-image. The reading is cached on the document, so call this once per receipt |
 | GET | `/api/documents/{id}/matches` | ✓ | Re-runs the transaction match against the cached reading. **No decryption, no upload, no model call** — this is what finds the charge for a receipt scanned before it posted. Empty list when the receipt has not been read |
 
+### Payroll
+
+The pre-tax side of the ledger. Adult-only like every other financial surface,
+but the group guard is **not** the whole access story here: a paystub is private
+to the person whose pay it is, and the `(owner OR shared)` predicate is enforced
+per row in SQL. Reads use it; every mutation uses a stricter owner-only lookup,
+because seeing a shared stub is not permission to change it. Misses are **404,
+never 403** — the distinction would confirm that another member has a stub.
+
+Two invariants every consumer inherits:
+
+- **Unconfirmed paystubs are inert.** They appear in the listing — that is the
+  review queue — and contribute nothing to `/summary`, `/savings-rate` or
+  `/tax-summary`. The filter lives in SQL, once.
+- **Confirmation requires the stub to balance**, `gross − Σ(deductions) = net`
+  within a cent. `422` otherwise, with the gap named in the message.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/payroll/taxonomy` | ✓ | Line categories and pay frequencies. Served rather than duplicated client-side — the wage-base rules are a server fact |
+| GET | `/api/payroll/years` | ✓ | Tax years with confirmed stubs, newest first |
+| GET | `/api/payroll/summary` | ✓ | `year`, `family_hsa`. Year roll-up: gross, net, effective tax rate, total comp, per-category totals, contribution headroom. `limits_configured: false` when the app has no IRS limits for that year — it never substitutes an adjacent one |
+| GET | `/api/payroll/savings-rate` | ✓ | `from`, `to`. Both rates side by side: the existing net-based figure **unchanged**, the gross-based one beside it, plus a coverage warning when the stubs on file only partly cover the window |
+| GET | `/api/payroll/tax-summary` | ✓ | `year`. Confirmed stubs mapped onto W-2 boxes, per employer. The only endpoint that returns a full EIN. Carries its own disclaimer **in the payload** — it is not a W-2 and will be printed away from the page that framed it |
+| POST | `/api/payroll/parse` | ✓ | `multipart/form-data`: `file`. Local PDF text-layer extraction — **no network call, no AI provider, nothing stored**. Returns a proposal and writes nothing. `422` for a scan with no text layer, `415` for a non-PDF |
+| POST | `/api/payroll/parse-document` | ✓ | The same local parse over a vault document's decrypted bytes. Deliberately **not** gated on `DOCUMENTS_OCR_ENABLED`: that switch governs what may be uploaded to a third party, and nothing here is |
+| GET | `/api/payroll/employers` | ✓ | Paystub counts are visibility-scoped; the EIN is masked |
+| POST | `/api/payroll/employers` | ✓ | `409` on a duplicate name — two rows for one employer would break the shared-limit pooling |
+| PUT | `/api/payroll/employers/{id}` | ✓ | `ein` is three-valued: omit to keep, `""` to clear, digits to replace |
+| DELETE | `/api/payroll/employers/{id}` | ✓ | `409` while paystubs exist. The FK cascades, which is exactly why |
+| GET | `/api/payroll/paystubs` | ✓ | `year`. Includes unconfirmed stubs — the review queue |
+| POST | `/api/payroll/paystubs` | ✓ | `confirm: true` requires a balancing stub (`422`). `409` on a duplicate employer + pay date |
+| GET | `/api/payroll/paystubs/{id}` | ✓ | Lines plus every derived figure |
+| PUT | `/api/payroll/paystubs/{id}` | ✓ | Lines are replaced wholesale; an edit re-opens the review |
+| DELETE | `/api/payroll/paystubs/{id}` | ✓ | Owner only |
+| POST | `/api/payroll/paystubs/{id}/confirm` | ✓ | `{confirmed}`. `422` naming the gap when the stub does not reconcile |
+| PATCH | `/api/payroll/paystubs/{id}/sharing` | ✓ | Private by default — the one place this app inverts its sharing default |
+| GET | `/api/payroll/paystubs/{id}/deposit-matches` | ✓ | Candidate deposits ranked by distance from net. A **proposal**; a deposit already claimed by another stub is not offered at all |
+| PUT | `/api/payroll/paystubs/{id}/deposit` | ✓ | `{transaction_id}`, null to unlink. The only thing that ever writes the link |
+
 ## CSRF
 
 Every state-changing request needs the CSRF token echoed in an `X-CSRF-Token`

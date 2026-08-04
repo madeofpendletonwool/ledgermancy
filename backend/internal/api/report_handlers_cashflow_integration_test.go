@@ -107,7 +107,7 @@ func TestHandleCashFlowReconcilesWithDB(t *testing.T) {
 		t.Fatalf("unmarshal: %v\nbody: %s", err, rec.Body.String())
 	}
 
-	assertDec(t, "income_total", got.IncomeTotal, "3000.00") // -(-2000 + -1000)
+	assertDec(t, "income_total", got.IncomeTotal, "3000.00")     // -(-2000 + -1000)
 	assertDec(t, "spending_total", got.SpendingTotal, "2700.00") // 2000+300+250+150
 	assertDec(t, "leftover", got.Leftover, "300.00")             // 3000 - 2700
 	assertDec(t, "uncategorized_spending", got.UncategorizedSpending, "150.00")

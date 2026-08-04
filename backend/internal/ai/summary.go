@@ -60,7 +60,22 @@ type MonthlySummaryInput struct {
 	DiscretionarySpending string
 	// SavingsRate is leftover as a share of income, e.g. "36%"; empty when income
 	// was zero and there is nothing to divide by.
+	//
+	// "Income" here means what reached the household's accounts — post-tax,
+	// post-deduction — because that is what the ledger can see. The meaning is
+	// deliberately unchanged now that gross pay is available: the recap, the
+	// insight feed and the assistant all quote this figure, so redefining it
+	// against a different denominator would move all three at once without a
+	// single call site changing. The gross-based figure below sits ALONGSIDE it.
 	SavingsRate string
+	// GrossPay is the confirmed paystub gross for the month, empty when no
+	// paystubs cover it. Most months on most installs will have none, so every
+	// consumer treats it as optional rather than as a better SavingsRate.
+	GrossPay string
+	// GrossSavingsRate is leftover as a share of GROSS pay — the honest figure,
+	// and normally a good deal lower than SavingsRate, because 30–45% of gross
+	// never reaches an account at all. Empty whenever GrossPay is.
+	GrossSavingsRate string
 	// RecurringTotal is the estimated monthly cost of the household's active
 	// recurring charges; empty when none were detected.
 	RecurringTotal string
@@ -120,7 +135,16 @@ func (c *Client) MonthlySummary(ctx context.Context, in MonthlySummaryInput) (st
 	fmt.Fprintf(&b, "Fixed spending: %s\n", in.FixedSpending)
 	fmt.Fprintf(&b, "Discretionary spending: %s\n", in.DiscretionarySpending)
 	if in.SavingsRate != "" {
-		fmt.Fprintf(&b, "Savings rate (leftover / income): %s\n", in.SavingsRate)
+		fmt.Fprintf(&b, "Savings rate (leftover / income that reached the accounts): %s\n", in.SavingsRate)
+	}
+	// Labelled unmistakably, and only present when paystubs cover the month.
+	// The two rates differ by a lot and the model must not treat them as
+	// alternative phrasings of one number.
+	if in.GrossPay != "" {
+		fmt.Fprintf(&b, "Gross pay before tax and deductions (from paystubs): %s\n", in.GrossPay)
+	}
+	if in.GrossSavingsRate != "" {
+		fmt.Fprintf(&b, "Savings rate against GROSS pay (leftover / gross): %s\n", in.GrossSavingsRate)
 	}
 	if in.RecurringTotal != "" {
 		fmt.Fprintf(&b, "Estimated recurring/subscription cost per month: %s\n", in.RecurringTotal)

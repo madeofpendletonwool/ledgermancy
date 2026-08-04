@@ -55,8 +55,11 @@ six-figure decision on this output.
 
 **Hard: [15-fire-projections.md](15-fire-projections.md).** TODO #16 is explicit —
 "this initiative must land after #5 ships. Building it before means
-re-implementing projection logic that will be thrown away." Do not start the
-engine before 15's `ProjectByAccount` exists.
+re-implementing projection logic that will be thrown away." That prerequisite
+is **satisfied**: 15 shipped as `networth.ProjectRetirement` (per-account series
+on `RetirementPoint.ByAccount`). This doc previously named it
+`ProjectByAccount`, a name doc 15's plan used and its implementation did not —
+there is no such function. Delegate to `ProjectRetirement`; do not fork it.
 
 **Strong (each unlocks scenario families):**
 
