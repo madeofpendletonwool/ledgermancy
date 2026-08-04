@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type {
@@ -11,7 +11,10 @@ import type {
 } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
 import { ProjectionChart } from '../components/charts/ProjectionChart'
+import { SkeletonRows, SkeletonChart, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
 import { STATUS } from '../components/charts/tokens'
 
 const HORIZONS = [30, 60, 90] as const
@@ -76,17 +79,17 @@ export function Schedule() {
         </p>
 
         {upcoming.isPending ? (
-          <Loading />
+          <SkeletonRows count={4} />
         ) : items.length === 0 ? (
-          <Empty>
-            Nothing due in this window. Recurring charges are picked up
-            automatically; add anything else below.
-          </Empty>
+          <EmptyState title={`Nothing due in the next ${days} days`}>
+            Recurring charges are picked up automatically. Anything the bank
+            can't show can be added under “Your bills”.
+          </EmptyState>
         ) : (
-          <>
+          <Reveal>
             <BillCalendar items={items} />
             <UpcomingList items={items} />
-          </>
+          </Reveal>
         )}
       </section>
 
@@ -100,7 +103,7 @@ export function Schedule() {
           </span>
         </p>
         {projection.isPending ? (
-          <Loading />
+          <SkeletonChart />
         ) : (
           <ProjectionPanel projection={projection.data} />
         )}
@@ -293,14 +296,22 @@ function ProjectionPanel({
 }) {
   const [selected, setSelected] = useState<string>('combined')
 
-  if (!projection) return <Empty>Couldn't load a projection.</Empty>
+  if (!projection)
+    return <EmptyState title="Couldn't load a projection." />
   if (projection.accounts.length === 0) {
     return (
-      <Empty>
-        No cash accounts to project. Only checking and savings balances are
-        projected — running this over a credit card would subtract the card's own
-        bills from the balance they make up.
-      </Empty>
+      <EmptyState
+        title="No cash accounts to project"
+        action={
+          <Link to="/accounts" className="btn-ghost">
+            Link an account
+          </Link>
+        }
+      >
+        Only checking and savings balances are projected — running this over a
+        credit card would subtract the card's own bills from the balance they
+        make up.
+      </EmptyState>
     )
   }
 
@@ -415,15 +426,28 @@ function ObligationManager({
         </p>
 
         {isPending ? (
-          <Loading />
+          <SkeletonRows count={3} />
         ) : active.length === 0 ? (
-          <Empty>No bills tracked yet. Add one below.</Empty>
+          <EmptyState
+            title="No bills tracked yet"
+            icon={<BillGlyph />}
+            action={
+              <a href="#add-bill" className="btn-primary">
+                Add a bill
+              </a>
+            }
+          >
+            Recurring charges are detected from your transactions; add anything
+            else by hand here.
+          </EmptyState>
         ) : (
-          <div className="space-y-3">
-            {active.map((o) => (
-              <ObligationRow key={o.id} obligation={o} onEdit={setEditing} />
-            ))}
-          </div>
+          <Reveal>
+            <div className="space-y-3">
+              {active.map((o) => (
+                <ObligationRow key={o.id} obligation={o} onEdit={setEditing} />
+              ))}
+            </div>
+          </Reveal>
         )}
 
         {inactive.length > 0 && (
@@ -461,19 +485,21 @@ function ObligationRow({
   return (
     <div className="rounded-xl border border-white/5 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-medium">
-            {/* A detected bill IS a merchant, so its label opens that merchant.
-                The stored key is already the resolved one — the detector hands out
-                resolved keys, and a later merge re-promotes the row under the new
-                key while retiring the old. A hand-entered bill has no merchant and
-                stays plain text. */}
-            <MerchantLink
-              name={obligation.label}
-              merchantKey={
-                obligation.source === 'detected' ? obligation.merchant_key : null
-              }
-            />
+        <div className="flex min-w-0 items-start gap-3">
+          <Monogram name={obligation.label} className="mt-0.5" />
+          <div>
+            <p className="font-medium">
+              {/* A detected bill IS a merchant, so its label opens that merchant.
+                  The stored key is already the resolved one — the detector hands out
+                  resolved keys, and a later merge re-promotes the row under the new
+                  key while retiring the old. A hand-entered bill has no merchant and
+                  stays plain text. */}
+              <MerchantLink
+                name={obligation.label}
+                merchantKey={
+                  obligation.source === 'detected' ? obligation.merchant_key : null
+                }
+              />
             {obligation.is_personal && (
               <span className="ml-2 text-xs font-normal text-mist-500">personal</span>
             )}
@@ -492,6 +518,7 @@ function ObligationRow({
             {obligation.source === 'detected' && obligation.user_edited &&
               ' · your edits are kept when charges are re-detected'}
           </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -588,7 +615,7 @@ function ObligationForm({
   }
 
   return (
-    <section className="glass p-6">
+    <section id="add-bill" className="glass scroll-mt-24 p-6">
       <h2 className="mb-1 text-lg font-medium">
         {editing ? `Edit ${editing.label}` : 'Add a bill'}
       </h2>
@@ -820,10 +847,20 @@ function invalidateSchedule(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['safe-to-spend'] })
 }
 
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-8 text-center text-sm text-mist-500">{children}</p>
+/** Outline glyph for the schedule empty state. */
+function BillGlyph() {
+  return (
+    <svg
+      className="h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2-2 2zM9 9h6M9 13h6" />
+    </svg>
+  )
 }

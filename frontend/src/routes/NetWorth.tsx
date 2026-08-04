@@ -1,10 +1,14 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { motion, useReducedMotion } from 'motion/react'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney, isAmortizingDebt } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
-import { CHART, SERIES, STATUS } from '../components/charts/tokens'
+import { NetWorthComposition } from '../components/charts/NetWorthComposition'
+import { lineDraw } from '../components/charts/motion'
+import { AnimatedNumber } from '../components/motion'
+import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 export function NetWorth() {
   const qc = useQueryClient()
@@ -42,11 +46,11 @@ export function NetWorth() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Tile label="Assets" value={nw ? formatMoney(nw.assets_total) : '—'} />
-        <Tile label="Liabilities" value={nw ? formatMoney(nw.liabilities_total) : '—'} tone="debt" />
+        <Tile label="Assets" value={nw ? nw.assets_total : null} />
+        <Tile label="Liabilities" value={nw ? nw.liabilities_total : null} tone="debt" />
         <Tile
           label="Net worth"
-          value={nw ? formatMoney(nw.net_worth) : '—'}
+          value={nw ? nw.net_worth : null}
           tone={nw && Number(nw.net_worth) < 0 ? 'debt' : 'good'}
           large
         />
@@ -59,6 +63,17 @@ export function NetWorth() {
           the day Ledgermancy did.
         </p>
         <NetWorthChart data={history.data ?? []} />
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Composition over time</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Assets above the line, liabilities below — the gap between the two
+          stacks is the net worth plotted above. Each snapshot carries the
+          breakdown it was recorded with, so the make-up of a past month
+          survives even after accounts are closed or re-linked.
+        </p>
+        <NetWorthComposition data={history.data ?? []} />
       </section>
 
       <ByPerson />
@@ -204,6 +219,28 @@ function ByPerson() {
   )
   if (!people?.length) return null
 
+  // A single stacked bar makes the household split scannable. Colour is
+  // redundant here — identity rides on the list below (the app's own
+  // AllocationList rule) — so every person wears the single-series hue stepped
+  // only in opacity, and the unassigned remainder recedes.
+  const grandTotal = Number(byPerson.data?.total ?? 0)
+  const segments = [
+    ...people.map((p, i) => ({
+      key: p.person_id,
+      label: p.person_name,
+      value: Number(p.total),
+      opacity: Math.max(0.35, 1 - i * 0.12),
+      muted: false,
+    })),
+    {
+      key: '__unassigned__',
+      label: 'Not assigned to anyone',
+      value: Number(byPerson.data?.unassigned ?? 0),
+      opacity: 1,
+      muted: true,
+    },
+  ].filter((s) => s.value > 0)
+
   return (
     <section className="glass p-6">
       <h2 className="mb-1 text-lg font-medium">Whose money</h2>
@@ -211,6 +248,29 @@ function ByPerson() {
         A breakdown of the assets above, not an extra total. Anything not held
         for a specific person shows as unassigned.
       </p>
+
+      {grandTotal > 0 && segments.length > 0 && (
+        <div className="mb-5">
+          <div className="flex h-4 gap-px overflow-hidden rounded-md bg-white/5">
+            {segments.map((s) => (
+              <span
+                key={s.key}
+                className="h-full"
+                style={{
+                  width: `${(s.value / grandTotal) * 100}%`,
+                  backgroundColor: s.muted ? CHART.axis : SINGLE_SERIES,
+                  opacity: s.muted ? 1 : s.opacity,
+                }}
+                title={`${s.label} · ${formatMoney(String(s.value))}`}
+              />
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] text-mist-500">
+            Each segment is one person&rsquo;s share; the pale tail is unassigned.
+            Names and amounts in the list below.
+          </p>
+        </div>
+      )}
 
       <ul className="divide-y divide-white/5">
         {people.map((p) => (
@@ -234,7 +294,7 @@ function ByPerson() {
                 <p className="text-xs text-mist-500">{p.age} years old</p>
               )}
             </div>
-            <span className="shrink-0 tabular-nums">{formatMoney(p.total)}</span>
+            <span className="shrink-0 tabular">{formatMoney(p.total)}</span>
           </li>
         ))}
       </ul>
@@ -242,7 +302,7 @@ function ByPerson() {
       {byPerson.data && (
         <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
           <span className="text-mist-500">Not assigned to anyone</span>
-          <span className="tabular-nums text-mist-300">
+          <span className="tabular text-mist-300">
             {formatMoney(byPerson.data.unassigned)}
           </span>
         </div>
@@ -252,6 +312,8 @@ function ByPerson() {
 }
 
 function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
+  const reduce = useReducedMotion() ?? false
+
   if (data.length < 2) {
     return (
       <p className="py-10 text-center text-sm" style={{ color: CHART.textMuted }}>
@@ -296,7 +358,7 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
 
   return (
     <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[520px]" role="img"
+      <svg viewBox={`0 0 ${W} ${H}`}         className="w-full max-sm:min-w-0 sm:min-w-[520px]" role="img"
         aria-label="Net worth over time">
         {/* A zero line, because net worth can legitimately be negative and the
             sign is the most important thing on the chart. */}
@@ -310,7 +372,12 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
         <text x={PAD.left - 10} y={y(min) + 4} textAnchor="end" fontSize="11" fill={CHART.textMuted}>
           {formatMoney(String(min))}
         </text>
-        <path d={path} fill="none" stroke={SERIES.leftover} strokeWidth={2} />
+        <motion.path
+          fill="none"
+          stroke={SERIES.leftover}
+          strokeWidth={2}
+          {...lineDraw(path, reduce)}
+        />
         {data.map((d, i) => (
           <circle key={d.as_of} cx={x(i)} cy={y(Number(d.net_worth))} r={4}
             fill={SERIES.leftover} stroke={CHART.surface} strokeWidth={2}>
@@ -433,19 +500,21 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
 }
 
 function Tile({
-  label, value, tone, large,
+  label, value, tone, large, format, fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   tone?: 'good' | 'debt'
   large?: boolean
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color = tone === 'debt' ? STATUS.critical : tone === 'good' ? STATUS.good : '#f2d492'
   return (
     <div className="glass p-5">
       <p className="text-sm text-mist-300">{label}</p>
       <p className={`tabular mt-2 font-semibold ${large ? 'text-4xl' : 'text-3xl'}`} style={{ color }}>
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
     </div>
   )

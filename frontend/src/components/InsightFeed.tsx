@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, type Insight } from '../lib/api'
 import { formatMoney, formatRelative } from '../lib/money'
+import { SkeletonRows } from '../components/Skeleton'
 
 /**
  * The proactive-insight feed. Renders in two shapes off one data source:
@@ -76,7 +77,7 @@ export function InsightFeed({
 
   // Page variant.
   if (feed.isPending) {
-    return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
+    return <SkeletonRows count={3} />
   }
   if (shown.length === 0) {
     return (
@@ -237,7 +238,7 @@ function AnomalyDetail({ insight }: { insight: Insight }) {
       {cells.map((c) => (
         <div key={c.label}>
           <dt className="text-[10px] uppercase tracking-wide text-mist-500">{c.label}</dt>
-          <dd className="text-sm font-medium tabular-nums text-mist-100">{c.value}</dd>
+          <dd className="text-sm font-medium tabular text-mist-100">{c.value}</dd>
         </div>
       ))}
     </dl>

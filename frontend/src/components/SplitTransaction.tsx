@@ -71,7 +71,7 @@ export function SplitPanel({
             {existing.map((sh) => (
               <li key={sh.id} className="flex justify-between gap-2">
                 <span className="truncate">{sh.person_name}</span>
-                <span className="tabular-nums text-mist-300">
+                <span className="tabular text-mist-300">
                   {formatMoney(sh.amount)}
                   {sh.settled_at && ' ✓'}
                 </span>

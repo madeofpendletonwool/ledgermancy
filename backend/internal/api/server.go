@@ -515,6 +515,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/by-day", s.handleSpendingByDay)
 			r.Get("/trend", s.handleTrend)
 			r.Get("/averages", s.handleCategoryAverages)
+			// The category × month matrix behind the spending heatmap (item #8)
+			// and the category-mix small multiples (item #12). One endpoint,
+			// two renderings; the clients pivot differently.
+			r.Get("/heatmap", s.handleSpendingHeatmap)
+			// The cash-flow Sankey (item #13, MAD-33): income sources →
+			// spending categories → leftover to savings, in one round trip.
+			// Bundles the period summary with the income/spending-by-category
+			// breakdowns so the chart's bands reconcile with the Spending page
+			// tiles to the cent.
+			r.Get("/cash-flow", s.handleCashFlow)
 			r.Get("/merchants", s.handleTopMerchants)
 			// The whole merchant list for the explorer, where /merchants is the
 			// top-N card. Separate rather than a mode of the same endpoint: this

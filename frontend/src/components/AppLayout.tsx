@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
 import { DropdownMenu } from './DropdownMenu'
 import { OfflineBanner } from './OfflineBanner'
 import { InstallPrompt } from './PwaPrompts'
+import { AnimatedOutlet } from './motion'
 import { api, isAdult } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
@@ -296,7 +297,7 @@ export function AppLayout() {
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10">
         <InstallPrompt />
-        <Outlet />
+        <AnimatedOutlet />
       </main>
     </div>
   )

@@ -161,7 +161,7 @@ deployment, TLS, webhooks, and backups.
 | -------- | ------------------------------------------------------------------- |
 | Backend  | Go — chi, pgx, sqlc, goose, River (background jobs)                 |
 | Database | PostgreSQL 17 — money as `NUMERIC(20,4)`, raw Plaid in `JSONB`      |
-| Frontend | React + Vite + TypeScript, Tailwind, shadcn/ui, Tremor, Framer Motion |
+| Frontend | React + Vite + TypeScript, Tailwind, shadcn/ui, Tremor, Motion (motion.dev) |
 | Data     | Plaid — Transactions, plus optional Investments and Liabilities     |
 | AI       | Any Anthropic Messages API-compatible endpoint (GLM, Claude, …)     |
 | Deploy   | Docker Compose                                                      |

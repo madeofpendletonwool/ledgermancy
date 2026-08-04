@@ -13,6 +13,10 @@ import type {
 } from '../lib/api'
 import { formatDate, formatMoney, isAmortizingDebt, isLiability } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { PayoffScheduleChart } from '../components/charts/PayoffScheduleChart'
+import { AnimatedNumber } from '../components/motion'
+import { SkeletonRows, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
 import { STATUS } from '../components/charts/tokens'
 
 export function Goals() {
@@ -44,15 +48,28 @@ export function Goals() {
         </p>
 
         {goals.isPending ? (
-          <Loading />
+          <SkeletonRows count={3} />
         ) : rows.length === 0 ? (
-          <Empty>No goals yet. Add one below to start tracking a target.</Empty>
+          <EmptyState
+            title="No goals yet"
+            icon={<GoalGlyph />}
+            action={
+              <a href="#add-goal" className="btn-primary">
+                Add a goal
+              </a>
+            }
+          >
+            Track a savings target or a debt payoff here. Progress updates from
+            your balances and cashflow.
+          </EmptyState>
         ) : (
-          <div className="space-y-3">
-            {rows.map((g) => (
-              <GoalCard key={g.id} goal={g} />
-            ))}
-          </div>
+          <Reveal>
+            <div className="space-y-3">
+              {rows.map((g) => (
+                <GoalCard key={g.id} goal={g} />
+              ))}
+            </div>
+          </Reveal>
         )}
       </section>
 
@@ -113,10 +130,18 @@ function GoalCard({ goal }: { goal: Goal }) {
               </span>
             )}
           </p>
-          <p className="mt-0.5 text-sm text-mist-400">
-            {goal.kind === 'debt_payoff'
-              ? `${formatMoney(goal.current_amount)} of ${formatMoney(goal.target_amount)} paid off`
-              : `${formatMoney(goal.current_amount)} of ${formatMoney(goal.target_amount)}`}
+          <p className="mt-0.5 text-sm text-mist-400 tabular">
+            {goal.kind === 'debt_payoff' ? (
+              <>
+                <AnimatedNumber value={goal.current_amount} /> of{' '}
+                <AnimatedNumber value={goal.target_amount} /> paid off
+              </>
+            ) : (
+              <>
+                <AnimatedNumber value={goal.current_amount} /> of{' '}
+                <AnimatedNumber value={goal.target_amount} />
+              </>
+            )}
             {goal.target_date && ` · by ${formatDate(goal.target_date)}`}
           </p>
         </div>
@@ -237,44 +262,55 @@ function PayoffDetail({ payoff }: { payoff: GoalPayoff }) {
   }
 
   return (
-    <div className="mt-3 grid gap-x-6 gap-y-1.5 rounded-lg bg-white/5 px-3 py-2.5 text-xs sm:grid-cols-2">
-      <PayoffFact label="Paid off">
-        {payoff.payoff_date ? formatDate(payoff.payoff_date) : '—'}
-        <span className="ml-1.5 text-mist-500">
-          ({payoff.months} {payoff.months === 1 ? 'payment' : 'payments'})
-        </span>
-      </PayoffFact>
-      <PayoffFact label="Interest to come">
-        {formatMoney(payoff.total_interest)}
-      </PayoffFact>
-      <PayoffFact label="Paying">
-        {formatMoney(payoff.monthly_payment)}/mo
-        {payoff.apr_source === ''
-          ? ''
-          : payoff.apr_source === 'manual'
-            ? ` at the ${payoff.apr}% you entered`
-            : ` at ${payoff.apr}% ${
-                isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'
-              }`}
-      </PayoffFact>
-      {payoff.target_reachable && (
-        <PayoffFact label="To hit your date">
-          {formatMoney(payoff.required_monthly)}/mo
+    <div className="mt-3 space-y-3">
+      {payoff.schedule && payoff.schedule.length > 0 && (
+        <div className="rounded-lg bg-white/5 px-3 py-3">
+          <PayoffScheduleChart
+            schedule={payoff.schedule}
+            startBalance={payoff.balance}
+            monthlyPayment={payoff.monthly_payment}
+          />
+        </div>
+      )}
+      <div className="grid gap-x-6 gap-y-1.5 rounded-lg bg-white/5 px-3 py-2.5 text-xs sm:grid-cols-2">
+        <PayoffFact label="Paid off">
+          {payoff.payoff_date ? formatDate(payoff.payoff_date) : '—'}
+          <span className="ml-1.5 text-mist-500">
+            ({payoff.months} {payoff.months === 1 ? 'payment' : 'payments'})
+          </span>
         </PayoffFact>
-      )}
-      {/* A schedule with no rate is arithmetically sound but optimistic — every
-          date above is the earliest possible one. Saying so is the difference
-          between a floor and a promise. */}
-      {payoff.apr_source === '' && (
-        <p className="text-mist-500 sm:col-span-2">
-          No rate on file, so this assumes the debt is interest-free — the real
-          payoff date is later.{' '}
-          <Link to="/accounts" className="underline">
-            Add the APR
-          </Link>{' '}
-          for a true schedule.
-        </p>
-      )}
+        <PayoffFact label="Interest to come">
+          {formatMoney(payoff.total_interest)}
+        </PayoffFact>
+        <PayoffFact label="Paying">
+          {formatMoney(payoff.monthly_payment)}/mo
+          {payoff.apr_source === ''
+            ? ''
+            : payoff.apr_source === 'manual'
+              ? ` at the ${payoff.apr}% you entered`
+              : ` at ${payoff.apr}% ${
+                  isAmortizingDebt(payoff.account_type) ? 'interest' : 'APR'
+                }`}
+        </PayoffFact>
+        {payoff.target_reachable && (
+          <PayoffFact label="To hit your date">
+            {formatMoney(payoff.required_monthly)}/mo
+          </PayoffFact>
+        )}
+        {/* A schedule with no rate is arithmetically sound but optimistic — every
+            date above is the earliest possible one. Saying so is the difference
+            between a floor and a promise. */}
+        {payoff.apr_source === '' && (
+          <p className="text-mist-500 sm:col-span-2">
+            No rate on file, so this assumes the debt is interest-free — the real
+            payoff date is later.{' '}
+            <Link to="/accounts" className="underline">
+              Add the APR
+            </Link>{' '}
+            for a true schedule.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -283,7 +319,7 @@ function PayoffFact({ label, children }: { label: string; children: ReactNode })
   return (
     <p className="flex items-baseline justify-between gap-3">
       <span className="text-mist-500">{label}</span>
-      <span className="text-right tabular-nums text-mist-200">{children}</span>
+      <span className="text-right tabular text-mist-200">{children}</span>
     </p>
   )
 }
@@ -340,7 +376,7 @@ function GoalFunding({ goal }: { goal: Goal }) {
                 style={{ width: `${c.share_pct}%` }}
               />
             </div>
-            <span className="w-24 shrink-0 text-right tabular-nums text-mist-300">
+            <span className="w-24 shrink-0 text-right tabular text-mist-300">
               {formatMoney(c.total)}
             </span>
           </li>
@@ -486,7 +522,7 @@ function CreateGoal() {
   }
 
   return (
-    <section className="glass p-6">
+    <section id="add-goal" className="glass scroll-mt-24 p-6">
       <h2 className="mb-1 text-lg font-medium">Add a goal</h2>
       <p className="mb-5 text-sm text-mist-300">
         {isPayoff
@@ -815,10 +851,21 @@ function NLGoalParser() {
   )
 }
 
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-8 text-center text-sm text-mist-500">{children}</p>
+/** Outline glyph for the goals empty state. */
+function GoalGlyph() {
+  return (
+    <svg
+      className="h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+      <circle cx="12" cy="12" r="4" />
+    </svg>
+  )
 }

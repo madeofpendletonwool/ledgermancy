@@ -132,6 +132,7 @@ var childRoutes = []struct{ method, path string }{
 	// Reporting.
 	{"GET", "/api/reports/summary"},
 	{"GET", "/api/reports/by-category"},
+	{"GET", "/api/reports/cash-flow"},
 	{"GET", "/api/reports/trend"},
 	{"GET", "/api/reports/merchants"},
 	{"GET", "/api/reports/merchant-explorer"},

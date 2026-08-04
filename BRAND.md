@@ -95,6 +95,34 @@ hairline border, and a soft inner top highlight — a frosted "spell page".
 
 ---
 
+## Typography
+
+Two faces, both **self-hosted** in `frontend/public/fonts` (no outbound font
+request — privacy). Both are SIL OFL 1.1.
+
+| Role | Face | File | Weights |
+| --- | --- | --- | --- |
+| **UI** — body, headings, labels | Sora (variable) | `sora-latin-variable.woff2` | 100–800 |
+| **Money** — every figure, the rune-gold headline numbers | Space Mono | `space-mono-latin-400.woff2`, `space-mono-latin-700.woff2` | 400, 700 |
+
+Rules:
+
+- The UI face is wired through the `--font-sans` token and applied to `body`.
+- The money face is wired through `--font-mono` and applied via the `.tabular`
+  class — that class is the canonical "this is a money figure" marker and
+  carries both `font-family: var(--font-mono)` and
+  `font-variant-numeric: tabular-nums`. Put `.tabular` on every figure; do not
+  reach for the bare `tabular-nums` utility for money, it won't pick up Space
+  Mono.
+- Space Mono ships two static weights, not a variable axis. `font-medium` (500)
+  resolves to 400 and `font-semibold` / `font-bold` (600 / 700) resolve to 700,
+  so headline numbers read as Space Mono Bold with no faux synthesis.
+- The wordmark ("Ledger**mancy**") stays in the UI face with the violet→gold
+  gradient; it is not set in Space Mono.
+- Print is unaffected: the report keeps these faces and stays legible on white.
+
+---
+
 ## The mark
 
 A coin crossed by a rune: an outer circle, a fainter inner circle, an

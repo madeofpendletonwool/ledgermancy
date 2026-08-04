@@ -36,7 +36,7 @@ export function MyMoney() {
       {allowance.data && (
         <section className="glass p-6">
           <p className="text-xs uppercase tracking-wide text-mist-500">You have</p>
-          <p className="mt-1 text-4xl font-semibold tabular-nums">
+          <p className="mt-1 text-4xl font-semibold tabular">
             {formatMoney(allowance.data.balance)}
           </p>
 
@@ -85,7 +85,7 @@ export function MyMoney() {
                 <li key={g.id}>
                   <div className="flex items-baseline justify-between gap-3">
                     <span className="font-medium">{g.name}</span>
-                    <span className="text-sm tabular-nums text-mist-300">
+                    <span className="text-sm tabular text-mist-300">
                       {formatMoney(g.current_amount)} of {formatMoney(g.target_amount)}
                       {/* On a payoff goal current_amount is the debt retired so
                           far, so the same two figures read correctly — they just
@@ -126,7 +126,7 @@ export function MyMoney() {
                     {a.is_custodial && ' · held for you'}
                   </p>
                 </div>
-                <span className="ml-auto shrink-0 tabular-nums">
+                <span className="ml-auto shrink-0 tabular">
                   {formatMoney(a.balance)}
                 </span>
               </li>
@@ -144,7 +144,7 @@ export function MyMoney() {
                 <span className="capitalize">{e.note || e.kind}</span>
                 <span className="text-xs text-mist-500">{e.occurred_on}</span>
                 <span
-                  className={`ml-auto tabular-nums ${
+                  className={`ml-auto tabular ${
                     e.amount.startsWith('-') ? 'text-ember-400' : 'text-rune-300'
                   }`}
                 >

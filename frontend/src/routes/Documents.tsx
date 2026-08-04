@@ -10,6 +10,8 @@ import type {
   VaultDocument,
 } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
+import { SkeletonCard, SkeletonBlock, SkeletonText, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
 
 /**
  * Documents — the encrypted vault.
@@ -98,23 +100,37 @@ export function Documents() {
           <FilterBar filters={filters} onChange={setFilters} />
 
           {documents.isPending ? (
-            <Loading />
-          ) : documents.data && documents.data.length > 0 ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {documents.data.map((doc) => (
-                <DocumentCard
-                  key={doc.id}
-                  document={doc}
-                  onOpen={() => setSelected(doc)}
-                />
+              {Array.from({ length: 3 }, (_, i) => (
+                <SkeletonCard key={i} />
               ))}
             </div>
+          ) : documents.data && documents.data.length > 0 ? (
+            <Reveal>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {documents.data.map((doc) => (
+                  <DocumentCard
+                    key={doc.id}
+                    document={doc}
+                    onOpen={() => setSelected(doc)}
+                  />
+                ))}
+              </div>
+            </Reveal>
+          ) : hasFilters(filters) ? (
+            <EmptyState title="No documents match these filters" />
           ) : (
-            <Empty>
-              {hasFilters(filters)
-                ? 'No documents match these filters.'
-                : 'Nothing filed yet. Add a receipt, a policy or last year’s tax return.'}
-            </Empty>
+            <EmptyState
+              title="Nothing filed yet"
+              action={
+                <button className="btn-primary" onClick={() => setUploading(true)}>
+                  Add a document
+                </button>
+              }
+            >
+              Receipts, tax returns, warranties and policies belong beside the
+              transactions they relate to.
+            </EmptyState>
           )}
         </>
       )}
@@ -614,7 +630,7 @@ function DocumentModal({
   if (!doc) {
     return (
       <Modal title="Document" onClose={onClose}>
-        <Loading />
+        <SkeletonText lines={4} />
       </Modal>
     )
   }
@@ -636,7 +652,7 @@ function DocumentModal({
     <Modal title={doc.title} onClose={onClose}>
       <Preview document={doc} />
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
         <Field label="Type">{TYPE_LABELS[doc.doc_type]}</Field>
         <Field label="Size">
           <span className="tabular">{formatBytes(doc.size_bytes)}</span>
@@ -799,7 +815,7 @@ function Preview({ document: doc }: { document: VaultDocument }) {
       </div>
     )
   }
-  if (!url) return <Loading />
+  if (!url) return <SkeletonBlock className="h-72 w-full" />
 
   if (doc.preview_type === 'application/pdf') {
     return (
@@ -1047,7 +1063,7 @@ function ReceiptExtractor({ document: doc }: { document: VaultDocument }) {
 
       {reading && (
         <div className="mt-4 space-y-3 text-sm">
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+          <dl className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
             <Field label="Merchant">{reading.merchant || '—'}</Field>
             <Field label="Total">
               {reading.total ? formatMoney(reading.total) : '—'}
@@ -1207,15 +1223,5 @@ function PaperclipIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
     >
       <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
     </svg>
-  )
-}
-
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-400">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return (
-    <div className="glass p-10 text-center text-sm text-mist-400">{children}</div>
   )
 }

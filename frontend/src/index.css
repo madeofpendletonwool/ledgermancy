@@ -1,6 +1,35 @@
 @import 'tailwindcss';
 
 /* ---------------------------------------------------------------------------
+   Self-hosted type. Sora (variable) is the UI voice; Space Mono (400/700) is
+   reserved for money figures so they are unmistakable at a glance. No outbound
+   font request — files ship in /public/fonts. Both are SIL OFL 1.1.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Sora';
+  src: url('/fonts/sora-latin-variable.woff2') format('woff2-variations');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/space-mono-latin-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/space-mono-latin-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
    Ledgermancy's visual language: deep ink, arcane violet, and a warm gold that
    is reserved for money and emphasis. Everything else stays muted so numbers
    are the loudest thing on the page.
@@ -27,6 +56,13 @@
 
   --color-verdant-400: #4ade80;
   --color-ember-400: #fb7185;
+
+  /* Type. Sora is the UI face; Space Mono is the money face. Fallbacks keep
+     the app readable before the self-hosted files arrive and on any glyph the
+     latin subset omits. */
+  --font-sans: 'Sora', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -36,6 +72,7 @@
 
   body {
     @apply bg-ink-950 text-mist-100 antialiased;
+    font-family: var(--font-sans);
     background-image:
       radial-gradient(
         ellipse 80% 55% at 50% -10%,
@@ -51,8 +88,10 @@
     min-height: 100vh;
   }
 
-  /* Numbers should line up in columns wherever they appear. */
+  /* Numbers should line up in columns wherever they appear. The numeric face
+     (Space Mono) lives here so every money figure reads as a figure. */
   .tabular {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 }
@@ -66,26 +105,85 @@
       0 20px 60px -20px rgb(0 0 0 / 0.7);
   }
 
+  /* A `.glass` that IS the click affordance (a <button>/<a>, or a div carrying
+     role="button"/"link") lifts a hair on hover to signal it is pressable.
+     Static info panels — the common case, `<section class="glass">` — are left
+     alone. `:where()` keeps this at plain `.glass` specificity, so a card's own
+     utilities (e.g. `hover:border-white/20`) still win where they overlap and
+     the card's own `transition` still sets the property list when present. */
+  .glass:where(button, a, [role='button'], [role='link']) {
+    transition:
+      transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 140ms ease;
+  }
+  .glass:where(button, a, [role='button'], [role='link']):hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 1px 0 0 rgb(255 255 255 / 0.07) inset,
+      0 28px 70px -22px rgb(0 0 0 / 0.78);
+  }
+
   .field {
     @apply w-full rounded-xl border border-white/10 bg-ink-900/70 px-4 py-2.5
            text-mist-100 outline-none transition
            placeholder:text-mist-500
            focus:border-arcane-500/60 focus:ring-2 focus:ring-arcane-500/25;
+    /* The shared `transition` above already covers border-color and the
+       ring's box-shadow; tuned to a short, decisive ease-out so the focus
+       ring settles intentionally instead of linearly. */
+    transition-duration: 140ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 rounded-xl
            bg-gradient-to-b from-arcane-500 to-arcane-600 px-4 py-2.5
-           font-medium text-white shadow-lg shadow-arcane-600/25 transition
+           font-medium text-white shadow-lg shadow-arcane-600/25
            hover:brightness-110 active:brightness-95
            disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100;
+    /* Existing brightness hover preserved; a 1px settle on :active adds tactile
+       press travel. Short and soft. */
+    transition:
+      transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      filter 140ms ease,
+      box-shadow 140ms ease,
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      opacity 140ms ease;
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(1px);
   }
 
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-xl border
-           border-white/10 px-4 py-2.5 text-mist-300 transition
+           border-white/10 px-4 py-2.5 text-mist-300
            hover:border-white/20 hover:text-mist-100
            disabled:cursor-not-allowed disabled:opacity-50;
+    transition:
+      transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      box-shadow 140ms ease,
+      opacity 140ms ease;
+  }
+  .btn-ghost:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  /* Every motion added above degrades to static under reduced-motion: the
+     hover-lift and the press travel collapse to no spatial movement. Color and
+     shadow transitions are not motion, so focus and hover affordances still
+     register without anything on screen actually moving. */
+  @media (prefers-reduced-motion: reduce) {
+    .btn-primary:active:not(:disabled),
+    .btn-ghost:active:not(:disabled),
+    .glass:where(button, a, [role='button'], [role='link']):hover {
+      transform: none;
+    }
   }
 
   .label {
@@ -176,6 +274,50 @@
   }
 }
 
+/* Recessed ink placeholders for loading states. Faint white over the ink
+   surface reads as a cut-out of the glass card itself — ink-toned, not a
+   generic flat-gray block — and matches the .glass aesthetic everywhere a
+   skeleton sits. Deliberately static: no shimmer. The constraint in MAD-37 is
+   that skeletons themselves never move (only the hand-off to real content
+   animates, via .reveal), which also means there is nothing to disable under
+   prefers-reduced-motion. */
+@layer components {
+  .skeleton {
+    background-color: rgb(255 255 255 / 0.045);
+    border-radius: 0.5rem;
+  }
+
+  /* A slightly deeper variant for larger fields inside a card. */
+  .skeleton-sunken {
+    background-color: rgb(255 255 255 / 0.03);
+    border-radius: 0.5rem;
+  }
+}
+
+/* Crossfade from a skeleton to the real content once it arrives (MAD-37).
+   Short opacity settle; snaps to static under prefers-reduced-motion. It only
+   fires when the element mounts, which is exactly the skeleton→content
+   hand-off — react-query keeps data mounted across refetches, so a period
+   change does not re-trigger it. */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.reveal {
+  animation: reveal-in 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    animation: none;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Financial summary report.
    The report is a normal page on screen and a clean document when printed.
@@ -201,7 +343,23 @@
   }
   .report-table .num {
     @apply text-right;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Dense charts (Sankey, Pareto, 12-month Trend, Heatmap) stay wider than a
+   phone viewport on purpose — scaling them to ~360px makes them illegible — so
+   they keep their min-width and scroll. A soft right-edge fade on small screens
+   is the discoverable hint that there is more to scroll to. The mask sits on
+   the scroll container's own box, so it stays pinned at the visible edge while
+   the SVG scrolls underneath; the money axis labels on the left are untouched.
+   --------------------------------------------------------------------------- */
+@media (max-width: 639px) {
+  .chart-scroll {
+    -webkit-mask-image: linear-gradient(to left, transparent, #000 1.5rem);
+    mask-image: linear-gradient(to left, transparent, #000 1.5rem);
   }
 }
 
@@ -256,8 +414,12 @@
   /* A letter page minus margins is about 178mm wide. Four tiles at the
      on-screen font size overflowed it — the last one was clipped off the page
      edge and a long value ran outside its border. Two rows of two fit
-     comfortably, and the figures step down a size. */
-  .report .grid-cols-4 {
+     comfortably, and the figures step down a size. The cash-flow grid carries
+     a stable class so this rule still targets it now that its on-screen layout
+     is mobile-first (grid-cols-2 sm:grid-cols-4); the literal grid-cols-4
+     token is gone from the markup, so the old `.report .grid-cols-4` selector
+     no longer matches. */
+  .report .report-cashflow-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 

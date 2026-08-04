@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useChangePassword } from '../lib/session'
+import { SkeletonRows } from '../components/Skeleton'
 
 export function Security() {
   return (
@@ -91,7 +92,7 @@ function TwoFactorSection() {
           : 'Add a code from your phone to every sign-in. Strongly recommended.'
       }
     >
-      {status.isPending && <p className="text-sm text-mist-500">Loading…</p>}
+      {status.isPending && <SkeletonRows count={2} />}
 
       {enabled && status.data && (
         <>
@@ -397,7 +398,7 @@ function SessionsSection() {
       title="Signed-in devices"
       description="Anything here can read your finances. If you do not recognise one, revoke it and change your password."
     >
-      {sessions.isPending && <p className="text-sm text-mist-500">Loading…</p>}
+      {sessions.isPending && <SkeletonRows count={3} />}
 
       <ul className="divide-y divide-white/5">
         {sessions.data?.map((session) => (
@@ -522,7 +523,7 @@ function ActivitySection() {
       title="Recent activity"
       description="The last 50 security events on your account."
     >
-      {events.isPending && <p className="text-sm text-mist-500">Loading…</p>}
+      {events.isPending && <SkeletonRows count={4} />}
       {events.data?.length === 0 && (
         <p className="text-sm text-mist-500">Nothing recorded yet.</p>
       )}
