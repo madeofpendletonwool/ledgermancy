@@ -510,6 +510,51 @@ export interface CategorySpend {
   transaction_count: number
 }
 
+/**
+ * One income source for the cash-flow Sankey. Same shape as CategorySpend minus
+ * `is_fixed`, because an income category is never fixed (the API forces
+ * is_fixed = false for income). The rows sum to `CashFlow.income_total` to the
+ * cent — there is no "uncategorised income" the way there can be uncategorised
+ * spending, because a row only counts as income when its category is_income.
+ */
+export interface CashFlowSource {
+  category_id: string
+  name: string
+  slug: string
+  color: string | null
+  total: string
+  transaction_count: number
+}
+
+/**
+ * The cash-flow Sankey payload (item #13, MAD-33): income sources on the left,
+ * spending categories on the right, and the leftover flowing to savings.
+ *
+ * The three totals are the SAME figures `/api/reports/summary` returns for the
+ * period — the Spending page's headline tiles — so the Sankey's bands reconcile
+ * with that page to the dollar. The spending category flows plus
+ * `uncategorized_spending` sum to `spending_total`, and the income source flows
+ * sum to `income_total`. All money is computed server-side in NUMERIC; the
+ * client only sizes display geometry from these strings.
+ */
+export interface CashFlow {
+  from: string
+  to: string
+  income_total: string
+  spending_total: string
+  /** income_total − spending_total. Negative in a deficit period. */
+  leftover: string
+  /**
+   * Spending whose category_id was null — present in `spending_total` but absent
+   * from `spending_categories` (which comes from an INNER join on categories).
+   * Usually zero; carried only so the flows always sum to `spending_total`.
+   */
+  uncategorized_spending: string
+  income_sources: CashFlowSource[]
+  /** Same rows `/api/reports/by-category` returns for the period. */
+  spending_categories: CategorySpend[]
+}
+
 export interface TrendPoint {
   /** "YYYY-MM" */
   month: string
@@ -2493,6 +2538,16 @@ export const api = {
    */
   spendingHeatmap: (params: PeriodQuery = {}) =>
     request<SpendingHeatmap>('GET', withQuery('/api/reports/heatmap', params)),
+
+  /**
+   * The cash-flow Sankey payload (item #13, MAD-33): income sources, spending
+   * categories and the period totals in one round trip, all from the same
+   * queries every other report uses. The chart's bands reconcile with the
+   * Spending page tiles to the cent, and honour the same money rules
+   * (transfers and credit-card payments excluded, one-time charges included).
+   */
+  cashFlow: (params: PeriodQuery = {}) =>
+    request<CashFlow>('GET', withQuery('/api/reports/cash-flow', params)),
 
   averages: (params: PeriodQuery = {}) =>
     request<CategoryAverage[]>('GET', withQuery('/api/reports/averages', params)),

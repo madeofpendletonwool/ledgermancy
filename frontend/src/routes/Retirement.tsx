@@ -503,7 +503,7 @@ function ProjectionChart({
       <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="w-full min-w-[560px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[560px]"
           role="img"
           aria-label="Projected retirement balance, split into your contributions, employer match and assumed growth"
           onMouseLeave={() => setHover(null)}

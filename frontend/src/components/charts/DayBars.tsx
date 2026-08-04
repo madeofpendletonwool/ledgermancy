@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { DaySpend } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { barRect } from './motion'
 import { axisTicks, compactMoney } from './scale'
 import { CHART, SERIES } from './tokens'
 
@@ -40,6 +42,7 @@ export function DayBars({
   onSelect?: (dom: number) => void
 }) {
   const [active, setActive] = useState<number | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   const daysInMonth = new Date(year, month, 0).getDate()
   const today = new Date()
@@ -97,7 +100,7 @@ export function DayBars({
       <div className="relative overflow-x-auto">
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="w-full min-w-[560px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[560px]"
           role="img"
           aria-label="Spend by day this month"
           onMouseLeave={() => setActive(null)}
@@ -145,17 +148,17 @@ export function DayBars({
           {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((dom) => {
             const v = daily[dom]
             const future = dom > todayDom
-            const h = v > 0 ? PAD.top + PLOT_H - y(v) : 0
+            const top = y(v)
+            const h = v > 0 ? PAD.top + PLOT_H - top : 0
             return (
-              <rect
+              <motion.rect
                 key={dom}
                 x={x(dom) - barW / 2}
-                y={y(v)}
                 width={barW}
-                height={h}
                 rx={1.5}
                 fill={SERIES.spending}
                 opacity={future ? 0 : active === null || active === dom ? 0.9 : 0.4}
+                {...barRect(top, h, PAD.top + PLOT_H, reduce)}
               />
             )
           })}

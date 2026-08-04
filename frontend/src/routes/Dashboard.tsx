@@ -22,6 +22,11 @@ import { DayBars } from '../components/charts/DayBars'
 import { SpendSparkline } from '../components/charts/SpendSparkline'
 import { InsightFeed } from '../components/InsightFeed'
 import { MerchantLink } from '../components/MerchantLink'
+import { AnimatedNumber } from '../components/motion'
+import { SkeletonChart, SkeletonRows, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
+import { enterProps } from '../lib/motion'
+import { motion } from 'motion/react'
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
@@ -124,7 +129,7 @@ export function Dashboard() {
           Good to see you, {user?.display_name}
         </h1>
         <p className="mt-1 text-mist-300">
-          {household.data?.name ?? 'Loading household…'}
+          {household.data?.name ?? '\u00A0'}
         </p>
       </div>
 
@@ -153,7 +158,9 @@ export function Dashboard() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
           label="Accounts linked"
-          value={hasData ? String(rows.length) : '0'}
+          value={hasData ? rows.length : null}
+          format={(n) => String(Math.round(n))}
+          fallback="0"
           hint={
             items.data?.length
               ? `${items.data.length} institution${items.data.length === 1 ? '' : 's'}`
@@ -162,18 +169,18 @@ export function Dashboard() {
         />
         <StatTile
           label="Cash & investments"
-          value={hasData ? formatMoney(cash) : '—'}
+          value={hasData ? cash : null}
           hint="Across depository and investment accounts"
         />
         <StatTile
           label="Debt"
-          value={hasData ? formatMoney(debt) : '—'}
+          value={hasData ? debt : null}
           hint="Credit cards and loans"
           tone={hasData && Number(debt) > 0 ? 'warn' : 'default'}
         />
         <StatTile
           label={`${monthName} spend`}
-          value={s ? formatMoney(s.spending) : '—'}
+          value={s ? s.spending : null}
           hint={
             s && Number(s.income) > 0
               ? `${formatMoney(s.income)} in this month`
@@ -242,33 +249,32 @@ export function Dashboard() {
 
             <div className="mt-5">
               {byDayThis.isPending ? (
-                <Loading />
+                <SkeletonChart />
               ) : (
-                <DayBars
-                  year={year}
-                  month={month}
-                  days={byDayThis.data ?? []}
-                  lastMonthAvgDaily={lastMonthAvgDaily}
-                  onSelect={openDay}
-                />
+                <Reveal>
+                  <DayBars
+                    year={year}
+                    month={month}
+                    days={byDayThis.data ?? []}
+                    lastMonthAvgDaily={lastMonthAvgDaily}
+                    onSelect={openDay}
+                  />
+                </Reveal>
               )}
             </div>
 
             {/* Income / left / savings rate for the month. */}
             <div className="mt-6 grid gap-4 border-t border-white/5 pt-6 sm:grid-cols-3">
-              <MiniStat label="Income" value={s ? formatMoney(s.income) : '—'} />
+              <MiniStat label="Income" value={s ? s.income : null} />
               <MiniStat
                 label="Left to invest"
-                value={s ? formatMoney(s.leftover) : '—'}
+                value={s ? s.leftover : null}
                 tone={s && Number(s.leftover) < 0 ? 'bad' : 'good'}
               />
               <MiniStat
                 label="Savings rate"
-                value={
-                  s?.savings_rate != null
-                    ? `${(Number(s.savings_rate) * 100).toFixed(1)}%`
-                    : '—'
-                }
+                value={s?.savings_rate ?? null}
+                format={(n) => `${(n * 100).toFixed(1)}%`}
               />
             </div>
           </section>
@@ -282,11 +288,16 @@ export function Dashboard() {
               </Link>
             </div>
             {byCategory.isPending ? (
-              <Loading />
+              <SkeletonRows count={4} />
             ) : (byCategory.data?.length ?? 0) === 0 ? (
-              <Empty>No categorised spending yet this month.</Empty>
+              <EmptyState title="No categorised spending yet this month.">
+                Charges show up here once they land and are filed under a
+                category.
+              </EmptyState>
             ) : (
-              <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
+              <Reveal>
+                <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
+              </Reveal>
             )}
           </section>
 
@@ -295,15 +306,19 @@ export function Dashboard() {
             <section className="glass p-6">
               <h2 className="mb-5 text-lg font-medium">Top merchants · {monthName}</h2>
               {merchants.isPending ? (
-                <Loading />
+                <SkeletonRows count={4} />
               ) : (merchants.data?.length ?? 0) === 0 ? (
-                <Empty>No spending recorded yet this month.</Empty>
+                <EmptyState title="No spending recorded yet this month.">
+                  Once a charge clears it lands here.
+                </EmptyState>
               ) : (
-                <ul className="space-y-3">
-                  {(merchants.data ?? []).map((m) => (
-                    <MerchantRow key={m.merchant} merchant={m} />
-                  ))}
-                </ul>
+                <Reveal>
+                  <ul className="space-y-3">
+                    {(merchants.data ?? []).map((m, i) => (
+                      <MerchantRow key={m.merchant} merchant={m} index={i} />
+                    ))}
+                  </ul>
+                </Reveal>
               )}
             </section>
 
@@ -316,15 +331,19 @@ export function Dashboard() {
                 </Link>
               </div>
               {recent.isPending ? (
-                <Loading />
+                <SkeletonRows count={4} />
               ) : (recent.data?.length ?? 0) === 0 ? (
-                <Empty>Nothing has come in yet.</Empty>
+                <EmptyState title="Nothing has come in yet.">
+                  New transactions appear here as they sync.
+                </EmptyState>
               ) : (
-                <ul className="divide-y divide-white/5">
-                  {(recent.data ?? []).map((t) => (
-                    <RecentRow key={t.id} transaction={t} />
-                  ))}
-                </ul>
+                <Reveal>
+                  <ul className="divide-y divide-white/5">
+                    {(recent.data ?? []).map((t) => (
+                      <RecentRow key={t.id} transaction={t} />
+                    ))}
+                  </ul>
+                </Reveal>
               )}
             </section>
           </div>
@@ -415,12 +434,16 @@ function StatTile({
   hint,
   tone = 'default',
   footer,
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   hint: string
   tone?: 'default' | 'warn'
   footer?: ReactNode
+  format?: (n: number) => string
+  fallback?: string
 }) {
   return (
     <div className="glass p-5">
@@ -430,7 +453,7 @@ function StatTile({
           tone === 'warn' ? 'text-ember-400' : 'text-rune-300'
         }`}
       >
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
       <p className="mt-1 text-xs text-mist-500">{hint}</p>
       {footer}
@@ -442,22 +465,28 @@ function MiniStat({
   label,
   value,
   tone = 'default',
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   tone?: 'default' | 'good' | 'bad'
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color =
     tone === 'bad' ? 'text-ember-400' : tone === 'good' ? 'text-verdant-400' : 'text-mist-100'
   return (
     <div>
       <p className="text-xs text-mist-500">{label}</p>
-      <p className={`tabular mt-1 text-xl font-semibold ${color}`}>{value}</p>
+      <p className={`tabular mt-1 text-xl font-semibold ${color}`}>
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
+      </p>
     </div>
   )
 }
 
-function MerchantRow({ merchant: m }: { merchant: MerchantSpend }) {
+function MerchantRow({ merchant: m, index }: { merchant: MerchantSpend; index: number }) {
   // A merchant with no resolved key cannot be addressed, so it stays plain text
   // rather than becoming a link that goes nowhere.
   const body = (
@@ -475,7 +504,7 @@ function MerchantRow({ merchant: m }: { merchant: MerchantSpend }) {
   )
 
   return (
-    <li>
+    <motion.li {...enterProps(index)}>
       {m.merchant_key ? (
         <Link
           className="-mx-2 flex items-center gap-4 rounded-lg px-2 py-1 hover:bg-white/5"
@@ -486,7 +515,7 @@ function MerchantRow({ merchant: m }: { merchant: MerchantSpend }) {
       ) : (
         <div className="flex items-center gap-4">{body}</div>
       )}
-    </li>
+    </motion.li>
   )
 }
 
@@ -513,12 +542,4 @@ function RecentRow({ transaction: t }: { transaction: Transaction }) {
       </span>
     </li>
   )
-}
-
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-8 text-center text-sm text-mist-500">{children}</p>
 }

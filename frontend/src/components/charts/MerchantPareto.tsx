@@ -77,7 +77,8 @@ export function MerchantPareto({
 
   return (
     <div className="mb-5">
-      <div className="relative overflow-x-auto">
+      <div className="chart-scroll relative overflow-x-auto">
+        <span className="sr-only">This chart scrolls horizontally — swipe to see the rest.</span>
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           className="w-full min-w-[600px]"

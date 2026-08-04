@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { AccountProjection, ProjectionEstimate } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { lineDraw, lineFade } from './motion'
 import { CHART, SINGLE_SERIES, STATUS } from './tokens'
 
 const WIDTH = 760
@@ -42,6 +44,7 @@ export function ProjectionChart({
   estimate?: ProjectionEstimate
 }) {
   const [active, setActive] = useState<number | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   const points = series.points
   if (points.length < 2) {
@@ -93,7 +96,7 @@ export function ProjectionChart({
     <div className="relative overflow-x-auto">
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="w-full min-w-[560px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[560px]"
         role="img"
         aria-label={`Projected balance for ${series.name}`}
         onMouseLeave={() => setActive(null)}
@@ -160,16 +163,21 @@ export function ProjectionChart({
         )}
 
         {hasEstimate && (
-          <path
-            d={estimatedPath}
+          <motion.path
             fill="none"
             stroke={ESTIMATE_COLOR}
             strokeWidth={2}
             strokeDasharray={ESTIMATE_DASH}
+            {...lineFade(estimatedPath, reduce, 0.15)}
           />
         )}
 
-        <path d={path} fill="none" stroke={SINGLE_SERIES} strokeWidth={2} />
+        <motion.path
+          fill="none"
+          stroke={SINGLE_SERIES}
+          strokeWidth={2}
+          {...lineDraw(path, reduce)}
+        />
 
         {/* Days a bill clears get a marker, so the drops are attributable. */}
         {points.map((p, i) =>

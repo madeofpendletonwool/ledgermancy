@@ -649,6 +649,95 @@ func (q *Queries) GetCategorySummary(ctx context.Context, arg GetCategorySummary
 	return i, err
 }
 
+const getIncomeByCategory = `-- name: GetIncomeByCategory :many
+SELECT
+    c.id      AS category_id,
+    c.name    AS category_name,
+    c.slug    AS category_slug,
+    c.color   AS category_color,
+    SUM(-t.amount)::numeric AS total,
+    COUNT(*)::bigint       AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT ($5::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND c.is_income
+GROUP BY c.id, c.name, c.slug, c.color
+ORDER BY total DESC
+`
+
+type GetIncomeByCategoryParams struct {
+	HouseholdID    uuid.UUID    `json:"household_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Date           stdtime.Time `json:"date"`
+	Date_2         stdtime.Time `json:"date_2"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
+}
+
+type GetIncomeByCategoryRow struct {
+	CategoryID       uuid.UUID       `json:"category_id"`
+	CategoryName     string          `json:"category_name"`
+	CategorySlug     string          `json:"category_slug"`
+	CategoryColor    *string         `json:"category_color"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// Income broken down by income category for one period, largest first. The
+// income-side companion to GetSpendingByCategory: identical visibility scoping
+// and excluded/pending guards, but selects income categories and sums -amount
+// (income rows arrive negative on Plaid's positive = out convention). Mirrors
+// the income column of GetSpendingSummary, so the sources sum to that headline
+// to the cent — which is what lets the cash-flow Sankey reconcile with the
+// Spending page tiles.
+//
+// No is_spend guard, unlike the spending queries: income is selected by the
+// category flag, not by sign. A deposit is always -amount in an income
+// category, with no loan-account inversion to worry about (that exception only
+// applies to outflows). The INNER JOIN on categories is safe here too — a row
+// only counts as income when its category is_income, so a null category_id
+// cannot be income and is correctly absent.
+func (q *Queries) GetIncomeByCategory(ctx context.Context, arg GetIncomeByCategoryParams) ([]GetIncomeByCategoryRow, error) {
+	rows, err := q.db.Query(ctx, getIncomeByCategory,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Date,
+		arg.Date_2,
+		arg.ExcludeOneTime,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetIncomeByCategoryRow{}
+	for rows.Next() {
+		var i GetIncomeByCategoryRow
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.CategorySlug,
+			&i.CategoryColor,
+			&i.Total,
+			&i.TransactionCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLargestTransactions = `-- name: GetLargestTransactions :many
 SELECT
     COALESCE(t.merchant_name, t.name) AS merchant,

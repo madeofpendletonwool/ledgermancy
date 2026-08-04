@@ -13,7 +13,9 @@ import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
 import { MerchantLink } from '../components/MerchantLink'
 import { SplitPanel } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
+import { enterProps } from '../lib/motion'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
+import { motion } from 'motion/react'
 
 const PAGE_SIZE = 50
 
@@ -271,7 +273,7 @@ export function Transactions() {
         </label>
 
         <p className="ml-auto text-sm text-mist-500">
-          {transactions.isFetching ? 'Loading…' : `${rows.length} shown`}
+          {transactions.isFetching ? 'Updating…' : `${rows.length} shown`}
         </p>
       </div>
 
@@ -304,10 +306,11 @@ export function Transactions() {
           </p>
         ) : (
           <ul className="divide-y divide-white/5">
-            {rows.map((t) => (
+            {rows.map((t, i) => (
               <TransactionRow
                 key={t.id}
                 transaction={t}
+                index={i}
                 categoryById={categoryById}
                 spendCats={spendCats}
                 documentCount={countFor(t.id)}
@@ -432,12 +435,14 @@ function groupByInstitution(accounts: Account[]): [string, Account[]][] {
 
 function TransactionRow({
   transaction: t,
+  index,
   categoryById,
   spendCats,
   documentCount,
   onEdit,
 }: {
   transaction: Transaction
+  index: number
   categoryById: Map<string, Category>
   spendCats: Category[]
   documentCount: number
@@ -461,7 +466,10 @@ function TransactionRow({
   const currentLabel = current?.name ?? 'Uncategorised'
 
   return (
-    <li className="flex items-center gap-4 px-6 py-3.5">
+    <motion.li
+      {...enterProps(index)}
+      className="flex items-center gap-4 px-4 py-3.5 sm:px-6"
+    >
       <div className="w-24 shrink-0 text-sm text-mist-500">
         {formatDate(t.date)}
       </div>
@@ -585,7 +593,7 @@ function TransactionRow({
           </button>
         </div>
       )}
-    </li>
+    </motion.li>
   )
 }
 

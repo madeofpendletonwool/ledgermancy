@@ -7,6 +7,7 @@ import {
   type Liability,
   type PlaidItem,
 } from '../lib/api'
+import { SkeletonCard } from '../components/Skeleton'
 import {
   formatDate,
   formatMoney,
@@ -42,7 +43,12 @@ export function Accounts() {
         <ConnectAccount />
       </div>
 
-      {items.isPending && <p className="text-sm text-mist-500">Loading…</p>}
+      {items.isPending && (
+        <div className="space-y-4">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      )}
 
       {items.data?.length === 0 && (
         <section className="glass p-10 text-center">

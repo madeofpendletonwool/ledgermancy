@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Category } from '../lib/api'
 import { CategoryLink } from '../components/CategoryLink'
+import { SkeletonRows, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
 
 // A small preset palette for category chips. Hex strings map straight to the
 // categories.color column; a null color falls back to a neutral dot.
@@ -98,15 +100,27 @@ export function Categories() {
           Custom categories you can rename, recolor, or remove.
         </p>
         {categories.isPending ? (
-          <Loading />
+          <SkeletonRows count={4} />
         ) : custom.length === 0 ? (
-          <Empty>No custom categories yet. Add one above.</Empty>
+          <EmptyState
+            title="No custom categories yet"
+            icon={<CategoryGlyph />}
+            action={
+              <a href="#add-category" className="btn-primary">
+                Add a category
+              </a>
+            }
+          >
+            Make your own to file charges the built-ins don't cover.
+          </EmptyState>
         ) : (
-          <div className="space-y-3">
-            {custom.map((c) => (
-              <CategoryRow key={c.id} category={c} />
-            ))}
-          </div>
+          <Reveal>
+            <div className="space-y-3">
+              {custom.map((c) => (
+                <CategoryRow key={c.id} category={c} />
+              ))}
+            </div>
+          </Reveal>
         )}
       </section>
 
@@ -164,7 +178,7 @@ function CreateCategory() {
   const canAdd = name.trim() !== ''
 
   return (
-    <section className="glass p-6">
+    <section id="add-category" className="glass scroll-mt-24 p-6">
       <h2 className="mb-1 text-lg font-medium">Add a category</h2>
       <p className="mb-5 text-sm text-mist-300">
         e.g. “Childcare”. Set <em>Transfer</em> for money moving between your own
@@ -396,10 +410,20 @@ function Swatches({ value, onChange }: { value: string; onChange: (c: string) =>
   )
 }
 
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-8 text-center text-sm text-mist-500">{children}</p>
+/** Outline glyph for the categories empty state. */
+function CategoryGlyph() {
+  return (
+    <svg
+      className="h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM17.5 14.5v6M14.5 17.5h6" />
+    </svg>
+  )
 }

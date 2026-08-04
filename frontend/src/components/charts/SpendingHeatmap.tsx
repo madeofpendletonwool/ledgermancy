@@ -78,7 +78,8 @@ export function SpendingHeatmap({
 
   return (
     <div className="space-y-3">
-      <div className="relative overflow-x-auto">
+      <div className="chart-scroll relative overflow-x-auto">
+        <span className="sr-only">This chart scrolls horizontally — swipe to see the rest.</span>
         <svg
           viewBox={`0 0 ${W} ${H}`}
           className="w-full"

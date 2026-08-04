@@ -8,6 +8,7 @@ import {
   type CreatedInvite,
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import { SkeletonRows } from '../components/Skeleton'
 
 /**
  * People: everyone the household's money can be about, whether or not they can
@@ -62,7 +63,7 @@ export function PeopleSection() {
         </button>
       </div>
 
-      {people.isPending && <p className="mt-4 text-sm text-mist-500">Loading…</p>}
+      {people.isPending && <SkeletonRows count={2} />}
 
       {!!adults.length && (
         <PersonGroup
@@ -366,7 +367,7 @@ function AllowanceDialog({ person, onClose }: { person: Person; onClose: () => v
                   <span className="capitalize text-mist-300">{e.kind}</span>
                   <span className="text-xs text-mist-500">{e.occurred_on}</span>
                   <span
-                    className={`ml-auto tabular-nums ${
+                    className={`ml-auto tabular ${
                       e.amount.startsWith('-') ? 'text-ember-400' : 'text-rune-300'
                     }`}
                   >
@@ -392,7 +393,7 @@ export function AllowanceBalance({ allowance }: { allowance: Allowance }) {
   return (
     <div className="rounded-xl border border-rune-400/25 bg-rune-400/5 p-4">
       <p className="text-xs uppercase tracking-wide text-mist-500">Balance</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">
+      <p className="mt-1 text-2xl font-semibold tabular">
         {formatMoney(allowance.balance)}
       </p>
       <p className="mt-2 text-xs text-mist-500">

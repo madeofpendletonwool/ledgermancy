@@ -12,6 +12,8 @@ import { MerchantLink } from './MerchantLink'
 import { CategoryLink } from './CategoryLink'
 import { merchantDetailPath } from '../lib/merchants'
 import { Link } from 'react-router-dom'
+import { SkeletonRows, SkeletonText } from './Skeleton'
+import { EmptyState } from './EmptyState'
 
 /**
  * Where the money goes — every merchant, searchable.
@@ -171,13 +173,13 @@ export function MerchantExplorer() {
       </div>
 
       {explorer.isPending ? (
-        <p className="py-6 text-center text-sm text-mist-400">Loading…</p>
+        <SkeletonRows count={6} />
       ) : explorer.isError ? (
         <p className="py-6 text-center text-sm text-red-300">
           Couldn’t load your merchants.
         </p>
       ) : rows.length === 0 ? (
-        <Empty>No spending in this window.</Empty>
+        <EmptyState title="No spending in this window" />
       ) : sorted.length === 0 ? (
         <div className="py-6 text-center">
           <p className="text-sm text-mist-400">
@@ -389,7 +391,7 @@ function Concentration({
   isPending: boolean
 }) {
   if (isPending) {
-    return <p className="mt-1 text-sm text-mist-300">Loading…</p>
+    return <SkeletonText lines={2} />
   }
   if (rows.length === 0 || windowTotal <= 0) {
     return (
@@ -577,8 +579,4 @@ function Pager({
       </button>
     </div>
   )
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-6 text-center text-sm text-mist-400">{children}</p>
 }

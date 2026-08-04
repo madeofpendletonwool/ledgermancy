@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { motion, useReducedMotion } from 'motion/react'
 import {
   api,
   type AllocationSlice,
@@ -12,6 +13,9 @@ import {
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
 import { DividendBars } from '../components/charts/DividendBars'
+import { lineDraw } from '../components/charts/motion'
+import { AnimatedNumber } from '../components/motion'
+import { SkeletonTiles } from '../components/Skeleton'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 const PERIODS: { value: InvestmentPeriod; label: string }[] = [
@@ -130,10 +134,10 @@ export function Investments() {
       {hasAccounts && (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
-            <Tile label="Total value" value={formatMoney(data!.total_value)} large />
+            <Tile label="Total value" value={data!.total_value} large />
             <Tile
               label="Unrealised gain"
-              value={data!.unrealised_gain ? formatMoney(data!.unrealised_gain) : '—'}
+              value={data!.unrealised_gain ?? null}
               sub={
                 data!.unrealised_gain_pct
                   ? formatShare(data!.unrealised_gain_pct, 2)
@@ -149,7 +153,9 @@ export function Investments() {
             />
             <Tile
               label="Recorded history"
-              value={data!.history_days > 0 ? `${data!.history_days} days` : 'None yet'}
+              value={data!.history_days > 0 ? data!.history_days : null}
+              format={(n) => `${Math.round(n)} days`}
+              fallback="None yet"
               sub="Since Ledgermancy started watching"
             />
           </div>
@@ -216,7 +222,7 @@ export function Investments() {
               {fees.data && fees.data.covered_holdings > 0 ? (
                 <>
                   <p className="tabular mt-3 text-3xl font-semibold" style={{ color: STATUS.serious }}>
-                    {formatMoney(fees.data.annual_cost)}
+                    <AnimatedNumber value={fees.data.annual_cost} />
                   </p>
                   <p className="mt-1 text-sm text-mist-300">per year in fund expenses</p>
                 </>
@@ -231,7 +237,7 @@ export function Investments() {
               {dividends.data && dividends.data.months.length > 0 ? (
                 <>
                   <p className="tabular mt-3 text-3xl font-semibold" style={{ color: STATUS.good }}>
-                    {formatMoney(dividends.data.total)}
+                    <AnimatedNumber value={dividends.data.total} />
                   </p>
                   <p className="mt-1 text-sm text-mist-300">
                     received over the last two years
@@ -296,7 +302,12 @@ function Performance({
   data: InvestmentPerformance | undefined
   loading: boolean
 }) {
-  if (loading) return <p className="text-sm text-mist-300">Loading…</p>
+  if (loading)
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <SkeletonTiles count={4} />
+      </div>
+    )
   if (!data) return null
 
   if (!data.computable) {
@@ -314,7 +325,8 @@ function Performance({
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           label="Time-weighted"
-          value={formatPercent(data.twr)}
+          value={data.twr}
+          format={(n) => formatPercent(String(n))}
           sub={
             data.annualised
               ? `${formatPercent(data.annualised)} a year`
@@ -324,19 +336,20 @@ function Performance({
         />
         <Stat
           label="Money-weighted"
-          value={formatPercent(data.mwr)}
+          value={data.mwr}
+          format={(n) => formatPercent(String(n))}
           sub={data.mwr ? 'Annualised (IRR)' : data.mwr_note}
           tone={data.mwr ? (Number(data.mwr) >= 0 ? 'good' : 'debt') : undefined}
         />
         <Stat
           label="Market gain"
-          value={formatMoney(data.gain)}
+          value={data.gain}
           sub="Your deposits removed"
           tone={Number(data.gain) >= 0 ? 'good' : 'debt'}
         />
         <Stat
           label="Net paid in"
-          value={formatMoney(data.net_flows)}
+          value={data.net_flows}
           sub={`${data.start} → ${data.end}`}
         />
       </div>
@@ -348,6 +361,7 @@ function Performance({
 function BenchmarkChart({ data }: { data: BenchmarkComparison | undefined }) {
   const series = data?.series ?? []
   const withPoints = series.filter((s) => s.points.length >= 2)
+  const reduce = useReducedMotion() ?? false
 
   if (withPoints.length === 0) {
     return (
@@ -391,7 +405,7 @@ function BenchmarkChart({ data }: { data: BenchmarkComparison | undefined }) {
       <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="w-full min-w-[520px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[520px]"
           role="img"
           aria-label="Portfolio growth against benchmarks, rebased to 100"
         >
@@ -415,20 +429,23 @@ function BenchmarkChart({ data }: { data: BenchmarkComparison | undefined }) {
             {min.toFixed(0)}
           </text>
 
-          {withPoints.map((s, i) => (
-            <path
-              key={s.label}
-              d={s.points
-                .map(
-                  (p, j) =>
-                    `${j === 0 ? 'M' : 'L'} ${xFor(p.date)} ${y(Number(p.value))}`,
-                )
-                .join(' ')}
-              fill="none"
-              stroke={colours[i % colours.length]}
-              strokeWidth={i === 0 ? 2.5 : 1.5}
-            />
-          ))}
+          {withPoints.map((s, i) => {
+            const d = s.points
+              .map(
+                (p, j) =>
+                  `${j === 0 ? 'M' : 'L'} ${xFor(p.date)} ${y(Number(p.value))}`,
+              )
+              .join(' ')
+            return (
+              <motion.path
+                key={s.label}
+                fill="none"
+                stroke={colours[i % colours.length]}
+                strokeWidth={i === 0 ? 2.5 : 1.5}
+                {...lineDraw(d, reduce)}
+              />
+            )
+          })}
 
           <text x={PAD.left} y={H - 8} fontSize="11" fill={CHART.textMuted}>
             {dates[0]}
@@ -805,12 +822,16 @@ function Tile({
   sub,
   tone,
   large,
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   sub?: string
   tone?: 'good' | 'debt'
   large?: boolean
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color = tone === 'debt' ? STATUS.critical : tone === 'good' ? STATUS.good : '#f2d492'
   return (
@@ -820,7 +841,7 @@ function Tile({
         className={`tabular mt-2 font-semibold ${large ? 'text-4xl' : 'text-3xl'}`}
         style={{ color }}
       >
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
       {sub && <p className="mt-1 text-xs text-mist-500">{sub}</p>}
     </div>
@@ -832,18 +853,22 @@ function Stat({
   value,
   sub,
   tone,
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   sub?: string
   tone?: 'good' | 'debt'
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color = tone === 'debt' ? STATUS.critical : tone === 'good' ? STATUS.good : undefined
   return (
     <div className="rounded-xl bg-white/5 px-4 py-3.5">
       <p className="text-xs tracking-wide text-mist-500 uppercase">{label}</p>
       <p className="tabular mt-1.5 text-2xl font-semibold" style={{ color }}>
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
       {sub && <p className="mt-1 text-xs text-mist-500">{sub}</p>}
     </div>

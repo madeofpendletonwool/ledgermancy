@@ -814,6 +814,159 @@ func buildHeatmap(from, to time.Time, rows []dbgen.GetCategoryMonthMatrixRow) sp
 	}
 }
 
+// cashFlowSource is one inflow source for the cash-flow Sankey: an income
+// category total for the period. It carries the same money/category fields as
+// categorySpendResponse minus is_fixed, because an income category is never
+// fixed (the API forces is_fixed = false for income categories), so carrying
+// the flag would only invite the client to branch on a value that is always
+// false.
+type cashFlowSource struct {
+	CategoryID       uuid.UUID       `json:"category_id"`
+	Name             string          `json:"name"`
+	Slug             string          `json:"slug"`
+	Color            *string         `json:"color"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+type cashFlowResponse struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	// IncomeTotal, SpendingTotal and Leftover are the SAME figures
+	// GetSpendingSummary returns for the period — the Spending page's headline
+	// tiles — so the Sankey's bands reconcile with that page to the cent.
+	// Computed in NUMERIC here, never in the client.
+	IncomeTotal   decimal.Decimal `json:"income_total"`
+	SpendingTotal decimal.Decimal `json:"spending_total"`
+	Leftover      decimal.Decimal `json:"leftover"`
+	// UncategorizedSpending is the slice of SpendingTotal that did not land in
+	// any category (transactions whose category_id is null). Spending categories
+	// come from an INNER JOIN on categories, so without this the category flows
+	// would sum to less than SpendingTotal whenever a charge was uncategorised
+	// and the Sankey would not balance. Usually zero; carried only so the flows
+	// always reconcile exactly. Computed server-side, in exact decimal, as
+	// SpendingTotal minus the sum of the returned category totals.
+	UncategorizedSpending decimal.Decimal `json:"uncategorized_spending"`
+	// IncomeSources decomposes IncomeTotal by income category. The rows sum to
+	// IncomeTotal exactly: income requires an is_income category, so there is no
+	// uncategorised income the way there can be uncategorised spending.
+	IncomeSources []cashFlowSource `json:"income_sources"`
+	// SpendingCategories decomposes (SpendingTotal - UncategorizedSpending) by
+	// spending category — the same rows GetSpendingByCategory returns for the
+	// period, so the Sankey and the "By category" bars are the same numbers.
+	SpendingCategories []categorySpendResponse `json:"spending_categories"`
+}
+
+// handleCashFlow answers the cash-flow Sankey (item #13, MAD-33): the
+// "where does my money actually go" hero view. One round trip carries the
+// income sources, the spending categories and the period totals — all from the
+// same queries every other report uses (GetSpendingSummary +
+// GetSpendingByCategory + GetIncomeByCategory), so the Sankey's bands
+// reconcile with the Spending page tiles and honour the same money rules:
+// transfers are excluded from both sides, credit-card payments are transfers,
+// and one-time charges are included because this is a REAL PERIOD report.
+func (s *Server) handleCashFlow(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+	from, to := period(r)
+
+	summaryParams := dbgen.GetSpendingSummaryParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	}
+	categoryParams := dbgen.GetSpendingByCategoryParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	}
+
+	summary, err := s.Queries.GetSpendingSummary(r.Context(), summaryParams)
+	if err != nil {
+		s.internalError(w, "cash-flow summary", err)
+		return
+	}
+	spendingCats, err := s.Queries.GetSpendingByCategory(r.Context(), categoryParams)
+	if err != nil {
+		s.internalError(w, "cash-flow spending categories", err)
+		return
+	}
+	incomeCats, err := s.Queries.GetIncomeByCategory(r.Context(), dbgen.GetIncomeByCategoryParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	})
+	if err != nil {
+		s.internalError(w, "cash-flow income sources", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildCashFlow(from, to, summary, spendingCats, incomeCats))
+}
+
+// buildCashFlow assembles the cash-flow response and derives the uncategorised
+// spending gap. Kept separate from the handler so the reconciliation maths —
+// the invariant the Sankey depends on — is unit-testable without a database.
+//
+// Spending categories use an INNER JOIN on categories, so a charge with a null
+// category_id sits in SpendingTotal but is absent from the category rows. The
+// gap is recovered here, in exact decimal, as SpendingTotal minus the sum of
+// the returned category totals, so the Sankey's spending flows always sum to
+// the headline the rest of the Spending page shows. A negative gap is not a
+// reachable state — the category rows are a subset of summary spending by
+// construction — but it is clamped at zero so a future query change can never
+// produce a negative Sankey flow.
+func buildCashFlow(
+	from, to time.Time,
+	summary dbgen.GetSpendingSummaryRow,
+	spendingCats []dbgen.GetSpendingByCategoryRow,
+	incomeCats []dbgen.GetIncomeByCategoryRow,
+) cashFlowResponse {
+	categorised := decimal.Zero
+	for _, c := range spendingCats {
+		categorised = categorised.Add(c.Total)
+	}
+	uncategorised := summary.Spending.Sub(categorised)
+	if uncategorised.IsNegative() {
+		uncategorised = decimal.Zero
+	}
+
+	out := cashFlowResponse{
+		From:                  from.Format(time.DateOnly),
+		To:                    to.Format(time.DateOnly),
+		IncomeTotal:           summary.Income,
+		SpendingTotal:         summary.Spending,
+		Leftover:              summary.Income.Sub(summary.Spending),
+		UncategorizedSpending: uncategorised,
+		IncomeSources:         make([]cashFlowSource, 0, len(incomeCats)),
+		SpendingCategories:    make([]categorySpendResponse, 0, len(spendingCats)),
+	}
+	for _, c := range incomeCats {
+		out.IncomeSources = append(out.IncomeSources, cashFlowSource{
+			CategoryID:       c.CategoryID,
+			Name:             c.CategoryName,
+			Slug:             c.CategorySlug,
+			Color:            c.CategoryColor,
+			Total:            c.Total,
+			TransactionCount: c.TransactionCount,
+		})
+	}
+	for _, c := range spendingCats {
+		out.SpendingCategories = append(out.SpendingCategories, categorySpendResponse{
+			CategoryID:       c.CategoryID,
+			Name:             c.CategoryName,
+			Slug:             c.CategorySlug,
+			Color:            c.CategoryColor,
+			IsFixed:          c.IsFixed,
+			Total:            c.Total,
+			TransactionCount: c.TransactionCount,
+		})
+	}
+	return out
+}
+
 // monthsBetween returns every "YYYY-MM" from `from`'s month through `to`'s month
 // inclusive, ascending. Built from the calendar parts of the two dates rather
 // than by stepping a time.Time, so a UTC midnight at month end cannot flip a

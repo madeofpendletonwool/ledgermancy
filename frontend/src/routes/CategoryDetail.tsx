@@ -15,6 +15,7 @@ import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 import { MerchantLink } from '../components/MerchantLink'
 import { Tile } from '../components/Tile'
+import { SkeletonDetail } from '../components/Skeleton'
 
 /**
  * One category, in detail.
@@ -62,7 +63,7 @@ export function CategoryDetail() {
   if (detail.isPending) {
     return (
       <Shell>
-        <p className="text-sm text-mist-400">Loading…</p>
+        <SkeletonDetail />
       </Shell>
     )
   }
@@ -143,18 +144,19 @@ export function CategoryDetail() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Tile label="Total spent" value={formatMoney(d.total)} />
+            <Tile label="Total spent" value={d.total} />
             <Tile
               label="Charges"
-              value={String(count)}
+              value={count}
+              format={(n) => String(Math.round(n))}
               hint={`${formatMoney(d.average)} average`}
             />
             <Tile
               label="Per month"
-              value={formatMoney(String(perMonth))}
+              value={perMonth}
               hint="Averaged over the window"
             />
-            <Tile label="Largest charge" value={formatMoney(d.largest)} />
+            <Tile label="Largest charge" value={d.largest} />
           </div>
 
           {budget && <BudgetProgressPanel budget={budget} />}

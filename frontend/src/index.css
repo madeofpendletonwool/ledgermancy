@@ -1,6 +1,35 @@
 @import 'tailwindcss';
 
 /* ---------------------------------------------------------------------------
+   Self-hosted type. Sora (variable) is the UI voice; Space Mono (400/700) is
+   reserved for money figures so they are unmistakable at a glance. No outbound
+   font request — files ship in /public/fonts. Both are SIL OFL 1.1.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Sora';
+  src: url('/fonts/sora-latin-variable.woff2') format('woff2-variations');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/space-mono-latin-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/space-mono-latin-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
    Ledgermancy's visual language: deep ink, arcane violet, and a warm gold that
    is reserved for money and emphasis. Everything else stays muted so numbers
    are the loudest thing on the page.
@@ -27,6 +56,13 @@
 
   --color-verdant-400: #4ade80;
   --color-ember-400: #fb7185;
+
+  /* Type. Sora is the UI face; Space Mono is the money face. Fallbacks keep
+     the app readable before the self-hosted files arrive and on any glyph the
+     latin subset omits. */
+  --font-sans: 'Sora', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -36,6 +72,7 @@
 
   body {
     @apply bg-ink-950 text-mist-100 antialiased;
+    font-family: var(--font-sans);
     background-image:
       radial-gradient(
         ellipse 80% 55% at 50% -10%,
@@ -51,8 +88,10 @@
     min-height: 100vh;
   }
 
-  /* Numbers should line up in columns wherever they appear. */
+  /* Numbers should line up in columns wherever they appear. The numeric face
+     (Space Mono) lives here so every money figure reads as a figure. */
   .tabular {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 }
@@ -176,6 +215,50 @@
   }
 }
 
+/* Recessed ink placeholders for loading states. Faint white over the ink
+   surface reads as a cut-out of the glass card itself — ink-toned, not a
+   generic flat-gray block — and matches the .glass aesthetic everywhere a
+   skeleton sits. Deliberately static: no shimmer. The constraint in MAD-37 is
+   that skeletons themselves never move (only the hand-off to real content
+   animates, via .reveal), which also means there is nothing to disable under
+   prefers-reduced-motion. */
+@layer components {
+  .skeleton {
+    background-color: rgb(255 255 255 / 0.045);
+    border-radius: 0.5rem;
+  }
+
+  /* A slightly deeper variant for larger fields inside a card. */
+  .skeleton-sunken {
+    background-color: rgb(255 255 255 / 0.03);
+    border-radius: 0.5rem;
+  }
+}
+
+/* Crossfade from a skeleton to the real content once it arrives (MAD-37).
+   Short opacity settle; snaps to static under prefers-reduced-motion. It only
+   fires when the element mounts, which is exactly the skeleton→content
+   hand-off — react-query keeps data mounted across refetches, so a period
+   change does not re-trigger it. */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.reveal {
+  animation: reveal-in 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    animation: none;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Financial summary report.
    The report is a normal page on screen and a clean document when printed.
@@ -201,7 +284,23 @@
   }
   .report-table .num {
     @apply text-right;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Dense charts (Sankey, Pareto, 12-month Trend, Heatmap) stay wider than a
+   phone viewport on purpose — scaling them to ~360px makes them illegible — so
+   they keep their min-width and scroll. A soft right-edge fade on small screens
+   is the discoverable hint that there is more to scroll to. The mask sits on
+   the scroll container's own box, so it stays pinned at the visible edge while
+   the SVG scrolls underneath; the money axis labels on the left are untouched.
+   --------------------------------------------------------------------------- */
+@media (max-width: 639px) {
+  .chart-scroll {
+    -webkit-mask-image: linear-gradient(to left, transparent, #000 1.5rem);
+    mask-image: linear-gradient(to left, transparent, #000 1.5rem);
   }
 }
 
@@ -256,8 +355,12 @@
   /* A letter page minus margins is about 178mm wide. Four tiles at the
      on-screen font size overflowed it — the last one was clipped off the page
      edge and a long value ran outside its border. Two rows of two fit
-     comfortably, and the figures step down a size. */
-  .report .grid-cols-4 {
+     comfortably, and the figures step down a size. The cash-flow grid carries
+     a stable class so this rule still targets it now that its on-screen layout
+     is mobile-first (grid-cols-2 sm:grid-cols-4); the literal grid-cols-4
+     token is gone from the markup, so the old `.report .grid-cols-4` selector
+     no longer matches. */
+  .report .report-cashflow-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 

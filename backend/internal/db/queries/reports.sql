@@ -93,6 +93,44 @@ WHERE u.household_id = $1
 GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
 ORDER BY total DESC;
 
+-- name: GetIncomeByCategory :many
+-- Income broken down by income category for one period, largest first. The
+-- income-side companion to GetSpendingByCategory: identical visibility scoping
+-- and excluded/pending guards, but selects income categories and sums -amount
+-- (income rows arrive negative on Plaid's positive = out convention). Mirrors
+-- the income column of GetSpendingSummary, so the sources sum to that headline
+-- to the cent — which is what lets the cash-flow Sankey reconcile with the
+-- Spending page tiles.
+--
+-- No is_spend guard, unlike the spending queries: income is selected by the
+-- category flag, not by sign. A deposit is always -amount in an income
+-- category, with no loan-account inversion to worry about (that exception only
+-- applies to outflows). The INNER JOIN on categories is safe here too — a row
+-- only counts as income when its category is_income, so a null category_id
+-- cannot be income and is correctly absent.
+SELECT
+    c.id      AS category_id,
+    c.name    AS category_name,
+    c.slug    AS category_slug,
+    c.color   AS category_color,
+    SUM(-t.amount)::numeric AS total,
+    COUNT(*)::bigint       AS transaction_count
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN plaid_items i ON i.id = a.plaid_item_id
+JOIN users u       ON u.id = i.user_id
+JOIN categories c  ON c.id = t.category_id
+WHERE u.household_id = $1
+  AND (i.user_id = $2 OR i.is_shared)
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND c.is_income
+GROUP BY c.id, c.name, c.slug, c.color
+ORDER BY total DESC;
+
 -- name: GetMonthlyTrend :many
 -- Income, spending, leftover AND the fixed/discretionary split per calendar
 -- month across a range. Drives the rolling-twelve chart, the month-over-month

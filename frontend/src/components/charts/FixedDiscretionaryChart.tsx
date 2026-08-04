@@ -65,7 +65,7 @@ export function FixedDiscretionaryChart({ data }: { data: TrendPoint[] }) {
       <div className="relative overflow-x-auto">
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="w-full min-w-[560px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[560px]"
           role="img"
           aria-label="Fixed versus discretionary spending per month"
           onMouseLeave={() => setActive(null)}

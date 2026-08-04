@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { TrendPoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { areaFade, lineDraw } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES, STATUS } from './tokens'
 
@@ -20,6 +22,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  */
 export function TrendChart({ data }: { data: TrendPoint[] }) {
   const [active, setActive] = useState<number | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   if (data.length === 0) {
     return (
@@ -80,7 +83,8 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
         <LegendKey color={SERIES.spending} label="Spending" />
       </div>
 
-      <div className="relative overflow-x-auto">
+      <div className="chart-scroll relative overflow-x-auto">
+        <span className="sr-only">This chart scrolls horizontally — swipe to see the rest.</span>
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           className="w-full min-w-[560px]"
@@ -142,16 +146,26 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
           {/* The shaded gap between the two lines: green where income cleared
               spending, red where it did not. Behind the lines, low-opacity. */}
           {gapFills.map((g, i) => (
-            <polygon
+            <motion.polygon
               key={i}
               points={g.pts}
               fill={g.saved ? SERIES.leftover : STATUS.critical}
-              opacity={0.12}
+              {...areaFade(0.12, reduce)}
             />
           ))}
 
-          <path d={line('income')} fill="none" stroke={SERIES.income} strokeWidth={2} />
-          <path d={line('spending')} fill="none" stroke={SERIES.spending} strokeWidth={2} />
+          <motion.path
+            fill="none"
+            stroke={SERIES.income}
+            strokeWidth={2}
+            {...lineDraw(line('income'), reduce)}
+          />
+          <motion.path
+            fill="none"
+            stroke={SERIES.spending}
+            strokeWidth={2}
+            {...lineDraw(line('spending'), reduce)}
+          />
 
           {/* Markers on the hovered month, ringed in the surface colour so they
               stay legible where the two lines overlap. */}

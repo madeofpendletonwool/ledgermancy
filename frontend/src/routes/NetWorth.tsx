@@ -1,10 +1,13 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { motion, useReducedMotion } from 'motion/react'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney, isAmortizingDebt } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
 import { NetWorthComposition } from '../components/charts/NetWorthComposition'
+import { lineDraw } from '../components/charts/motion'
+import { AnimatedNumber } from '../components/motion'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 export function NetWorth() {
@@ -43,11 +46,11 @@ export function NetWorth() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Tile label="Assets" value={nw ? formatMoney(nw.assets_total) : '—'} />
-        <Tile label="Liabilities" value={nw ? formatMoney(nw.liabilities_total) : '—'} tone="debt" />
+        <Tile label="Assets" value={nw ? nw.assets_total : null} />
+        <Tile label="Liabilities" value={nw ? nw.liabilities_total : null} tone="debt" />
         <Tile
           label="Net worth"
-          value={nw ? formatMoney(nw.net_worth) : '—'}
+          value={nw ? nw.net_worth : null}
           tone={nw && Number(nw.net_worth) < 0 ? 'debt' : 'good'}
           large
         />
@@ -291,7 +294,7 @@ function ByPerson() {
                 <p className="text-xs text-mist-500">{p.age} years old</p>
               )}
             </div>
-            <span className="shrink-0 tabular-nums">{formatMoney(p.total)}</span>
+            <span className="shrink-0 tabular">{formatMoney(p.total)}</span>
           </li>
         ))}
       </ul>
@@ -299,7 +302,7 @@ function ByPerson() {
       {byPerson.data && (
         <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-3 text-sm">
           <span className="text-mist-500">Not assigned to anyone</span>
-          <span className="tabular-nums text-mist-300">
+          <span className="tabular text-mist-300">
             {formatMoney(byPerson.data.unassigned)}
           </span>
         </div>
@@ -309,6 +312,8 @@ function ByPerson() {
 }
 
 function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
+  const reduce = useReducedMotion() ?? false
+
   if (data.length < 2) {
     return (
       <p className="py-10 text-center text-sm" style={{ color: CHART.textMuted }}>
@@ -353,7 +358,7 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
 
   return (
     <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[520px]" role="img"
+      <svg viewBox={`0 0 ${W} ${H}`}         className="w-full max-sm:min-w-0 sm:min-w-[520px]" role="img"
         aria-label="Net worth over time">
         {/* A zero line, because net worth can legitimately be negative and the
             sign is the most important thing on the chart. */}
@@ -367,7 +372,12 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
         <text x={PAD.left - 10} y={y(min) + 4} textAnchor="end" fontSize="11" fill={CHART.textMuted}>
           {formatMoney(String(min))}
         </text>
-        <path d={path} fill="none" stroke={SERIES.leftover} strokeWidth={2} />
+        <motion.path
+          fill="none"
+          stroke={SERIES.leftover}
+          strokeWidth={2}
+          {...lineDraw(path, reduce)}
+        />
         {data.map((d, i) => (
           <circle key={d.as_of} cx={x(i)} cy={y(Number(d.net_worth))} r={4}
             fill={SERIES.leftover} stroke={CHART.surface} strokeWidth={2}>
@@ -490,19 +500,21 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
 }
 
 function Tile({
-  label, value, tone, large,
+  label, value, tone, large, format, fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   tone?: 'good' | 'debt'
   large?: boolean
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color = tone === 'debt' ? STATUS.critical : tone === 'good' ? STATUS.good : '#f2d492'
   return (
     <div className="glass p-5">
       <p className="text-sm text-mist-300">{label}</p>
       <p className={`tabular mt-2 font-semibold ${large ? 'text-4xl' : 'text-3xl'}`} style={{ color }}>
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
     </div>
   )
