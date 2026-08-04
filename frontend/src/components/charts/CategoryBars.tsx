@@ -3,6 +3,7 @@ import type { CategorySpend } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { enterProps } from '../../lib/motion'
 import { motion, useReducedMotion } from 'motion/react'
+import { CategoryIcon } from '../CategoryIcon'
 import { barWidth } from './motion'
 import { CHART, SINGLE_SERIES } from './tokens'
 
@@ -56,8 +57,20 @@ export function CategoryBars({
             onClick={clickable ? () => onSelect(bar.category_id) : undefined}
             title={clickable ? `See ${bar.name} transactions` : undefined}
           >
-            <span className="min-w-0 truncate text-mist-300" title={bar.name}>
-              {bar.name}
+            <span className="flex min-w-0 items-center gap-1.5 text-mist-300">
+              {/* Icon sits beside the axis LABEL — colour is redundant beside a
+                  text label per this chart's own rule, so the category identity
+                  colour is allowed here. It never enters the bar itself, which
+                  stays single-series. */}
+              <CategoryIcon
+                slug={bar.slug}
+                name={bar.name}
+                color={bar.color}
+                className="size-4"
+              />
+              <span className="truncate" title={bar.name}>
+                {bar.name}
+              </span>
             </span>
 
             {/* Track sits at low contrast so the bar itself carries the signal. */}

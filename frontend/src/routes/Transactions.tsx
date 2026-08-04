@@ -11,6 +11,7 @@ import {
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
 import { SplitPanel } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
@@ -468,49 +469,86 @@ function TransactionRow({
   return (
     <motion.li
       {...enterProps(index)}
-      className="flex items-center gap-4 px-4 py-3.5 sm:px-6"
+      className="flex items-center gap-3 px-4 py-3.5 sm:gap-4 sm:px-6"
     >
-      <div className="w-24 shrink-0 text-sm text-mist-500">
+      {/* Desktop-only date column. On a phone the date moves into the
+          subtitle line below the merchant — a w-24 column here is ~110px
+          the merchant name cannot spare on a 360px viewport, and keeping it
+          inline is what was forcing the name to truncate to almost nothing. */}
+      <div className="hidden w-24 shrink-0 text-sm text-mist-500 sm:block">
         {formatDate(t.date)}
       </div>
 
+      <Monogram name={t.merchant_name ?? t.name} />
+
+      {/*
+        The merchant column. Two lines:
+
+          line 1 — merchant name (+ status badges), with the amount pinned to
+                   the right on mobile. On desktop the amount lives in its own
+                   column further right so figures align down the page.
+          line 2 — when + where. The date leads on mobile (there is no date
+                   column there) and the account follows.
+
+        Stacking is what gives the name room on a phone: line 1 is the name's
+        own row, not one of six things fighting for a single line.
+      */}
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 truncate font-medium">
-          {/* An inline link, not a whole-row one: this row already holds the
-              category button, the ⋯ menu and edit/delete, and nesting those
-              inside a link is neither valid nor usable.
-              merchant_key_resolved, never merchant_key — the raw descriptor would
-              strand every fragment of a grouped merchant but one. */}
-          <MerchantLink
-            name={t.merchant_name ?? t.name}
-            merchantKey={t.merchant_key_resolved}
-          />
-          {isManual && (
-            <span className="shrink-0 rounded-full border border-arcane-500/30 bg-arcane-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-arcane-400">
-              Manual
-            </span>
-          )}
-          {t.is_one_time && (
-            <span
-              className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rune-300"
-              title="Counted in this month, but left out of the averages that predict future months."
-            >
-              One-time
-            </span>
-          )}
-          {t.excluded_from_reports && (
-            <span
-              className="shrink-0 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mist-400"
-              title="Hidden from every report."
-            >
-              Excluded
-            </span>
-          )}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="flex min-w-0 flex-1 items-center gap-2 truncate font-medium">
+            {/* An inline link, not a whole-row one: this row already holds the
+                category button, the ⋯ menu and edit/delete, and nesting those
+                inside a link is neither valid nor usable.
+                merchant_key_resolved, never merchant_key — the raw descriptor
+                would strand every fragment of a grouped merchant but one. */}
+            <MerchantLink
+              name={t.merchant_name ?? t.name}
+              merchantKey={t.merchant_key_resolved}
+            />
+            {isManual && (
+              <span className="shrink-0 rounded-full border border-arcane-500/30 bg-arcane-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-arcane-400">
+                Manual
+              </span>
+            )}
+            {t.is_one_time && (
+              <span
+                className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rune-300"
+                title="Counted in this month, but left out of the averages that predict future months."
+              >
+                One-time
+              </span>
+            )}
+            {t.excluded_from_reports && (
+              <span
+                className="shrink-0 rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mist-400"
+                title="Hidden from every report."
+              >
+                Excluded
+              </span>
+            )}
+            {t.pending && (
+              <span className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rune-300">
+                Pending
+              </span>
+            )}
+          </p>
+          {/* Mobile amount — sits at the end of line 1. Desktop renders the
+              amount in its own aligned column instead (below). */}
+          <span
+            className={`tabular shrink-0 font-medium sm:hidden ${
+              amount.isIncome ? 'text-verdant-400' : 'text-mist-100'
+            }`}
+          >
+            {amount.text}
+          </span>
+        </div>
+
         <p className="truncate text-xs text-mist-500">
+          <span className="sm:hidden">{formatDate(t.date)} · </span>
           {t.account_name}
           {t.institution_name && ` · ${t.institution_name}`}
         </p>
+
         {t.possible_duplicate && (
           <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ember-400">
             <span>Possible duplicate — a matching synced charge arrived.</span>
@@ -543,14 +581,10 @@ function TransactionRow({
         </button>
       )}
 
-      {t.pending && (
-        <span className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2.5 py-1 text-xs text-rune-300">
-          Pending
-        </span>
-      )}
-
+      {/* Desktop amount column — aligned figures down the page. The mobile
+          amount is the inline span on line 1 above. */}
       <div
-        className={`tabular w-28 shrink-0 text-right font-medium ${
+        className={`tabular hidden w-28 shrink-0 text-right font-medium sm:block ${
           amount.isIncome ? 'text-verdant-400' : 'text-mist-100'
         }`}
       >
@@ -558,10 +592,12 @@ function TransactionRow({
       </div>
 
       {/* A row-level count of attachments, so the vault is still visible at a
-          glance now that the paperclip itself lives in the menu. */}
+          glance now that the paperclip itself lives in the menu. Desktop only:
+          on mobile the count is unreachable here, but the ⋯ menu labels the
+          Documents item with "(n)" so the info is not lost. */}
       {documentCount > 0 && (
         <span
-          className="flex shrink-0 items-center gap-1 text-xs text-mist-400"
+          className="hidden shrink-0 items-center gap-1 text-xs text-mist-400 sm:flex"
           title={`${documentCount} attached`}
         >
           <PaperclipIcon />
@@ -569,15 +605,25 @@ function TransactionRow({
         </span>
       )}
 
-      {/* Everything that acts on this row — splitting, documents, and how it
-          counts — behind one ⋯ so the row stays scannable. Applies to synced
-          rows too: a loan payoff arrives from Plaid. */}
-      <RowMenu transaction={t} documentCount={documentCount} />
+      {/* Everything that acts on this row — splitting, documents, how it
+          counts, and (for manual rows) edit/delete — behind one ⋯ so the row
+          stays scannable. On mobile this is the ONLY per-row control, which is
+          what keeps edit/delete from being clipped off-screen. Applies to
+          synced rows too: a loan payoff arrives from Plaid. */}
+      <RowMenu
+        transaction={t}
+        documentCount={documentCount}
+        canEdit={isManual}
+        onEdit={onEdit}
+        onDelete={() => remove.mutate()}
+        deletePending={remove.isPending}
+      />
 
-      {/* Edit/delete only on hand-entered rows. Plaid rows stay read-only
+      {/* Edit/delete inline for hand-entered rows. Desktop only — on mobile
+          the same actions live in the ⋯ menu above. Plaid rows stay read-only
           except category, which has its own path. */}
       {isManual && (
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="hidden shrink-0 items-center gap-1 sm:flex">
           <button
             className="btn-ghost px-2 py-1 text-xs text-mist-300"
             onClick={onEdit}
@@ -620,9 +666,22 @@ function TransactionRow({
 function RowMenu({
   transaction: t,
   documentCount,
+  canEdit = false,
+  onEdit,
+  onDelete,
+  deletePending = false,
 }: {
   transaction: Transaction
   documentCount: number
+  /**
+   * Hand-entered rows are editable and deletable; synced rows are not. On
+   * mobile these actions live ONLY here (the inline buttons are sm+), so the
+   * menu is where a phone user goes to delete a manual transaction.
+   */
+  canEdit?: boolean
+  onEdit?: () => void
+  onDelete?: () => void
+  deletePending?: boolean
 }) {
   const qc = useQueryClient()
   const online = useOnline()
@@ -765,6 +824,57 @@ function RowMenu({
                   : 'Hide it everywhere, as if it never happened.'}
               </span>
             </button>
+
+            {/* Edit/delete for hand-entered rows. On desktop these are also
+                inline buttons at the row's end; here they are the mobile path,
+                and the only way to delete a manual transaction on a phone. */}
+            {canEdit && (onEdit || onDelete) && (
+              <>
+                <div className="my-1 border-t border-white/10" role="none" />
+
+                {onEdit && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                    disabled={!online}
+                    title={online ? undefined : OFFLINE_WRITE_HINT}
+                    onClick={() => {
+                      close()
+                      onEdit()
+                    }}
+                  >
+                    <span className="block font-medium text-mist-100">
+                      Edit…
+                    </span>
+                    <span className="block text-mist-500">
+                      Change the amount, date, or merchant.
+                    </span>
+                  </button>
+                )}
+
+                {onDelete && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                    disabled={deletePending || !online}
+                    title={online ? undefined : OFFLINE_WRITE_HINT}
+                    onClick={() => {
+                      close()
+                      onDelete()
+                    }}
+                  >
+                    <span className="block font-medium text-ember-400">
+                      Delete…
+                    </span>
+                    <span className="block text-mist-500">
+                      Remove this transaction for good.
+                    </span>
+                  </button>
+                )}
+              </>
+            )}
 
             {set.isError && (
               <p className="px-2 py-1 text-ember-400">

@@ -10,6 +10,7 @@ import { SINGLE_SERIES, STATUS } from './charts/tokens'
 import { MerchantPareto } from './charts/MerchantPareto'
 import { MerchantLink } from './MerchantLink'
 import { CategoryLink } from './CategoryLink'
+import { Monogram } from './Monogram'
 import { merchantDetailPath } from '../lib/merchants'
 import { Link } from 'react-router-dom'
 import { SkeletonRows, SkeletonText } from './Skeleton'
@@ -299,6 +300,7 @@ function MerchantRow({
   return (
     <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 rounded-lg py-1.5 sm:grid-cols-[14rem_1fr_7rem_5rem]">
       <div className="flex min-w-0 items-center gap-2">
+        <Monogram name={m.merchant} size="sm" />
         <MerchantLink
           name={m.merchant}
           merchantKey={m.merchant_key}
@@ -451,13 +453,16 @@ function NewMerchants({
       ) : (
         <ul className="space-y-1.5">
           {fresh.map((m) => (
-            <li key={m.merchant_key} className="flex items-baseline justify-between gap-3">
-              <MerchantLink
-                name={m.merchant}
-                merchantKey={m.merchant_key}
-                range={range}
-                className="min-w-0 text-sm text-mist-200"
-              />
+            <li key={m.merchant_key} className="flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2">
+                <Monogram name={m.merchant} size="sm" />
+                <MerchantLink
+                  name={m.merchant}
+                  merchantKey={m.merchant_key}
+                  range={range}
+                  className="min-w-0 text-sm text-mist-200"
+                />
+              </span>
               <span className="shrink-0 text-right">
                 <span className="tabular block text-sm text-mist-200">
                   {formatMoney(m.total)}
@@ -496,17 +501,20 @@ function GoneQuiet({ merchants }: { merchants: LapsedMerchant[] }) {
             {shown.map((m) => (
               <li
                 key={m.merchant_key}
-                className="flex items-baseline justify-between gap-3"
+                className="flex items-center justify-between gap-3"
               >
-                {/* No window on this link: these charges are outside the window
-                    being explored, so carrying it through would open an empty
-                    merchant page. */}
-                <Link
-                  to={merchantDetailPath(m.merchant_key)}
-                  className="min-w-0 truncate text-sm text-mist-200 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
-                >
-                  {m.merchant}
-                </Link>
+                <span className="flex min-w-0 items-center gap-2">
+                  <Monogram name={m.merchant} size="sm" />
+                  {/* No window on this link: these charges are outside the window
+                      being explored, so carrying it through would open an empty
+                      merchant page. */}
+                  <Link
+                    to={merchantDetailPath(m.merchant_key)}
+                    className="min-w-0 truncate text-sm text-mist-200 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
+                  >
+                    {m.merchant}
+                  </Link>
+                </span>
                 <span className="shrink-0 text-right">
                   <span className="tabular block text-sm text-mist-200">
                     ~{formatMoney(m.monthly_estimate)}/mo

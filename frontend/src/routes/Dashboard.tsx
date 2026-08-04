@@ -22,6 +22,7 @@ import { DayBars } from '../components/charts/DayBars'
 import { SpendSparkline } from '../components/charts/SpendSparkline'
 import { InsightFeed } from '../components/InsightFeed'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
 import { AnimatedNumber } from '../components/motion'
 import { SkeletonChart, SkeletonRows, Reveal } from '../components/Skeleton'
 import { EmptyState } from '../components/EmptyState'
@@ -491,6 +492,7 @@ function MerchantRow({ merchant: m, index }: { merchant: MerchantSpend; index: n
   // rather than becoming a link that goes nowhere.
   const body = (
     <>
+      <Monogram name={m.merchant} />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{m.merchant}</p>
         <p className="text-xs text-mist-500">
@@ -524,6 +526,7 @@ function RecentRow({ transaction: t }: { transaction: Transaction }) {
   return (
     <li className="flex items-center gap-4 py-3">
       <div className="w-16 shrink-0 text-xs text-mist-500">{formatDate(t.date)}</div>
+      <Monogram name={t.merchant_name ?? t.name} size="sm" />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">
           <MerchantLink

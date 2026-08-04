@@ -11,6 +11,7 @@ import type {
 } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
 import { ProjectionChart } from '../components/charts/ProjectionChart'
 import { SkeletonRows, SkeletonChart, Reveal } from '../components/Skeleton'
 import { EmptyState } from '../components/EmptyState'
@@ -484,19 +485,21 @@ function ObligationRow({
   return (
     <div className="rounded-xl border border-white/5 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-medium">
-            {/* A detected bill IS a merchant, so its label opens that merchant.
-                The stored key is already the resolved one — the detector hands out
-                resolved keys, and a later merge re-promotes the row under the new
-                key while retiring the old. A hand-entered bill has no merchant and
-                stays plain text. */}
-            <MerchantLink
-              name={obligation.label}
-              merchantKey={
-                obligation.source === 'detected' ? obligation.merchant_key : null
-              }
-            />
+        <div className="flex min-w-0 items-start gap-3">
+          <Monogram name={obligation.label} className="mt-0.5" />
+          <div>
+            <p className="font-medium">
+              {/* A detected bill IS a merchant, so its label opens that merchant.
+                  The stored key is already the resolved one — the detector hands out
+                  resolved keys, and a later merge re-promotes the row under the new
+                  key while retiring the old. A hand-entered bill has no merchant and
+                  stays plain text. */}
+              <MerchantLink
+                name={obligation.label}
+                merchantKey={
+                  obligation.source === 'detected' ? obligation.merchant_key : null
+                }
+              />
             {obligation.is_personal && (
               <span className="ml-2 text-xs font-normal text-mist-500">personal</span>
             )}
@@ -515,6 +518,7 @@ function ObligationRow({
             {obligation.source === 'detected' && obligation.user_edited &&
               ' · your edits are kept when charges are re-detected'}
           </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button

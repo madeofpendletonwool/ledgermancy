@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { SpendingHeatmapCategory } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { CategoryIcon } from '../CategoryIcon'
 import { CHART, SINGLE_SERIES } from './tokens'
 
 /**
@@ -121,8 +122,18 @@ function MultiplesPanel({
       className="rounded-xl border border-white/5 p-3"
       style={{ backgroundColor: 'rgba(255,255,255,0.02)' }}
     >
-      <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-medium text-mist-200">{category.name}</span>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <CategoryIcon
+            slug={category.slug}
+            name={category.name}
+            color={category.color}
+            className="size-3.5 shrink-0"
+          />
+          <span className="truncate text-xs font-medium text-mist-200">
+            {category.name}
+          </span>
+        </span>
         <span className="tabular shrink-0 text-[11px] text-mist-500">
           {formatMoney(category.total)}
         </span>

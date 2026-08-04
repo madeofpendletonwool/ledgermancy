@@ -14,6 +14,7 @@ import { CategoryBars } from '../components/charts/CategoryBars'
 import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { Tile } from '../components/Tile'
 import { SkeletonDetail } from '../components/Skeleton'
+import { Monogram } from '../components/Monogram'
 import { categoryDetailPath } from '../lib/categories'
 import { merchantDetailPath } from '../lib/merchants'
 
@@ -102,36 +103,41 @@ export function MerchantDetail() {
   return (
     <Shell>
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <Link
-            className="text-xs text-mist-400 underline underline-offset-2 hover:text-mist-100"
-            to="/merchants"
-          >
-            ← Merchants
-          </Link>
-          <MerchantNameEditor
-            merchant={d.merchant}
-            merchantKey={d.merchant_key}
-            isGrouped={d.is_grouped}
-            descriptors={d.descriptors}
-            from={from}
-            to={to}
-          />
-          <p className="mt-1 text-sm text-mist-300">
-            {d.is_grouped
-              ? `${d.descriptors.length} descriptor${
-                  d.descriptors.length === 1 ? '' : 's'
-                } grouped as one merchant`
-              : 'A single descriptor, not grouped with anything'}
-            {d.first_seen && d.last_seen && (
-              <>
-                {' · first seen '}
-                {formatDate(d.first_seen)}
-                {', last '}
-                {formatDate(d.last_seen)}
-              </>
-            )}
-          </p>
+        <div className="flex min-w-0 items-start gap-4">
+          {/* The resolved name drives the avatar, so a grouped merchant reads
+              as one identity regardless of which descriptor fed a given charge. */}
+          <Monogram name={d.merchant} size="xl" className="mt-6 sm:mt-7" />
+          <div className="min-w-0">
+            <Link
+              className="text-xs text-mist-400 underline underline-offset-2 hover:text-mist-100"
+              to="/merchants"
+            >
+              ← Merchants
+            </Link>
+            <MerchantNameEditor
+              merchant={d.merchant}
+              merchantKey={d.merchant_key}
+              isGrouped={d.is_grouped}
+              descriptors={d.descriptors}
+              from={from}
+              to={to}
+            />
+            <p className="mt-1 text-sm text-mist-300">
+              {d.is_grouped
+                ? `${d.descriptors.length} descriptor${
+                    d.descriptors.length === 1 ? '' : 's'
+                  } grouped as one merchant`
+                : 'A single descriptor, not grouped with anything'}
+              {d.first_seen && d.last_seen && (
+                <>
+                  {' · first seen '}
+                  {formatDate(d.first_seen)}
+                  {', last '}
+                  {formatDate(d.last_seen)}
+                </>
+              )}
+            </p>
+          </div>
         </div>
 
         {/* Filters in one row above the charts. */}

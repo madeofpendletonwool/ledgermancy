@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { SpendingHeatmapCategory } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { CategoryIcon } from '../CategoryIcon'
 import { CHART, SINGLE_SERIES } from './tokens'
 
 /**
@@ -166,7 +167,15 @@ export function SpendingHeatmap({
               transform: 'translateX(-50%)',
             }}
           >
-            <p className="mb-0.5 font-medium text-mist-100">{hoverRow.name}</p>
+            <p className="mb-0.5 flex items-center gap-1.5 font-medium text-mist-100">
+              <CategoryIcon
+                slug={hoverRow.slug}
+                name={hoverRow.name}
+                color={hoverRow.color}
+                className="size-3.5 shrink-0"
+              />
+              {hoverRow.name}
+            </p>
             <p className="text-mist-300">{shortMonth(hoverMonth, true)}</p>
             <p className="tabular mt-1 text-mist-100">
               {Number(hoverValue) > 0 ? formatMoney(hoverValue) : 'No spend'}
