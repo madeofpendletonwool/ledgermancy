@@ -11,7 +11,7 @@ import {
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
@@ -479,7 +479,10 @@ function TransactionRow({
         {formatDate(t.date)}
       </div>
 
-      <Monogram name={t.merchant_name ?? t.name} />
+      <MerchantAvatar
+        name={t.merchant_name ?? t.name}
+        merchantKey={t.merchant_key_resolved}
+      />
 
       {/*
         The merchant column. Two lines:

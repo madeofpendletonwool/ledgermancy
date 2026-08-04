@@ -60,12 +60,13 @@ you do all the math. Ledgermancy is neither.
   competitor structurally cannot offer.
 - **It's private by design.** Optional TOTP two-factor, server-side sessions,
   encrypted-at-rest credentials and documents, rate limiting, a security audit
-  log, and invite-only registration. The app sends no email and phones home to
-  nothing but Plaid and (optionally) your AI provider — plus, only if you switch
-  them on, a daily index-price fetch for the Investments page's benchmark chart
-  (`BENCHMARK_PRICES_ENABLED`), receipt OCR through your AI provider
-  (`DOCUMENTS_OCR_ENABLED`), and an S3 bucket you nominate for document storage.
-  All three are off by default.
+  log, and invite-only registration. The app **sends no email unless you
+  configure SMTP**, and phones home to nothing but Plaid and (optionally) your
+  AI provider — plus, only if you switch them on, a mail server for the emailed
+  digest (`SMTP_HOST`), a daily index-price fetch for the Investments page's
+  benchmark chart (`BENCHMARK_PRICES_ENABLED`), receipt OCR through your AI
+  provider (`DOCUMENTS_OCR_ENABLED`), and an S3 bucket you nominate for document
+  storage. All four are off by default.
 
 ## Features
 

@@ -172,6 +172,15 @@ var tableCoverage = map[string]Coverage{
 	// The rules are the user's; the events are the engine's output.
 	"alerts": InExport,
 
+	// --- Digests ----------------------------------------------------------
+	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
+	// looks like something a job produces. But the job cannot produce it again.
+	// Each entry is a snapshot of figures as they stood in a past period, and
+	// the transactions behind it have since been recategorised, corrected and
+	// added to. Re-running the sweep against today's data would write a
+	// different digest, not the same one — so a lost entry is lost history.
+	"digest_entries": InExport,
+
 	// --- Credentials: dump only, never a plain-JSON file ------------------
 	"plaid_items":         DumpOnly, // access tokens, sealed with ENCRYPTION_KEY
 	"user_recovery_codes": DumpOnly,

@@ -1784,6 +1784,112 @@ export interface Capabilities {
   ai_enabled: boolean
   /** Whether an ntfy server is configured, so Settings can gate push controls. */
   notify_enabled: boolean
+  /**
+   * Whether a mail server is configured. Gates the emailed-digest toggle, so
+   * Settings never offers a switch that could not deliver anything.
+   */
+  smtp_enabled: boolean
+  /**
+   * Whether the OPERATOR opted into the merchant logo fetcher
+   * (`MERCHANT_LOGOS_ENABLED`, plus a Logo.dev token and an AI key). Settings
+   * uses this to explain why a household switch would be doing nothing.
+   */
+  merchant_logos_available: boolean
+  /**
+   * Whether an avatar should try to load a logo at all: the operator switch AND
+   * the household's `merchant.logos` preference, resolved server-side so a
+   * component rendered fifty times a page asks one question rather than two.
+   */
+  merchant_logos_enabled: boolean
+}
+
+/**
+ * A stored digest: what one period's recap SAID, frozen when it was generated.
+ *
+ * `payload` is rendered as given and is never recomputed. That is the point of
+ * the feature — recategorise a transaction inside the period and last week's
+ * digest still reads exactly as it did when you read it. Nothing here should
+ * re-derive a figure from it: every money value is already a finished display
+ * string built server-side, in decimal, by the same formatter the recap uses.
+ */
+export interface DigestEntry {
+  id: string
+  cadence: string
+  period_key: string
+  period_start: string
+  period_end: string
+  label: string
+  payload: DigestPayload
+  /** The AI narrative, or null on an install running without an AI key. */
+  narrative: string | null
+  read_at: string | null
+  created_at: string
+}
+
+export interface DigestPayload {
+  version: number
+  cadence: string
+  label: string
+  period_start: string
+  period_end: string
+  in_progress: boolean
+
+  income: string
+  spending: string
+  leftover: string
+  prior_spending?: string
+  savings_rate?: string
+  gross_pay?: string
+  gross_savings_rate?: string
+  recurring_total?: string
+  transaction_count: number
+
+  top_categories: { name: string; slug: string; total: string }[]
+  above_baseline: {
+    name: string
+    this_month: string
+    typical: string
+    over: string
+  }[]
+  budgets: {
+    name: string
+    slug: string
+    available: string
+    spent: string
+    remaining: string
+    percent_used: number
+    over: boolean
+  }[]
+  largest_transactions: {
+    merchant: string
+    amount: string
+    date: string
+    category: string
+  }[]
+  net_worth?: {
+    current: string
+    as_of: string
+    start?: string
+    change?: string
+    direction?: 'up' | 'down' | 'flat'
+  }
+  insights: {
+    id: string
+    kind: string
+    title: string
+    body: string
+    priority: number
+  }[]
+  upcoming_bills: { label: string; amount: string; due_date: string }[]
+}
+
+/** One page of digest history, with the counts needed to page and to badge. */
+export interface DigestList {
+  entries: DigestEntry[]
+  total: number
+  unread: number
+  limit: number
+  offset: number
 }
 
 /**
@@ -3076,8 +3182,21 @@ export const api = {
     request<{ status: string }>('POST', '/api/notifications/test'),
 
   // Queues a one-off digest for the caller now, bypassing cadence/dedupe. Async
-  // — resolves once queued; the push itself arrives shortly after.
+  // — resolves once queued; the entry (and any push) appears shortly after.
+  // Works with no notification channel configured: the in-app entry is always
+  // somewhere for it to go.
   sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
+
+  // --- Digest history -----------------------------------------------------
+  // Scoped to the signed-in user server-side, not to the household: two members
+  // legitimately see different figures for the same period.
+  digests: (params: { limit?: number; offset?: number } = {}) =>
+    request<DigestList>('GET', withQuery('/api/digests/', params)),
+
+  digest: (id: string) => request<DigestEntry>('GET', `/api/digests/${id}`),
+
+  markDigestRead: (id: string) =>
+    request<void>('POST', `/api/digests/${id}/read`),
 
   // --- Continuity (owner-only operator surface) ---------------------------
   continuity: () => request<Continuity>('GET', '/api/admin/continuity'),
@@ -3093,6 +3212,20 @@ export const api = {
 
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
+
+  /**
+   * The `<img src>` for a merchant's cached logo (MAD-38).
+   *
+   * A URL rather than a fetch: this is the one endpoint the browser is meant to
+   * load as an image, and it is same-origin, so the session cookie rides along
+   * without any of the plumbing `request` exists for. 404 is the normal answer
+   * for a merchant with no logo — MerchantAvatar's `onError` handles it.
+   *
+   * It never points at a logo host. The bytes were fetched server-side; that is
+   * the whole privacy argument for the feature.
+   */
+  merchantLogoUrl: (merchantKey: string) =>
+    withQuery('/api/merchants/logo', { key: merchantKey }),
 
   // The proactive feed. state 'all' includes dismissed insights; the default
   // 'unread' hides them.

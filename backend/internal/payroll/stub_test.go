@@ -29,14 +29,17 @@ func nullMoney(s string) decimal.NullDecimal {
 //	  401(k) pre-tax              -300.00   pre-tax, federal only
 //	  Health premium              -100.00   pre-tax, federal AND FICA
 //	  401(k) employer match       +150.00   EMPLOYER money, not a deduction
-//	Net                         2,028.15
+//	Net                         1,928.15
+//
+// Employee deductions total 1,071.85, so net is 3,000.00 − 1,071.85. The match
+// is added on top of gross and is deliberately absent from that subtraction.
 //
 // Federal taxable wages = 3,000 − 300 − 100 = 2,600
 // FICA wages            = 3,000 − 100       = 2,900   <- the 401(k) does NOT come out
 func typicalStub() Stub {
 	return Stub{
 		Gross: money("3000.00"),
-		Net:   money("2028.15"),
+		Net:   money("1928.15"),
 		Lines: []Line{
 			{Category: CatFederalIncomeTax, Label: "Federal Income Tax", Amount: money("330.00")},
 			{Category: CatStateIncomeTax, Label: "State Income Tax", Amount: money("120.00")},
@@ -69,13 +72,13 @@ func TestBalanceToleranceIsOneCent(t *testing.T) {
 
 	// A cent out: payroll systems round each deduction independently, and
 	// refusing this would mean refusing real paystubs.
-	s.Net = money("2028.16")
+	s.Net = money("1928.16")
 	if !s.Balances() {
 		t.Errorf("a one-cent rounding difference should still balance, residual = %s", s.Residual())
 	}
 
 	// A dollar out is a missed line, not rounding.
-	s.Net = money("2029.15")
+	s.Net = money("1929.15")
 	if s.Balances() {
 		t.Error("a dollar discrepancy must not balance")
 	}

@@ -28,6 +28,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/spending', label: 'Spending' },
       { to: '/insights', label: 'Insights' },
+      { to: '/digest', label: 'Digest' },
       { to: '/report', label: 'Report' },
     ],
   },

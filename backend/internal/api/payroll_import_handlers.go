@@ -211,14 +211,7 @@ func (s *Server) respondWithProposal(w http.ResponseWriter, data []byte, documen
 		out.Warnings = []string{}
 	}
 
-	stub := payroll.Stub{Lines: proposal.Lines}
-	if proposal.Gross.Valid {
-		stub.Gross = proposal.Gross.Decimal
-	}
-	if proposal.Net.Valid {
-		stub.Net = proposal.Net.Decimal
-	}
-	out.Residual = stub.Residual().StringFixed(2)
+	out.Residual = proposal.Stub().Residual().StringFixed(2)
 
 	for _, l := range proposal.Lines {
 		spec := payroll.SpecFor(l.Category)

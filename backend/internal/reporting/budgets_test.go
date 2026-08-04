@@ -1,12 +1,15 @@
-package api
+package reporting
 
 import (
 	"testing"
 	"time"
 )
 
-// monthsInclusive underpins the envelope carryover, so pin its edges: same month
+// MonthsInclusive underpins the envelope carryover, so pin its edges: same month
 // is 1, and it counts across year boundaries.
+//
+// Moved here from internal/api when the envelope math was lifted into reporting
+// so the Budgets page and the stored digest could share one implementation.
 func TestMonthsInclusive(t *testing.T) {
 	m := func(y int, mo time.Month) time.Time {
 		return time.Date(y, mo, 1, 0, 0, 0, 0, time.UTC)
@@ -21,8 +24,8 @@ func TestMonthsInclusive(t *testing.T) {
 		{m(2026, time.July), m(2026, time.May), -1},         // target before start
 	}
 	for _, c := range cases {
-		if got := monthsInclusive(c.start, c.target); got != c.want {
-			t.Errorf("monthsInclusive(%s, %s) = %d, want %d",
+		if got := MonthsInclusive(c.start, c.target); got != c.want {
+			t.Errorf("MonthsInclusive(%s, %s) = %d, want %d",
 				c.start.Format("2006-01"), c.target.Format("2006-01"), got, c.want)
 		}
 	}

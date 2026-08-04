@@ -16,6 +16,8 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/logos"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/mailer"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
@@ -97,6 +99,12 @@ const summaryRefreshInterval = 24 * time.Hour
 // produce an identical review queue.
 const merchantSuggestInterval = 24 * time.Hour
 
+// merchantLogoInterval is how often every household is swept for merchants with
+// no cached logo. Daily, riding the same reasoning as the merge suggestion
+// sweep: the descriptor space barely moves, and a merchant is resolved and
+// fetched exactly once ever, so a tighter cadence would re-read an empty list.
+const merchantLogoInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -120,10 +128,15 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // frontend origin used to build notification deep links.
 // backup carries the continuity dependencies, which the worker builds because
 // they need a cipher and a document store the api has already constructed.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
+// mail is likewise always passed and may be unconfigured; the digest worker
+// checks Enabled() and the per-user opt-in before ever addressing a message.
+// merchantLogos is the opt-in logo fetcher's configuration; its Ready() already
+// folds in the AI dependency, so nothing here re-derives it.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
+	logosEnabled := merchantLogos.Enabled && merchantLogos.Token != "" && aiEnabled
 
 	// The net-worth snapshot does not depend on Plaid, so it is registered
 	// whether or not credentials are configured — manual assets alone are
@@ -190,6 +203,20 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Queries: queries, AI: aiClient,
 	}); err != nil {
 		return nil, fmt.Errorf("register merchant suggestion worker: %w", err)
+	}
+
+	// Merchant logos, unlike the suggestion pass above, are entirely opt-in:
+	// they add a host that is neither Plaid nor the AI provider. Not registered
+	// at all when off, for the same reason as the benchmark worker — an
+	// enqueued job must not be able to make that request by accident.
+	if logosEnabled {
+		if err := river.AddWorkerSafely(workers, &FetchMerchantLogosWorker{
+			Queries: queries,
+			AI:      aiClient,
+			Fetcher: logos.NewFetcher(merchantLogos.Token, merchantLogos.Size, merchantLogos.MaxBytes),
+		}); err != nil {
+			return nil, fmt.Errorf("register merchant logo worker: %w", err)
+		}
 	}
 
 	config := &river.Config{
@@ -307,6 +334,22 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		))
 	}
 
+	// RunOnStart, unlike the benchmark fetch above, and the difference is worth
+	// stating: a restart loop cannot turn into a burst of third-party requests
+	// here, because every merchant the pass has already considered carries a
+	// cached row — including the ones with no logo. A second run makes zero
+	// outbound requests. What RunOnStart buys is that switching the feature on
+	// shows logos after a deploy rather than after a day.
+	if logosEnabled {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(merchantLogoInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return FetchMerchantLogosAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
 	if syncer != nil {
 		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
 			river.PeriodicInterval(syncInterval),
@@ -408,13 +451,22 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register merchant suggestion sweep worker: %w", err)
 	}
 
+	// The logo sweep fans out per household, so it needs the client too.
+	if logosEnabled {
+		if err := river.AddWorkerSafely(workers, &FetchMerchantLogosAllWorker{
+			Queries: queries, Client: client,
+		}); err != nil {
+			return nil, fmt.Errorf("register merchant logo sweep worker: %w", err)
+		}
+	}
+
 	// Digest sweep + per-user worker. Both enqueue other jobs (the sweep enqueues
 	// DigestArgs; the worker enqueues NotifyArgs), so they need the client and are
 	// registered after construction. Registered unconditionally — the deterministic
 	// parts (top insights) send without AI, and the summary call self-gates on
 	// Enabled() inside the worker.
 	if err := river.AddWorkerSafely(workers, &DigestWorker{
-		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+		Queries: queries, AI: aiClient, Client: client, Mail: mail, AppURL: appURL,
 	}); err != nil {
 		return nil, fmt.Errorf("register digest worker: %w", err)
 	}

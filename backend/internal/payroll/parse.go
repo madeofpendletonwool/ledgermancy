@@ -58,7 +58,25 @@ func (p Proposal) Balanced() bool {
 	if !p.Gross.Valid || !p.Net.Valid {
 		return false
 	}
-	return Stub{Gross: p.Gross.Decimal, Net: p.Net.Decimal, Lines: p.Lines}.Balances()
+	return p.Stub().Balances()
+}
+
+// Stub is the proposal as the arithmetic sees it, with an unread gross or net
+// treated as zero.
+//
+// Shared so the review screen's "X is unaccounted for" and this file's own
+// balance warning are the same computation. An unread figure being zero is only
+// safe because Balanced() refuses a proposal missing either one — Residual() on
+// its own would otherwise report the whole of gross as a shortfall.
+func (p Proposal) Stub() Stub {
+	s := Stub{Lines: p.Lines}
+	if p.Gross.Valid {
+		s.Gross = p.Gross.Decimal
+	}
+	if p.Net.Valid {
+		s.Net = p.Net.Decimal
+	}
+	return s
 }
 
 // amountPattern matches a money figure as a payroll provider prints it: an
@@ -242,7 +260,43 @@ func looksLikeDeductionRow(lower string) bool {
 			letters++
 		}
 	}
-	return letters >= 4
+	if letters < 4 {
+		return false
+	}
+	for _, n := range nonDeductionNeedles {
+		if strings.Contains(lower, n) {
+			return false
+		}
+	}
+	return true
+}
+
+// nonDeductionNeedles are rows that carry money but are not deductions, and so
+// must not reach the "we could not classify this" list.
+//
+// Only rows that matched no rule in lineRules get this far, so nothing here can
+// steal a real deduction — "401(k) Employer Match" contains "employer" but was
+// claimed by lineRules several steps earlier.
+//
+// A letter count alone is not enough: "Hours 80.00 Rate 37.50" is nine letters
+// of pure payroll furniture, and a review list padded with earnings detail is
+// one nobody reads, which defeats the point of surfacing the genuinely
+// unrecognised line sitting in it.
+//
+// "total" is the sharpest entry and the reason this is worth doing carefully. A
+// "Total Deductions 1,071.85" row offered as an unclassified line invites the
+// user to add it — which double-counts every deduction on the stub and produces
+// a paystub that fails to balance by the whole deduction total.
+var nonDeductionNeedles = []string{
+	// The earnings side. These make gross up; they are not taken out of it.
+	"hours", "hrs", "rate", "regular", "overtime", "salary", "earnings",
+	"bonus", "commission", "holiday", "vacation", "pto", "sick", "shift",
+	"retro", "reimburse", "units",
+
+	// Summary and administrative furniture.
+	"total", "gross", "net pay", "ytd", "year to date", "balance", "accrued",
+	"employee", "check no", "check #", "advice", "period", "deposit",
+	"taxable", "memo", "statement",
 }
 
 // findAmounts returns the money figures on one line, in printed order.

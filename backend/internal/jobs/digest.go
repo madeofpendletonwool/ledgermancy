@@ -16,6 +16,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/mailer"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
@@ -83,7 +84,7 @@ type DigestSweepArgs struct{}
 
 func (DigestSweepArgs) Kind() string { return "digest_sweep" }
 
-// DigestSweepWorker lists digest-enabled users and fans out due ones.
+// DigestSweepWorker lists candidate users and fans out due ones.
 type DigestSweepWorker struct {
 	river.WorkerDefaults[DigestSweepArgs]
 	Queries *dbgen.Queries
@@ -92,27 +93,36 @@ type DigestSweepWorker struct {
 
 func (w *DigestSweepWorker) Work(ctx context.Context, job *river.Job[DigestSweepArgs]) error {
 	now := time.Now()
-	users, err := w.Queries.ListDigestEnabledUsers(ctx)
+	// Every adult, not only those who opted into a push. Doc 25's central change:
+	// the in-app digest defaults on and needs no notification channel, so a sweep
+	// gated on the push preference would keep the whole feature dark for anyone
+	// who has never configured ntfy — which is most people.
+	users, err := w.Queries.ListDigestCandidateUsers(ctx)
 	if err != nil {
-		return fmt.Errorf("list digest-enabled users: %w", err)
+		return fmt.Errorf("list digest candidate users: %w", err)
 	}
 
 	enqueued := 0
 	for _, u := range users {
+		if !u.InAppEnabled && !u.PushEnabled && !u.EmailEnabled {
+			continue
+		}
 		due, periodKey := digestDue(u.Cadence, now)
 		if !due {
 			continue
 		}
 		// Cheap pre-check so a busy Monday doesn't enqueue 24 identical jobs; the
-		// worker re-checks authoritatively to close the race.
-		exists, err := w.Queries.DigestDeliveryExists(ctx, dbgen.DigestDeliveryExistsParams{
+		// worker re-checks authoritatively to close the race. "Satisfied" spans
+		// both surfaces — a stored entry counts as much as a recorded push, so a
+		// user with push off is not swept again all day.
+		satisfied, err := w.Queries.DigestPeriodSatisfied(ctx, dbgen.DigestPeriodSatisfiedParams{
 			UserID: u.UserID, PeriodKey: periodKey,
 		})
 		if err != nil {
 			slog.Error("digest dedupe check", "error", err, "user_id", u.UserID)
 			continue
 		}
-		if exists {
+		if satisfied {
 			continue
 		}
 		if _, err := w.Client.Insert(ctx, DigestArgs{
@@ -156,16 +166,24 @@ func (DigestArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// DigestWorker builds one user's digest — the (cache-first) monthly narrative
-// plus the top unread insights — and hands it to the delivery job. It recomputes
-// the dedupe guard, re-checks opt-in, and skips a user with no notification
-// channel (a channel-less Send is a no-op, and skipping avoids burning the
-// period's dedupe slot before they configure one).
+// DigestWorker builds one user's digest — the computed figures, the
+// (cache-first) monthly narrative, and the top unread insights — then persists
+// it and delivers it to whichever surfaces the user has switched on.
+//
+// The ordering inside Work is load-bearing. The entry is written BEFORE any
+// delivery is attempted, because a push that fails must not take the content
+// with it: before doc 25 a delivery failure lost the digest entirely, since the
+// narrative existed only inside the notification body.
+//
+// Mail is optional and nil-safe. A send failure is logged, never returned —
+// matching how insight-push failures are handled in jobs.go: an unreachable mail
+// server must not put the job into a retry loop that regenerates the digest.
 type DigestWorker struct {
 	river.WorkerDefaults[DigestArgs]
 	Queries *dbgen.Queries
 	AI      *ai.Client
 	Client  *river.Client[pgx.Tx]
+	Mail    mailer.Sender
 	AppURL  string
 }
 
@@ -175,15 +193,28 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 	force := job.Args.Force
 	now := time.Now()
 
-	// Re-check opt-in — a user may have turned it off between sweep and run. A
-	// forced ("send now") digest skips this: the user just asked for one.
-	if !force && !boolPref(ctx, w.Queries, userID, "digest.enabled") {
-		return nil
-	}
-	// No channel → nothing to deliver to. Applies even to a forced send; skip
-	// without recording, so the digest resumes once they configure one.
+	// Which surfaces this user wants. Re-read here rather than carried on the
+	// job args, because a user may have changed them between sweep and run.
+	//
+	//   in-app — defaults ON. The digest exists as a page whether or not any
+	//            notification channel is configured; that is the feature.
+	//   push   — defaults OFF (pre-existing key), and additionally needs a
+	//            channel to have anywhere to go.
+	//   email  — defaults OFF, and inert unless the operator configured SMTP.
+	//
+	// A forced ("send one now") digest overrides the in-app switch only: the
+	// user is standing in front of the button asking to see one.
+	inApp := force || boolPrefDefault(ctx, w.Queries, userID, "digest.in_app", true)
+	wantPush := force || boolPref(ctx, w.Queries, userID, "digest.enabled")
 	channel := stringPref(ctx, w.Queries, userID, "notify.channel")
-	if channel == "" || channel == "none" {
+	canPush := wantPush && channel != "" && channel != "none"
+	wantEmail := boolPref(ctx, w.Queries, userID, "digest.email") &&
+		w.Mail != nil && w.Mail.Enabled()
+
+	if !inApp && !canPush && !wantEmail {
+		// Nothing switched on, or push is the only thing on and there is no
+		// channel for it. Nothing is recorded, so the digest resumes the moment
+		// they configure one.
 		return nil
 	}
 
@@ -193,10 +224,13 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 	}
 	_, periodKey := digestDue(cadence, now)
 
-	// The per-period dedupe guards the scheduled path only. A forced send is a
-	// deliberate manual action: it neither honours nor records the dedupe, so it
-	// always goes out and never burns the real digest's slot for the period.
-	if !force {
+	// The per-period dedupe guards the PUSH on the scheduled path only. A forced
+	// send is a deliberate manual action: it neither honours nor records the
+	// dedupe, so it always goes out and never burns the real digest's slot.
+	//
+	// The in-app entry has its own guard — the unique constraint on
+	// (user_id, period_key) — so it is not consulted here.
+	if canPush && !force {
 		exists, err := w.Queries.DigestDeliveryExists(ctx, dbgen.DigestDeliveryExistsParams{
 			UserID: userID, PeriodKey: periodKey,
 		})
@@ -204,7 +238,7 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 			return fmt.Errorf("digest dedupe check: %w", err)
 		}
 		if exists {
-			return nil
+			canPush = false
 		}
 	}
 
@@ -250,12 +284,21 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 		return fmt.Errorf("list digest insights: %w", err)
 	}
 
-	// Nothing to say this period: no narrative and no insights. On the scheduled
-	// path, skip without recording so a digest still goes out if insights appear
-	// later. On a forced test, send a short confirmation instead — the point is
-	// to prove the channel and digest pipeline work, not to withhold on a quiet
-	// period.
-	if strings.TrimSpace(narrative) == "" && len(insights) == 0 {
+	// The computed figures. Deterministic SQL and decimal throughout — the model
+	// never sees a number it could restate, and this is what gets frozen into the
+	// stored entry.
+	payload, err := reporting.BuildDigestPayload(
+		ctx, w.Queries, householdID, userID, cadence, from, to, label, now, insights)
+	if err != nil {
+		return fmt.Errorf("build digest payload: %w", err)
+	}
+
+	// Nothing to say this period: no figures, no insights, no narrative. On the
+	// scheduled path, skip without recording anything so a digest still goes out
+	// if activity appears later. On a forced test, produce a short confirmation
+	// instead — the point is to prove the pipeline works, not to withhold on a
+	// quiet period.
+	if !payload.HasContent() && strings.TrimSpace(narrative) == "" {
 		if !force {
 			return nil
 		}
@@ -263,30 +306,102 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 			" yet — but your digest is set up, and this is what one looks like."
 	}
 
-	n := buildDigestNotification(label, narrative, insights, w.AppURL)
-	if _, err := w.Client.Insert(ctx, NotifyArgs{
-		UserID:   userID,
-		Title:    n.Title,
-		Body:     n.Body,
-		Priority: n.Priority,
-		Tags:     n.Tags,
-		ClickURL: n.ClickURL,
-	}, nil); err != nil {
-		return fmt.Errorf("enqueue digest delivery: %w", err)
+	// ----------------------------------------------------------------------
+	// Persist first, deliver second.
+	//
+	// This ordering is the fix at the heart of doc 25: a failed push used to
+	// take the whole digest with it, because the generated narrative existed
+	// nowhere but in the notification body.
+	// ----------------------------------------------------------------------
+	stored := false
+	if inApp {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode digest payload: %w", err)
+		}
+		var storedNarrative *string
+		if s := strings.TrimSpace(narrative); s != "" {
+			storedNarrative = &s
+		}
+		rows, err := w.Queries.InsertDigestEntry(ctx, dbgen.InsertDigestEntryParams{
+			HouseholdID: householdID,
+			UserID:      userID,
+			Cadence:     cadence,
+			PeriodKey:   periodKey,
+			PeriodStart: from,
+			PeriodEnd:   to,
+			Label:       label,
+			Payload:     encoded,
+			Narrative:   storedNarrative,
+		})
+		if err != nil {
+			return fmt.Errorf("store digest entry: %w", err)
+		}
+		// 0 rows means this period was already stored. Entries are write-once, so
+		// that is the correct outcome and not an error: what the user read for
+		// this period must not change under them.
+		stored = rows > 0
 	}
 
-	// Record after enqueue: a crash between the two at worst re-sends next sweep,
-	// which is far better than silently dropping a digest. A forced send records
-	// nothing, so it never blocks the period's real, scheduled digest.
-	if !force {
-		if err := w.Queries.RecordDigestDelivery(ctx, dbgen.RecordDigestDeliveryParams{
-			UserID: userID, PeriodKey: periodKey,
-		}); err != nil {
-			return fmt.Errorf("record digest delivery: %w", err)
+	if canPush {
+		n := buildDigestNotification(label, narrative, insights, w.AppURL)
+		if _, err := w.Client.Insert(ctx, NotifyArgs{
+			UserID:   userID,
+			Title:    n.Title,
+			Body:     n.Body,
+			Priority: n.Priority,
+			Tags:     n.Tags,
+			ClickURL: n.ClickURL,
+		}, nil); err != nil {
+			return fmt.Errorf("enqueue digest delivery: %w", err)
+		}
+
+		// Record after enqueue: a crash between the two at worst re-sends next
+		// sweep, which is far better than silently dropping a digest. A forced
+		// send records nothing, so it never blocks the period's real digest.
+		if !force {
+			if err := w.Queries.RecordDigestDelivery(ctx, dbgen.RecordDigestDeliveryParams{
+				UserID: userID, PeriodKey: periodKey,
+			}); err != nil {
+				return fmt.Errorf("record digest delivery: %w", err)
+			}
 		}
 	}
-	slog.Info("digest delivered", "user_id", userID, "period", periodKey, "insights", len(insights), "forced", force)
+
+	if wantEmail {
+		w.sendEmail(ctx, userID, label, narrative, payload)
+	}
+
+	slog.Info("digest produced",
+		"user_id", userID, "period", periodKey, "insights", len(insights),
+		"stored", stored, "pushed", canPush, "emailed", wantEmail, "forced", force)
 	return nil
+}
+
+// sendEmail delivers the digest by mail. Failures are logged and swallowed:
+// the entry is already stored and any push already enqueued, so returning an
+// error here would re-run the whole job — and a job that retries a digest
+// because a mail server is down is worse than a missing email.
+func (w *DigestWorker) sendEmail(
+	ctx context.Context,
+	userID uuid.UUID,
+	label, narrative string,
+	payload reporting.DigestPayload,
+) {
+	// The account email, which is the only address the app knows about — there is
+	// deliberately no separate "notification address" to keep in sync.
+	user, err := w.Queries.GetUserByID(ctx, userID)
+	if err != nil {
+		slog.Warn("digest email: read address", "error", err, "user_id", userID)
+		return
+	}
+	if err := w.Mail.Send(ctx, mailer.Message{
+		To:      user.Email,
+		Subject: "Your " + label + " recap",
+		Body:    renderDigestEmail(narrative, payload, w.AppURL),
+	}); err != nil {
+		slog.Warn("digest email delivery failed", "error", err, "user_id", userID)
+	}
 }
 
 // buildDigestNotification composes the push: the narrative (when present) then a
@@ -309,7 +424,7 @@ func buildDigestNotification(label, narrative string, insights []dbgen.Insight, 
 
 	click := ""
 	if appURL != "" {
-		click = strings.TrimRight(appURL, "/") + "/insights"
+		click = strings.TrimRight(appURL, "/") + "/digest"
 	}
 	return notify.Notification{
 		Title:    "Your " + label + " recap",
@@ -320,17 +435,119 @@ func buildDigestNotification(label, narrative string, insights []dbgen.Insight, 
 	}
 }
 
+// renderDigestEmail lays the digest out as plain text.
+//
+// Plain text rather than HTML, deliberately: the figures are already finished
+// strings, an email client cannot re-render them, and there is nothing here that
+// a table would explain better than a line would. It also means this function
+// can never grow a tracking pixel or a remote image.
+//
+// Every amount is quoted verbatim from the payload. Nothing here computes.
+func renderDigestEmail(narrative string, p reporting.DigestPayload, appURL string) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Your %s recap\n", p.Label)
+	fmt.Fprintf(&b, "%s to %s\n\n", p.PeriodStart, p.PeriodEnd)
+
+	if s := strings.TrimSpace(narrative); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+
+	fmt.Fprintf(&b, "In: %s\nOut: %s\nLeft over: %s\n", p.Income, p.Spending, p.Leftover)
+	if p.SavingsRate != "" {
+		fmt.Fprintf(&b, "Savings rate: %s\n", p.SavingsRate)
+	}
+	if p.GrossSavingsRate != "" {
+		fmt.Fprintf(&b, "Savings rate on gross pay: %s\n", p.GrossSavingsRate)
+	}
+
+	if len(p.TopCategories) > 0 {
+		b.WriteString("\nWhere it went\n")
+		for _, c := range p.TopCategories {
+			fmt.Fprintf(&b, "  %s — %s\n", c.Name, c.Total)
+		}
+	}
+
+	if len(p.AboveBaseline) > 0 {
+		b.WriteString("\nRunning above usual\n")
+		for _, d := range p.AboveBaseline {
+			fmt.Fprintf(&b, "  %s — %s, usually %s (%s over)\n", d.Name, d.ThisMonth, d.Typical, d.Over)
+		}
+	}
+
+	if len(p.Budgets) > 0 {
+		b.WriteString("\nBudgets\n")
+		for _, bl := range p.Budgets {
+			state := "left"
+			if bl.Over {
+				state = "over"
+			}
+			fmt.Fprintf(&b, "  %s — %s of %s spent, %s %s\n",
+				bl.Name, bl.Spent, bl.Available, strings.TrimPrefix(bl.Remaining, "-"), state)
+		}
+	}
+
+	if len(p.LargestTransactions) > 0 {
+		b.WriteString("\nBiggest purchases\n")
+		for _, t := range p.LargestTransactions {
+			fmt.Fprintf(&b, "  %s — %s on %s\n", t.Merchant, t.Amount, t.Date)
+		}
+	}
+
+	if p.NetWorth != nil {
+		fmt.Fprintf(&b, "\nNet worth: %s", p.NetWorth.Current)
+		if p.NetWorth.Direction != "" {
+			fmt.Fprintf(&b, " (%s %s this period)", p.NetWorth.Direction,
+				strings.TrimPrefix(p.NetWorth.Change, "-"))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(p.UpcomingBills) > 0 {
+		b.WriteString("\nComing up\n")
+		for _, bill := range p.UpcomingBills {
+			fmt.Fprintf(&b, "  %s — %s due %s\n", bill.Label, bill.Amount, bill.DueDate)
+		}
+	}
+
+	if len(p.Insights) > 0 {
+		b.WriteString("\nWorth a look\n")
+		for _, i := range p.Insights {
+			fmt.Fprintf(&b, "  %s\n", i.Title)
+		}
+	}
+
+	if appURL != "" {
+		fmt.Fprintf(&b, "\nRead it in the app: %s/digest\n", strings.TrimRight(appURL, "/"))
+	}
+	return b.String()
+}
+
 // boolPref reads a JSON-bool user preference, returning false when unset or
 // malformed — an opt-in check should degrade to "off", never error.
 func boolPref(ctx context.Context, q *dbgen.Queries, userID uuid.UUID, key string) bool {
+	return boolPrefDefault(ctx, q, userID, key, false)
+}
+
+// boolPrefDefault is boolPref with a caller-chosen value for "never set".
+//
+// The default matters here in a way it did not before: `digest.in_app` defaults
+// TRUE, because the whole point of doc 25 is that the in-app digest exists
+// without anybody configuring anything. A malformed stored value still falls
+// back to the default rather than erroring — a preference read must never be
+// able to sink a job.
+func boolPrefDefault(ctx context.Context, q *dbgen.Queries, userID uuid.UUID, key string, fallback bool) bool {
 	raw, err := q.GetUserPreference(ctx, dbgen.GetUserPreferenceParams{UserID: &userID, Key: key})
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("read preference", "error", err, "key", key, "user_id", userID)
 		}
-		return false
+		return fallback
 	}
 	var b bool
-	_ = json.Unmarshal(raw, &b)
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return fallback
+	}
 	return b
 }

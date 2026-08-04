@@ -89,6 +89,7 @@ nav:
       - Dashboard: features/dashboard.md
       - Spending: features/spending.md
       - Insights: features/insights.md
+      - Digest: features/digest.md
       - Financial Summary: features/report.md
       - Budgets: features/budgets.md
       - Goals: features/goals.md

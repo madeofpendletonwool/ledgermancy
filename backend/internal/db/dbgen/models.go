@@ -187,6 +187,21 @@ type DigestDelivery struct {
 	SentAt    stdtime.Time `json:"sent_at"`
 }
 
+type DigestEntry struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Cadence     string        `json:"cadence"`
+	PeriodKey   string        `json:"period_key"`
+	PeriodStart stdtime.Time  `json:"period_start"`
+	PeriodEnd   stdtime.Time  `json:"period_end"`
+	Label       string        `json:"label"`
+	Payload     []byte        `json:"payload"`
+	Narrative   *string       `json:"narrative"`
+	ReadAt      *stdtime.Time `json:"read_at"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+}
+
 type Document struct {
 	ID                  uuid.UUID           `json:"id"`
 	HouseholdID         uuid.UUID           `json:"household_id"`
@@ -413,6 +428,17 @@ type MerchantEntity struct {
 	Color             *string      `json:"color"`
 	CreatedAt         stdtime.Time `json:"created_at"`
 	UpdatedAt         stdtime.Time `json:"updated_at"`
+}
+
+type MerchantLogo struct {
+	HouseholdID  uuid.UUID    `json:"household_id"`
+	MerchantKey  string       `json:"merchant_key"`
+	MerchantName string       `json:"merchant_name"`
+	Domain       *string      `json:"domain"`
+	ContentType  *string      `json:"content_type"`
+	Image        []byte       `json:"image"`
+	State        string       `json:"state"`
+	CheckedAt    stdtime.Time `json:"checked_at"`
 }
 
 type MerchantMergeRejection struct {

@@ -21,6 +21,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/documents"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/mailer"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
@@ -84,12 +85,30 @@ func run() error {
 	// there is nothing to branch on here.
 	notifier := notify.New(cfg.NTFY, dbgen.New(pool))
 
+	// The emailed digest, constructed the same way and for the same reason: with
+	// no SMTP_HOST it reports Enabled() == false and every send is a no-op, so
+	// the app keeps its "sends no email" posture without a branch here.
+	mail := mailer.New(cfg.SMTP)
+	if mail.Enabled() {
+		slog.Info("smtp configured; the emailed digest is available to members who opt in",
+			"host", cfg.SMTP.Host, "security", cfg.SMTP.Security)
+	}
+
 	backupDeps, err := buildBackupDeps(cfg, pool, cipher)
 	if err != nil {
 		return err
 	}
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, cfg.FrontendOrigin, cfg.Benchmarks, backupDeps)
+	// The one outbound host this app contacts that is neither Plaid nor the AI
+	// provider, other than the benchmark fetch. Logged on the way up so an
+	// operator can see it in the boot output rather than only in .env.
+	if cfg.MerchantLogos.Ready(cfg.AI) {
+		slog.Info("merchant logos enabled; merchant names are resolved to domains "+
+			"via the AI provider and logos fetched from img.logo.dev",
+			"size", cfg.MerchantLogos.Size)
+	}
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, mail, cfg.FrontendOrigin, cfg.Benchmarks, cfg.MerchantLogos, backupDeps)
 	if err != nil {
 		return err
 	}

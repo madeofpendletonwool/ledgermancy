@@ -84,6 +84,36 @@ their private topic in the UI (**Settings → Notifications**).
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Self-host ntfy → point at your instance. Otherwise defaults to the public ntfy.sh. |
 | `NTFY_TOKEN` | _(empty)_ | Optional Bearer token for a protected / self-hosted ntfy server |
 
+## Email (SMTP)
+
+Off by default, and this switch carries more weight than the others on this page:
+**until you set `SMTP_HOST`, Ledgermancy sends no email at all.** Configuring a
+mail server is how you withdraw that guarantee for your own deployment.
+
+The only thing ever mailed is the [digest](features/digest.md), and only to
+members who tick **Email it to me** in **Settings → Digest**. An operator with
+SMTP configured and nobody opted in still sends nothing.
+
+Setting `SMTP_HOST` without `SMTP_FROM` **fails at startup**, rather than
+discovering at 6am on a Monday that every message was rejected.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SMTP_HOST` | _(empty)_ | Mail server hostname. Empty = no email, ever. |
+| `SMTP_PORT` | `587` | `587` for STARTTLS, `465` for implicit TLS, `25` for a local relay |
+| `SMTP_FROM` | _(empty)_ | Envelope sender and `From:` header. **Required** when `SMTP_HOST` is set. |
+| `SMTP_USERNAME` | _(empty)_ | Leave blank for a relay that needs no authentication |
+| `SMTP_PASSWORD` | _(empty)_ | |
+| `SMTP_SECURITY` | `starttls` | `starttls`, `tls` (implicit, usually port 465), or `none` |
+
+!!! note "There is no certificate-verification bypass"
+    Both encrypted modes verify the server's certificate against `SMTP_HOST`. A
+    switch that turns an encrypted channel into an unauthenticated one is a
+    footgun; an operator with no usable certificate can say so honestly with
+    `SMTP_SECURITY=none` instead. Note that Go refuses to send a password over an
+    unencrypted connection to anything but localhost — that is correct, and is
+    not worked around.
+
 ## Benchmark prices (Investments page)
 
 Off by default. This is the **only** outbound request Ledgermancy makes to a host

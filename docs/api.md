@@ -62,6 +62,26 @@ by-day, trend, averages, merchants, recurring, net-worth + history + projection,
 holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
 preferences/capabilities).
 
+### Digests
+
+The stored digest history. Unlike every other read on this page these are scoped
+to the requesting **user**, not the household: a digest entry records one
+member's view of the money, computed under their own visibility, so another
+member reading it would be handed figures from institutions deliberately not
+shared with them.
+
+`payload` is returned as the exact JSON that was frozen when the digest was
+generated. It is never recomputed, so a digest that disagrees with today's
+reporting endpoints is correct rather than stale — see
+[Digest](features/digest.md).
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/digests/` | ✓ | `limit` (≤50, default 12), `offset`. Returns the page plus `total` and `unread` |
+| GET | `/api/digests/{id}` | ✓ | One entry. 404 for an id belonging to anyone else |
+| POST | `/api/digests/{id}/read` | ✓ | Stamps `read_at`, once. 204 either way |
+| POST | `/api/digest/test` | ✓ | Queues a digest for the current period now, ignoring cadence and dedupe. Needs no notification channel |
+
 ### Investments
 
 | Method | Path | Auth | Notes |

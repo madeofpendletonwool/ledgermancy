@@ -83,15 +83,37 @@ func ExtractPDFText(data []byte) ([]string, error) {
 		return nil, ErrNotPDF
 	}
 
-	var fragments []textFragment
+	// Grouped PER STREAM, then concatenated in stream order — never pooled into
+	// one coordinate space.
+	//
+	// A text matrix is page-local, so page 2's "Medical PPO" and page 1's "Gross
+	// Pay" both sit at y=700 and pooling them merges two unrelated rows into
+	// "Gross PayMedical PPO 3,000.00100.00". The label pattern then matches the
+	// wrong figure and the importer proposes a gross of 100.00 off a 3,000.00
+	// stub — silently, and confidently. Multi-page stubs are ordinary (earnings
+	// on one page, year-to-date detail on the next), so this is the common case
+	// rather than an edge.
+	//
+	// The cost is that a single page whose content is split across several
+	// streams has its rows split at those boundaries. That trade is deliberate:
+	// a split row loses the label/amount pairing, so the line goes unmatched and
+	// the balance check reports the gap — a loud, visible failure. Pooling fails
+	// silently with a wrong number, which is the one outcome this whole package
+	// is built to avoid.
+	var lines []string
+	sawFragment := false
 	for _, content := range contentStreams(data) {
-		fragments = append(fragments, parseContentStream(content)...)
+		fragments := parseContentStream(content)
+		if len(fragments) == 0 {
+			continue
+		}
+		sawFragment = true
+		lines = append(lines, groupIntoLines(fragments)...)
 	}
-	if len(fragments) == 0 {
+	if !sawFragment {
 		return nil, ErrNoTextLayer
 	}
 
-	lines := groupIntoLines(fragments)
 	if !looksLikeText(lines) {
 		return nil, ErrNoTextLayer
 	}
@@ -181,8 +203,14 @@ func dictBefore(data []byte, streamAt int) ([]byte, bool) {
 		return nil, false
 	}
 
+	// Starts at end-1, not end-2. The pair is matched on its SECOND byte —
+	// data[i] and data[i-1] — so the closing `>>` that `end` was just proved to
+	// sit behind is matched at index end-1. Starting one earlier skips it, depth
+	// never reaches 1, and the first `<<` drives it to -1 so nothing ever
+	// returns: every stream in every PDF is silently skipped and the whole
+	// importer reports "no readable text layer".
 	depth := 0
-	for i := end - 2; i >= 1; i-- {
+	for i := end - 1; i >= 1; i-- {
 		switch {
 		case data[i] == '>' && data[i-1] == '>':
 			depth++

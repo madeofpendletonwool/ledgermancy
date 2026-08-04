@@ -52,9 +52,12 @@ var childRoutes = []struct{ method, path string }{
 	{"POST", "/api/admin/continuity/run"},
 	{"GET", "/api/admin/continuity/export"},
 
-	// Delivery.
+	// Delivery, and the stored digests it produces.
 	{"POST", "/api/notifications/test"},
 	{"POST", "/api/digest/test"},
+	{"GET", "/api/digests/"},
+	{"GET", "/api/digests/" + uuid.Nil.String()},
+	{"POST", "/api/digests/" + uuid.Nil.String() + "/read"},
 
 	// Institutions: linking and unlinking is not a child's to do.
 	{"POST", "/api/plaid/link-token"},

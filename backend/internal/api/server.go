@@ -287,6 +287,18 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Post("/test", s.handleSendDigestNow)
 		})
 
+		// The in-app digest history. Separate from /digest above, which is the
+		// "send one now" action rather than a resource: these are the stored
+		// entries, and each one is scoped to the requesting USER inside the
+		// queries — the adult-only group here is necessary but not sufficient,
+		// exactly as it is for /payroll.
+		r.Route("/digests", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListDigests)
+			r.Get("/{digestID}", s.handleGetDigest)
+			r.Post("/{digestID}/read", s.handleMarkDigestRead)
+		})
+
 		// Operator surface. This is the instance's recovery posture, not a
 		// household's data: it names paths on the host, reports on the backup
 		// subsystem, and can trigger a full database dump. Owner-only,
@@ -344,6 +356,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// Ahead of the /{merchantID} routes below, so chi does not read
 			// "detail" as a merchant id.
 			r.Get("/detail", s.handleMerchantDetail)
+			// The cached avatar image (MAD-38). Keyed by resolved merchant key
+			// in the query string rather than in the path: a merchant key is
+			// free-form text, and a path segment would have to survive escaping
+			// on both sides for no benefit. 404 whenever there is nothing to
+			// show, which the frontend treats as "use the monogram".
+			r.Get("/logo", s.handleMerchantLogo)
 			r.Post("/merge", s.handleMergeMerchants)
 			r.Post("/split", s.handleSplitMerchant)
 			r.Post("/scan", s.handleScanMerchants)

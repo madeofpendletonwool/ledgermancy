@@ -369,9 +369,17 @@ asset values (26), and honest long-horizon dollars (27).
   ingest paths, paycheck breakdown, contribution limits, tax-prep summary.
   *TODO #8.* **18 has shipped**, so its dependency is met — read 18's notes
   above before choosing where paystub files live.
-- **[25-in-app-digest.md](25-in-app-digest.md)** — persist and surface the
-  digest that already exists but only ever becomes a push. *TODO #10.* Soft deps
-  on 13 and 24.
+- **[25-in-app-digest.md](25-in-app-digest.md)** — **shipped.** The digest is
+  persisted to `digest_entries` and surfaced at `/digest`; push and SMTP are now
+  two optional surfaces beside it rather than the only ones. Migration
+  `00049_digest_entries.sql` is taken. *TODO #10.*
+
+  Read that doc's shipped notes before touching this area. The one that reaches
+  outside the doc: **reserve-ahead migration numbers no longer work.** These docs
+  have shipped out of order, the schema is already past most of the numbers they
+  reserve, and goose refuses to apply a migration below the current version — so
+  a doc's reserved number would fail every existing deployment at boot. Every
+  unshipped doc here should take the next free number, not the one it names.
 - **[26-real-asset-revaluation.md](26-real-asset-revaluation.md)** — asset
   classes, depreciation curves, value history, asset↔loan equity, **and
   directly-held bonds**. *TODO #14.* Brokerage-held bonds already work through

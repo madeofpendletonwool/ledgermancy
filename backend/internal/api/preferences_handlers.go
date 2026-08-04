@@ -6,16 +6,33 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/logos"
 )
 
 // Defaults for the reserved user-scoped keys, so the Settings UI always has
 // something to render before a user has saved anything. The store itself is
 // schemaless (any key/value); these are only the initial knobs 03/04/10 read.
 // Values are raw JSON so they round-trip through the JSONB column unchanged.
+// The three digest keys are one switch per surface, and their defaults differ on
+// purpose:
+//
+//   - digest.enabled (push) stays FALSE. Pushing to someone who never asked is
+//     not a safe default, and this key predates the others.
+//   - digest.in_app defaults TRUE. The in-app digest needs no channel, no
+//     provider and no configuration, and a recap nobody can find until they
+//     visit Settings is the gap doc 25 exists to close.
+//   - digest.email defaults FALSE, and is inert unless the operator configured
+//     SMTP at all.
+//
+// These defaults are NOT the authority — jobs/digest.go reads the same keys with
+// the same fallbacks, because a background job must never depend on this handler
+// having been called. Keep the two in step.
 var reservedUserPreferenceDefaults = map[string]json.RawMessage{
 	"notify.channel":    json.RawMessage(`"none"`),
 	"notify.ntfy_topic": json.RawMessage(`""`),
 	"digest.enabled":    json.RawMessage(`false`),
+	"digest.in_app":     json.RawMessage(`true`),
+	"digest.email":      json.RawMessage(`false`),
 	"digest.cadence":    json.RawMessage(`"weekly"`),
 }
 
@@ -28,8 +45,16 @@ var reservedUserPreferenceDefaults = map[string]json.RawMessage{
 // been saved. They are NOT the authority: insights.balancedSensitivity() is,
 // because a producer runs in a job and must never depend on this handler having
 // been called. Keep the two in step.
+//
+// merchant.logos defaults TRUE, which reads oddly next to the false defaults
+// above until you notice which switch is the opt-in. The decision to contact a
+// logo host at all is the operator's MERCHANT_LOGOS_ENABLED, and with it unset
+// this preference has nothing to permit. Requiring a second yes would mean an
+// operator who deliberately turned the feature on sees no logos and no
+// explanation. Its authority is logos.PreferenceDefault; keep the two in step.
 var reservedHouseholdPreferenceDefaults = map[string]json.RawMessage{
 	"anomaly.sensitivity": json.RawMessage(`"balanced"`),
+	logos.PreferenceKey:   json.RawMessage(`true`),
 }
 
 type preferencesResponse struct {
@@ -147,6 +172,17 @@ func (s *Server) handleUpsertPreferences(w http.ResponseWriter, r *http.Request)
 			if err != nil {
 				s.internalError(w, "upsert household preference", err)
 				return
+			}
+			// Switching merchant logos off drops what was already fetched.
+			// The cache is derived data about where this household shops, and
+			// keeping it after they said no would be keeping the part they
+			// objected to — the same instinct as not retaining a mailing list
+			// after an unsubscribe.
+			if item.Key == logos.PreferenceKey && string(item.Value) == "false" {
+				if err := s.Queries.DeleteMerchantLogos(r.Context(), identity.HouseholdID); err != nil {
+					s.internalError(w, "clear merchant logos", err)
+					return
+				}
 			}
 		default:
 			writeError(w, http.StatusBadRequest, "scope must be \"user\" or \"household\"")

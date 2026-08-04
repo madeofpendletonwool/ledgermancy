@@ -52,10 +52,9 @@ are pull + digest.
 
 ### Digests
 
-A digest is a periodic recap — your monthly narrative plus the top insights —
-pushed to your notification channel on a schedule. Configure it under
-**Settings → Digest**:
+A digest is a periodic recap — the period's figures, your narrative and the top
+insights. It is kept in the app on the [Digest](digest.md) page, and can
+additionally be pushed to your notification channel or emailed to you.
 
-1. Set up a notification channel first (**Settings → Notifications** — ntfy).
-2. Toggle **Send me a digest** and pick weekly or monthly.
-3. Use **Send one now** to preview a digest immediately, ignoring the schedule.
+It needs no configuration to exist: the in-app digest is on by default and does
+not require a notification channel. See [Digest](digest.md).

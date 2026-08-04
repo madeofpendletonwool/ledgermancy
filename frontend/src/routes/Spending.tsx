@@ -7,7 +7,7 @@ import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { CategoryLink } from '../components/CategoryLink'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
@@ -547,7 +547,7 @@ function RecurringSection() {
                     <span className="flex items-center gap-2">
                       {/* The detector already groups by resolved key, which is
                           exactly what addresses the merchant detail view. */}
-                      <Monogram name={m.merchant} size="sm" />
+                      <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
                       <MerchantLink name={m.merchant} merchantKey={m.merchant_key} />
                       {creep && (
                         <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
@@ -624,7 +624,11 @@ function RecurringSection() {
                   {/* merchant_key_resolved, not merchant_key: the stored key is
                       what unsuppress acts on, but a suppression recorded before a
                       later merge would link nowhere. */}
-                  <Monogram name={s.merchant || s.merchant_key} size="xs" />
+                  <MerchantAvatar
+                    name={s.merchant || s.merchant_key}
+                    merchantKey={s.merchant_key_resolved}
+                    size="xs"
+                  />
                   <MerchantLink
                     name={s.merchant || s.merchant_key}
                     merchantKey={s.merchant_key_resolved}

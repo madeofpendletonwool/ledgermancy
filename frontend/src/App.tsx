@@ -12,6 +12,7 @@ import { CategoryDetail } from './routes/CategoryDetail'
 import { MerchantDetail } from './routes/MerchantDetail'
 import { Merchants } from './routes/Merchants'
 import { Dashboard } from './routes/Dashboard'
+import { Digest } from './routes/Digest'
 import { Documents } from './routes/Documents'
 import { Goals } from './routes/Goals'
 import { Insights } from './routes/Insights'
@@ -68,6 +69,10 @@ export default function App() {
               the API regardless of what the router renders. */}
           <Route index element={<Home />} />
           <Route path="/insights" element={<Insights />} />
+          {/* The stored digest history. Also the ntfy deep link target, so a
+              push always lands on the kept copy rather than a feed that has
+              moved on since. */}
+          <Route path="/digest" element={<Digest />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/spending" element={<Spending />} />
           <Route path="/budgets" element={<Budgets />} />

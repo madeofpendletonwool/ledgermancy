@@ -187,6 +187,94 @@ func TestLiteralStringEscapes(t *testing.T) {
 	}
 }
 
+// TestExtractPDFTextHandlesRealWorldStreamDictionaries covers the three shapes
+// every mainstream payroll PDF has and the simple fixture above does not.
+//
+// This is a regression test with a specific history. `dictBefore` walks
+// backwards from the `stream` keyword counting `>>`/`<<` pairs, and it shipped
+// starting one byte too late — so the closing `>>` was never counted, depth
+// never reached 1, and EVERY stream in EVERY PDF was skipped. The importer
+// reported "no readable text layer" for all input, including the files it was
+// built for. The flat-dictionary fixtures caught it; these cover the branch a
+// flat dictionary never reaches at all.
+//
+//	nested dictionary  /DecodeParms << /Predictor 12 >> — the actual nesting
+//	                   path, which a flat dict leaves entirely unexecuted
+//	indirect /Length   `/Length 7 0 R` — extremely common, and the reason the
+//	                   scanner bounds streams with `endstream` rather than
+//	                   trusting /Length, which would need xref resolution
+//	multiple objects   a real file has many, including non-content ones the
+//	                   scan must walk past without tripping over
+func TestExtractPDFTextHandlesRealWorldStreamDictionaries(t *testing.T) {
+	page1 := buildContentStream([]run{
+		{72, 700, "Gross Pay"},
+		{300, 700, "3,000.00"},
+		{72, 686, "Federal Income Tax"},
+		{300, 686, "330.00"},
+	})
+	page2 := buildContentStream([]run{
+		{72, 700, "Medical PPO"},
+		{300, 700, "100.00"},
+		{72, 686, "Net Pay"},
+		{300, 686, "2,570.00"},
+	})
+
+	var compressed bytes.Buffer
+	zw := zlib.NewWriter(&compressed)
+	_, _ = zw.Write([]byte(page2))
+	_ = zw.Close()
+
+	var pdf bytes.Buffer
+	pdf.WriteString("%PDF-1.5\n")
+	// A catalog object first, so the scan has a non-stream object to walk past.
+	pdf.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	pdf.WriteString("2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\nendobj\n")
+	// Page one: an INDIRECT /Length, which cannot be resolved without the xref.
+	fmt.Fprintf(&pdf, "5 0 obj\n<< /Length 7 0 R >>\nstream\n%s\nendstream\nendobj\n", page1)
+	// Page two: a NESTED dictionary inside the stream dictionary.
+	fmt.Fprintf(&pdf,
+		"6 0 obj\n<< /Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4 >> /Length %d >>\nstream\n",
+		compressed.Len())
+	pdf.Write(compressed.Bytes())
+	pdf.WriteString("\nendstream\nendobj\n")
+	// An image stream, which must be skipped rather than inflated and parsed.
+	pdf.WriteString("8 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /Length 4 >>\nstream\n\x01\x02\x03\x04\nendstream\nendobj\n")
+	pdf.WriteString("7 0 obj\n" + fmt.Sprint(len(page1)) + "\nendobj\n")
+	pdf.WriteString("xref\n0 9\n0000000000 65535 f \ntrailer\n<< /Size 9 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n")
+
+	lines, err := ExtractPDFText(pdf.Bytes())
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+
+	// Both pages have to come through: the indirect-length one and the one
+	// behind a nested dictionary.
+	for _, want := range []string{
+		"Gross Pay 3,000.00",
+		"Federal Income Tax 330.00",
+		"Medical PPO 100.00",
+		"Net Pay 2,570.00",
+	} {
+		if !containsLine(lines, want) {
+			t.Errorf("expected a line %q, got:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+
+	// And the whole thing has to parse into a usable proposal, which is the
+	// property that actually matters to a user.
+	p := ParseProposal(lines)
+	if !p.Gross.Valid || p.Gross.Decimal.String() != "3000" {
+		t.Errorf("gross = %v, want 3000", p.Gross)
+	}
+	if !p.Net.Valid || p.Net.Decimal.String() != "2570" {
+		t.Errorf("net = %v, want 2570", p.Net)
+	}
+	if !p.Balanced() {
+		t.Errorf("3000 − 330 − 100 = 2570 should balance, residual %s",
+			p.Stub().Residual().StringFixed(2))
+	}
+}
+
 func containsLine(lines []string, want string) bool {
 	return indexOfLine(lines, want) >= 0
 }

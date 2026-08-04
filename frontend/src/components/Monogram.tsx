@@ -66,10 +66,17 @@ function monogramLetter(name: string): string {
   return (found ?? chars[0] ?? '?').toUpperCase()
 }
 
-type MonogramSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
+export type MonogramSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 
-/** Box size, corner radius and glyph size move together so proportions hold. */
-const BOX: Record<MonogramSize, string> = {
+/**
+ * Box size, corner radius and glyph size move together so proportions hold.
+ *
+ * Exported because MerchantAvatar renders a fetched logo in the same slot when
+ * the opt-in logo fetcher is on. A logo that is a pixel off the monogram it
+ * replaces makes every list jump as images arrive, so the two must share one
+ * definition rather than agreeing by hand.
+ */
+export const MONOGRAM_BOX: Record<MonogramSize, string> = {
   xs: 'size-5 rounded-md text-[11px]',
   sm: 'size-6 rounded-md text-xs',
   md: 'size-8 rounded-lg text-[15px]',
@@ -95,7 +102,7 @@ export function Monogram({
   return (
     <span
       aria-hidden
-      className={`inline-flex shrink-0 items-center justify-center font-semibold tracking-tight text-white/95 ${BOX[size]} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center font-semibold tracking-tight text-white/95 ${MONOGRAM_BOX[size]} ${className}`}
       style={{ backgroundColor: monogramColor(name) }}
     >
       {monogramLetter(name)}

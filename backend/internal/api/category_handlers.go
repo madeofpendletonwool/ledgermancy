@@ -388,24 +388,14 @@ type budgetResponse struct {
 	Remaining decimal.Decimal `json:"remaining"`
 }
 
-// monthsInclusive counts calendar months from start's month through target's
-// month, inclusive (both are first-of-month dates). 1 when they are the same
-// month, 0 or negative when target precedes start.
-func monthsInclusive(start, target time.Time) int {
-	return (target.Year()-start.Year())*12 + int(target.Month()) - int(start.Month()) + 1
-}
-
 func (s *Server) handleBudgetProgress(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 	from, to := period(r)
 
-	rows, err := s.Queries.GetBudgetProgress(r.Context(), dbgen.GetBudgetProgressParams{
-		HouseholdID: identity.HouseholdID,
-		UserID:      identity.UserID,
-		WindowStart: from,
-		WindowEnd:   to,
-		Ref:         time.Now().UTC(),
-	})
+	// The envelope arithmetic lives in reporting so the stored digest quotes the
+	// same remaining balances this page does.
+	rows, err := reporting.BuildBudgetProgress(
+		r.Context(), s.Queries, identity.HouseholdID, identity.UserID, from, to, time.Now().UTC())
 	if err != nil {
 		s.internalError(w, "budget progress", err)
 		return
@@ -413,34 +403,21 @@ func (s *Server) handleBudgetProgress(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]budgetResponse, 0, len(rows))
 	for _, b := range rows {
-		// Envelope math (decimal, from SQL-sourced figures):
-		//   carryover (balance entering this month) = amount×(months−1) − prior spend
-		//   available this month                    = amount + carryover
-		// A non-rollover budget carries nothing and resets each period. Rollover is
-		// monthly-only, so the month-based carryover matches the budget's window.
-		carryover := decimal.Zero
-		available := b.Budgeted
-		if b.Rollover {
-			if months := monthsInclusive(b.RolloverStart, from); months > 1 {
-				carryover = b.Budgeted.Mul(decimal.NewFromInt(int64(months - 1))).Sub(b.PriorSpent)
-			}
-			available = b.Budgeted.Add(carryover)
-		}
 		out = append(out, budgetResponse{
 			BudgetID:    b.BudgetID,
 			CategoryID:  b.CategoryID,
-			Name:        b.CategoryName,
-			Slug:        b.CategorySlug,
-			Color:       b.CategoryColor,
+			Name:        b.Name,
+			Slug:        b.Slug,
+			Color:       b.Color,
 			Budgeted:    b.Budgeted,
 			Period:      b.Period,
 			PeriodStart: b.PeriodStart.Format(time.DateOnly),
 			PeriodEnd:   b.PeriodEnd.Format(time.DateOnly),
 			Rollover:    b.Rollover,
-			Carryover:   carryover,
-			Available:   available,
+			Carryover:   b.Carryover,
+			Available:   b.Available,
 			Spent:       b.Spent,
-			Remaining:   available.Sub(b.Spent),
+			Remaining:   b.Remaining,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
