@@ -101,11 +101,30 @@ type payoffResponse struct {
 	Months        int     `json:"months"`
 	TotalInterest string  `json:"total_interest"`
 	PayoffDate    *string `json:"payoff_date"`
+	// Schedule is the per-month balance + interest series behind the totals
+	// above, present only when the debt amortizes (NeverPaysOff false and the
+	// starting balance was positive). Drives the amortization curve (item #10,
+	// MAD-34). Nil when there is no schedule — the chart renders its empty
+	// state rather than a curve that contradicts "never".
+	Schedule []payoffSchedulePoint `json:"schedule,omitempty"`
 
 	// RequiredMonthly is the smallest payment that clears the balance by the
 	// target date; zero when the goal is open-ended.
 	RequiredMonthly string `json:"required_monthly"`
 	TargetReachable bool   `json:"target_reachable"`
+}
+
+// payoffSchedulePoint is one month of a debt-payoff amortization schedule,
+// shipped as decimal strings so the chart never touches a float. The balance
+// line declines to zero; the interest shaded area sums to total_interest.
+type payoffSchedulePoint struct {
+	// Month is the 1-based payment number.
+	Month int `json:"month"`
+	// Interest is the interest charged this month (decimal string).
+	Interest string `json:"interest"`
+	// Balance is what is still owed after this month's payment (decimal string,
+	// never negative — the final point is "0.00").
+	Balance string `json:"balance"`
 }
 
 // goalVisibility resolves the caller's identity into the three parameters every
@@ -294,6 +313,21 @@ func (s *Server) fillPayoffStanding(ctx context.Context, g dbgen.Goal, resp goal
 	p.TargetReachable = f.TargetReachable
 	p.APRSource = terms.APRSource
 	p.PaymentSource = terms.PaymentSource
+	// Surface the per-month series only when the simulation produced one. A
+	// never-paying or already-cleared debt carries no schedule, and the chart's
+	// empty state is the honest rendering for those — the headline already says
+	// "never" / "achieved", a curve would muddy both.
+	if !f.NeverPaysOff && len(f.Schedule) > 0 {
+		schedule := make([]payoffSchedulePoint, len(f.Schedule))
+		for i, s := range f.Schedule {
+			schedule[i] = payoffSchedulePoint{
+				Month:    s.Month,
+				Interest: s.Interest.StringFixed(2),
+				Balance:  s.Balance.StringFixed(2),
+			}
+		}
+		p.Schedule = schedule
+	}
 	if f.PayoffDate != nil {
 		d := f.PayoffDate.Format(time.DateOnly)
 		p.PayoffDate = &d

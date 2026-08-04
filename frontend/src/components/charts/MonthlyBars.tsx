@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import { formatMoney } from '../../lib/money'
+import { barPath } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SINGLE_SERIES } from './tokens'
 
@@ -57,6 +59,7 @@ export function MonthlyBars({
   label?: string
 }) {
   const [active, setActive] = useState<number | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   const axis = monthsBetween(from, to)
   const byMonth = new Map(months.map((m) => [m.month.slice(0, 7), m]))
@@ -83,7 +86,7 @@ export function MonthlyBars({
     <div className="relative overflow-x-auto">
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="w-full min-w-[560px]"
+          className="w-full max-sm:min-w-0 sm:min-w-[560px]"
         role="img"
         aria-label={label}
         onMouseLeave={() => setActive(null)}
@@ -136,11 +139,13 @@ export function MonthlyBars({
           const top = y(v)
           const h = PAD.top + PLOT_H - top
           return (
-            <path
+            <motion.path
               key={key}
-              d={barPath(x(i) - barW / 2, top, barW, h)}
+              d={barPathGeo(x(i) - barW / 2, top, barW, h)}
               fill={SINGLE_SERIES}
               opacity={active === null || active === i ? 0.9 : 0.45}
+              style={{ transformBox: 'fill-box', originY: 1 }}
+              {...barPath(barPathGeo(x(i) - barW / 2, top, barW, h), reduce)}
             />
           )
         })}
@@ -197,7 +202,7 @@ const BAR_RADIUS = 4
  * The radius shrinks for a bar shorter or narrower than it, so a small month
  * renders as a small bar rather than a lozenge.
  */
-function barPath(x: number, y: number, w: number, h: number): string {
+function barPathGeo(x: number, y: number, w: number, h: number): string {
   const r = Math.max(0, Math.min(BAR_RADIUS, w / 2, h))
   const bottom = y + h
   if (r === 0) return `M${x} ${y}H${x + w}V${bottom}H${x}Z`

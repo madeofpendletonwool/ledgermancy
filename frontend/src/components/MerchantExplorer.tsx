@@ -7,10 +7,14 @@ import type { Category, LapsedMerchant, MerchantExplorerRow } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { WINDOWS, matchedWindow, windowRange } from '../lib/period'
 import { SINGLE_SERIES, STATUS } from './charts/tokens'
+import { MerchantPareto } from './charts/MerchantPareto'
 import { MerchantLink } from './MerchantLink'
 import { CategoryLink } from './CategoryLink'
+import { Monogram } from './Monogram'
 import { merchantDetailPath } from '../lib/merchants'
 import { Link } from 'react-router-dom'
+import { SkeletonRows, SkeletonText } from './Skeleton'
+import { EmptyState } from './EmptyState'
 
 /**
  * Where the money goes — every merchant, searchable.
@@ -131,7 +135,7 @@ export function MerchantExplorer() {
         </select>
       </div>
 
-      {rows.length > 0 && <ParetoStrip rows={rows} windowTotal={windowTotal} />}
+      {rows.length > 0 && <MerchantPareto rows={rows} windowTotal={windowTotal} />}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input
@@ -170,13 +174,13 @@ export function MerchantExplorer() {
       </div>
 
       {explorer.isPending ? (
-        <p className="py-6 text-center text-sm text-mist-400">Loading…</p>
+        <SkeletonRows count={6} />
       ) : explorer.isError ? (
         <p className="py-6 text-center text-sm text-red-300">
           Couldn’t load your merchants.
         </p>
       ) : rows.length === 0 ? (
-        <Empty>No spending in this window.</Empty>
+        <EmptyState title="No spending in this window" />
       ) : sorted.length === 0 ? (
         <div className="py-6 text-center">
           <p className="text-sm text-mist-400">
@@ -296,6 +300,7 @@ function MerchantRow({
   return (
     <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 rounded-lg py-1.5 sm:grid-cols-[14rem_1fr_7rem_5rem]">
       <div className="flex min-w-0 items-center gap-2">
+        <Monogram name={m.merchant} size="sm" />
         <MerchantLink
           name={m.merchant}
           merchantKey={m.merchant_key}
@@ -388,7 +393,7 @@ function Concentration({
   isPending: boolean
 }) {
   if (isPending) {
-    return <p className="mt-1 text-sm text-mist-300">Loading…</p>
+    return <SkeletonText lines={2} />
   }
   if (rows.length === 0 || windowTotal <= 0) {
     return (
@@ -421,59 +426,6 @@ function Concentration({
 }
 
 /**
- * The concentration curve as one stacked bar: each of the top merchants as its
- * share of the window, then everything else.
- *
- * A single bar rather than a cumulative line because the question is "how much of
- * my spending is a handful of businesses?", and a stacked share answers that at a
- * glance where a Pareto curve asks to be read.
- */
-function ParetoStrip({
-  rows,
-  windowTotal,
-}: {
-  rows: MerchantExplorerRow[]
-  windowTotal: number
-}) {
-  if (windowTotal <= 0) return null
-  const top = rows.slice(0, CONCENTRATION_TOP_N)
-  const topTotal = top.reduce((sum, m) => sum + Number(m.total), 0)
-  const rest = Math.max(0, windowTotal - topTotal)
-
-  return (
-    <div className="mb-5">
-      <div className="flex h-3 gap-px overflow-hidden rounded-full bg-white/5">
-        {top.map((m, i) => (
-          <span
-            key={m.merchant_key}
-            className="h-full first:rounded-l-full"
-            style={{
-              width: `${(Number(m.total) / windowTotal) * 100}%`,
-              // One series, stepped only in opacity so the segments read as
-              // ranked slices of one measure rather than as different things.
-              backgroundColor: SINGLE_SERIES,
-              opacity: 1 - i * 0.07,
-            }}
-            title={`${m.merchant} · ${formatMoney(m.total)}`}
-          />
-        ))}
-        {rest > 0 && (
-          <span
-            className="h-full rounded-r-full bg-white/10"
-            style={{ width: `${(rest / windowTotal) * 100}%` }}
-            title={`Everyone else · ${formatMoney(String(rest))}`}
-          />
-        )}
-      </div>
-      <p className="mt-1.5 text-[11px] text-mist-500">
-        Each segment is one of your biggest merchants; the pale tail is everyone
-        else.
-      </p>
-    </div>
-  )
-}
-
-/**
  * Merchants charging this household for the first time.
  *
  * `is_new` is computed against all of history rather than against the previous
@@ -501,13 +453,16 @@ function NewMerchants({
       ) : (
         <ul className="space-y-1.5">
           {fresh.map((m) => (
-            <li key={m.merchant_key} className="flex items-baseline justify-between gap-3">
-              <MerchantLink
-                name={m.merchant}
-                merchantKey={m.merchant_key}
-                range={range}
-                className="min-w-0 text-sm text-mist-200"
-              />
+            <li key={m.merchant_key} className="flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2">
+                <Monogram name={m.merchant} size="sm" />
+                <MerchantLink
+                  name={m.merchant}
+                  merchantKey={m.merchant_key}
+                  range={range}
+                  className="min-w-0 text-sm text-mist-200"
+                />
+              </span>
               <span className="shrink-0 text-right">
                 <span className="tabular block text-sm text-mist-200">
                   {formatMoney(m.total)}
@@ -546,17 +501,20 @@ function GoneQuiet({ merchants }: { merchants: LapsedMerchant[] }) {
             {shown.map((m) => (
               <li
                 key={m.merchant_key}
-                className="flex items-baseline justify-between gap-3"
+                className="flex items-center justify-between gap-3"
               >
-                {/* No window on this link: these charges are outside the window
-                    being explored, so carrying it through would open an empty
-                    merchant page. */}
-                <Link
-                  to={merchantDetailPath(m.merchant_key)}
-                  className="min-w-0 truncate text-sm text-mist-200 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
-                >
-                  {m.merchant}
-                </Link>
+                <span className="flex min-w-0 items-center gap-2">
+                  <Monogram name={m.merchant} size="sm" />
+                  {/* No window on this link: these charges are outside the window
+                      being explored, so carrying it through would open an empty
+                      merchant page. */}
+                  <Link
+                    to={merchantDetailPath(m.merchant_key)}
+                    className="min-w-0 truncate text-sm text-mist-200 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
+                  >
+                    {m.merchant}
+                  </Link>
+                </span>
                 <span className="shrink-0 text-right">
                   <span className="tabular block text-sm text-mist-200">
                     ~{formatMoney(m.monthly_estimate)}/mo
@@ -629,8 +587,4 @@ function Pager({
       </button>
     </div>
   )
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-6 text-center text-sm text-mist-400">{children}</p>
 }

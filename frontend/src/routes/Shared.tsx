@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Person, type SplitTransaction } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import { SkeletonRows } from '../components/Skeleton'
 
 /**
  * Shared expenses and the household ledger.
@@ -36,7 +37,7 @@ export function Shared() {
       <section className="glass p-6">
         <h2 className="text-lg font-medium">Who owes whom</h2>
 
-        {ledger.isPending && <p className="mt-4 text-sm text-mist-500">Loading…</p>}
+        {ledger.isPending && <SkeletonRows count={2} />}
 
         {ledger.data?.length === 0 && (
           <p className="mt-4 text-sm text-mist-500">
@@ -53,7 +54,7 @@ export function Shared() {
               <span className="font-medium">{row.debtor_name}</span>
               <span className="text-sm text-mist-500">owes</span>
               <span className="font-medium">{row.creditor_name}</span>
-              <span className="ml-auto text-lg tabular-nums">
+              <span className="ml-auto text-lg tabular">
                 {formatMoney(row.amount)}
               </span>
             </li>
@@ -86,7 +87,7 @@ export function Shared() {
                   {t.payer_name && ` · paid by ${t.payer_name}`} · {t.split_count} ways
                 </p>
               </div>
-              <span className="shrink-0 tabular-nums">{formatMoney(t.amount)}</span>
+              <span className="shrink-0 tabular">{formatMoney(t.amount)}</span>
               <span
                 className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
                   t.fully_settled
@@ -182,7 +183,7 @@ function SplitDialog({
             {splits.data.shares.map((sh) => (
               <li key={sh.id} className="flex items-center gap-3 py-2.5">
                 <span>{sh.person_name}</span>
-                <span className="ml-auto tabular-nums">{formatMoney(sh.amount)}</span>
+                <span className="ml-auto tabular">{formatMoney(sh.amount)}</span>
                 {sh.settled_at ? (
                   <button
                     className="shrink-0 text-xs text-mist-500 hover:underline"

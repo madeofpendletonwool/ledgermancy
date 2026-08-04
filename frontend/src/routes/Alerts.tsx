@@ -9,6 +9,7 @@ import {
   type ParseRuleResult,
 } from '../lib/api'
 import { formatMoney, formatRelative } from '../lib/money'
+import { SkeletonBlock } from '../components/Skeleton'
 
 // A seed pushed into a rule form when the user chooses "Edit" on a parsed
 // proposal: the config to prefill, plus a nonce so re-picking the same values
@@ -394,7 +395,13 @@ function RecentEvents({
       </div>
 
       <ul className="mt-4 divide-y divide-white/5">
-        {isPending && <li className="py-3 text-sm text-mist-500">Loading…</li>}
+        {isPending && (
+          <li className="flex items-center gap-4 py-3">
+            <SkeletonBlock className="h-9 w-9 shrink-0 rounded-full" />
+            <SkeletonBlock className="h-4 flex-1" />
+            <SkeletonBlock className="h-4 w-20 shrink-0" />
+          </li>
+        )}
         {!isPending && (events?.length ?? 0) === 0 && (
           <li className="py-3 text-sm text-mist-500">
             Nothing yet. When a rule triggers, it shows up here.

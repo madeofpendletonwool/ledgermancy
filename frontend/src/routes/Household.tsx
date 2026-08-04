@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type CreatedInvite, type Role } from '../lib/api'
 import { PeopleSection } from '../components/PeopleSection'
+import { SkeletonBlock } from '../components/Skeleton'
 
 export function Household() {
   const qc = useQueryClient()
@@ -55,7 +56,13 @@ export function Household() {
           The people above who can sign in. Not everyone needs to.
         </p>
         <ul className="mt-4 divide-y divide-white/5">
-          {members.isPending && <li className="py-3 text-sm text-mist-500">Loading…</li>}
+          {members.isPending && (
+            <li className="flex items-center gap-4 py-3">
+              <SkeletonBlock className="h-9 w-9 shrink-0 rounded-full" />
+              <SkeletonBlock className="h-4 flex-1" />
+              <SkeletonBlock className="h-5 w-16 shrink-0 rounded-full" />
+            </li>
+          )}
           {members.data?.map((m) => (
             <li key={m.id} className="flex items-center gap-4 py-3">
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-arcane-500/20 text-sm font-medium text-arcane-400">

@@ -14,7 +14,10 @@ import {
 import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
+import { CategoryIcon } from '../components/CategoryIcon'
 import { Tile } from '../components/Tile'
+import { SkeletonDetail } from '../components/Skeleton'
 
 /**
  * One category, in detail.
@@ -62,7 +65,7 @@ export function CategoryDetail() {
   if (detail.isPending) {
     return (
       <Shell>
-        <p className="text-sm text-mist-400">Loading…</p>
+        <SkeletonDetail />
       </Shell>
     )
   }
@@ -99,10 +102,11 @@ export function CategoryDetail() {
             ← Spending
           </Link>
           <h1 className="mt-1 flex items-center gap-2.5 truncate text-2xl font-semibold">
-            <span
-              aria-hidden
-              className="inline-block size-3 shrink-0 rounded-full"
-              style={{ backgroundColor: d.color ?? 'rgba(255,255,255,0.25)' }}
+            <CategoryIcon
+              slug={d.slug}
+              name={d.name}
+              color={d.color}
+              className="size-5 shrink-0"
             />
             {d.name}
           </h1>
@@ -143,18 +147,19 @@ export function CategoryDetail() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Tile label="Total spent" value={formatMoney(d.total)} />
+            <Tile label="Total spent" value={d.total} />
             <Tile
               label="Charges"
-              value={String(count)}
+              value={count}
+              format={(n) => String(Math.round(n))}
               hint={`${formatMoney(d.average)} average`}
             />
             <Tile
               label="Per month"
-              value={formatMoney(String(perMonth))}
+              value={perMonth}
               hint="Averaged over the window"
             />
-            <Tile label="Largest charge" value={formatMoney(d.largest)} />
+            <Tile label="Largest charge" value={d.largest} />
           </div>
 
           {budget && <BudgetProgressPanel budget={budget} />}
@@ -216,17 +221,22 @@ export function CategoryDetail() {
                         {formatDate(t.date)}
                       </td>
                       <td className="max-w-xs py-2 pr-4">
-                        <MerchantLink
-                          name={t.merchant}
-                          merchantKey={t.merchant_key}
-                          range={{ from, to }}
-                          className="block max-w-full text-mist-100"
-                        />
-                        {t.descriptor !== t.merchant && (
-                          <span className="block truncate text-xs text-mist-500">
-                            {t.descriptor}
+                        <span className="flex items-center gap-2">
+                          <Monogram name={t.merchant} size="sm" />
+                          <span className="min-w-0">
+                            <MerchantLink
+                              name={t.merchant}
+                              merchantKey={t.merchant_key}
+                              range={{ from, to }}
+                              className="block max-w-full text-mist-100"
+                            />
+                            {t.descriptor !== t.merchant && (
+                              <span className="block truncate text-xs text-mist-500">
+                                {t.descriptor}
+                              </span>
+                            )}
                           </span>
-                        )}
+                        </span>
                       </td>
                       <td className="py-2 pr-4 text-mist-400">{t.account_name}</td>
                       <td className="tabular py-2 text-right text-mist-100">
@@ -274,12 +284,15 @@ function MerchantBars({
             key={m.merchant_key || m.merchant}
             className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 py-1 sm:grid-cols-[14rem_1fr_7rem]"
           >
-            <MerchantLink
-              name={m.merchant}
-              merchantKey={m.merchant_key}
-              range={range}
-              className="min-w-0 text-sm text-mist-100"
-            />
+            <span className="flex min-w-0 items-center gap-2">
+              <Monogram name={m.merchant} size="sm" />
+              <MerchantLink
+                name={m.merchant}
+                merchantKey={m.merchant_key}
+                range={range}
+                className="min-w-0 text-sm text-mist-100"
+              />
+            </span>
             {/* One measure across a categorical dimension is ONE series, so every
                 bar carries the same colour — hue would encode nothing. */}
             <span className="order-last col-span-2 h-2.5 overflow-hidden rounded-full bg-white/5 sm:order-none sm:col-span-1">

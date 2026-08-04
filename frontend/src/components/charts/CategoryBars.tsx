@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import type { CategorySpend } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { enterProps } from '../../lib/motion'
+import { motion, useReducedMotion } from 'motion/react'
+import { CategoryIcon } from '../CategoryIcon'
+import { barWidth } from './motion'
 import { CHART, SINGLE_SERIES } from './tokens'
 
 const MAX_BARS = 8
@@ -22,6 +26,7 @@ export function CategoryBars({
   onSelect?: (categoryId: string) => void
 }) {
   const [hovered, setHovered] = useState<string | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   if (data.length === 0) {
     return <Empty>No spending in this period.</Empty>
@@ -32,7 +37,7 @@ export function CategoryBars({
 
   return (
     <div className="space-y-2.5">
-      {bars.map((bar) => {
+      {bars.map((bar, index) => {
         const value = Number(bar.total)
         // Guard the divide: a period whose largest category is 0 would
         // otherwise produce NaN widths.
@@ -41,9 +46,10 @@ export function CategoryBars({
         const clickable = onSelect !== undefined && bar.slug !== 'other'
 
         return (
-          <div
+          <motion.div
             key={bar.slug}
-            className={`group grid grid-cols-[10rem_1fr_6rem] items-center gap-3 text-sm ${
+            {...enterProps(index)}
+            className={`group grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 text-sm sm:grid-cols-[10rem_1fr_6rem] ${
               clickable ? 'cursor-pointer' : ''
             }`}
             onMouseEnter={() => setHovered(bar.slug)}
@@ -51,19 +57,31 @@ export function CategoryBars({
             onClick={clickable ? () => onSelect(bar.category_id) : undefined}
             title={clickable ? `See ${bar.name} transactions` : undefined}
           >
-            <span className="truncate text-mist-300" title={bar.name}>
-              {bar.name}
+            <span className="flex min-w-0 items-center gap-1.5 text-mist-300">
+              {/* Icon sits beside the axis LABEL — colour is redundant beside a
+                  text label per this chart's own rule, so the category identity
+                  colour is allowed here. It never enters the bar itself, which
+                  stays single-series. */}
+              <CategoryIcon
+                slug={bar.slug}
+                name={bar.name}
+                color={bar.color}
+                className="size-4"
+              />
+              <span className="truncate" title={bar.name}>
+                {bar.name}
+              </span>
             </span>
 
             {/* Track sits at low contrast so the bar itself carries the signal. */}
-            <div className="relative h-6 overflow-hidden rounded-md bg-white/5">
-              <div
+            <div className="relative order-last col-span-2 h-6 overflow-hidden rounded-md bg-white/5 sm:order-none sm:col-span-1">
+              <motion.div
                 className="h-full rounded-r-[4px] transition-[filter]"
                 style={{
-                  width: `${Math.max(pct, 0.5)}%`,
                   backgroundColor: SINGLE_SERIES,
                   filter: isHovered ? 'brightness(1.15)' : undefined,
                 }}
+                {...barWidth(pct, reduce)}
               />
               {isHovered && (
                 <span
@@ -80,7 +98,7 @@ export function CategoryBars({
             <span className="tabular text-right text-mist-100">
               {formatMoney(bar.total)}
             </span>
-          </div>
+          </motion.div>
         )
       })}
     </div>

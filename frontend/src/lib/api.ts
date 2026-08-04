@@ -510,12 +510,66 @@ export interface CategorySpend {
   transaction_count: number
 }
 
+/**
+ * One income source for the cash-flow Sankey. Same shape as CategorySpend minus
+ * `is_fixed`, because an income category is never fixed (the API forces
+ * is_fixed = false for income). The rows sum to `CashFlow.income_total` to the
+ * cent — there is no "uncategorised income" the way there can be uncategorised
+ * spending, because a row only counts as income when its category is_income.
+ */
+export interface CashFlowSource {
+  category_id: string
+  name: string
+  slug: string
+  color: string | null
+  total: string
+  transaction_count: number
+}
+
+/**
+ * The cash-flow Sankey payload (item #13, MAD-33): income sources on the left,
+ * spending categories on the right, and the leftover flowing to savings.
+ *
+ * The three totals are the SAME figures `/api/reports/summary` returns for the
+ * period — the Spending page's headline tiles — so the Sankey's bands reconcile
+ * with that page to the dollar. The spending category flows plus
+ * `uncategorized_spending` sum to `spending_total`, and the income source flows
+ * sum to `income_total`. All money is computed server-side in NUMERIC; the
+ * client only sizes display geometry from these strings.
+ */
+export interface CashFlow {
+  from: string
+  to: string
+  income_total: string
+  spending_total: string
+  /** income_total − spending_total. Negative in a deficit period. */
+  leftover: string
+  /**
+   * Spending whose category_id was null — present in `spending_total` but absent
+   * from `spending_categories` (which comes from an INNER join on categories).
+   * Usually zero; carried only so the flows always sum to `spending_total`.
+   */
+  uncategorized_spending: string
+  income_sources: CashFlowSource[]
+  /** Same rows `/api/reports/by-category` returns for the period. */
+  spending_categories: CategorySpend[]
+}
+
 export interface TrendPoint {
   /** "YYYY-MM" */
   month: string
   income: string
   spending: string
   leftover: string
+  /**
+   * Spending decomposed into its fixed and discretionary buckets — same split
+   * the period summary reports, per month. The two sum to `spending` to the
+   * cent (computed server-side in exact decimal), which is what makes the
+   * fixed-vs-discretionary stacked bar a decomposition of the headline rather
+   * than a second story about the same money. Drives item #9 (MAD-34).
+   */
+  fixed_spending: string
+  discretionary_spending: string
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -526,6 +580,36 @@ export interface CategoryAverage extends CategorySpend {
 export interface DaySpend {
   day: string
   spending: string
+}
+
+/**
+ * The category × month spending matrix. Returned by the heatmap endpoint so two
+ * charts can render from one round trip: the intensity heatmap (item #8) and
+ * the category-mix small multiples (item #12).
+ *
+ * `months` is the full axis across the range; `categories[i].cells` carries
+ * only the months that had spend, so a missing key reads as zero (the same
+ * contract GetMerchantMonthlySpend uses).
+ */
+export interface SpendingHeatmap {
+  from: string
+  to: string
+  /** "YYYY-MM" strings, ascending, across [from, to]. */
+  months: string[]
+  /** Sorted by whole-range `total` descending. */
+  categories: SpendingHeatmapCategory[]
+}
+
+export interface SpendingHeatmapCategory {
+  category_id: string
+  name: string
+  slug: string
+  color: string | null
+  is_fixed: boolean
+  /** Whole-range spend as a decimal string; the ranking key. */
+  total: string
+  /** "YYYY-MM" → spend that month, decimal string. Only non-zero months. */
+  cells: Record<string, string>
 }
 
 export interface MerchantSpend {
@@ -931,6 +1015,14 @@ export interface NetWorthPoint {
   assets_total: string
   liabilities_total: string
   net_worth: string
+  /**
+   * The composition recorded the day this snapshot was taken. Present on every
+   * snapshot the app has ever written (the column is NOT NULL DEFAULT '{}'),
+   * so the stacked-area composition chart (item #11, MAD-34) can plot assets vs
+   * liabilities across the whole trend. Omitted only when a stored row would
+   * not decode — a backstop, not a live case.
+   */
+  breakdown?: NetWorthBreakdown
 }
 
 export interface Holding {
@@ -1449,6 +1541,28 @@ export interface GoalPayoff {
   /** Smallest payment that clears the balance by the target date. */
   required_monthly: string
   target_reachable: boolean
+  /**
+   * The per-month balance + interest series behind `months` and
+   * `total_interest`, present only when the debt amortizes. Drives the
+   * amortization curve (item #10, MAD-34): a declining balance line to zero
+   * with the interest portion shaded. Omitted when there is no schedule —
+   * never_pays_off, achieved, or no terms — so the chart renders its empty
+   * state rather than a curve that contradicts the headline.
+   */
+  schedule?: PayoffSchedulePoint[]
+}
+
+/** One month of a debt-payoff amortization schedule. Decimal strings — never
+ *  touched as floats in the browser. */
+export interface PayoffSchedulePoint {
+  /** 1-based payment number; 1 is the first payment after now. */
+  month: number
+  /** Interest charged this month. Summed across the schedule it equals
+   *  `total_interest`. */
+  interest: string
+  /** Balance still owed after this month's payment. The final point is "0.00";
+   *  the series never goes negative. */
+  balance: string
 }
 
 /**
@@ -2414,6 +2528,26 @@ export const api = {
 
   trend: (params: PeriodQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
+
+  /**
+   * The category × month spending matrix behind the heatmap (item #8) and the
+   * category-mix small multiples (item #12). One endpoint, two renderings: the
+   * heatmap folds to "Other" past its row cap, the small multiples cap
+   * themselves at eight. Every money field is a decimal string — the only
+   * arithmetic in the client is display-side intensity scaling.
+   */
+  spendingHeatmap: (params: PeriodQuery = {}) =>
+    request<SpendingHeatmap>('GET', withQuery('/api/reports/heatmap', params)),
+
+  /**
+   * The cash-flow Sankey payload (item #13, MAD-33): income sources, spending
+   * categories and the period totals in one round trip, all from the same
+   * queries every other report uses. The chart's bands reconcile with the
+   * Spending page tiles to the cent, and honour the same money rules
+   * (transfers and credit-card payments excluded, one-time charges included).
+   */
+  cashFlow: (params: PeriodQuery = {}) =>
+    request<CashFlow>('GET', withQuery('/api/reports/cash-flow', params)),
 
   averages: (params: PeriodQuery = {}) =>
     request<CategoryAverage[]>('GET', withQuery('/api/reports/averages', params)),

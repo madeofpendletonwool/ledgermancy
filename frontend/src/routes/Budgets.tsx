@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
@@ -12,7 +11,13 @@ import type {
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { formatMoney } from '../lib/money'
 import { CategoryLink } from '../components/CategoryLink'
+import { BurnDown } from '../components/charts/BurnDown'
+import { AnimatedNumber } from '../components/motion'
+import { SkeletonCard, SkeletonRows, SkeletonText, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
+import { enterProps } from '../lib/motion'
 import { STATUS } from '../components/charts/tokens'
+import { motion } from 'motion/react'
 
 /** Month options: the current month plus the previous eleven. */
 function recentMonths(count = 12) {
@@ -53,6 +58,10 @@ export function Budgets() {
   const categories = useQuery({
     queryKey: ['categories'],
     queryFn: api.categories,
+  })
+  const byDay = useQuery({
+    queryKey: ['by-day', range.from, range.to],
+    queryFn: () => api.byDay(range),
   })
 
   const invalidate = () =>
@@ -125,46 +134,76 @@ export function Budgets() {
       <SafeToSpendCard />
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Tile label="Budgeted" value={formatMoney(totalBudgeted)} />
-        <Tile label="Spent" value={formatMoney(totalSpent)} />
+        <Tile label="Budgeted" value={totalBudgeted} />
+        <Tile label="Spent" value={totalSpent} />
         <Tile
           label="Remaining"
-          value={formatMoney(totalRemaining)}
+          value={totalRemaining}
           tone={Number(totalRemaining) < 0 ? 'critical' : 'good'}
         />
       </div>
+
+      {rows.length > 0 && (
+        <section className="glass p-6">
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-lg font-medium">Burn-down</h2>
+            <span className="text-sm text-mist-300">{month.label}</span>
+          </div>
+          <p className="mb-5 text-sm text-mist-300">
+            Cumulative spend against an even pace. The static bars above
+            can&rsquo;t show whether you are ahead of or behind for how far through
+            the month you are &mdash; this does.
+          </p>
+          <BurnDown
+            year={Number(monthValue.slice(0, 4))}
+            month={Number(monthValue.slice(5, 7))}
+            days={byDay.data ?? []}
+            budgeted={Number(totalBudgeted)}
+          />
+        </section>
+      )}
 
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">Category budgets</h2>
         <p className="mb-5 text-sm text-mist-300">{month.label}</p>
 
         {budgets.isPending ? (
-          <Loading />
+          <SkeletonRows count={3} />
         ) : rows.length === 0 ? (
-          <Empty>
-            No budgets set yet. Add one below to start tracking a category
-            against a monthly target.
-          </Empty>
+          <EmptyState
+            title="No budgets yet"
+            icon={<BudgetGlyph />}
+            action={
+              <a href="#add-budget" className="btn-primary">
+                Add a budget
+              </a>
+            }
+          >
+            Set a target on a category and track it against the month.
+          </EmptyState>
         ) : (
-          <div className="space-y-3">
-            {rows.map((b) => (
-              <BudgetRow
-                key={b.budget_id}
-                budget={b}
-                onSave={(amount, period, rollover) =>
-                  setBudget.mutate({
-                    categoryID: b.category_id,
-                    amount,
-                    period,
-                    rollover,
-                  })
-                }
-                onDelete={() => deleteBudget.mutate(b.budget_id)}
-                saving={setBudget.isPending}
-                deleting={deleteBudget.isPending}
-              />
-            ))}
-          </div>
+          <Reveal>
+            <div className="space-y-3">
+              {rows.map((b, i) => (
+                <BudgetRow
+                  key={b.budget_id}
+                  budget={b}
+                  index={i}
+                  onSave={(amount, period, rollover) =>
+                    setBudget.mutate({
+                      categoryID: b.category_id,
+                      amount,
+                      period,
+                      rollover,
+                    })
+                  }
+                  onDelete={() => deleteBudget.mutate(b.budget_id)}
+                  saving={setBudget.isPending}
+                  deleting={deleteBudget.isPending}
+                />
+              ))}
+            </div>
+          </Reveal>
         )}
       </section>
 
@@ -199,7 +238,7 @@ function SafeToSpendCard() {
   if (q.isPending) {
     return (
       <section className="glass p-6">
-        <Loading />
+        <SkeletonCard />
       </section>
     )
   }
@@ -234,7 +273,7 @@ function SafeToSpendCard() {
           </p>
         </div>
         <span className={`text-3xl font-semibold tabular ${tone}`}>
-          {formatMoney(d.safe_to_spend)}
+          <AnimatedNumber value={d.safe_to_spend} />
         </span>
       </div>
 
@@ -278,7 +317,7 @@ function SafeToSpendCard() {
                 afterBills < 0 ? 'text-ember-400' : 'text-mist-100'
               }`}
             >
-              {formatMoney(d.safe_to_spend_after_bills)}
+              <AnimatedNumber value={d.safe_to_spend_after_bills} />
             </span>
           </div>
           <p className="mt-2 text-xs text-mist-500">
@@ -309,12 +348,14 @@ function SafeToSpendCard() {
 
 function BudgetRow({
   budget,
+  index,
   onSave,
   onDelete,
   saving,
   deleting,
 }: {
   budget: BudgetProgress
+  index: number
   onSave: (
     amount: string,
     period: 'weekly' | 'monthly' | 'yearly',
@@ -357,7 +398,10 @@ function BudgetRow({
         : 'monthly'
 
   return (
-    <div className="rounded-xl border border-white/5 p-4">
+    <motion.div
+      {...enterProps(index)}
+      className="rounded-xl border border-white/5 p-4"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="flex items-center gap-2 font-medium">
           {/* The budget's own window, so the breakdown opens on the period the
@@ -490,7 +534,7 @@ function BudgetRow({
             : `${formatMoney(budget.remaining)} left`}
         </span>
       </div>
-    </div>
+    </motion.div>
   )
 }
 
@@ -574,10 +618,10 @@ function SuggestBudgets() {
       )}
 
       {data && data.proposals.length === 0 && (
-        <Empty>
-          Not enough spending history yet to suggest budgets. Add a budget
-          manually below.
-        </Empty>
+        <EmptyState title="Not enough history to suggest budgets">
+          A year of spending feeds the suggestions. Add a budget manually in the
+          meantime.
+        </EmptyState>
       )}
 
       {data && data.proposals.length > 0 && (
@@ -757,16 +801,16 @@ function AddBudget({
   }
 
   return (
-    <section className="glass p-6">
+    <section id="add-budget" className="glass p-6 scroll-mt-24">
       <h2 className="mb-1 text-lg font-medium">Add a budget</h2>
       <p className="mb-5 text-sm text-mist-300">
         Set a weekly, monthly, or yearly target for a spending category.
       </p>
 
       {loading ? (
-        <Loading />
+        <SkeletonText lines={1} />
       ) : categories.length === 0 ? (
-        <Empty>Every spending category already has a budget.</Empty>
+        <EmptyState title="Every spending category already has a budget." />
       ) : (
         <div className="flex flex-wrap items-end gap-3">
           <div>
@@ -892,10 +936,14 @@ function Tile({
   label,
   value,
   tone,
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   tone?: 'good' | 'critical'
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color =
     tone === 'critical' ? STATUS.critical : tone === 'good' ? STATUS.good : undefined
@@ -907,16 +955,26 @@ function Tile({
         className="tabular mt-2 text-3xl font-semibold"
         style={{ color: color ?? '#f2d492' }}
       >
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
     </div>
   )
 }
 
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-8 text-center text-sm text-mist-500">{children}</p>
+/** Outline glyph for the budgets empty state. */
+function BudgetGlyph() {
+  return (
+    <svg
+      className="h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 7h18M5 7v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7M9 12h6" />
+    </svg>
+  )
 }

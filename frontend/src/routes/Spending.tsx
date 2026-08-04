@@ -7,7 +7,17 @@ import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { CategoryLink } from '../components/CategoryLink'
 import { MerchantLink } from '../components/MerchantLink'
+import { Monogram } from '../components/Monogram'
 import { TrendChart } from '../components/charts/TrendChart'
+import { SavingsRateChart } from '../components/charts/SavingsRateChart'
+import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
+import { SpendingHeatmap } from '../components/charts/SpendingHeatmap'
+import { CategoryMultiples } from '../components/charts/CategoryMultiples'
+import { CashFlowSankey } from '../components/charts/CashFlowSankey'
+import { AnimatedNumber } from '../components/motion'
+import { SkeletonChart, SkeletonRows, SkeletonText, Reveal } from '../components/Skeleton'
+import { enterProps } from '../lib/motion'
+import { motion } from 'motion/react'
 import { CHART, STATUS } from '../components/charts/tokens'
 
 /** Month options: the current month plus the previous eleven. */
@@ -47,7 +57,21 @@ export function Spending() {
     queryKey: ['by-category', range.from, range.to],
     queryFn: () => api.byCategory(range),
   })
+  // The cash-flow Sankey carries its own income/spending breakdowns plus the
+  // period totals in one round trip, so it does not lean on the two queries
+  // above — but it uses the SAME server queries, so its bands reconcile with
+  // these tiles to the cent.
+  const cashFlow = useQuery({
+    queryKey: ['cash-flow', range.from, range.to],
+    queryFn: () => api.cashFlow(range),
+  })
   const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
+  // The category × month matrix is the trailing twelve months the trend chart
+  // uses, fetched once and rendered two ways (heatmap + small multiples).
+  const heatmap = useQuery({
+    queryKey: ['heatmap'],
+    queryFn: () => api.spendingHeatmap(),
+  })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
   const capabilities = useQuery({
     queryKey: ['capabilities'],
@@ -88,20 +112,17 @@ export function Spending() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Tile label="Income" value={s ? formatMoney(s.income) : '—'} />
-        <Tile label="Spending" value={s ? formatMoney(s.spending) : '—'} />
+        <Tile label="Income" value={s ? s.income : null} />
+        <Tile label="Spending" value={s ? s.spending : null} />
         <Tile
           label="Left to invest"
-          value={s ? formatMoney(s.leftover) : '—'}
+          value={s ? s.leftover : null}
           tone={s && Number(s.leftover) < 0 ? 'critical' : 'good'}
         />
         <Tile
           label="Savings rate"
-          value={
-            s?.savings_rate != null
-              ? `${(Number(s.savings_rate) * 100).toFixed(1)}%`
-              : '—'
-          }
+          value={s?.savings_rate ?? null}
+          format={(n) => `${(n * 100).toFixed(1)}%`}
           hint={
             s?.savings_rate == null ? 'No income recorded this period' : undefined
           }
@@ -112,18 +133,43 @@ export function Spending() {
         <div className="grid gap-4 sm:grid-cols-2">
           <SplitTile
             label="Fixed"
-            value={formatMoney(s.fixed_spending)}
+            value={s.fixed_spending}
             share={Number(s.fixed_spending) / Number(s.spending)}
             hint="Rent, utilities, loan payments"
           />
           <SplitTile
             label="Discretionary"
-            value={formatMoney(s.discretionary_spending)}
+            value={s.discretionary_spending}
             share={Number(s.discretionary_spending) / Number(s.spending)}
             hint="Everything you can flex"
           />
         </div>
       )}
+
+      {/*
+        Cash flow — the hero. Where the money came from, where it went, and what
+        was left. Mounted here (top of Spending) as a DRAFT placement per MAD-33;
+        the owner can move it to its own "Cash flow" surface. The bands carry the
+        same totals the tiles above show: transfers and card payments are
+        excluded, one-time charges included — the same money rules as everywhere.
+      */}
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Cash flow</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Where {month.label}&rsquo;s money came from, where it went, and what was
+          left. The bands add up to the same income, spending and leftover the
+          tiles above show.
+        </p>
+        {cashFlow.isPending ? (
+          <SkeletonChart />
+        ) : cashFlow.data ? (
+          <Reveal>
+            <CashFlowSankey data={cashFlow.data} label={month.label} />
+          </Reveal>
+        ) : (
+          <SkeletonChart />
+        )}
+      </section>
 
       {capabilities.data?.ai_enabled && (
         <MonthlySummaryCard month={month.value} label={month.label} />
@@ -135,16 +181,87 @@ export function Spending() {
         <h2 className="mb-1 text-lg font-medium">By category</h2>
         <p className="mb-5 text-sm text-mist-300">{month.label}</p>
         {byCategory.isPending ? (
-          <Loading />
+          <SkeletonRows count={6} />
         ) : (
-          <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
+          <Reveal>
+            <CategoryBars data={byCategory.data ?? []} onSelect={openCategory} />
+          </Reveal>
         )}
       </section>
 
       <section className="glass p-6">
         <h2 className="mb-1 text-lg font-medium">Income vs spending</h2>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
-        {trend.isPending ? <Loading /> : <TrendChart data={trend.data ?? []} />}
+        {trend.isPending ? <SkeletonChart /> : (
+          <Reveal>
+            <TrendChart data={trend.data ?? []} />
+          </Reveal>
+        )}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Savings rate</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          What share of income was left over each month — the arc, not just this
+          month&rsquo;s number.
+        </p>
+        {trend.isPending ? <SkeletonChart /> : (
+          <Reveal>
+            <SavingsRateChart data={trend.data ?? []} />
+          </Reveal>
+        )}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Fixed vs discretionary</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Each month&rsquo;s spending split into the bills you can&rsquo;t flex
+          and everything you can. The two segments sum to the month&rsquo;s
+          total — the same split the period summary reports.
+        </p>
+        {trend.isPending ? <SkeletonChart /> : (
+          <Reveal>
+            <FixedDiscretionaryChart data={trend.data ?? []} />
+          </Reveal>
+        )}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Where it goes, when</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          Spend by category across the last twelve months. Darker cells are
+          bigger months; the ramp is one hue, so colour carries magnitude, not
+          identity. Seasonality and creep show as a row darkening left to right.
+        </p>
+        {heatmap.isPending ? (
+          <SkeletonChart />
+        ) : (
+          <Reveal>
+            <SpendingHeatmap
+              months={heatmap.data?.months ?? []}
+              categories={heatmap.data?.categories ?? []}
+            />
+          </Reveal>
+        )}
+      </section>
+
+      <section className="glass p-6">
+        <h2 className="mb-1 text-lg font-medium">Category mix over time</h2>
+        <p className="mb-5 text-sm text-mist-300">
+          The top categories one panel each, each on its own scale — so a
+          category&rsquo;s seasonal swing reads against its own range, not
+          against a global max that flattens the rest.
+        </p>
+        {heatmap.isPending ? (
+          <SkeletonChart />
+        ) : (
+          <Reveal>
+            <CategoryMultiples
+              months={heatmap.data?.months ?? []}
+              categories={heatmap.data?.categories ?? []}
+            />
+          </Reveal>
+        )}
       </section>
 
       <section className="glass overflow-hidden">
@@ -220,11 +337,15 @@ function Tile({
   value,
   hint,
   tone,
+  format,
+  fallback = '—',
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   hint?: string
   tone?: 'good' | 'critical'
+  format?: (n: number) => string
+  fallback?: string
 }) {
   const color =
     tone === 'critical' ? STATUS.critical : tone === 'good' ? STATUS.good : undefined
@@ -236,7 +357,7 @@ function Tile({
         className="tabular mt-2 text-3xl font-semibold"
         style={{ color: color ?? '#f2d492' }}
       >
-        {value}
+        <AnimatedNumber value={value} format={format} fallback={fallback} />
       </p>
       {hint && <p className="mt-1 text-xs text-mist-500">{hint}</p>}
     </div>
@@ -250,7 +371,7 @@ function SplitTile({
   hint,
 }: {
   label: string
-  value: string
+  value: string | number | null | undefined
   share: number
   hint: string
 }) {
@@ -261,7 +382,9 @@ function SplitTile({
         <p className="text-sm text-mist-300">{label}</p>
         <p className="tabular text-xs text-mist-500">{pct}% of spending</p>
       </div>
-      <p className="tabular mt-2 text-2xl font-semibold text-rune-300">{value}</p>
+      <p className="tabular mt-2 text-2xl font-semibold text-rune-300">
+        <AnimatedNumber value={value} />
+      </p>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/5">
         <div
           className="h-full rounded-full"
@@ -271,10 +394,6 @@ function SplitTile({
       <p className="mt-2 text-xs text-mist-500">{hint}</p>
     </div>
   )
-}
-
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
 }
 
 // MonthlySummaryCard shows the AI-written recap for the selected month, cached
@@ -296,7 +415,7 @@ function MonthlySummaryCard({ month, label }: { month: string; label: string }) 
 
   return (
     <section className="glass p-6">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-medium">Monthly recap</h2>
           <p className="text-sm text-mist-300">{label}, in plain English</p>
@@ -318,9 +437,11 @@ function MonthlySummaryCard({ month, label }: { month: string; label: string }) 
 
       <div className="mt-4">
         {summary.isPending ? (
-          <Loading />
+          <SkeletonText lines={3} />
         ) : text ? (
-          <p className="leading-relaxed text-mist-100">{text}</p>
+          <Reveal>
+            <p className="leading-relaxed text-mist-100">{text}</p>
+          </Reveal>
         ) : (
           <p className="text-sm text-mist-500">
             No recap yet. Generate one to see the month at a glance.
@@ -414,18 +535,19 @@ function RecurringSection() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {rows.map((m) => {
+            {rows.map((m, i) => {
               const sub = subByMerchant.get(m.merchant)
               const creep = sub?.flavor === 'price_creep'
               const type = sub?.category ? String(sub.category) : null
               const suppressing =
                 suppress.isPending && suppress.variables?.merchantKey === m.merchant_key
               return (
-                <tr key={m.merchant_key}>
+                <motion.tr key={m.merchant_key} {...enterProps(i)}>
                   <td className="px-6 py-2.5">
                     <span className="flex items-center gap-2">
                       {/* The detector already groups by resolved key, which is
                           exactly what addresses the merchant detail view. */}
+                      <Monogram name={m.merchant} size="sm" />
                       <MerchantLink name={m.merchant} merchantKey={m.merchant_key} />
                       {creep && (
                         <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
@@ -464,7 +586,7 @@ function RecurringSection() {
                       {suppressing ? 'Hiding…' : 'Not recurring'}
                     </button>
                   </td>
-                </tr>
+                </motion.tr>
               )
             })}
             {!recurring.isPending && rows.length === 0 && (
@@ -476,8 +598,8 @@ function RecurringSection() {
             )}
             {recurring.isPending && (
               <tr>
-                <td colSpan={cols} className="px-6 py-8 text-center text-mist-500">
-                  Loading…
+                <td colSpan={cols} className="px-6 py-6">
+                  <SkeletonRows count={3} />
                 </td>
               </tr>
             )}
@@ -502,6 +624,7 @@ function RecurringSection() {
                   {/* merchant_key_resolved, not merchant_key: the stored key is
                       what unsuppress acts on, but a suppression recorded before a
                       later merge would link nowhere. */}
+                  <Monogram name={s.merchant || s.merchant_key} size="xs" />
                   <MerchantLink
                     name={s.merchant || s.merchant_key}
                     merchantKey={s.merchant_key_resolved}

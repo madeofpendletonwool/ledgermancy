@@ -18,6 +18,11 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Ledgermancy" />
     <meta name="description" content="A self-hosted hub for your household's finances." />
+    <!-- Self-hosted type (see index.css @font-face). Preload the UI face and the
+         default money weight so first paint isn't a flash of the system stack;
+         the bold money weight is fetched on demand. -->
+    <link rel="preload" href="/fonts/sora-latin-variable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/space-mono-latin-400.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body>
     <div id="root"></div>

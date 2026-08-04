@@ -7,6 +7,7 @@ import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
 import { Continuity } from './Continuity'
+import { SkeletonRows } from '../components/Skeleton'
 
 type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'anomalies' | 'household' | 'continuity'
 
@@ -49,12 +50,12 @@ export function Settings() {
         </p>
       </div>
 
-      <div className="flex gap-1 border-b border-white/10">
+      <div className="flex gap-1 overflow-x-auto border-b border-white/10">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`-mb-px border-b-2 px-4 py-2 text-sm transition ${
+            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-4 py-2 text-sm transition ${
               activeTab === t.id
                 ? 'border-arcane-500 text-mist-100'
                 : 'border-transparent text-mist-300 hover:text-mist-100'
@@ -228,7 +229,7 @@ function NotificationsSection() {
       description="Where the app reaches you. Pick a channel and topic here; choose which alerts push on the Alerts page."
     >
       {prefs.isPending ? (
-        <Loading />
+        <SkeletonRows count={3} />
       ) : (
         <div className="space-y-5">
           {capabilities.data && !capabilities.data.notify_enabled && (
@@ -340,7 +341,7 @@ function DigestSection() {
       description="A periodic recap — your monthly narrative plus the top insights — pushed to you on a schedule. It's delivered through your notification channel, so set one up in Notifications first."
     >
       {prefs.isPending ? (
-        <Loading />
+        <SkeletonRows count={3} />
       ) : (
         <div className="space-y-5">
           <label className="flex items-center gap-2 text-sm">
@@ -453,7 +454,7 @@ function AnomaliesSection() {
       description="Unusual charges and possible duplicate charges are compared against what each merchant normally bills you. Detection is arithmetic over your own history — no AI decides what counts as unusual."
     >
       {prefs.isPending ? (
-        <Loading />
+        <SkeletonRows count={3} />
       ) : (
         <div className="space-y-5">
           <div>
@@ -484,7 +485,7 @@ function AnomaliesSection() {
               Restore one to start hearing about it again.
             </p>
             {suppressed.isPending ? (
-              <Loading />
+              <SkeletonRows count={3} />
             ) : rows.length === 0 ? (
               <p className="mt-3 text-sm text-mist-500">Nothing suppressed.</p>
             ) : (
@@ -577,10 +578,6 @@ function Section({
       {children}
     </section>
   )
-}
-
-function Loading() {
-  return <p className="py-8 text-center text-sm text-mist-500">Loading…</p>
 }
 
 // The preference values arrive as parsed JSON of unknown shape; these coerce a

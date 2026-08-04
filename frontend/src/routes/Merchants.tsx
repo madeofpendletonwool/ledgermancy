@@ -7,6 +7,8 @@ import type { Merchant, MerchantAlias, MerchantKeyStat } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { merchantDetailPath } from '../lib/merchants'
 import { MerchantExplorer } from '../components/MerchantExplorer'
+import { SkeletonRows, Reveal } from '../components/Skeleton'
+import { EmptyState } from '../components/EmptyState'
 
 /**
  * Merchants — canonical merchant management.
@@ -92,25 +94,27 @@ function ReviewQueue({
       )}
 
       {isPending ? (
-        <Loading />
+        <SkeletonRows count={3} />
       ) : merchants.length === 0 ? (
-        <Empty>
-          Nothing to review. Suggestions are refreshed daily, or scan now.
-        </Empty>
+        <EmptyState title="Nothing to review">
+          Suggestions are refreshed daily, or run a scan with the button above.
+        </EmptyState>
       ) : (
-        <div className="space-y-4">
-          {merchants.map((m) => (
-            <SuggestionCard
-              key={m.id}
-              merchant={m}
-              onDone={() => {
-                setNote(null)
-                qc.invalidateQueries({ queryKey: ['merchants'] })
-                qc.invalidateQueries({ queryKey: ['merchant-keys'] })
-              }}
-            />
-          ))}
-        </div>
+        <Reveal>
+          <div className="space-y-4">
+            {merchants.map((m) => (
+              <SuggestionCard
+                key={m.id}
+                merchant={m}
+                onDone={() => {
+                  setNote(null)
+                  qc.invalidateQueries({ queryKey: ['merchants'] })
+                  qc.invalidateQueries({ queryKey: ['merchant-keys'] })
+                }}
+              />
+            ))}
+          </div>
+        </Reveal>
       )}
     </section>
   )
@@ -425,24 +429,24 @@ function ManualMerge() {
       />
 
       {keys.isPending ? (
-        <Loading />
+        <SkeletonRows count={4} />
       ) : available.length === 0 ? (
-        <Empty>
-          {filter
-            ? 'No descriptors match that filter.'
-            : 'Every descriptor is already grouped.'}
-        </Empty>
+        <EmptyState
+          title={filter ? 'No descriptors match that filter' : 'Everything is already grouped'}
+        />
       ) : (
-        <div className="max-h-80 space-y-1 overflow-y-auto pr-1">
-          {available.map((k) => (
-            <KeyOption
-              key={k.merchant_key}
-              stat={k}
-              checked={selected.includes(k.merchant_key)}
-              onToggle={() => toggle(k.merchant_key)}
-            />
-          ))}
-        </div>
+        <Reveal>
+          <div className="max-h-80 space-y-1 overflow-y-auto pr-1">
+            {available.map((k) => (
+              <KeyOption
+                key={k.merchant_key}
+                stat={k}
+                checked={selected.includes(k.merchant_key)}
+                onToggle={() => toggle(k.merchant_key)}
+              />
+            ))}
+          </div>
+        </Reveal>
       )}
 
       <div className="mt-5 flex flex-wrap items-end gap-3">
@@ -530,15 +534,20 @@ function ConfirmedMerchants({
         a descriptor that doesn’t belong.
       </p>
       {isPending ? (
-        <Loading />
+        <SkeletonRows count={3} />
       ) : merchants.length === 0 ? (
-        <Empty>Nothing grouped yet.</Empty>
+        <EmptyState title="Nothing grouped yet">
+          Confirm a suggestion above, or merge descriptors by hand, to group a
+          merchant.
+        </EmptyState>
       ) : (
-        <div className="space-y-4">
-          {merchants.map((m) => (
-            <MerchantCard key={m.id} merchant={m} />
-          ))}
-        </div>
+        <Reveal>
+          <div className="space-y-4">
+            {merchants.map((m) => (
+              <MerchantCard key={m.id} merchant={m} />
+            ))}
+          </div>
+        </Reveal>
       )}
     </section>
   )
@@ -653,12 +662,4 @@ function Pill({ children, className }: { children: ReactNode; className?: string
       {children}
     </span>
   )
-}
-
-function Loading() {
-  return <p className="text-sm text-mist-400">Loading…</p>
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-mist-400">{children}</p>
 }

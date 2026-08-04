@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { categoryDetailPath } from '../lib/categories'
+import { CategoryIcon } from './CategoryIcon'
 
 /**
  * A category name that opens its breakdown.
@@ -29,12 +30,12 @@ export function CategoryLink({
   showDot?: boolean
   className?: string
 }) {
+  // The colour dot is the same identifier the charts use, so a category reads
+  // the same whether it appears as a bar, a row or a link. Where the icon set
+  // has a match it replaces the dot (shape carries the meaning, identity colour
+  // stays); where it doesn't, CategoryIcon falls back to the same dot.
   const dot = showDot ? (
-    <span
-      aria-hidden
-      className="inline-block size-2 shrink-0 rounded-full"
-      style={{ backgroundColor: color ?? 'rgba(255,255,255,0.25)' }}
-    />
+    <CategoryIcon name={name} color={color} className="size-4" />
   ) : null
 
   // 'other' is CategoryBars' synthetic folded row, not a category anyone can open.

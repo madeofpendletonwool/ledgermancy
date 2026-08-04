@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { TrendPoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
+import { areaFade, lineDraw } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
-import { CHART, SERIES } from './tokens'
+import { CHART, SERIES, STATUS } from './tokens'
 
 const WIDTH = 760
 const HEIGHT = 260
@@ -20,6 +22,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  */
 export function TrendChart({ data }: { data: TrendPoint[] }) {
   const [active, setActive] = useState<number | null>(null)
+  const reduce = useReducedMotion() ?? false
 
   if (data.length === 0) {
     return (
@@ -45,6 +48,30 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
   const line = (key: 'income' | 'spending') =>
     data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(Number(d[key]))}`).join(' ')
 
+  /**
+   * The area between income and spending IS the savings (or the shortfall),
+   * so a faint fill between the two lines makes "did I save this month"
+   * readable at a glance instead of by subtraction.
+   *
+   * One polygon per segment, coloured by that segment's `leftover` (which the
+   * server already computes as income − spending): green where income sat above
+   * spending, the critical red where it did not. The fill is low-opacity and
+   * sits behind the lines, so the two series still carry the detail — the tint
+   * only carries the sign of the gap. Same axis, same two series, no new slot.
+   */
+  const gapFills = data.slice(0, Math.max(data.length - 1, 0)).map((_, i) => {
+    const d0 = data[i]
+    const d1 = data[i + 1]
+    const saved = Number(d0.leftover) + Number(d1.leftover) >= 0
+    const pts = [
+      `${x(i)},${y(Number(d0.income))}`,
+      `${x(i + 1)},${y(Number(d1.income))}`,
+      `${x(i + 1)},${y(Number(d1.spending))}`,
+      `${x(i)},${y(Number(d0.spending))}`,
+    ].join(' ')
+    return { pts, saved }
+  })
+
   const point = active !== null ? data[active] : null
 
   return (
@@ -56,7 +83,8 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
         <LegendKey color={SERIES.spending} label="Spending" />
       </div>
 
-      <div className="relative overflow-x-auto">
+      <div className="chart-scroll relative overflow-x-auto">
+        <span className="sr-only">This chart scrolls horizontally — swipe to see the rest.</span>
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           className="w-full min-w-[560px]"
@@ -115,8 +143,29 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
             />
           )}
 
-          <path d={line('income')} fill="none" stroke={SERIES.income} strokeWidth={2} />
-          <path d={line('spending')} fill="none" stroke={SERIES.spending} strokeWidth={2} />
+          {/* The shaded gap between the two lines: green where income cleared
+              spending, red where it did not. Behind the lines, low-opacity. */}
+          {gapFills.map((g, i) => (
+            <motion.polygon
+              key={i}
+              points={g.pts}
+              fill={g.saved ? SERIES.leftover : STATUS.critical}
+              {...areaFade(0.12, reduce)}
+            />
+          ))}
+
+          <motion.path
+            fill="none"
+            stroke={SERIES.income}
+            strokeWidth={2}
+            {...lineDraw(line('income'), reduce)}
+          />
+          <motion.path
+            fill="none"
+            stroke={SERIES.spending}
+            strokeWidth={2}
+            {...lineDraw(line('spending'), reduce)}
+          />
 
           {/* Markers on the hovered month, ringed in the surface colour so they
               stay legible where the two lines overlap. */}

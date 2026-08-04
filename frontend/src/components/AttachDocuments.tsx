@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, DOCUMENT_TYPES } from '../lib/api'
 import type { DocumentTarget, DocumentType, VaultDocument } from '../lib/api'
 import { formatDate } from '../lib/money'
+import { SkeletonRows } from '../components/Skeleton'
 
 /**
  * The paperclip: attach a document to a transaction, asset, account or goal,
@@ -145,7 +146,7 @@ export function AttachPanel({
           </div>
 
           {attached.isPending ? (
-            <p className="py-4 text-center text-xs text-mist-500">Loading…</p>
+            <SkeletonRows count={2} />
           ) : attached.data && attached.data.length > 0 ? (
             <ul className="mt-3 space-y-1.5">
               {attached.data.map((doc) => (

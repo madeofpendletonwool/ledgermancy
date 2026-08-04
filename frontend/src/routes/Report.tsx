@@ -83,27 +83,29 @@ export function Report() {
 
         <section>
           <h2 className="report-h2">Position today</h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Figure label="Assets" value={nw ? formatMoney(nw.assets_total) : '—'} />
             <Figure label="Liabilities" value={nw ? formatMoney(nw.liabilities_total) : '—'} />
             <Figure label="Net worth" value={nw ? formatMoney(nw.net_worth) : '—'} strong />
           </div>
           {nw && (
-            <table className="report-table mt-4">
-              <tbody>
-                <tr><td>Cash & deposits</td><td className="num">{formatMoney(nw.breakdown.cash)}</td></tr>
-                <tr><td>Investments</td><td className="num">{formatMoney(nw.breakdown.investments)}</td></tr>
-                <tr><td>Manual assets</td><td className="num">{formatMoney(nw.breakdown.manual_assets)}</td></tr>
-                <tr><td>Credit card debt</td><td className="num">{formatMoney(nw.breakdown.credit_debt)}</td></tr>
-                <tr><td>Loans</td><td className="num">{formatMoney(nw.breakdown.loan_debt)}</td></tr>
-              </tbody>
-            </table>
+            <div className="mt-4 overflow-x-auto">
+              <table className="report-table">
+                <tbody>
+                  <tr><td>Cash & deposits</td><td className="num">{formatMoney(nw.breakdown.cash)}</td></tr>
+                  <tr><td>Investments</td><td className="num">{formatMoney(nw.breakdown.investments)}</td></tr>
+                  <tr><td>Manual assets</td><td className="num">{formatMoney(nw.breakdown.manual_assets)}</td></tr>
+                  <tr><td>Credit card debt</td><td className="num">{formatMoney(nw.breakdown.credit_debt)}</td></tr>
+                  <tr><td>Loans</td><td className="num">{formatMoney(nw.breakdown.loan_debt)}</td></tr>
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
 
         <section>
           <h2 className="report-h2">Cash flow, trailing 12 months</h2>
-          <div className="grid grid-cols-4 gap-4">
+          <div className="report-cashflow-grid grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Figure label="Income" value={s ? formatMoney(s.income) : '—'} />
             <Figure label="Spending" value={s ? formatMoney(s.spending) : '—'} />
             <Figure label="Left to invest" value={s ? formatMoney(s.leftover) : '—'} strong />
@@ -123,69 +125,75 @@ export function Report() {
 
         <section className="break-inside-avoid">
           <h2 className="report-h2">Spending by category</h2>
-          <table className="report-table">
-            <thead>
-              <tr>
-                <th>Category</th><th>Type</th>
-                <th className="num">Avg / month</th><th className="num">Total / year</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(averages.data ?? []).map((c) => (
-                <tr key={c.category_id}>
-                  <td>{c.name}</td>
-                  <td className="text-mist-500">{c.is_fixed ? 'Fixed' : 'Discretionary'}</td>
-                  <td className="num">{formatMoney(c.monthly_average)}</td>
-                  <td className="num">{formatMoney(c.total)}</td>
+          <div className="overflow-x-auto">
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>Category</th><th>Type</th>
+                  <th className="num">Avg / month</th><th className="num">Total / year</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(averages.data ?? []).map((c) => (
+                  <tr key={c.category_id}>
+                    <td>{c.name}</td>
+                    <td className="text-mist-500">{c.is_fixed ? 'Fixed' : 'Discretionary'}</td>
+                    <td className="num">{formatMoney(c.monthly_average)}</td>
+                    <td className="num">{formatMoney(c.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section className="break-inside-avoid">
           <h2 className="report-h2">Month by month</h2>
-          <table className="report-table">
-            <thead>
-              <tr>
-                <th>Month</th><th className="num">Income</th>
-                <th className="num">Spending</th><th className="num">Leftover</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(trend.data ?? []).map((m) => (
-                <tr key={m.month}>
-                  <td>{m.month}</td>
-                  <td className="num">{formatMoney(m.income)}</td>
-                  <td className="num">{formatMoney(m.spending)}</td>
-                  <td className="num">{formatMoney(m.leftover)}</td>
+          <div className="overflow-x-auto">
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>Month</th><th className="num">Income</th>
+                  <th className="num">Spending</th><th className="num">Leftover</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(trend.data ?? []).map((m) => (
+                  <tr key={m.month}>
+                    <td>{m.month}</td>
+                    <td className="num">{formatMoney(m.income)}</td>
+                    <td className="num">{formatMoney(m.spending)}</td>
+                    <td className="num">{formatMoney(m.leftover)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         {(liabilities.data?.length ?? 0) > 0 && (
           <section className="break-inside-avoid">
             <h2 className="report-h2">Debt</h2>
-            <table className="report-table">
-              <thead>
-                <tr>
-                  <th>Account</th><th>Type</th>
-                  <th className="num">Rate</th><th className="num">Balance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {liabilities.data!.map((l) => (
-                  <tr key={l.id}>
-                    <td>{l.account_name}</td>
-                    <td className="text-mist-500">{l.kind}</td>
-                    <td className="num">{l.apr ? `${Number(l.apr).toFixed(2)}%` : '—'}</td>
-                    <td className="num">{formatMoney(l.balance)}</td>
+            <div className="overflow-x-auto">
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th>Account</th><th>Type</th>
+                    <th className="num">Rate</th><th className="num">Balance</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {liabilities.data!.map((l) => (
+                    <tr key={l.id}>
+                      <td>{l.account_name}</td>
+                      <td className="text-mist-500">{l.kind}</td>
+                      <td className="num">{l.apr ? `${Number(l.apr).toFixed(2)}%` : '—'}</td>
+                      <td className="num">{formatMoney(l.balance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 
@@ -207,24 +215,26 @@ export function Report() {
               {(Number(projection.data.assumptions.annual_return_rate) * 100).toFixed(1)}%
               annual return on invested assets.
             </p>
-            <table className="report-table">
-              <thead>
-                <tr><th>Horizon</th><th className="num">Projected net worth</th></tr>
-              </thead>
-              <tbody>
-                {[11, 59, 119].map((i) => {
-                  const p = projection.data!.points[i]
-                  if (!p) return null
-                  const years = Math.round((i + 1) / 12)
-                  return (
-                    <tr key={p.month}>
-                      <td>{years} year{years === 1 ? '' : 's'} ({p.month})</td>
-                      <td className="num">{formatMoney(p.net_worth)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <div className="overflow-x-auto">
+              <table className="report-table">
+                <thead>
+                  <tr><th>Horizon</th><th className="num">Projected net worth</th></tr>
+                </thead>
+                <tbody>
+                  {[11, 59, 119].map((i) => {
+                    const p = projection.data!.points[i]
+                    if (!p) return null
+                    const years = Math.round((i + 1) / 12)
+                    return (
+                      <tr key={p.month}>
+                        <td>{years} year{years === 1 ? '' : 's'} ({p.month})</td>
+                        <td className="num">{formatMoney(p.net_worth)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 

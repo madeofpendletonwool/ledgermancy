@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Continuity as ContinuityData, ContinuityHealth, ContinuityKind, ContinuityRun } from '../lib/api'
+import { SkeletonCard } from '../components/Skeleton'
 
 /**
  * The continuity panel: whether this deployment could actually be restored.
@@ -27,7 +28,12 @@ export function Continuity() {
         </p>
       </div>
 
-      {status.isPending && <p className="text-sm text-mist-500">Loading…</p>}
+      {status.isPending && (
+        <div className="space-y-4">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      )}
       {status.isError && (
         <p className="text-sm text-ember-400">
           Could not read backup status: {(status.error as Error).message}
@@ -275,7 +281,7 @@ function CoverageSection({ data }: { data: ContinuityData }) {
         not — so a feature cannot ship with data nobody backs up.
       </p>
 
-      <dl className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <dl className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Your data" value={c.in_export} hint="backup + portable export" />
         <Stat label="App internals" value={c.dump_only} hint="backup only" />
         <Stat label="Recomputed" value={c.derived} hint="rebuilt by a job" />
