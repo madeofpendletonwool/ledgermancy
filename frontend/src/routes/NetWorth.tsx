@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from 'motion/react'
 import { api, type NetWorthPoint } from '../lib/api'
 import { formatMoney, isAmortizingDebt } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { AssetDetailPanel } from '../components/AssetDetailPanel'
 import { NetWorthComposition } from '../components/charts/NetWorthComposition'
 import { lineDraw } from '../components/charts/motion'
 import { AnimatedNumber } from '../components/motion'
@@ -99,7 +100,7 @@ export function NetWorth() {
         </section>
       )}
 
-      <ManualAssets assets={manual.data ?? []} />
+      <ManualAssets assets={manual.data ?? []} liabilities={liabilities.data ?? []} />
 
       {(holdings.data?.length ?? 0) > 0 && (
         <section className="glass overflow-hidden">
@@ -393,12 +394,19 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
   )
 }
 
-function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }) {
+function ManualAssets({
+  assets,
+  liabilities,
+}: {
+  assets: import('../lib/api').ManualAsset[]
+  liabilities: import('../lib/api').Liability[]
+}) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
   const [kind, setKind] = useState('home')
   const [isLiability, setIsLiability] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['manual-assets'] })
@@ -421,43 +429,80 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
   }
 
   return (
-    <section className="glass p-6">
-      <h2 className="text-lg font-medium">Manual assets</h2>
-      <p className="mt-1 mb-4 text-sm text-mist-300">
-        Things Plaid cannot see — home equity, vehicles, a private loan.
-      </p>
+    <section className="glass overflow-hidden">
+      <div className="px-6 pt-6">
+        <h2 className="text-lg font-medium">Manual assets</h2>
+        <p className="mt-1 mb-4 text-sm text-mist-300">
+          Things Plaid cannot see — home equity, vehicles, savings bonds, a
+          private loan. Open one to record what it is worth now, see its history,
+          or tie it to the loan secured against it.
+        </p>
+      </div>
 
       {assets.length > 0 && (
-        <ul className="mb-5 divide-y divide-white/5">
+        <ul className="mb-5 divide-y divide-white/5 border-y border-white/5">
           {assets.map((a) => (
-            <li key={a.id} className="flex items-center gap-4 py-2.5 text-sm">
-              <span className="font-medium">{a.name}</span>
-              <span className="text-xs text-mist-500">{a.kind}</span>
-              <span
-                className="tabular ml-auto"
-                style={{ color: a.is_liability ? STATUS.critical : undefined }}
-              >
-                {a.is_liability ? '−' : ''}
-                {formatMoney(a.value)}
-              </span>
-              {/* Title deeds, valuations and purchase paperwork belong with the
-                  asset they describe. */}
-              <AttachDocuments
-                target={{ kind: 'manual_asset', id: a.id }}
-                label="Attach a document"
-              />
-              <button
-                className="text-xs text-mist-500 transition hover:text-ember-400"
-                onClick={() => remove.mutate(a.id)}
-              >
-                Remove
-              </button>
+            <li key={a.id}>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-2.5 text-sm">
+                <button
+                  className="flex min-w-0 items-center gap-2 text-left transition hover:text-arcane-300"
+                  aria-expanded={expanded === a.id}
+                  onClick={() => setExpanded(expanded === a.id ? null : a.id)}
+                >
+                  <span className="text-mist-500">{expanded === a.id ? '−' : '+'}</span>
+                  <span className="truncate font-medium">{a.name}</span>
+                </button>
+                <span className="text-xs text-mist-500">{a.kind}</span>
+
+                {/* A value the user has not touched in a year has probably
+                    drifted. Bonds never carry this: they revalue themselves. */}
+                {a.stale && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[11px]"
+                    style={{ backgroundColor: `${STATUS.warning}1a`, color: STATUS.warning }}
+                    title={`Last set ${a.as_of}`}
+                  >
+                    last valued {a.as_of}
+                  </span>
+                )}
+
+                {a.equity !== undefined && (
+                  <span className="text-xs text-mist-500">
+                    {formatMoney(a.equity)} equity
+                  </span>
+                )}
+
+                <span
+                  className="tabular ml-auto"
+                  style={{ color: a.is_liability ? STATUS.critical : undefined }}
+                >
+                  {a.is_liability ? '−' : ''}
+                  {formatMoney(a.value)}
+                </span>
+
+                {/* Title deeds, valuations and purchase paperwork belong with the
+                    asset they describe. */}
+                <AttachDocuments
+                  target={{ kind: 'manual_asset', id: a.id }}
+                  label="Attach a document"
+                />
+                <button
+                  className="text-xs text-mist-500 transition hover:text-ember-400"
+                  onClick={() => remove.mutate(a.id)}
+                >
+                  Remove
+                </button>
+              </div>
+
+              {expanded === a.id && (
+                <AssetDetailPanel asset={a} liabilities={liabilities} />
+              )}
             </li>
           ))}
         </ul>
       )}
 
-      <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3">
+      <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3 px-6 pb-6">
         <div className="min-w-[10rem] flex-1">
           <label className="label" htmlFor="asset-name">Name</label>
           <input id="asset-name" className="field" required value={name}
@@ -469,6 +514,7 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
             onChange={(e) => setKind(e.target.value)}>
             <option value="home">Home</option>
             <option value="vehicle">Vehicle</option>
+            <option value="bond">Savings bond</option>
             <option value="cash">Cash</option>
             <option value="collectible">Collectible</option>
             <option value="other">Other</option>
@@ -488,13 +534,13 @@ function ManualAssets({ assets }: { assets: import('../lib/api').ManualAsset[] }
         <button type="submit" className="btn-primary mb-0.5" disabled={create.isPending}>
           {create.isPending ? 'Adding…' : 'Add'}
         </button>
-      </form>
 
-      {create.isError && (
-        <p role="alert" className="mt-3 rounded-xl border border-ember-400/30 bg-ember-400/10 px-4 py-2.5 text-sm text-ember-400">
-          {create.error.message}
-        </p>
-      )}
+        {create.isError && (
+          <p role="alert" className="w-full rounded-xl border border-ember-400/30 bg-ember-400/10 px-4 py-2.5 text-sm text-ember-400">
+            {create.error.message}
+          </p>
+        )}
+      </form>
     </section>
   )
 }

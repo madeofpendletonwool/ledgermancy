@@ -457,7 +457,9 @@ Doc 32 now owns an eligibility table beside `limits.go`, and doc 31's
 - **[31-advisor-surface.md](31-advisor-surface.md)** — rename Assistant →
   Advisor, expose ~12 existing engines as chat tools (no new math), build the
   Briefing/Horizon/Assumptions/Threads shell around the chat, add household
-  profile fields and conversation/action-item persistence. The cheapest,
+  profile fields and conversation/action-item persistence, and render
+  deterministic charts inline in a chat turn from the tool results it already
+  computed (see its *Dynamic charts in chat* section). The cheapest,
   highest-leverage doc in the wave.
 - **[32-allocation-planner.md](32-allocation-planner.md)** — the multi-bucket
   allocator: split a lump and/or monthly surplus across Roth/529/brokerage/
@@ -543,11 +545,19 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00046_anomaly_overrides.sql` (doc 22) is the latest.** Applied before it:
-  `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, and `00043`–`00045`
-  (`00043_account_terms`, `00044_loan_account_outflow`,
-  `00045_one_time_transactions` — the last two are out-of-wave bugfixes that
-  landed after this table was last written).
+  **`00051_asset_revaluation.sql` (doc 26) is the latest.** Applied before it:
+  `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, `00043`–`00046`, and
+  `00047`–`00050` (`00043_account_terms`, `00044_loan_account_outflow`,
+  `00045_one_time_transactions` are out-of-wave bugfixes; `00050_merchant_logos`
+  is an out-of-wave feature).
+
+  **Reserve-ahead numbering has now been broken twice by the same mechanism**,
+  and it is worth naming: a reservation is only safe while the docs land in the
+  order the table assumes. `00050_merchant_logos.sql` was not a plan doc at all,
+  took the next free number as it must, and thereby consumed doc 26's
+  reservation. Check the migrations directory, not just this table, before
+  writing one — and take the next free number above everything applied when the
+  reservation has gone.
 
   **The old `00022`–`00032` reservations are void and have been reissued
   above `00033`.** They were allocated below `00033` before doc 18's follow-up
@@ -595,9 +605,10 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00046_anomaly_overrides.sql`~~ | 22 | `anomaly_overrides` table — **taken**. Note the scope changed: no `merchant_baselines` table ships, because a stored median/p95 cannot be made leave-one-out. See doc 22's shipped notes. |
   | ~~`00047_manual_accounts.sql`~~ | 30 | `accounts.source`/`user_id`/`is_shared`/`household_id`, `account_balance_history`, `securities.source`/`ticker_key`, `investment_transactions.source`, `recurring_obligations.auto_post`/`last_posted_date`/`posting_account_id` — **taken** |
   | ~~`00048_paystubs.sql`~~ | 23 | `employers`, `paystubs`, `paystub_lines` — **taken**. Two additions to the schema doc 23 prints, both load-bearing: `paystub_lines.is_employer` (without it a 401(k) match is summed as a deduction and every stub carrying one fails the doc's *own* `gross − Σdeductions = net` rule) and `employers.pay_frequency` (the "N pay periods left" figure divides by it, and inferring a cadence from stub gaps fails hardest on a new job — which is when the question matters most). `employers.ein` is stored sealed, as `ein_encrypted BYTEA`. **This landing before `00047` means doc 30 must ship first or renumber above it** — see doc 23's shipped notes. |
-  | `00049_digest_entries.sql` | 25 | `digest_entries` table |
-  | `00050_asset_revaluation.sql` | 26 | `asset_details` (incl. bond columns), `asset_valuations`, `savings_bond_rates`, `manual_assets.loan_account_id` |
-  | `00051_cpi_series.sql` | 27 | `cpi_series` table |
+  | ~~`00049_digest_entries.sql`~~ | 25 | `digest_entries` table — **taken** |
+  | ~~`00050_merchant_logos.sql`~~ | (out of wave) | `merchant_logos` — **taken**. Not a plan doc; the logo fetcher landed between wave-5 docs and needed a number above everything applied. It consumed doc 26's reservation, which is why the next two rows moved. |
+  | ~~`00051_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations` (+ backfill), `savings_bond_rates` (+ seed), `manual_assets.loan_account_id` — **taken**. Renumbered from the reserved `00050`, which `00050_merchant_logos.sql` had already taken. |
+  | `00057_cpi_series.sql` | 27 | `cpi_series` table. Moved up from `00051`: doc 26 had to take that number, and wave 6/7's `00052`–`00056` were already spoken for. |
   | `00052_advisor_surface.sql` | 31 | `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) |
   | `00053_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans` |
   | `00054_likelihood_layer.sql` | 33 | `plan_trackings` |

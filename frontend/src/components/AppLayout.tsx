@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
@@ -6,11 +5,12 @@ import { DropdownMenu } from './DropdownMenu'
 import { OfflineBanner } from './OfflineBanner'
 import { InstallPrompt } from './PwaPrompts'
 import { AnimatedOutlet } from './motion'
+import { MobileTabBar } from './MobileTabBar'
 import { api, isAdult } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
 
-type NavLeaf = { to: string; label: string; end?: boolean }
-type NavGroup = { label: string; items: NavLeaf[] }
+export type NavLeaf = { to: string; label: string; end?: boolean }
+export type NavGroup = { label: string; items: NavLeaf[] }
 
 // Dashboard is a bare link; everything else is grouped behind a dropdown so the
 // top bar stays to a handful of triggers rather than a dozen flat tabs.
@@ -99,7 +99,7 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
       : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
   }`
 
-// Block link used inside a dropdown panel and the mobile drawer.
+// Block link used inside a dropdown panel.
 const menuItemClass = ({ isActive }: { isActive: boolean }) =>
   `block rounded-lg px-3 py-2 text-sm transition ${
     isActive
@@ -114,16 +114,9 @@ export function AppLayout() {
   const location = useLocation()
   const navGroups = useNavGroups()
   const home = useHomeLink()
-  const [menuOpen, setMenuOpen] = useState(false)
 
   const signOut = () =>
     logout.mutate(undefined, { onSuccess: () => navigate('/login') })
-
-  // Close the mobile drawer whenever the route changes so it never lingers
-  // open on top of a freshly navigated page.
-  useEffect(() => {
-    setMenuOpen(false)
-  }, [location.pathname])
 
   return (
     <div className="min-h-screen">
@@ -169,7 +162,7 @@ export function AppLayout() {
           <div className="ml-auto flex items-center gap-2">
             <NotificationBell />
 
-            <div className="hidden lg:block">
+            <div>
               <DropdownMenu
                 label={user?.display_name ?? 'Account'}
                 menuLabel="Account"
@@ -201,119 +194,26 @@ export function AppLayout() {
                 )}
               </DropdownMenu>
             </div>
-
-            <button
-              className="btn-ghost px-2.5 py-1.5 lg:hidden"
-              aria-label="Toggle navigation"
-              aria-expanded={menuOpen}
-              aria-controls="mobile-nav"
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              {menuOpen ? (
-                <svg
-                  className="h-5 w-5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  aria-hidden="true"
-                >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              ) : (
-                <svg
-                  className="h-5 w-5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  aria-hidden="true"
-                >
-                  <path d="M4 7h16M4 12h16M4 17h16" />
-                </svg>
-              )}
-            </button>
           </div>
         </div>
 
-        {menuOpen && (
-          <nav
-            id="mobile-nav"
-            className="border-t border-white/10 bg-ink-950/70 px-4 py-3 backdrop-blur-xl lg:hidden"
-          >
-            <div className="mx-auto flex max-w-6xl flex-col gap-3">
-              <NavLink
-                to={home.to}
-                end={home.end}
-                onClick={() => setMenuOpen(false)}
-                className={mobileLinkClass}
-              >
-                {home.label}
-              </NavLink>
-
-              {navGroups.map((group) => (
-                <div key={group.label} className="flex flex-col gap-1">
-                  <span className="px-4 text-xs font-medium uppercase tracking-wide text-mist-500">
-                    {group.label}
-                  </span>
-                  {group.items.map((item) => (
-                    <NavLink
-                      key={item.to}
-                      to={item.to}
-                      onClick={() => setMenuOpen(false)}
-                      className={mobileLinkClass}
-                    >
-                      {item.label}
-                    </NavLink>
-                  ))}
-                </div>
-              ))}
-
-              <div className="mt-2 flex flex-col gap-1 border-t border-white/10 pt-3">
-                <NavLink
-                  to="/settings"
-                  onClick={() => setMenuOpen(false)}
-                  className={mobileLinkClass}
-                >
-                  Settings
-                </NavLink>
-                <button
-                  type="button"
-                  disabled={logout.isPending}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    signOut()
-                  }}
-                  className="block rounded-lg px-4 py-2.5 text-left text-sm text-mist-300 transition hover:bg-white/5 hover:text-mist-100 disabled:opacity-50"
-                >
-                  Sign out
-                </button>
-              </div>
-            </div>
-          </nav>
-        )}
         {/* Inside the sticky header, below the nav row, so it stays pinned to
             the top of the viewport. A disclosure that the figures are stale is
             worth little if it scrolls away from the figures. */}
         <OfflineBanner />
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10">
+      <main className="mx-auto max-w-6xl px-4 pt-6 pb-28 sm:px-6 sm:pt-10 sm:pb-28 lg:pb-10">
         <InstallPrompt />
         <AnimatedOutlet />
       </main>
+
+      {/* Mobile-only bottom tab bar (PWA). Hidden for child logins, whose
+          whole app is a single page with no groups. */}
+      {navGroups.length > 0 && <MobileTabBar home={home} groups={navGroups} />}
     </div>
   )
 }
-
-const mobileLinkClass = ({ isActive }: { isActive: boolean }) =>
-  `block rounded-lg px-4 py-2.5 text-sm transition ${
-    isActive
-      ? 'bg-white/10 text-mist-100'
-      : 'text-mist-300 hover:bg-white/5 hover:text-mist-100'
-  }`
 
 // NotificationBell links to the Alerts page and shows the unread event count.
 // The count is polled on a slow interval — alerts are not time-critical, and a

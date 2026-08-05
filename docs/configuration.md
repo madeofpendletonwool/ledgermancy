@@ -116,9 +116,10 @@ discovering at 6am on a Monday that every message was rejected.
 
 ## Benchmark prices (Investments page)
 
-Off by default. This is the **only** outbound request Ledgermancy makes to a host
-that is neither Plaid nor your AI provider, so it is opt-in rather than something
-you have to notice and disable. Enabling it lets a daily job fetch end-of-day
+Off by default. This is one of only two outbound requests Ledgermancy makes to a
+host that is neither Plaid nor your AI provider — the other is
+[merchant logos](#merchant-logos) — so it is opt-in rather than something you
+have to notice and disable. Enabling it lets a daily job fetch end-of-day
 index closes from [Stooq](https://stooq.com) so the Investments page can plot
 your portfolio's growth against the market. Only a ticker symbol is sent — no
 account, balance or transaction data leaves the host.
@@ -166,7 +167,7 @@ api never proxies either: if the worker has not cached a logo, the answer is a
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `MERCHANT_LOGOS_ENABLED` | `false` | Set `true` to allow the daily resolve-and-fetch pass |
-| `LOGO_DEV_TOKEN` | — | Required when enabled. Free tier: 500,000 requests/month, no card, no attribution. Sign up at [logo.dev](https://logo.dev) |
+| `LOGO_DEV_TOKEN` | — | Required when enabled. The **publishable** key (`pk_…`), not the secret one — see below. Free tier: 500,000 requests/month, no card. Sign up at [logo.dev](https://logo.dev) |
 | `MERCHANT_LOGOS_SIZE` | `128` | Requested square size in pixels. Logo.dev's ceiling is 800 |
 | `MERCHANT_LOGOS_MAX_BYTES` | `128KB` | Per-logo storage cap. A larger response is treated as "no logo" |
 
@@ -179,6 +180,38 @@ Each household can switch the imagery off for itself in **Settings →
 Appearance**. Doing so stops the lookups for that household and deletes the
 logos already cached for it — the cache is derived data about where they shop,
 and keeping it past a "no" would be keeping the part they objected to.
+
+### Which Logo.dev key, and why only one
+
+Logo.dev issues two keys and only the **publishable** one (`pk_…`) belongs in
+`LOGO_DEV_TOKEN`. There is nowhere in this app to put the secret key.
+
+That is a consequence of using exactly one Logo.dev surface. The CDN image
+endpoint, `img.logo.dev/{domain}`, authenticates with `?token=pk_…` and is free
+at 500,000 requests a month. The **Brand API** (`api.logo.dev/brand/{domain}`),
+which is what the secret key is for, returns brand profiles — colours, socials,
+descriptions — at 5 credits per call, roughly 100 calls a month on the free
+plan. Nothing here wants a brand profile, and name→domain resolution goes
+through your AI provider precisely so that no part of this feature is metered.
+The result is that turning merchant logos on cannot generate a bill.
+
+Note that Logo.dev's publishable key is designed to sit in a public image URL.
+Here it never does — the browser never talks to Logo.dev at all — so it stays
+server-side as a matter of architecture rather than of secrecy.
+
+### Attribution
+
+Logo.dev requires a visible credit ("Logos provided by Logo.dev") only for
+**commercial** use of the free tier; a personal, self-hosted instance owned by an
+individual and earning nothing does not need one. Nothing in this app renders an
+attribution link, and a login-gated self-hosted app has no public page to put one
+on in the first place.
+
+If you deploy Ledgermancy commercially and enable this on the free tier, that
+obligation is yours rather than the project's: add the credit somewhere public,
+or move to a paid plan, which removes the requirement. Check Logo.dev's
+[attribution terms](https://www.logo.dev/docs/platform/attribution) rather than
+relying on this paragraph.
 
 ## Document vault
 

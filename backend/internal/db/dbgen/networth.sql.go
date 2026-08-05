@@ -78,7 +78,7 @@ INSERT INTO manual_assets (
 )
 VALUES ($1, $2, $3, $4, $5, $6, COALESCE($8::date, CURRENT_DATE), $7,
         $9)
-RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id
+RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id, loan_account_id
 `
 
 type CreateManualAssetParams struct {
@@ -122,6 +122,7 @@ func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PersonID,
+		&i.LoanAccountID,
 	)
 	return i, err
 }
@@ -330,7 +331,7 @@ func (q *Queries) GetVisibleLiability(ctx context.Context, arg GetVisibleLiabili
 }
 
 const listManualAssets = `-- name: ListManualAssets :many
-SELECT id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC
+SELECT id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id, loan_account_id FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC
 `
 
 func (q *Queries) ListManualAssets(ctx context.Context, householdID uuid.UUID) ([]ManualAsset, error) {
@@ -355,6 +356,7 @@ func (q *Queries) ListManualAssets(ctx context.Context, householdID uuid.UUID) (
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PersonID,
+			&i.LoanAccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -739,7 +741,7 @@ UPDATE manual_assets
 SET name = $3, kind = $4, value = $5, is_liability = $6, notes = $7,
     person_id = $8, as_of = CURRENT_DATE
 WHERE id = $1 AND household_id = $2
-RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id
+RETURNING id, household_id, created_by, name, kind, value, is_liability, as_of, notes, created_at, updated_at, person_id, loan_account_id
 `
 
 type UpdateManualAssetParams struct {
@@ -778,6 +780,7 @@ func (q *Queries) UpdateManualAsset(ctx context.Context, arg UpdateManualAssetPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PersonID,
+		&i.LoanAccountID,
 	)
 	return i, err
 }

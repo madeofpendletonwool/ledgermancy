@@ -62,9 +62,10 @@ balance. Plotting the raw balance here would make a portfolio that received a
 large deposit appear to beat every benchmark while having underperformed all of
 them — the most convincing wrong thing the app could draw.
 
-Benchmark prices are **off by default**. Fetching them is the only outbound
-request Ledgermancy makes to a host that is neither Plaid nor your AI provider,
-so it is opt-in — see
+Benchmark prices are **off by default**. Fetching them is one of only two
+outbound requests Ledgermancy makes to a host that is neither Plaid nor your AI
+provider — the other is [merchant logos](merchants.md#merchant-imagery) — so it
+is opt-in; see
 [Benchmark prices](../configuration.md#benchmark-prices-investments-page). With
 it off, your own line still plots.
 

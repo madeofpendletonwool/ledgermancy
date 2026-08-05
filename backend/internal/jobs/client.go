@@ -105,6 +105,15 @@ const merchantSuggestInterval = 24 * time.Hour
 // fetched exactly once ever, so a tighter cadence would re-read an empty list.
 const merchantLogoInterval = 24 * time.Hour
 
+// bondRevalueInterval is how often directly-held bonds are revalued.
+//
+// Daily, even though a savings bond only changes value on an accrual date (the
+// first of the month). The job skips writing when the figure has not moved, so
+// the extra runs cost a read and nothing else — and a daily cadence means a
+// bond added mid-month is valued within a day rather than waiting for the next
+// month to roll over.
+const bondRevalueInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -238,6 +247,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register allowance worker: %w", err)
 	}
 
+	// Bond revaluation is deterministic arithmetic over the seeded rate table,
+	// so it is registered unconditionally — no API key, no network, nothing to
+	// configure. It needs the pool because each revaluation writes the current
+	// value and its history row in one transaction.
+	if err := river.AddWorkerSafely(workers, &RevalueBondsWorker{
+		Pool: pool, Queries: queries,
+	}); err != nil {
+		return nil, fmt.Errorf("register bond revaluation worker: %w", err)
+	}
+
 	config.PeriodicJobs = []*river.PeriodicJob{
 		river.NewPeriodicJob(
 			river.PeriodicInterval(snapshotInterval),
@@ -287,6 +306,15 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(insightInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return GenerateInsightsAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Bond revaluation. RunOnStart because a bond added while the worker
+		// was down should not wait a day for its first honest figure.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(bondRevalueInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return RevalueBondsAllArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
@@ -441,6 +469,14 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Queries: queries, Client: client,
 	}); err != nil {
 		return nil, fmt.Errorf("register insights sweep worker: %w", err)
+	}
+
+	// The bond sweep enqueues per-household revaluations, so it needs the
+	// client and is registered after construction.
+	if err := river.AddWorkerSafely(workers, &RevalueBondsAllWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register bond revaluation sweep worker: %w", err)
 	}
 
 	// The merchant sweep enqueues per-household passes, so it needs the client

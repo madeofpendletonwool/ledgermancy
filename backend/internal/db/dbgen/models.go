@@ -107,12 +107,48 @@ type AnomalyOverride struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+type AssetDetail struct {
+	ID            uuid.UUID           `json:"id"`
+	ManualAssetID uuid.UUID           `json:"manual_asset_id"`
+	Address       *string             `json:"address"`
+	Beds          decimal.NullDecimal `json:"beds"`
+	Baths         decimal.NullDecimal `json:"baths"`
+	Sqft          *int32              `json:"sqft"`
+	LotSqft       *int32              `json:"lot_sqft"`
+	Year          *int32              `json:"year"`
+	Make          *string             `json:"make"`
+	Model         *string             `json:"model"`
+	Trim          *string             `json:"trim"`
+	Mileage       *int32              `json:"mileage"`
+	AnnualMileage *int32              `json:"annual_mileage"`
+	BondSeries    *string             `json:"bond_series"`
+	IssueDate     *stdtime.Time       `json:"issue_date"`
+	PurchasePrice decimal.NullDecimal `json:"purchase_price"`
+	FaceValue     decimal.NullDecimal `json:"face_value"`
+	CouponRate    decimal.NullDecimal `json:"coupon_rate"`
+	MaturityDate  *stdtime.Time       `json:"maturity_date"`
+	TaxExempt     *bool               `json:"tax_exempt"`
+	Condition     *string             `json:"condition"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+	UpdatedAt     stdtime.Time        `json:"updated_at"`
+}
+
 type AssetPrice struct {
 	ID        uuid.UUID       `json:"id"`
 	Ticker    string          `json:"ticker"`
 	AsOf      stdtime.Time    `json:"as_of"`
 	Close     decimal.Decimal `json:"close"`
 	CreatedAt stdtime.Time    `json:"created_at"`
+}
+
+type AssetValuation struct {
+	ID            uuid.UUID       `json:"id"`
+	ManualAssetID uuid.UUID       `json:"manual_asset_id"`
+	Value         decimal.Decimal `json:"value"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	Source        string          `json:"source"`
+	Note          *string         `json:"note"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
 }
 
 type AuthEvent struct {
@@ -385,18 +421,20 @@ type Liability struct {
 }
 
 type ManualAsset struct {
-	ID          uuid.UUID       `json:"id"`
-	HouseholdID uuid.UUID       `json:"household_id"`
-	CreatedBy   *uuid.UUID      `json:"created_by"`
-	Name        string          `json:"name"`
-	Kind        string          `json:"kind"`
-	Value       decimal.Decimal `json:"value"`
-	IsLiability bool            `json:"is_liability"`
-	AsOf        stdtime.Time    `json:"as_of"`
-	Notes       *string         `json:"notes"`
-	CreatedAt   stdtime.Time    `json:"created_at"`
-	UpdatedAt   stdtime.Time    `json:"updated_at"`
-	PersonID    *uuid.UUID      `json:"person_id"`
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID uuid.UUID  `json:"household_id"`
+	CreatedBy   *uuid.UUID `json:"created_by"`
+	Name        string     `json:"name"`
+	// home | vehicle | cash | collectible | bond | other | debt
+	Kind          string          `json:"kind"`
+	Value         decimal.Decimal `json:"value"`
+	IsLiability   bool            `json:"is_liability"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	Notes         *string         `json:"notes"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
+	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	PersonID      *uuid.UUID      `json:"person_id"`
+	LoanAccountID *uuid.UUID      `json:"loan_account_id"`
 }
 
 type MerchantAlias struct {
@@ -590,6 +628,16 @@ type RecurringOverride struct {
 	MerchantKey   string       `json:"merchant_key"`
 	MerchantLabel string       `json:"merchant_label"`
 	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
+type SavingsBondRate struct {
+	ID            uuid.UUID           `json:"id"`
+	Series        string              `json:"series"`
+	PeriodStart   stdtime.Time        `json:"period_start"`
+	FixedRate     decimal.Decimal     `json:"fixed_rate"`
+	InflationRate decimal.NullDecimal `json:"inflation_rate"`
+	SourceUrl     string              `json:"source_url"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
 }
 
 type Security struct {

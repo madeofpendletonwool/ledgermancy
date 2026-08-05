@@ -741,23 +741,63 @@ type manualAssetResponse struct {
 	IsLiability bool            `json:"is_liability"`
 	AsOf        string          `json:"as_of"`
 	Notes       *string         `json:"notes"`
+
+	// Equity, present only when a loan is linked. These are DISPLAY figures:
+	// net worth already counts the asset as an asset and the loan as a
+	// liability, so adding equity to the sum would count the asset twice.
+	LoanAccountID *uuid.UUID       `json:"loan_account_id,omitempty"`
+	LoanName      *string          `json:"loan_name,omitempty"`
+	LoanBalance   *decimal.Decimal `json:"loan_balance,omitempty"`
+	Equity        *decimal.Decimal `json:"equity,omitempty"`
+	PaidFraction  *decimal.Decimal `json:"paid_fraction,omitempty"`
+	Underwater    bool             `json:"underwater,omitempty"`
+
+	// Stale marks a value old enough that it has probably drifted from
+	// reality. The date is already in AsOf; this saves every client
+	// reimplementing the threshold and disagreeing about it.
+	Stale      bool    `json:"stale"`
+	BondSeries *string `json:"bond_series,omitempty"`
 }
 
 func (s *Server) handleListManualAssets(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
-	rows, err := s.Queries.ListManualAssets(r.Context(), identity.HouseholdID)
+	rows, err := s.Queries.ListManualAssetsWithLoans(r.Context(), dbgen.ListManualAssetsWithLoansParams{
+		HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+	})
 	if err != nil {
 		s.internalError(w, "list manual assets", err)
 		return
 	}
 
+	staleBefore := networth.StaleBefore(time.Now().UTC())
+
 	out := make([]manualAssetResponse, 0, len(rows))
 	for _, a := range rows {
-		out = append(out, manualAssetResponse{
+		item := manualAssetResponse{
 			ID: a.ID, Name: a.Name, Kind: a.Kind, Value: a.Value,
 			IsLiability: a.IsLiability, AsOf: a.AsOf.Format(time.DateOnly), Notes: a.Notes,
-		})
+			BondSeries: a.DetailBondSeries,
+		}
+
+		// A bond is never "stale": it revalues itself every month from
+		// published rates, so flagging one would be asking the user to confirm
+		// arithmetic the app has already done.
+		item.Stale = !a.IsLiability && a.DetailBondSeries == nil &&
+			a.Kind != "bond" && !a.AsOf.After(staleBefore)
+
+		if a.LoanAccountID != nil && a.LoanBalance.Valid {
+			e := networth.ComputeEquity(a.Value, a.LoanBalance.Decimal)
+			balance, owned, paid := a.LoanBalance.Decimal, e.Owned, e.PaidFraction
+			item.LoanAccountID = a.LoanAccountID
+			item.LoanName = a.LoanName
+			item.LoanBalance = &balance
+			item.Equity = &owned
+			item.PaidFraction = &paid
+			item.Underwater = e.Underwater
+		}
+
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

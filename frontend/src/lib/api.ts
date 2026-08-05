@@ -1123,6 +1123,107 @@ export interface ManualAsset {
   is_liability: boolean
   as_of: string
   notes: string | null
+
+  /**
+   * Equity, present only when a loan is linked. These are DISPLAY figures —
+   * net worth already counts the asset as an asset and the loan as a
+   * liability, so equity must never be added to a total.
+   */
+  loan_account_id?: string
+  loan_name?: string
+  loan_balance?: string
+  equity?: string
+  paid_fraction?: string
+  underwater?: boolean
+
+  /** The recorded value is old enough to have drifted. Bonds are never stale. */
+  stale: boolean
+  bond_series?: string
+}
+
+/** Class-specific asset metadata. Every field is optional by design. */
+export interface AssetDetail {
+  address: string | null
+  beds: string | null
+  baths: string | null
+  sqft: number | null
+  lot_sqft: number | null
+
+  year: number | null
+  make: string | null
+  model: string | null
+  trim: string | null
+  mileage: number | null
+  annual_mileage: number | null
+
+  bond_series: string | null
+  issue_date: string | null
+  purchase_price: string | null
+  face_value: string | null
+  coupon_rate: string | null
+  maturity_date: string | null
+  tax_exempt: boolean | null
+
+  condition: string | null
+}
+
+export interface AssetValuation {
+  value: string
+  as_of: string
+  /** 'manual' the user typed it, 'estimated' the app computed it, 'api' external. */
+  source: string
+  note: string | null
+}
+
+/**
+ * A proposed revaluation. It is a PROPOSAL: rendering it must never be mistaken
+ * for the app having changed anything, which is why `estimate` rides along in
+ * the payload rather than being assumed by the caller.
+ */
+export interface AssetSuggestion {
+  ok: boolean
+  reason?: string
+  value?: string
+  change?: string
+  current: string
+  basis?: string
+  estimate: boolean
+}
+
+/** One published rate period that went into a bond valuation. */
+export interface AppliedBondRate {
+  period_start: string
+  announced: string
+  fixed_rate: string
+  inflation_rate: string | null
+  composite_rate: string
+  months: number
+}
+
+export interface BondValue {
+  ok: boolean
+  reason?: string
+  /** What the bond could be turned into today — the figure that enters net worth. */
+  redemption_value: string
+  /** What it has earned. Higher than redemption inside the first five years. */
+  accrued_value: string
+  penalty_applied: boolean
+  doubling_applied: boolean
+  matured: boolean
+  as_of: string
+  valued_through: string
+  final_maturity?: string
+  basis?: string
+  months_to_doubling?: number
+  rates: AppliedBondRate[]
+}
+
+export interface SavingsBondRate {
+  series: string
+  period_start: string
+  fixed_rate: string
+  inflation_rate: string | null
+  source_url: string
 }
 
 // --- Investments ----------------------------------------------------------
@@ -3061,6 +3162,35 @@ export const api = {
 
   deleteManualAsset: (id: string) =>
     request<void>('DELETE', `/api/manual-assets/${id}`),
+
+  assetDetail: (id: string) =>
+    request<AssetDetail>('GET', `/api/manual-assets/${id}/detail`),
+
+  saveAssetDetail: (id: string, input: Partial<AssetDetail>) =>
+    request<AssetDetail>('PUT', `/api/manual-assets/${id}/detail`, input),
+
+  assetValuations: (id: string) =>
+    request<AssetValuation[]>('GET', `/api/manual-assets/${id}/valuations`),
+
+  /** The ONLY call that changes an asset's value. Estimates never write. */
+  recordValuation: (
+    id: string,
+    input: { value: string; as_of?: string; source?: string; note?: string },
+  ) => request<ManualAsset>('POST', `/api/manual-assets/${id}/valuations`, input),
+
+  assetSuggestion: (id: string) =>
+    request<AssetSuggestion>('GET', `/api/manual-assets/${id}/suggestion`),
+
+  bondValue: (id: string) =>
+    request<BondValue>('GET', `/api/manual-assets/${id}/bond`),
+
+  linkAssetLoan: (id: string, loanAccountID: string | null) =>
+    request<ManualAsset>('PUT', `/api/manual-assets/${id}/loan`, {
+      loan_account_id: loanAccountID,
+    }),
+
+  savingsBondRates: () =>
+    request<SavingsBondRate[]>('GET', '/api/savings-bond-rates'),
 
   // --- Investments --------------------------------------------------------
   investments: () => request<InvestmentOverview>('GET', '/api/investments/'),

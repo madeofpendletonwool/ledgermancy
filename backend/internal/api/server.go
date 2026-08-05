@@ -555,6 +555,27 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/", s.handleListManualAssets)
 			r.Post("/", s.handleCreateManualAsset)
 			r.Delete("/{assetID}", s.handleDeleteManualAsset)
+
+			// Revaluation, depreciation and bonds (doc 26). Note which of these
+			// write: only POST /valuations does. The suggestion endpoint
+			// computes a proposal and returns it — net worth never moves on an
+			// estimate the user has not accepted.
+			r.Get("/{assetID}/detail", s.handleGetAssetDetail)
+			r.Put("/{assetID}/detail", s.handleUpsertAssetDetail)
+			r.Get("/{assetID}/valuations", s.handleListValuations)
+			r.Post("/{assetID}/valuations", s.handleCreateValuation)
+			r.Get("/{assetID}/suggestion", s.handleAssetSuggestion)
+			r.Get("/{assetID}/bond", s.handleBondValue)
+			r.Put("/{assetID}/loan", s.handleLinkAssetLoan)
+		})
+
+		// The published savings-bond rate table. Readable and editable on
+		// purpose: a bundled table of numbers is only defensible if the user
+		// can check it against treasurydirect.gov and correct a row.
+		r.Route("/savings-bond-rates", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListBondRates)
+			r.Put("/", s.handleUpsertBondRate)
 		})
 
 		r.Route("/export", func(r chi.Router) {

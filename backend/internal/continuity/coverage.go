@@ -125,6 +125,16 @@ var tableCoverage = map[string]Coverage{
 	"liabilities":             InExport,
 	"manual_assets":           InExport,
 	"account_contributions":   InExport,
+	// The class-specific facts about an asset — a bond's series and issue date,
+	// a car's model year and odometer. Typed in by hand, and without them a
+	// restored bond cannot be valued at all: it falls back to a frozen number,
+	// which is the exact condition doc 26 exists to remove.
+	"asset_details": InExport,
+	// Every dated valuation. manual_assets.value carries only the CURRENT
+	// figure, so losing this loses the trend behind it permanently — the same
+	// reasoning as net_worth_snapshots directly above. A house's five-year
+	// appreciation cannot be reconstructed from its present value.
+	"asset_valuations": InExport,
 	// account_terms is the sharper half of the pair above it. liabilities is a
 	// mirror of Plaid and a resync rebuilds it; account_terms is the APR and the
 	// monthly payment a person typed in, for the majority of institutions Plaid
@@ -190,7 +200,14 @@ var tableCoverage = map[string]Coverage{
 	"digest_deliveries": DumpOnly, // per-period dedupe keys
 	"backup_runs":       DumpOnly, // this package's own state
 	"asset_prices":      DumpOnly, // cache of third-party closes, refetchable
-	"pfc_category_map":  DumpOnly, // seeded by migration 00002; a fresh schema has it
+	// Published Treasury rates, seeded by migration 00051 — a fresh schema has
+	// them. DumpOnly rather than InExport because none of it is the
+	// household's: it is public reference data, identical in every install, and
+	// the portable export exists to carry what is theirs. A household that
+	// edited a row keeps that edit through the dump, which is the restore path
+	// that matters.
+	"savings_bond_rates": DumpOnly,
+	"pfc_category_map":   DumpOnly, // seeded by migration 00002; a fresh schema has it
 
 	// --- Derived: a job rebuilds these ------------------------------------
 	"alert_events":      Derived, // alerts.Evaluate, on the next sweep

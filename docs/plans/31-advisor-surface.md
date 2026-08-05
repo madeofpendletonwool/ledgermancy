@@ -16,7 +16,9 @@ none of them are reachable from the chat.
 
 This doc is the cheapest, highest-leverage step in the wave: **rename the
 route, expose ~12 existing engines as chat tools, and build the page shell
-around the chat.** No new math. No new tables beyond conversation/action-item
+around the chat.** Deterministic charts render inline in a chat turn, driven
+by the tool results the turn already computed (see *Dynamic charts in chat*
+below). No new math. No new tables beyond conversation/action-item
 persistence and a few household-profile columns. Doc 24 adds the ranker, doc
 32 the multi-bucket allocator, doc 33 the likelihood layer — all layered on
 the tools and surface this doc establishes.
@@ -340,6 +342,110 @@ The beneficiary currency nudge is a deterministic insight producer: a Roth
 or 401(k) with `beneficiary_person_id IS NULL` or a beneficiary under 18
 yields one insight per account per quarter, dismissible.
 
+## Dynamic charts in chat
+
+A question like "what have we spent vs saved over the last 6 months, and
+what's our average leftover" is answered today as a Markdown table — the
+`monthly_trend` tool (`chat_handlers.go:633`) already returns the series, and
+the model renders it as prose. The Spending page visualizes the *same* series
+as a chart (`TrendChart.tsx`). The chat should too. This section adds
+**deterministic charts rendered inline in an assistant turn**, driven by the
+tool results the turn already computed.
+
+**The gap is the delivery channel, not the data or the renderer.** `POST
+/api/chat` is a text-only SSE stream today — `{"delta"}`, `{"done"}`,
+`{"error"}` (`chat_handlers.go:96-128`). Tool results are JSON strings handed
+*only to the model* as `ToolResultBlock` text (`chat_handlers.go:177`); the
+client only ever sees the model's Markdown (`Assistant.tsx:212`). To render a
+chart we add one structured frame and a client-side mapper. No new math, no
+new tables.
+
+### The rule this must honor
+
+The wave's load-bearing rule — **AI never computes; tools compute, the model
+narrates** — extends to charts unchanged. Concretely:
+
+- **The model never picks a chart type, never shapes data, and never labels an
+  axis.** Chart selection is a deterministic map from *tool name* to *chart
+  component*, hardcoded on the client. A wrong tool pick renders the wrong
+  chart — the same visible, debuggable failure mode as today's wrong-tool-pick
+  rendering wrong prose.
+- **Reference lines are server-computed scalars.** "Average leftover" is not
+  derived on the client from the series; the tool returns it as a field (one
+  `AVG` in SQL, or a Go computation in decimal), exactly the way
+  `StringFixed(2)` totals are returned today. A chart's average / budget /
+  target line is a finished figure, never a client- or model-derived one.
+- **A chart must reconcile with the page and the prose.** The TrendChart in
+  chat, the TrendChart on the Spending page, and the model's stated figures
+  all derive from the same tool/engine — the doc-24/doc-31 "two surfaces must
+  agree" rule, now extended to a third. This is the property most "AI charts"
+  products lose (the LLM-generated chart silently drifts from the dashboard);
+  here the architecture forbids the drift by construction.
+
+### Backend — one new SSE frame
+
+Alongside the existing `delta` / `done` / `error` frames, emit a structured
+frame per tool result so the client can render it:
+
+```
+{"tool": "monthly_trend", "result": [ {month, income, spending, leftover, ...} ]}
+```
+
+This is emitted from inside `runChat` (`chat_handlers.go:135`) at the point a
+tool result is already in hand — the same value that becomes the
+`ToolResultBlock` is also forwarded to the client. The model's narration
+stream is unchanged. The frame rides the same SSE response; the existing
+`X-Accel-Buffering: no` flush discipline applies. Persisting it is free: it is
+already part of the turn's `tool_trace` (the Data model above stores the tool
+calls and results behind an assistant turn), so a reloaded thread re-renders
+its charts alongside its prose.
+
+### Frontend — a tool→chart mapper, chat-sized
+
+A single `<ChartAttachment>` component receives the `{tool, result}` frame and
+dispatches to an existing chart component from `frontend/src/components/charts/`.
+The mapping is exhaustive and deterministic; an unmapped tool renders no chart
+(the prose still stands). The v1 set reuses components that already ship:
+
+| Tool | Chart component | Notes |
+|---|---|---|
+| `monthly_trend` | `TrendChart` (or `MonthlyBars`) | Add a server-computed `avg_leftover` reference line for the "average leftover" question. |
+| `spending_by_day` | `DayBars` / `SpendingHeatmap` | A month's daily spend. |
+| `spend_by_category`, `category_averages` | `CategoryBars` | Largest-first; the same component the Spending page uses. |
+| `top_merchants` | `MerchantPareto` | |
+| `net_worth` | `NetWorthComposition` | |
+| `budget_status` | `CategoryBars` | Over/under coloring. |
+
+The chart components are page-sized today (`TrendChart` is 760×260); a chat
+bubble is narrower. Two acceptable answers, picked per component: render at
+page width and let the existing `.chart-scroll` overflow pattern
+(`index.css:352`) scroll inside the bubble, or ship a chat-sized variant for
+the two or three most common charts. Either keeps the validated chart palette
+(`charts/tokens.ts`) and scale helpers (`charts/scale.ts`) unchanged.
+
+**Streaming:** a chart cannot draw token-by-token. The clean pattern is to
+stream the prose as today and mount the chart the moment its tool-result frame
+lands — which is *before* the final prose, because tool calls complete earlier
+in the `runChat` loop. The chart appears while the answer composes, which
+reads as native.
+
+### Tool-set classifier emits a chart hint (the natural completion)
+
+The AI-notes classifier above (keyword → tool set) already decides which tools
+a turn sees. Extend it to also emit a `chart` hint per tool, so "spent vs
+saved over the last 6 months" deterministically routes to `monthly_trend`
+**and** tags `chart: trend_with_avg`. The chart then renders whether the model
+mentions it or not, and — like every other advisor surface — renders with no
+AI key configured. This is the endpoint, not the v1: ship the structured frame
+and mapper first (they work without the classifier), then wire the hint.
+
+### No new migration
+
+This section adds no tables or columns. It reuses this doc's
+`00052_advisor_surface.sql` and, for persistence, the `advisor_messages.tool_trace`
+column the Data model already defines. The structured frame is a transport
+detail; nothing about it is queryable.
+
 ## Verification
 
 Decimal-exact, table-driven, mirroring `chat_handlers_test.go`.
@@ -374,6 +480,15 @@ Decimal-exact, table-driven, mirroring `chat_handlers_test.go`.
   transitions enforced; household scope on every mutation.
 - **`ErrDisabled` path:** with `AI_API_KEY` blank, `GET /api/advisor/briefing`
   and the Options/Horizon panels render with no narration and no error.
+- **Charts render from tool results, not model output:** the structured frame
+  carries the same JSON the model received; a `monthly_trend` turn renders a
+  TrendChart whose points equal the `/api/reports/trend` series for the same
+  window. The `avg_leftover` reference line equals the decimal mean of the
+  series computed server-side — assert it matches to the cent.
+- **`ErrDisabled` charts:** with `AI_API_KEY` blank, a deterministic question
+  that maps to a charted tool still renders the chart (the tool-result frame
+  flows without narration); the classifier `chart` hint is not required for a
+  chart to appear.
 - **Build:** `cd backend && go build ./... && go vet ./... && go test -p 1 ./...`
   with `TEST_DATABASE_URL`. Frontend: `tsc -b && vite build && oxlint`.
 
@@ -385,3 +500,8 @@ Decimal-exact, table-driven, mirroring `chat_handlers_test.go`.
 - Executing anything. No transfers, no payments, ever.
 - Scenario modelling (doc 28, wave 7). The Scenario launchpad tile is a
   placeholder until 28 ships.
+- **Model-authored chart specs.** The model does not generate Vega-Lite,
+  ECharts, or any free-form chart JSON. Chart selection is a deterministic
+  tool→component map (see *Dynamic charts in chat*); a constrained spec that
+  only references a tool result by id collapses back into that map, so it is
+  not added as a separate path.
