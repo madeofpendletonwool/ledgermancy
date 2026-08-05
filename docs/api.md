@@ -62,6 +62,23 @@ by-day, trend, averages, merchants, recurring, net-worth + history + projection,
 holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
 preferences/capabilities).
 
+### Merchant logos
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/merchants/logo` | ✓ | `key` = the **resolved** merchant key. Returns the cached image bytes, with the content type **sniffed from the bytes** rather than read from the stored column, plus `nosniff` and `Cache-Control: private`. Adult-only |
+
+`404` is the ordinary answer, and the frontend is built around it: the operator
+never enabled the feature, the household opted out in **Settings → Appearance**,
+the merchant never resolved to a domain, or the domain had no logo — all four
+return the same response and the avatar falls back to its monogram. Nothing here
+reveals which.
+
+This endpoint is **not a proxy**. It never contacts Logo.dev: a logo is fetched
+by the worker, once per merchant, and cached, so a page render never depends on
+a third party being reachable. See
+[Security](security.md#merchant-logos-add-a-host-but-never-to-the-browser).
+
 ### Digests
 
 The stored digest history. Unlike every other read on this page these are scoped

@@ -514,7 +514,11 @@ retire" via tool calls over these projections).
 
 Delivered as described below; see "Recently shipped" for what landed. One note
 on the description: entity logos stayed out deliberately — they are an outbound
-dependency the app otherwise does not have.
+dependency the app otherwise does not have. They have since landed as an
+explicitly opt-in one (MAD-38, `MERCHANT_LOGOS_ENABLED`, off by default), which
+is the shape that reservation was asking for rather than a reversal of it: the
+default imagery is still the locally-generated monogram, and the browser still
+contacts nothing.
 
 **Problem.** Every finance app suffers from merchant-string fragmentation:
 `AMAZON.COM AMZN.COM/BILL WA`, `AMZ*ORDER 1234`, `AMAZON.COM*ABCD1` are all

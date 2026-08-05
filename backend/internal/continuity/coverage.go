@@ -196,6 +196,13 @@ var tableCoverage = map[string]Coverage{
 	"alert_events":      Derived, // alerts.Evaluate, on the next sweep
 	"insights":          Derived, // insights.Generate, on the next sweep
 	"monthly_summaries": Derived, // jobs.SummaryRefreshWorker, per completed month
+	// jobs.FetchMerchantLogosWorker, on the next daily sweep. Derived rather
+	// than DumpOnly on purpose: it IS in the dump, so a restore does not spend
+	// a fresh round of third-party requests re-fetching what it already had —
+	// but nothing in it is the household's, so it stays out of the portable
+	// export, which exists to outlive this app. Public brand imagery is the
+	// last thing worth carrying into a spreadsheet.
+	"merchant_logos": Derived,
 
 	// --- Ephemeral --------------------------------------------------------
 	"sessions":       Ephemeral, // restoring these would resurrect logins

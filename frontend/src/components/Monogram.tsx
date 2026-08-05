@@ -17,6 +17,8 @@
  * browsers. FNV-1a gives that without depending on a crypto hash.
  */
 
+import { AVATAR_BOX, type AvatarSize } from '../lib/avatar'
+
 /**
  * Curated 12-hue palette. All shades hold white text at large/bold sizes (the
  * only place the palette is used is behind a semibold glyph). Warm hues use the
@@ -66,24 +68,6 @@ function monogramLetter(name: string): string {
   return (found ?? chars[0] ?? '?').toUpperCase()
 }
 
-export type MonogramSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl'
-
-/**
- * Box size, corner radius and glyph size move together so proportions hold.
- *
- * Exported because MerchantAvatar renders a fetched logo in the same slot when
- * the opt-in logo fetcher is on. A logo that is a pixel off the monogram it
- * replaces makes every list jump as images arrive, so the two must share one
- * definition rather than agreeing by hand.
- */
-export const MONOGRAM_BOX: Record<MonogramSize, string> = {
-  xs: 'size-5 rounded-md text-[11px]',
-  sm: 'size-6 rounded-md text-xs',
-  md: 'size-8 rounded-lg text-[15px]',
-  lg: 'size-10 rounded-lg text-lg',
-  xl: 'size-12 rounded-xl text-xl',
-}
-
 /**
  * Render-only. The merchant name is always shown as text beside the avatar, so
  * the glyph is decorative (`aria-hidden`) — it must never be the only copy of
@@ -96,13 +80,13 @@ export function Monogram({
   className = '',
 }: {
   name: string
-  size?: MonogramSize
+  size?: AvatarSize
   className?: string
 }) {
   return (
     <span
       aria-hidden
-      className={`inline-flex shrink-0 items-center justify-center font-semibold tracking-tight text-white/95 ${MONOGRAM_BOX[size]} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center font-semibold tracking-tight text-white/95 ${AVATAR_BOX[size]} ${className}`}
       style={{ backgroundColor: monogramColor(name) }}
     >
       {monogramLetter(name)}

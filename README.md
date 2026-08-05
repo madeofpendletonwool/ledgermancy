@@ -65,8 +65,10 @@ you do all the math. Ledgermancy is neither.
   AI provider — plus, only if you switch them on, a mail server for the emailed
   digest (`SMTP_HOST`), a daily index-price fetch for the Investments page's
   benchmark chart (`BENCHMARK_PRICES_ENABLED`), receipt OCR through your AI
-  provider (`DOCUMENTS_OCR_ENABLED`), and an S3 bucket you nominate for document
-  storage. All four are off by default.
+  provider (`DOCUMENTS_OCR_ENABLED`), merchant logos fetched server-side and
+  cached locally (`MERCHANT_LOGOS_ENABLED` — your browser never talks to the
+  logo host), and an S3 bucket you nominate for document storage. All five are
+  off by default.
 
 ## Features
 

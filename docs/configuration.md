@@ -134,6 +134,52 @@ simply shows your own line with nothing to compare it against, and says so.
 A failed fetch degrades to a missing series: the job logs a warning, stores what
 it did get, and never fails or retry-storms over a chart decoration.
 
+## Merchant logos
+
+**Off by default.** This is the second of the two switches that add a host which
+is neither Plaid nor your AI provider, and unlike the benchmark fetch above it
+sends a merchant *name* rather than a ticker.
+
+Every merchant already has imagery without this: a coloured tile carrying its
+first letter, generated locally from the name, identical on every reload. Turning
+this on replaces that tile with the company's real logo where one can be found,
+and leaves the tile everywhere else.
+
+**How it works.** Once a day the worker takes the merchants it has not seen
+before and asks your AI provider which website each one is — "Blue Bottle
+Coffee" → `bluebottlecoffee.com`. It then asks [Logo.dev](https://logo.dev) for
+that domain's logo, stores the image in the database, and serves it from this
+app. Both steps happen **once per merchant, ever**: a merchant with a logo is
+never re-fetched, and a merchant without one is recorded as having none and
+never asked about again.
+
+**What leaves the host.** To your AI provider, the merchant's name — which it
+already sees during categorisation, so this step adds no new destination. To
+Logo.dev, a domain, one request per merchant. No amount, balance, account, date
+or transaction reaches either one.
+
+**Your browser never contacts Logo.dev.** Every image is fetched server-side and
+served from this origin, so a page still loads nothing from a third party. The
+api never proxies either: if the worker has not cached a logo, the answer is a
+404 and the monogram is used.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `MERCHANT_LOGOS_ENABLED` | `false` | Set `true` to allow the daily resolve-and-fetch pass |
+| `LOGO_DEV_TOKEN` | — | Required when enabled. Free tier: 500,000 requests/month, no card, no attribution. Sign up at [logo.dev](https://logo.dev) |
+| `MERCHANT_LOGOS_SIZE` | `128` | Requested square size in pixels. Logo.dev's ceiling is 800 |
+| `MERCHANT_LOGOS_MAX_BYTES` | `128KB` | Per-logo storage cap. A larger response is treated as "no logo" |
+
+Enabling this **also needs `AI_API_KEY`**: Logo.dev is keyed by domain only, and
+the AI provider is what turns a merchant name into one. The app refuses to start
+if the switch is on without a key or a token, rather than presenting a feature
+that quietly does nothing.
+
+Each household can switch the imagery off for itself in **Settings →
+Appearance**. Doing so stops the lookups for that household and deletes the
+logos already cached for it — the cache is derived data about where they shop,
+and keeping it past a "no" would be keeping the part they objected to.
+
 ## Document vault
 
 Receipts, tax returns, warranties, policies and contracts, encrypted with

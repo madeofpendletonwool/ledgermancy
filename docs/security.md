@@ -155,6 +155,52 @@ again". This is a privacy property as much as a performance one: without the
 cache, matching a receipt to a charge that posted three days later would mean
 uploading it a second time.
 
+## Merchant logos add a host, but never to the browser
+
+`MERCHANT_LOGOS_ENABLED` is off by default and is a **separate switch from
+`AI_API_KEY`**, for the same reason receipt OCR is: configuring a model to sort
+your spending is not the same as agreeing to tell a logo company which shops you
+use.
+
+**Nothing changes in the browser's request list.** The obvious way to build this
+feature is an `<img src="https://img.logo.dev/...">`, and that is precisely what
+is not done here — it would put a third party in the page, hand it your IP and
+`Referer` on every render, and let it count your visits. Instead the worker
+fetches each logo once, stores the bytes in the database, and the api serves
+them from this origin. The api is **not a proxy**: if the worker has not cached
+a logo, the answer is a 404 and the app's own monogram is drawn. No page render
+ever depends on a third party being reachable.
+
+**What is sent, and to whom.** Your AI provider is asked which website a
+merchant is, by name — a name it already sees during categorisation, so this
+step adds no destination that categorisation had not already added. Logo.dev is
+sent a bare domain. Neither is sent an amount, a balance, an account, a date or
+a transaction. What Logo.dev can learn is the set of businesses this deployment
+has merchants for, one domain at a time, and that is the honest cost of the
+feature.
+
+**Each merchant costs one request, ever.** A resolved logo is cached; a merchant
+with no logo is cached as having none and is never asked about again. There is
+no re-fetch schedule and no refresh — so switching the feature on produces a
+burst of requests once and then effectively nothing.
+
+**Households can refuse it.** Even with the operator switch on, a household can
+turn the imagery off in **Settings → Appearance**. That stops the lookups on
+their behalf and **deletes the logos already cached for them**: the cache is
+derived data about where they shop, and keeping it past a "no" would be keeping
+the part they objected to.
+
+Bytes coming back are treated as untrusted input, because they end up rendered
+on this app's origin. The response header is ignored and the content type is
+sniffed from the bytes, SVG is refused outright (it is a script-bearing document
+format wearing an image's clothes — the same call the document vault makes), and
+anything over `MERCHANT_LOGOS_MAX_BYTES` is discarded as "no logo".
+
+The domain the model returns is validated before it is used: it must be a bare
+lowercase hostname, so a path, a port, credentials, an IP address or a scheme is
+refused before any request is made. The model's input ultimately arrives from a
+bank feed, and this is the boundary where that stops mattering.
+
 ## Paystubs raise the sensitivity ceiling of the database
 
 Paystub tracking stores gross salary, an employer, and — optionally — an EIN.
@@ -239,7 +285,7 @@ open sign-up form on the public internet. See [Households](features/households.m
   Make it non-world-readable (`chmod 600 .env`) — it holds the database password
   and both encryption keys.
 - The app **sends no email unless you configure SMTP**, and phones home to
-  nothing but Plaid and (optionally) your AI provider. Two opt-in exceptions:
+  nothing but Plaid and (optionally) your AI provider. Three opt-in exceptions:
     - Setting `SMTP_HOST` enables the emailed
       [digest](features/digest.md). Off by default; the digest is the only thing
       the app ever mails, and only to members who tick the box themselves in
@@ -249,5 +295,7 @@ open sign-up form on the public internet. See [Households](features/households.m
     - Setting `BENCHMARK_PRICES_ENABLED=true` lets a daily job fetch end-of-day
       index closes from Stooq for the Investments benchmark chart. It is off by
       default, sends only a ticker symbol, and carries no account data.
+    - Setting `MERCHANT_LOGOS_ENABLED=true` lets a daily job fetch merchant
+      logos from Logo.dev. Off by default; see below.
 - **Back up the database** — it's the only record of net-worth history. See
   [Deployment](deployment.md#back-up-the-database).

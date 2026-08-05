@@ -9,7 +9,15 @@ import { Household } from './Household'
 import { Continuity } from './Continuity'
 import { SkeletonRows } from '../components/Skeleton'
 
-type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'anomalies' | 'household' | 'continuity'
+type Tab =
+  | 'profile'
+  | 'security'
+  | 'notifications'
+  | 'digest'
+  | 'anomalies'
+  | 'appearance'
+  | 'household'
+  | 'continuity'
 
 const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile' },
@@ -17,6 +25,8 @@ const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }
   { id: 'notifications', label: 'Notifications', adultOnly: true },
   { id: 'digest', label: 'Digest', adultOnly: true },
   { id: 'anomalies', label: 'Anomalies', adultOnly: true },
+  // Household-wide imagery, so adult-only like the other household settings.
+  { id: 'appearance', label: 'Appearance', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
   // Operator surface: the instance's recovery posture, not the household's
   // data. Owner-only, and enforced server-side by auth.RequireOwner.
@@ -71,6 +81,7 @@ export function Settings() {
       {activeTab === 'notifications' && <NotificationsSection />}
       {activeTab === 'digest' && <DigestSection />}
       {activeTab === 'anomalies' && <AnomaliesSection />}
+      {activeTab === 'appearance' && <AppearanceSection />}
       {activeTab === 'household' && <Household />}
       {activeTab === 'continuity' && <Continuity />}
     </div>
@@ -610,6 +621,91 @@ function AnomaliesSection() {
               </ul>
             )}
           </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+/**
+ * Appearance: the household's merchant imagery.
+ *
+ * One switch today, and it is worth reading the two-layer shape before adding a
+ * second. Fetching a real logo means contacting a company that is neither Plaid
+ * nor your AI provider, so the decision to do that at all is the OPERATOR's
+ * (`MERCHANT_LOGOS_ENABLED` in `.env`, off by default, documented there with the
+ * destination). This toggle is the household's say over what it already permits:
+ * on by default once the operator opted in, and turning it off both stops the
+ * imagery and deletes what was already fetched.
+ *
+ * With the operator switch off, the toggle still saves — it just explains that
+ * nothing will happen until the deployment opts in, the same courtesy the
+ * Notifications tab extends when no ntfy server is configured.
+ */
+function AppearanceSection() {
+  const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
+  const qc = useQueryClient()
+  const save = useSavePreferences()
+
+  const [logos, setLogos] = useState(true)
+
+  useEffect(() => {
+    const h = prefs.data?.household
+    if (!h) return
+    setLogos(asBool(h['merchant.logos']))
+  }, [prefs.data])
+
+  const onSave = () => {
+    save.mutate([{ scope: 'household', key: 'merchant.logos', value: logos }], {
+      // Avatars read the resolved answer off /capabilities, so it is stale the
+      // moment this is saved.
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['capabilities'] }),
+    })
+  }
+
+  const available = capabilities.data?.merchant_logos_available === true
+
+  return (
+    <Section
+      title="Appearance"
+      description="How merchants look around the app. Every merchant has a coloured monogram built from its own name — no network, no third party, always there. Real logos are an extra on top of that, and an opt-in one."
+    >
+      {prefs.isPending ? (
+        <SkeletonRows count={2} />
+      ) : (
+        <div className="space-y-5">
+          {capabilities.data && !available && (
+            <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-mist-300">
+              Merchant logos are unavailable — this deployment has not opted in.
+              An operator enables them with <code>MERCHANT_LOGOS_ENABLED=true</code>,
+              a free Logo.dev token and an AI key. You can still set a preference
+              here; it takes effect if that happens.
+            </p>
+          )}
+
+          <Toggle
+            checked={logos}
+            onChange={setLogos}
+            label="Show merchant logos"
+            hint={
+              <>
+                When on, this app looks up each merchant’s website with your AI
+                provider and fetches that company’s logo from Logo.dev — on the
+                server, once per merchant, then cached and served from here. Your
+                browser never contacts Logo.dev, and no amount, balance or
+                transaction is ever sent; only the merchant’s name. Merchants
+                without a known logo keep their monogram. Turning this off stops
+                the lookups and deletes the logos already stored.
+              </>
+            }
+          />
+
+          <SaveRow save={save} onSave={onSave} />
         </div>
       )}
     </Section>

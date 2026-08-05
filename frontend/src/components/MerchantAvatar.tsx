@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { Monogram, MONOGRAM_BOX, type MonogramSize } from './Monogram'
+import { AVATAR_BOX, type AvatarSize } from '../lib/avatar'
+import { Monogram } from './Monogram'
 
 /**
  * A merchant's avatar: its real logo when the opt-in fetcher has one, and the
@@ -34,7 +35,7 @@ export function MerchantAvatar({
    * household has bothered to group. Null or undefined renders the monogram.
    */
   merchantKey?: string | null
-  size?: MonogramSize
+  size?: AvatarSize
   className?: string
 }) {
   // One query for the whole page: react-query dedupes by key, so a list of
@@ -65,7 +66,7 @@ export function MerchantAvatar({
       // artwork with its own aspect ratio, and cropping one to a square is how
       // you end up showing the middle third of a wordmark. The faint tile keeps
       // a dark logo from vanishing into the page.
-      className={`shrink-0 bg-white/5 object-contain p-1 ${MONOGRAM_BOX[size]} ${className}`}
+      className={`shrink-0 bg-white/5 object-contain p-1 ${AVATAR_BOX[size]} ${className}`}
       onError={() => setFailed(true)}
     />
   )
