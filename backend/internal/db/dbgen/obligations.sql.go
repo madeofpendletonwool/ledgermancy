@@ -19,7 +19,7 @@ INSERT INTO recurring_obligations (
     household_id, user_id, is_shared, label, amount, category_id, account_id,
     interval_count, interval_unit, anchor_date, end_date, source, merchant_key
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'manual', NULL)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
 `
 
 type CreateObligationParams struct {
@@ -83,6 +83,9 @@ func (q *Queries) CreateObligation(ctx context.Context, arg CreateObligationPara
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
 	)
 	return i, err
 }
@@ -195,14 +198,13 @@ SELECT
     (mode() WITHIN GROUP (ORDER BY t.category_id))::uuid AS category_id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -255,7 +257,7 @@ func (q *Queries) GetMerchantDominantCategories(ctx context.Context, arg GetMerc
 }
 
 const getObligation = `-- name: GetObligation :one
-SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at FROM recurring_obligations
+SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id FROM recurring_obligations
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
 `
@@ -288,12 +290,86 @@ func (q *Queries) GetObligation(ctx context.Context, arg GetObligationParams) (R
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
+	)
+	return i, err
+}
+
+const insertScheduledTransaction = `-- name: InsertScheduledTransaction :one
+INSERT INTO transactions (
+    account_id, amount, currency, date, name, merchant_key,
+    category_id, category_source, source, pending, obligation_id
+)
+SELECT
+    a.id, $1, a.currency, $2, $3,
+    $4, $5,
+    CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'manual' END,
+    'scheduled', false, $6
+FROM accounts a
+WHERE a.id = $7
+ON CONFLICT (obligation_id, date) WHERE obligation_id IS NOT NULL DO NOTHING
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time, obligation_id
+`
+
+type InsertScheduledTransactionParams struct {
+	Amount       decimal.Decimal `json:"amount"`
+	Date         stdtime.Time    `json:"date"`
+	Name         string          `json:"name"`
+	MerchantKey  *string         `json:"merchant_key"`
+	CategoryID   *uuid.UUID      `json:"category_id"`
+	ObligationID *uuid.UUID      `json:"obligation_id"`
+	AccountID    uuid.UUID       `json:"account_id"`
+}
+
+// The materialised row. obligation_id ties it back to the template, and the
+// partial unique index on (obligation_id, date) makes a duplicate posting
+// impossible rather than merely unlikely — ON CONFLICT DO NOTHING turns a
+// replay into zero rows instead of a second charge.
+func (q *Queries) InsertScheduledTransaction(ctx context.Context, arg InsertScheduledTransactionParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, insertScheduledTransaction,
+		arg.Amount,
+		arg.Date,
+		arg.Name,
+		arg.MerchantKey,
+		arg.CategoryID,
+		arg.ObligationID,
+		arg.AccountID,
+	)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }
 
 const listObligations = `-- name: ListObligations :many
-SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at FROM recurring_obligations
+SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id FROM recurring_obligations
 WHERE household_id = $1
   AND (user_id IS NULL OR user_id = $2 OR is_shared)
 ORDER BY is_active DESC, label
@@ -343,6 +419,132 @@ func (q *Queries) ListObligations(ctx context.Context, arg ListObligationsParams
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AutoPost,
+			&i.LastPostedDate,
+			&i.PostingAccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObligationsDueForPosting = `-- name: ListObligationsDueForPosting :many
+WITH due AS (
+    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+    FROM recurring_obligations
+    WHERE auto_post
+      AND is_active
+      AND (end_date IS NULL OR end_date >= anchor_date)
+      AND (account_id IS NOT NULL OR posting_account_id IS NOT NULL)
+),
+bounded AS (
+    SELECT
+        due.id, due.household_id, due.user_id, due.is_shared, due.label, due.amount, due.category_id, due.account_id, due.interval_count, due.interval_unit, due.anchor_date, due.end_date, due.source, due.merchant_key, due.user_edited, due.is_active, due.created_at, due.updated_at, due.auto_post, due.last_posted_date, due.posting_account_id,
+        CASE interval_unit
+            WHEN 'day'   THEN ($1::date - anchor_date) / interval_count
+            WHEN 'week'  THEN ($1::date - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM $1::date)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM $1::date)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM $1::date)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM due
+)
+SELECT
+    b.id                                      AS obligation_id,
+    b.household_id,
+    b.label,
+    b.amount,
+    b.category_id,
+    COALESCE(b.posting_account_id, b.account_id)::uuid AS target_account_id,
+    b.account_id                              AS source_account_id,
+    -- The target's shape decides how much of the posting happens. A manual
+    -- investment account gets the full treatment (transaction + investment
+    -- transaction + balance move); anything else gets the transaction only,
+    -- because an institution owns that balance and reports the movement itself.
+    ta.type                                   AS target_type,
+    ta.source                                 AS target_source,
+    d.due_date::date                          AS due_date
+FROM bounded b
+JOIN accounts ta ON ta.id = COALESCE(b.posting_account_id, b.account_id)
+                AND ta.is_active
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    SELECT b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ) AS due_date
+) d
+WHERE d.due_date <= $1::date
+  AND (b.last_posted_date IS NULL OR d.due_date > b.last_posted_date)
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+  -- Bounds how far back a newly-enabled obligation reaches. Without it, turning
+  -- auto-post on for a bill anchored in 2019 posts six years of transactions in
+  -- one batch.
+  AND d.due_date >= $2::date
+ORDER BY b.id, d.due_date
+`
+
+type ListObligationsDueForPostingParams struct {
+	Today    stdtime.Time `json:"today"`
+	Earliest stdtime.Time `json:"earliest"`
+}
+
+type ListObligationsDueForPostingRow struct {
+	ObligationID    uuid.UUID       `json:"obligation_id"`
+	HouseholdID     uuid.UUID       `json:"household_id"`
+	Label           string          `json:"label"`
+	Amount          decimal.Decimal `json:"amount"`
+	CategoryID      *uuid.UUID      `json:"category_id"`
+	TargetAccountID uuid.UUID       `json:"target_account_id"`
+	SourceAccountID *uuid.UUID      `json:"source_account_id"`
+	TargetType      string          `json:"target_type"`
+	TargetSource    string          `json:"target_source"`
+	DueDate         stdtime.Time    `json:"due_date"`
+}
+
+// The worker's queue: every auto-posting obligation with at least one occurrence
+// on or before today that has not been posted yet.
+//
+// Deliberately NOT household-scoped — this is a background sweep over every
+// household, like the snapshot jobs. Nothing here is returned to a user;
+// visibility is enforced when the resulting transactions are read.
+//
+// The occurrence expansion is the same arithmetic as ListUpcomingObligations,
+// and for the same reason it lives in SQL: anchor_date + n whole periods
+// clamps a month end (2025-01-31 + 1 month is 2025-02-28), where stepping from
+// the previous occurrence would drift off the 31st permanently and Go's
+// time.AddDate would roll forward into March.
+func (q *Queries) ListObligationsDueForPosting(ctx context.Context, arg ListObligationsDueForPostingParams) ([]ListObligationsDueForPostingRow, error) {
+	rows, err := q.db.Query(ctx, listObligationsDueForPosting, arg.Today, arg.Earliest)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObligationsDueForPostingRow{}
+	for rows.Next() {
+		var i ListObligationsDueForPostingRow
+		if err := rows.Scan(
+			&i.ObligationID,
+			&i.HouseholdID,
+			&i.Label,
+			&i.Amount,
+			&i.CategoryID,
+			&i.TargetAccountID,
+			&i.SourceAccountID,
+			&i.TargetType,
+			&i.TargetSource,
+			&i.DueDate,
 		); err != nil {
 			return nil, err
 		}
@@ -361,15 +563,14 @@ SELECT
     a.mask,
     a.subtype,
     COALESCE(a.current_balance, 0)::numeric AS current_balance,
-    i.institution_name
+    v.institution_name
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type = 'depository'
-ORDER BY i.institution_name, a.name
+ORDER BY v.institution_name, a.name
 `
 
 type ListProjectionAccountsParams struct {
@@ -419,7 +620,7 @@ func (q *Queries) ListProjectionAccounts(ctx context.Context, arg ListProjection
 
 const listUpcomingObligations = `-- name: ListUpcomingObligations :many
 WITH visible AS (
-    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at
+    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
     FROM recurring_obligations
     WHERE household_id = $1
       AND (user_id IS NULL OR user_id = $2 OR is_shared)
@@ -427,7 +628,7 @@ WITH visible AS (
 ),
 bounded AS (
     SELECT
-        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at,
+        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id,
         CASE interval_unit
             WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
             WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
@@ -543,12 +744,40 @@ func (q *Queries) ListUpcomingObligations(ctx context.Context, arg ListUpcomingO
 	return items, nil
 }
 
+const markObligationPosted = `-- name: MarkObligationPosted :execrows
+UPDATE recurring_obligations
+SET last_posted_date = $1,
+    updated_at       = now()
+WHERE id = $2
+  AND auto_post
+  AND (last_posted_date IS NULL OR last_posted_date < $1)
+`
+
+type MarkObligationPostedParams struct {
+	PostedThrough *stdtime.Time `json:"posted_through"`
+	ID            uuid.UUID     `json:"id"`
+}
+
+// Advances the cursor. Runs in the same transaction as the rows it accounts
+// for: a crash before the commit replays from the same cursor, and a crash
+// after it has already written everything the cursor claims.
+//
+// The WHERE repeats the cursor predicate so two workers racing on one
+// obligation produce exactly one winner, matching MarkAllowancePosted.
+func (q *Queries) MarkObligationPosted(ctx context.Context, arg MarkObligationPostedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markObligationPosted, arg.PostedThrough, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setObligationActive = `-- name: SetObligationActive :one
 UPDATE recurring_obligations
 SET is_active = $4, user_edited = TRUE, updated_at = now()
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
 `
 
 type SetObligationActiveParams struct {
@@ -588,6 +817,84 @@ func (q *Queries) SetObligationActive(ctx context.Context, arg SetObligationActi
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
+	)
+	return i, err
+}
+
+const setObligationAutoPost = `-- name: SetObligationAutoPost :one
+
+UPDATE recurring_obligations
+SET auto_post          = $1,
+    posting_account_id = $2,
+    last_posted_date   = CASE WHEN $1 THEN last_posted_date ELSE NULL END,
+    user_edited        = TRUE,
+    updated_at         = now()
+WHERE id = $3
+  AND household_id = $4
+  AND (user_id IS NULL OR user_id = $5 OR is_shared)
+  -- An obligation cannot post without a target. The DB CHECK says the same
+  -- thing; repeating it here turns a constraint violation into "no rows", which
+  -- the handler reports as a 400 rather than a 500.
+  AND (NOT $1
+       OR $2::uuid IS NOT NULL
+       OR account_id IS NOT NULL)
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+`
+
+type SetObligationAutoPostParams struct {
+	AutoPost         bool       `json:"auto_post"`
+	PostingAccountID *uuid.UUID `json:"posting_account_id"`
+	ID               uuid.UUID  `json:"id"`
+	HouseholdID      uuid.UUID  `json:"household_id"`
+	UserID           *uuid.UUID `json:"user_id"`
+}
+
+// --------------------------------------------------------------------------
+// Auto-posting (doc 30)
+// --------------------------------------------------------------------------
+// Turns materialisation on or off for one obligation, and names the account a
+// posting credits. Separate from UpdateObligation because it is a different
+// decision with a different blast radius: editing a label changes a forecast,
+// turning this on starts writing transactions.
+//
+// last_posted_date is reset to NULL when auto_post is switched OFF, so
+// re-enabling it later does not silently backfill every occurrence that fell in
+// the gap. Re-enabling starts from the anchor's next due date, and the handler
+// says so.
+func (q *Queries) SetObligationAutoPost(ctx context.Context, arg SetObligationAutoPostParams) (RecurringObligation, error) {
+	row := q.db.QueryRow(ctx, setObligationAutoPost,
+		arg.AutoPost,
+		arg.PostingAccountID,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+	)
+	var i RecurringObligation
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.UserID,
+		&i.IsShared,
+		&i.Label,
+		&i.Amount,
+		&i.CategoryID,
+		&i.AccountID,
+		&i.IntervalCount,
+		&i.IntervalUnit,
+		&i.AnchorDate,
+		&i.EndDate,
+		&i.Source,
+		&i.MerchantKey,
+		&i.UserEdited,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
 	)
 	return i, err
 }
@@ -608,7 +915,7 @@ SET label          = $4,
     updated_at     = now()
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
 `
 
 type UpdateObligationParams struct {
@@ -666,6 +973,9 @@ func (q *Queries) UpdateObligation(ctx context.Context, arg UpdateObligationPara
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
 	)
 	return i, err
 }
@@ -685,7 +995,7 @@ DO UPDATE SET
     anchor_date    = EXCLUDED.anchor_date,
     updated_at     = now()
 WHERE NOT recurring_obligations.user_edited
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
 `
 
 type UpsertDetectedObligationParams struct {
@@ -736,6 +1046,9 @@ func (q *Queries) UpsertDetectedObligation(ctx context.Context, arg UpsertDetect
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
 	)
 	return i, err
 }

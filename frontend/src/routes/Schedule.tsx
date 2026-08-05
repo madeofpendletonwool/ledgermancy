@@ -547,6 +547,110 @@ function ObligationRow({
           {remove.error.message}
         </p>
       )}
+      <AutoPostControl obligation={obligation} />
+    </div>
+  )
+}
+
+/**
+ * Turns an obligation from a forecast into something that posts.
+ *
+ * Everything else on this page describes money that is *going* to move. This is
+ * the one control that makes it move: when it is on, a worker writes a real
+ * transaction on each due date, and for a manual investment account it also
+ * moves that account's balance. That is a genuinely different promise from the
+ * rest of the schedule, so it is presented as its own decision with its own
+ * consequence spelled out, rather than a checkbox inside the edit form.
+ *
+ * The posting-account picker exists because for the case this was built for —
+ * a retirement contribution — the account the money leaves and the account it
+ * lands in are not the same. Left unset, a posting credits the obligation's own
+ * account, which is right for an ordinary bill.
+ */
+function AutoPostControl({ obligation }: { obligation: Obligation }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const accounts = useQuery({
+    queryKey: ['accounts'],
+    queryFn: api.accounts,
+    enabled: open,
+  })
+
+  const [postingAccount, setPostingAccount] = useState(
+    obligation.posting_account_id ?? '',
+  )
+
+  const save = useMutation({
+    mutationFn: (autoPost: boolean) =>
+      api.setObligationAutoPost(obligation.id, {
+        auto_post: autoPost,
+        posting_account_id: postingAccount || null,
+      }),
+    onSuccess: () => invalidateSchedule(qc),
+  })
+
+  if (!obligation.auto_post && !open) {
+    return (
+      <button
+        className="mt-3 text-xs text-mist-400 underline"
+        onClick={() => setOpen(true)}
+      >
+        Post this automatically
+      </button>
+    )
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/5 bg-black/20 p-3">
+      <label className="flex cursor-pointer items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="accent-arcane-500"
+          checked={obligation.auto_post}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate(e.target.checked)}
+        />
+        <span>Post as a transaction on each due date</span>
+      </label>
+
+      <p className="mt-1 text-xs text-mist-500">
+        Writes a real transaction when each occurrence falls due. For a manual
+        investment account it also moves that account's balance. Occurrences
+        more than 90 days old are never posted, so turning this on will not
+        backfill years of history.
+      </p>
+
+      <label className="mt-3 block text-xs">
+        <span className="text-mist-400">Post into</span>
+        <select
+          className="input mt-1 w-full"
+          value={postingAccount}
+          onChange={(e) => {
+            setPostingAccount(e.target.value)
+            if (obligation.auto_post) save.mutate(true)
+          }}
+        >
+          <option value="">Same account this is paid from</option>
+          {(accounts.data ?? []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+              {a.mask ? ` ••${a.mask}` : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {obligation.last_posted_date && (
+        <p className="mt-2 text-xs text-mist-500">
+          Posted through {formatDate(obligation.last_posted_date)}.
+        </p>
+      )}
+
+      {save.isError && (
+        <p role="alert" className="mt-2 text-xs text-ember-400">
+          {save.error.message}
+        </p>
+      )}
     </div>
   )
 }

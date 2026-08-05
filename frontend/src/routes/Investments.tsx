@@ -19,6 +19,7 @@ import { SkeletonTiles } from '../components/Skeleton'
 import { RealToggle } from '../components/RealToggle'
 import { formatRate, realLabel, useInflation, useRealPreference } from '../lib/inflation'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
+import { ManualInvestmentEditor } from '../components/ManualInvestments'
 
 const PERIODS: { value: InvestmentPeriod; label: string }[] = [
   { value: 'ytd', label: 'YTD' },
@@ -238,6 +239,10 @@ export function Investments() {
           )}
 
           <HoldingsTable holdings={holdings.data ?? []} />
+
+          <ManualInvestmentAccounts
+            accounts={data!.accounts.filter((a) => a.source === 'manual')}
+          />
 
           <div className="grid gap-4 sm:grid-cols-2">
             <section className="glass p-6">
@@ -788,9 +793,14 @@ function AccountTagRow({ account }: { account: InvestmentAccount }) {
           {account.name}
           {account.mask && <span className="text-mist-500"> ••{account.mask}</span>}
         </p>
+        {/* A manual account has no institution and no reported subtype — its
+            subtype is whatever the user typed, so quoting it back as evidence
+            would dress their own guess up as the bank's. */}
         <p className="text-xs text-mist-500">
-          {account.institution_name}
-          {account.subtype && ` · reported as "${account.subtype}"`}
+          {account.source === 'manual' ? 'Added manually' : account.institution_name}
+          {account.source === 'plaid' &&
+            account.subtype &&
+            ` · reported as "${account.subtype}"`}
         </p>
       </div>
 
@@ -941,4 +951,47 @@ function Stat({
 function trimQuantity(q: string): string {
   if (!q.includes('.')) return q
   return q.replace(/\.?0+$/, '')
+}
+
+/**
+ * The accounts on this page that Plaid does not maintain.
+ *
+ * Everything above this reads the same tables regardless of where a position
+ * came from — that is the whole design, and it is why a manual Voya plan shows
+ * up in the allocation and return figures without a single engine knowing about
+ * it. This section is the one place the difference surfaces, because it is the
+ * one place it matters: nothing will update these numbers except the household.
+ */
+function ManualInvestmentAccounts({ accounts }: { accounts: InvestmentAccount[] }) {
+  if (accounts.length === 0) return null
+
+  return (
+    <section className="glass p-6">
+      <h2 className="text-lg font-medium">Accounts you maintain</h2>
+      <p className="mt-1 text-sm text-mist-300">
+        These are not linked to an institution, so their positions and activity
+        are whatever you have entered. Everything above counts them the same as
+        a synced account.
+      </p>
+      <ul className="mt-5 space-y-4">
+        {accounts.map((a) => (
+          <li key={a.id} className="rounded-xl bg-white/5 px-4 py-3">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <p className="font-medium">
+                {a.name}
+                {a.mask && <span className="text-mist-500"> ••{a.mask}</span>}
+              </p>
+              <span className="text-xs text-mist-500">
+                {treatmentLabel(a.tax_treatment)}
+              </span>
+              <p className="tabular ml-auto font-medium text-rune-300">
+                {formatMoney(a.balance, a.currency)}
+              </p>
+            </div>
+            <ManualInvestmentEditor account={a} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
 }

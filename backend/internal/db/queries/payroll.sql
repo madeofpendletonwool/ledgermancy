@@ -317,11 +317,10 @@ SELECT
     ABS(-t.amount - sqlc.arg('net')::numeric)::numeric AS delta
 FROM transactions t
 JOIN accounts    a ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users       u ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = sqlc.arg('household_id')
-  AND (i.user_id = sqlc.arg('user_id') OR i.is_shared)
+WHERE v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND NOT t.excluded_from_reports

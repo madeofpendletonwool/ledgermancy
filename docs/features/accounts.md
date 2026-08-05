@@ -4,7 +4,8 @@
 <em>Connected institutions and the balances they report.</em>
 
 Accounts is where you connect banks through Plaid, see what came in, and control
-sharing.
+sharing. It is also where you add accounts Plaid **cannot** link — see
+[Manual accounts](#accounts-without-plaid) below.
 
 ## Connecting an account
 
@@ -87,6 +88,60 @@ old item and cannot re-widen the 730-day window.
 Each sync module additionally skips any item with no accounts it applies to, so
 a chequing-only bank is never asked about its mortgages, and Plaid never bills
 for a product that doesn't apply.
+
+## Accounts without Plaid
+
+Some accounts cannot be linked at all — TreasuryDirect, a Voya retirement plan
+whose every sync attempt fails, a private holding, the books for a small
+business. Until they existed here, they were simply invisible: a manual asset
+is a number, not an account, and an account with no institution had nowhere to
+live. **Add account** beside *Connect an account* creates one without Plaid.
+
+A manual account has the same shape as a linked one — name, type
+(depository / investment / brokerage / credit / loan / other), subtype, optional
+mask, currency, opening balance, and a sharing toggle. Once it exists it behaves
+like any other account: transactions post to it, it appears in net worth, and a
+manual **investment** or **brokerage** account gets full
+[Investments](investments.md)-page parity — per-holding positions, buys / sells /
+dividends / contributions entered by hand, and TWR/MWR computed over them exactly
+as for a linked account.
+
+Two things are different, by design:
+
+- **You own the balance.** A linked account's balance belongs to the institution
+  and is overwritten on every sync; a manual account's balance is yours to set,
+  and every change is written alongside a dated history row (the figure, the
+  date, a reason, an optional note) in one transaction. **Update balance** is on
+  the account's menu where *Sync now* sits for a linked one, and the history is
+  the audit trail.
+- **The menu edits instead of syncing.** A manual account's row offers **Edit**,
+  **Update balance**, and **Delete** — there is no *Reconnect*, because there is
+  no link to repair. Deleting removes the account and its transactions; the
+  manual write endpoints refuse a linked account's id outright, so a Plaid
+  account can never be edited or deleted through this path.
+
+### Auto-posting scheduled transactions
+
+A [scheduled obligation](schedule.md) can be told to **auto-post as a
+transaction** — the Voya case, where a fixed monthly contribution should land on
+the account and grow its balance without anyone entering it each month. Toggle
+*Auto-post* on the obligation and pick the account it should credit. A worker
+materialises each due occurrence as an ordinary transaction (badged
+**Scheduled**), and for an investment account it also records the contribution
+and adjusts the balance in the same write — so the figure and its explanation
+move together.
+
+### What there is deliberately no path for
+
+- **Auto-fetching prices for manual holdings.** Manual price entry is the
+  default; pulling live quotes for tickers you hold would be a different privacy
+  contract than the operator-configured benchmark set, and it is not added here.
+- **Merging with a later Plaid link.** If an institution starts working through
+  Plaid, the manual account is deleted and the Plaid one linked. Transaction
+  history is preserved (manual rows stay); balance history is not.
+
+A manual account private to one member is invisible to the other, under the same
+visibility scoping every other account uses.
 
 ## Sandbox credentials
 

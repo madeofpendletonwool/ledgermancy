@@ -17,9 +17,8 @@ const computeNetWorth = `-- name: ComputeNetWorth :one
 WITH visible_accounts AS (
     SELECT a.type, a.current_balance
     FROM accounts a
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
-    WHERE u.household_id = $1
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
       AND a.is_active
       AND a.current_balance IS NOT NULL
 ),
@@ -129,13 +128,12 @@ func (q *Queries) CreateManualAsset(ctx context.Context, arg CreateManualAssetPa
 
 const deleteAccountTerms = `-- name: DeleteAccountTerms :exec
 DELETE FROM account_terms t
-USING accounts a, plaid_items i, users u
+USING accounts a, account_access v
 WHERE t.account_id = a.id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
+  AND v.account_id = a.id
   AND a.id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 `
 
 type DeleteAccountTermsParams struct {
@@ -191,11 +189,10 @@ const getAccountTerms = `-- name: GetAccountTerms :one
 SELECT t.account_id, t.apr, t.minimum_payment, t.payment_obligation_id, t.updated_by, t.created_at, t.updated_at
 FROM account_terms t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE t.account_id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 `
 
 type GetAccountTermsParams struct {
@@ -253,7 +250,7 @@ SELECT
     a.type,
     a.subtype,
     a.current_balance,
-    i.institution_name,
+    v.institution_name,
     l.apr,
     l.interest_rate_percentage,
     l.minimum_payment,
@@ -267,14 +264,13 @@ SELECT
     -- quoting a figure the calendar disagrees with.
     o.amount          AS obligation_amount
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
   AND a.id = $3
@@ -415,10 +411,9 @@ WITH linked AS (
     FROM account_terms t
     JOIN recurring_obligations o ON o.id = t.payment_obligation_id
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND o.is_active
 ),
@@ -511,14 +506,13 @@ SELECT
     s.type    AS security_type,
     s.is_cash_equivalent,
     a.name    AS account_name,
-    i.institution_name
+    v.institution_name
 FROM holdings h
 JOIN securities s  ON s.id = h.security_id
 JOIN accounts a    ON a.id = h.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
 ORDER BY h.institution_value DESC NULLS LAST
 `
@@ -582,7 +576,7 @@ SELECT
     a.type,
     a.subtype,
     a.current_balance,
-    i.institution_name,
+    v.institution_name,
     l.apr,
     l.interest_rate_percentage,
     l.minimum_payment,
@@ -596,14 +590,13 @@ SELECT
     -- quoting a figure the calendar disagrees with.
     o.amount          AS obligation_amount
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
 ORDER BY a.current_balance DESC NULLS LAST
@@ -793,11 +786,10 @@ SELECT a.id,
        $3::uuid,
        $4
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $5
-  AND u.household_id = $6
-  AND (i.user_id = $4 OR i.is_shared)
+  AND v.household_id = $6
+  AND (v.user_id = $4 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
 ON CONFLICT (account_id) DO UPDATE SET
@@ -999,7 +991,7 @@ INSERT INTO securities (
     plaid_security_id, name, ticker, type, cusip, isin,
     close_price, close_price_as_of, currency, is_cash_equivalent
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (plaid_security_id) DO UPDATE SET
+ON CONFLICT (plaid_security_id) WHERE plaid_security_id IS NOT NULL DO UPDATE SET
     name              = EXCLUDED.name,
     ticker            = EXCLUDED.ticker,
     type              = EXCLUDED.type,
@@ -1007,11 +999,11 @@ ON CONFLICT (plaid_security_id) DO UPDATE SET
     close_price_as_of = EXCLUDED.close_price_as_of,
     currency          = EXCLUDED.currency,
     is_cash_equivalent = EXCLUDED.is_cash_equivalent
-RETURNING id, plaid_security_id, name, ticker, type, cusip, isin, close_price, close_price_as_of, currency, is_cash_equivalent, created_at, updated_at
+RETURNING id, plaid_security_id, name, ticker, type, cusip, isin, close_price, close_price_as_of, currency, is_cash_equivalent, created_at, updated_at, source, ticker_key
 `
 
 type UpsertSecurityParams struct {
-	PlaidSecurityID  string              `json:"plaid_security_id"`
+	PlaidSecurityID  *string             `json:"plaid_security_id"`
 	Name             *string             `json:"name"`
 	Ticker           *string             `json:"ticker"`
 	Type             *string             `json:"type"`
@@ -1023,6 +1015,10 @@ type UpsertSecurityParams struct {
 	IsCashEquivalent bool                `json:"is_cash_equivalent"`
 }
 
+// The WHERE on the conflict target is load-bearing: 00053 made this index
+// PARTIAL (manual rows have no Plaid id and are not in it), and Postgres only
+// accepts a partial index as an ON CONFLICT arbiter when the statement repeats
+// its predicate.
 func (q *Queries) UpsertSecurity(ctx context.Context, arg UpsertSecurityParams) (Security, error) {
 	row := q.db.QueryRow(ctx, upsertSecurity,
 		arg.PlaidSecurityID,
@@ -1051,6 +1047,8 @@ func (q *Queries) UpsertSecurity(ctx context.Context, arg UpsertSecurityParams) 
 		&i.IsCashEquivalent,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+		&i.TickerKey,
 	)
 	return i, err
 }

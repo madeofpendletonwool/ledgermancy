@@ -21,12 +21,11 @@ INSERT INTO transaction_splits (transaction_id, person_id, amount)
 SELECT t.id, p.id, sqlc.arg('amount')::numeric
 FROM transactions t
 JOIN accounts a     ON a.id = t.account_id
-JOIN plaid_items i  ON i.id = a.plaid_item_id
-JOIN users u        ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN household_people p
-  ON p.id = sqlc.arg('person_id') AND p.household_id = u.household_id
+  ON p.id = sqlc.arg('person_id') AND p.household_id = v.household_id
 WHERE t.id = sqlc.arg('transaction_id')
-  AND u.household_id = sqlc.arg('household_id')
+  AND v.household_id = sqlc.arg('household_id')
 RETURNING *;
 
 -- name: ListSplitsForTransaction :many
@@ -39,12 +38,11 @@ ORDER BY p.display_name;
 -- name: GetTransactionForSplit :one
 -- The transaction a split is being written against, scoped to the household.
 -- The handler needs `amount` to assert the shares sum exactly.
-SELECT t.id, t.amount, t.name, t.date, i.user_id AS payer_user_id
+SELECT t.id, t.amount, t.name, t.date, v.user_id AS payer_user_id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE t.id = $1 AND u.household_id = $2;
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = $1 AND v.household_id = $2;
 
 -- name: ListSplitTransactions :many
 -- Every transaction in the household that carries splits, newest first. Powers
@@ -54,18 +52,17 @@ SELECT
     t.name,
     t.date,
     t.amount,
-    i.user_id AS payer_user_id,
+    v.user_id AS payer_user_id,
     payer.display_name AS payer_name,
     count(s.id)::bigint AS split_count,
     count(s.id) FILTER (WHERE s.settled_at IS NULL)::bigint AS unsettled_count
 FROM transactions t
 JOIN transaction_splits s ON s.transaction_id = t.id
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-LEFT JOIN household_people payer ON payer.user_id = i.user_id
-WHERE u.household_id = $1
-GROUP BY t.id, t.name, t.date, t.amount, i.user_id, payer.display_name
+JOIN account_access v ON v.account_id = a.id
+LEFT JOIN household_people payer ON payer.user_id = v.user_id
+WHERE v.household_id = $1
+GROUP BY t.id, t.name, t.date, t.amount, v.user_id, payer.display_name
 ORDER BY t.date DESC, t.id
 LIMIT $2;
 
@@ -104,11 +101,10 @@ SELECT
 FROM transaction_splits s
 JOIN transactions t ON t.id = s.transaction_id
 JOIN accounts a     ON a.id = t.account_id
-JOIN plaid_items i  ON i.id = a.plaid_item_id
-JOIN users u        ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN household_people debtor   ON debtor.id = s.person_id
-JOIN household_people creditor ON creditor.user_id = i.user_id
-WHERE u.household_id = $1
+JOIN household_people creditor ON creditor.user_id = v.user_id
+WHERE v.household_id = $1
   AND s.settled_at IS NULL
   AND debtor.id <> creditor.id
 GROUP BY debtor.id, debtor.display_name, creditor.id, creditor.display_name

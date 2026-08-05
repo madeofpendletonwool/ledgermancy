@@ -22,7 +22,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
 
 - **Accounts**
 
-    - [:material-bank: Accounts](accounts.md) — Plaid linking & sharing
+    - [:material-bank: Accounts](accounts.md) — Plaid linking, manual accounts & sharing
     - [:material-swap-horizontal: Transactions](transactions.md) — search, filter, recategorise, CSV import
     - [:material-tag-multiple: Categories](categories.md) — typing, rules, colours
     - [:material-file-lock-outline: Documents](documents.md) — encrypted vault for receipts, tax and policies

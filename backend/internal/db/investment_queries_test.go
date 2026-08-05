@@ -295,7 +295,7 @@ func TestInvestmentQueriesExecute(t *testing.T) {
 			if err := q.UpsertInvestmentTransaction(ctx, dbgen.UpsertInvestmentTransactionParams{
 				AccountID:                    brokerageID,
 				SecurityID:                   &securityID,
-				PlaidInvestmentTransactionID: plaidID,
+				PlaidInvestmentTransactionID: &plaidID,
 				Type:                         txnType,
 				Subtype:                      &sub,
 				Amount:                       decimal.RequireFromString(amount),

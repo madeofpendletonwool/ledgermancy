@@ -139,7 +139,10 @@ Listed on the page rather than left to be discovered, because these are the
 places the projection could flatter:
 
 - **Tax on withdrawals** (traditional vs. Roth ordering). Real, large, and
-  dependent on income data the app does not yet hold.
+  dependent on a marginal-rate model the app does not yet have —
+  [paystubs](paystubs.md) supply effective-rate income, but ordering withdrawals
+  across traditional, Roth, and taxable accounts needs per-bracket math that is
+  still ahead.
 - **Required Minimum Distributions.**
 - **Return variability** beyond the opt-in panel above.
 

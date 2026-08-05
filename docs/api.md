@@ -140,6 +140,55 @@ reporting endpoints is correct rather than stale — see
 | GET | `/api/investments/dividends` | ✓ | Dividends by month, from investment transactions |
 | PATCH | `/api/investments/accounts/{id}/tax-treatment` | ✓ | Confirms a classification. `null` clears it back to untagged |
 
+### Manual accounts
+
+Accounts Plaid cannot link (TreasuryDirect, a Voya plan, a private holding) are
+first-class accounts created here, with full Investments-page parity. The
+organising rule: **a manual endpoint never touches a Plaid row** — every mutation
+resolves through a `source='manual'` query, so a linked account's id gets a 404
+rather than an edit the next sync would silently revert. Manual balances are the
+only user-owned balance-write path; every change is paired with an
+`account_balance_history` row in the same transaction. See
+[Accounts → Accounts without Plaid](features/accounts.md#accounts-without-plaid).
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| POST | `/api/accounts` | ✓ | Create a manual account. `type` ∈ depository\|investment\|brokerage\|credit\|loan\|other; balance is a decimal string |
+| PUT | `/api/accounts/{id}` | ✓ | Manual only — a `source='plaid'` id 404s |
+| DELETE | `/api/accounts/{id}` | ✓ | Manual only; cascades its transactions |
+| PUT | `/api/accounts/{id}/balance` | ✓ | `{as_of, balance, reason, note}`. Re-running the same `as_of` updates in place |
+| GET | `/api/accounts/{id}/balance-history` | ✓ | The append-only balance trail |
+| POST | `/api/accounts/{id}/holdings` | ✓ | Upsert a manual holding (keys on account + security) |
+| GET | `/api/accounts/{id}/investment-transactions` | ✓ | The account's manual investment transactions |
+| GET | `/api/securities` | ✓ | Reference data — a security states what a ticker is, not who holds it. For the picker |
+| POST | `/api/securities` | ✓ | Create a manual security keyed on lowercased `ticker_key` |
+| POST | `/api/investment-transactions` | ✓ | `type`/`subtype` from the same vocabulary Plaid uses; a contribution is an external flow that moves TWR/MWR |
+| DELETE | `/api/investment-transactions/{id}` | ✓ | Manual only |
+| DELETE | `/api/holdings/{id}` | ✓ | Manual positions only; a Plaid holding deleted here would reappear on the next sync |
+
+The existing `GET /api/accounts` (above) and the `/api/investments/*` reads need
+no change — they call the same queries, which now return manual rows too.
+
+### Manual assets, valuations & bonds
+
+The revaluation surface for [manual assets](features/net-worth.md#manual-assets).
+The defining rule: **only `POST /valuations` writes a value**. The suggestion
+endpoint computes a proposal and returns it — net worth never moves on an
+estimate the user has not accepted. Bonds are the exception, because a savings
+bond's value is arithmetic over published rates rather than a judgement.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/manual-assets/{id}/detail` | ✓ | Class-specific metadata (real estate / vehicle / bond fields) |
+| PUT | `/api/manual-assets/{id}/detail` | ✓ | Upsert the detail row |
+| GET | `/api/manual-assets/{id}/valuations` | ✓ | The append-only value history |
+| POST | `/api/manual-assets/{id}/valuations` | ✓ | The one write that moves a value, paired with the authoritative current column atomically |
+| GET | `/api/manual-assets/{id}/suggestion` | ✓ | A depreciation proposal — never a write. `ok=false` with a `reason` when the curve has nothing to say |
+| GET | `/api/manual-assets/{id}/bond` | ✓ | A savings bond's redemption value, computed against `savings_bond_rates` |
+| PUT | `/api/manual-assets/{id}/loan` | ✓ | Link an asset to a loan account for equity, without double-counting |
+| GET | `/api/savings-bond-rates` | ✓ | The published rate table, seeded. Each row names its source |
+| PUT | `/api/savings-bond-rates` | ✓ | Correct a row against treasurydirect.gov — a bundled table is only defensible if it is checkable |
+
 ### Documents
 
 The encrypted vault. Every route is scoped to the caller's household **and**

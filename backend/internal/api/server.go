@@ -331,6 +331,33 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// account mutation: a child must not set the figures the household's
 			// payoff plans are computed from.
 			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
+
+			// Manual accounts (doc 30). Every one of these refuses a
+			// source='plaid' id — a linked account's identity and balance
+			// belong to the institution, and an edit here would survive only
+			// until the next sync silently reverted it.
+			r.Post("/", s.handleCreateManualAccount)
+			r.Put("/{accountID}", s.handleUpdateManualAccount)
+			r.Delete("/{accountID}", s.handleDeleteManualAccount)
+			r.Put("/{accountID}/balance", s.handleSetManualBalance)
+			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+			r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
+			r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
+		})
+
+		// Securities are reference data, not household data: a row states what
+		// a ticker is, which is true for everyone and says nothing about who
+		// holds it. Ownership lives in holdings, and those are scoped.
+		r.Route("/securities", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListSecurities)
+			r.Post("/", s.handleCreateManualSecurity)
+		})
+
+		r.Route("/investment-transactions", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Post("/", s.handleCreateManualInvestmentTx)
+			r.Delete("/{txID}", s.handleDeleteManualInvestmentTx)
 		})
 
 		r.Route("/transactions", func(r chi.Router) {
@@ -464,6 +491,7 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/projection", s.handleObligationProjection)
 			r.Put("/{obligationID}", s.handleUpdateObligation)
 			r.Delete("/{obligationID}", s.handleDeleteObligation)
+			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
 		})
 
 		// Goals are the one mixed group. Reads are visibility-scoped in SQL
@@ -543,6 +571,9 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/holdings", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListHoldings)
+			// Manual positions only; a Plaid holding deleted here would come
+			// straight back on the next sync.
+			r.Delete("/{holdingID}", s.handleDeleteManualHolding)
 		})
 
 		// The Investments surface. Every read is scoped the same way as the

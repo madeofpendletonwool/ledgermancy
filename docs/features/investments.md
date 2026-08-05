@@ -123,6 +123,43 @@ An unknown cost basis shows as an em dash, never `$0.00` — and the CSV exports
 as an empty cell, so a spreadsheet summing the column cannot silently treat
 "unknown" as zero.
 
+## Manual investment accounts
+
+A [manual investment account](accounts.md#accounts-without-plaid) — the Voya
+plan Plaid will not link, a TreasuryDirect position, anything held outside a
+linked brokerage — gets **full parity** on this page: holdings, performance,
+allocation, dividends, fee drag, and snapshots. The engines read tables, not
+Plaid, so a manual account is indistinguishable from a working linked one in
+every report.
+
+Two editors cover the write side, both per-account:
+
+- **Holdings.** *Add holding* picks a security by ticker (search the existing
+  set, or create one inline), then quantity, optional cost basis, and an
+  optional institution price that falls back to the security's close price.
+- **Investment transactions.** Buy / sell / cash / fee / transfer, with an
+  optional security, quantity, price, fees, amount, and date. The uses are the
+  ones a linked account gets for free: record a contribution (cash /
+  contribution), a dividend (cash / dividend), or a buy.
+
+Three honest limitations:
+
+- **Tax treatment has no suggestion.** A linked account's tag is inferred from
+  its Plaid subtype; a manual account has none, so the picker reads *Choose a
+  tax treatment* with nothing pre-selected. The tag still matters — it is what
+  puts a manual Roth or 529 in the right allocation bucket and retirement
+  projection — so it stays on the page until you set it.
+- **Backfill is impossible.** There are no historical holdings before you start
+  entering them, exactly as for a linked account, and the "N days of history"
+  disclosure above the performance figures says so.
+- **No auto price fetch.** Manual price entry is the default; pulling live
+  quotes for tickers you hold would be a different privacy contract than the
+  operator-configured benchmark set, and is not added here.
+
+A contribution that lands through the [auto-posting schedule](accounts.md#auto-posting-scheduled-transactions)
+is recorded as an external cash flow and moves TWR/MWR correctly — the same path
+a hand-entered contribution takes.
+
 ## Fund fees
 
 Annual cost of fund expense ratios across the portfolio.

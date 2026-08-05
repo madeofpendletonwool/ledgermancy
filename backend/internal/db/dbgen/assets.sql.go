@@ -330,11 +330,10 @@ FROM manual_assets m
 LEFT JOIN accounts a
        ON a.id = m.loan_account_id
       AND EXISTS (
-          SELECT 1 FROM plaid_items i
-          JOIN users u ON u.id = i.user_id
-          WHERE i.id = a.plaid_item_id
-            AND u.household_id = m.household_id
-            AND (i.user_id = $1 OR i.is_shared)
+          SELECT 1 FROM account_access v
+          WHERE v.account_id = a.id
+            AND v.household_id = m.household_id
+            AND (v.user_id = $1 OR v.is_shared)
       )
 LEFT JOIN asset_details d ON d.manual_asset_id = m.id
 WHERE m.household_id = $2

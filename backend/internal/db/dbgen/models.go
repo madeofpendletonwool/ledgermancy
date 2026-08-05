@@ -12,8 +12,8 @@ import (
 
 type Account struct {
 	ID                  uuid.UUID           `json:"id"`
-	PlaidItemID         uuid.UUID           `json:"plaid_item_id"`
-	PlaidAccountID      string              `json:"plaid_account_id"`
+	PlaidItemID         *uuid.UUID          `json:"plaid_item_id"`
+	PlaidAccountID      *string             `json:"plaid_account_id"`
 	Name                string              `json:"name"`
 	OfficialName        *string             `json:"official_name"`
 	Mask                *string             `json:"mask"`
@@ -29,6 +29,30 @@ type Account struct {
 	TaxTreatment        *string             `json:"tax_treatment"`
 	IsManaged           *bool               `json:"is_managed"`
 	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
+	// plaid — identity and balance owned by the institution. manual — owned by the user; balance writes go through account_balance_history.
+	Source      string     `json:"source"`
+	UserID      *uuid.UUID `json:"user_id"`
+	IsShared    *bool      `json:"is_shared"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+}
+
+// Visibility resolution for accounts of either source. Join this rather than reaching through plaid_items; a manual account has no item.
+type AccountAccess struct {
+	AccountID       uuid.UUID `json:"account_id"`
+	HouseholdID     uuid.UUID `json:"household_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	IsShared        bool      `json:"is_shared"`
+	InstitutionName *string   `json:"institution_name"`
+}
+
+type AccountBalanceHistory struct {
+	ID        uuid.UUID       `json:"id"`
+	AccountID uuid.UUID       `json:"account_id"`
+	AsOf      stdtime.Time    `json:"as_of"`
+	Balance   decimal.Decimal `json:"balance"`
+	Reason    string          `json:"reason"`
+	Note      *string         `json:"note"`
+	CreatedAt stdtime.Time    `json:"created_at"`
 }
 
 type AccountContribution struct {
@@ -393,7 +417,7 @@ type InvestmentTransaction struct {
 	ID                           uuid.UUID           `json:"id"`
 	AccountID                    uuid.UUID           `json:"account_id"`
 	SecurityID                   *uuid.UUID          `json:"security_id"`
-	PlaidInvestmentTransactionID string              `json:"plaid_investment_transaction_id"`
+	PlaidInvestmentTransactionID *string             `json:"plaid_investment_transaction_id"`
 	Type                         string              `json:"type"`
 	Subtype                      *string             `json:"subtype"`
 	Amount                       decimal.Decimal     `json:"amount"`
@@ -406,6 +430,7 @@ type InvestmentTransaction struct {
 	Raw                          []byte              `json:"raw"`
 	CreatedAt                    stdtime.Time        `json:"created_at"`
 	UpdatedAt                    stdtime.Time        `json:"updated_at"`
+	Source                       string              `json:"source"`
 }
 
 type Liability struct {
@@ -610,24 +635,27 @@ type ProjectionAssumption struct {
 }
 
 type RecurringObligation struct {
-	ID            uuid.UUID       `json:"id"`
-	HouseholdID   uuid.UUID       `json:"household_id"`
-	UserID        *uuid.UUID      `json:"user_id"`
-	IsShared      bool            `json:"is_shared"`
-	Label         string          `json:"label"`
-	Amount        decimal.Decimal `json:"amount"`
-	CategoryID    *uuid.UUID      `json:"category_id"`
-	AccountID     *uuid.UUID      `json:"account_id"`
-	IntervalCount int32           `json:"interval_count"`
-	IntervalUnit  string          `json:"interval_unit"`
-	AnchorDate    stdtime.Time    `json:"anchor_date"`
-	EndDate       *stdtime.Time   `json:"end_date"`
-	Source        string          `json:"source"`
-	MerchantKey   *string         `json:"merchant_key"`
-	UserEdited    bool            `json:"user_edited"`
-	IsActive      bool            `json:"is_active"`
-	CreatedAt     stdtime.Time    `json:"created_at"`
-	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	ID               uuid.UUID       `json:"id"`
+	HouseholdID      uuid.UUID       `json:"household_id"`
+	UserID           *uuid.UUID      `json:"user_id"`
+	IsShared         bool            `json:"is_shared"`
+	Label            string          `json:"label"`
+	Amount           decimal.Decimal `json:"amount"`
+	CategoryID       *uuid.UUID      `json:"category_id"`
+	AccountID        *uuid.UUID      `json:"account_id"`
+	IntervalCount    int32           `json:"interval_count"`
+	IntervalUnit     string          `json:"interval_unit"`
+	AnchorDate       stdtime.Time    `json:"anchor_date"`
+	EndDate          *stdtime.Time   `json:"end_date"`
+	Source           string          `json:"source"`
+	MerchantKey      *string         `json:"merchant_key"`
+	UserEdited       bool            `json:"user_edited"`
+	IsActive         bool            `json:"is_active"`
+	CreatedAt        stdtime.Time    `json:"created_at"`
+	UpdatedAt        stdtime.Time    `json:"updated_at"`
+	AutoPost         bool            `json:"auto_post"`
+	LastPostedDate   *stdtime.Time   `json:"last_posted_date"`
+	PostingAccountID *uuid.UUID      `json:"posting_account_id"`
 }
 
 type RecurringOverride struct {
@@ -650,7 +678,7 @@ type SavingsBondRate struct {
 
 type Security struct {
 	ID               uuid.UUID           `json:"id"`
-	PlaidSecurityID  string              `json:"plaid_security_id"`
+	PlaidSecurityID  *string             `json:"plaid_security_id"`
 	Name             *string             `json:"name"`
 	Ticker           *string             `json:"ticker"`
 	Type             *string             `json:"type"`
@@ -662,6 +690,8 @@ type Security struct {
 	IsCashEquivalent bool                `json:"is_cash_equivalent"`
 	CreatedAt        stdtime.Time        `json:"created_at"`
 	UpdatedAt        stdtime.Time        `json:"updated_at"`
+	Source           string              `json:"source"`
+	TickerKey        *string             `json:"ticker_key"`
 }
 
 type Session struct {
@@ -700,7 +730,8 @@ type Transaction struct {
 	CreatedAt            stdtime.Time    `json:"created_at"`
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 	// User state: a real but non-repeating event (loan payoff, tax bill, car purchase). Counted in the month it fell; skipped by trailing-average and recurring-detection queries that pass exclude_one_time. Preserved across Plaid sync, like excluded_from_reports and notes.
-	IsOneTime bool `json:"is_one_time"`
+	IsOneTime    bool       `json:"is_one_time"`
+	ObligationID *uuid.UUID `json:"obligation_id"`
 }
 
 type TransactionSplit struct {

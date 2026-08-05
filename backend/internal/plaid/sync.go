@@ -274,8 +274,8 @@ func (s *Syncer) syncAccounts(ctx context.Context, itemID uuid.UUID, accessToken
 	for _, a := range accounts {
 		kinds.noteAccountType(a.Type)
 		row, err := s.Queries.UpsertAccount(ctx, dbgen.UpsertAccountParams{
-			PlaidItemID:      itemID,
-			PlaidAccountID:   a.PlaidAccountID,
+			PlaidItemID:      &itemID,
+			PlaidAccountID:   plaidID(a.PlaidAccountID),
 			Name:             a.Name,
 			OfficialName:     a.OfficialName,
 			Mask:             a.Mask,

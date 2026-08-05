@@ -344,11 +344,14 @@ export interface SyncResult {
 export interface Account {
   id: string
   /** The linked institution this belongs to. Group by this, never by
-   *  `institution_name` — two household members can link the same bank. */
-  item_id: string
+   *  `institution_name` — two household members can link the same bank.
+   *
+   *  Null for a manual account, which belongs to no institution. Those group
+   *  together under their own heading rather than under an invented key. */
+  item_id: string | null
   name: string
   mask: string | null
-  /** depository | credit | loan | investment | other */
+  /** depository | credit | loan | investment | brokerage | other */
   type: string
   subtype: string | null
   institution_name: string | null
@@ -357,6 +360,109 @@ export interface Account {
   available_balance: string | null
   currency: string
   is_own: boolean
+  /** Which affordances the row offers. A Plaid account syncs and reconnects; a
+   *  manual one is edited and has its balance set by hand. */
+  source: 'plaid' | 'manual'
+  tax_treatment: string | null
+  is_shared: boolean
+}
+
+/** Fields the manual-account editor sends. Balance is a string like every other
+ *  money value — a JS number would be a float. */
+export interface ManualAccountInput {
+  name: string
+  type: string
+  subtype?: string | null
+  mask?: string | null
+  currency?: string
+  tax_treatment?: string | null
+  is_shared?: boolean
+  /** Opening balance, on create only. Later changes go through
+   *  setManualAccountBalance, which records why the balance moved. */
+  balance?: string | null
+}
+
+/** One dated balance for a manual account. `scheduled` rows were written by the
+ *  auto-posting worker, not by hand. */
+export interface AccountBalanceEntry {
+  as_of: string
+  balance: string
+  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend'
+  note: string | null
+}
+
+export interface SetBalanceInput {
+  balance: string
+  as_of?: string
+  reason?: 'manual' | 'holding_revalue' | 'fee' | 'dividend'
+  note?: string | null
+}
+
+export interface Security {
+  id: string
+  ticker: string | null
+  name: string | null
+  type: string | null
+  close_price: string | null
+  close_price_as_of: string | null
+  currency: string
+  source: 'plaid' | 'manual'
+}
+
+export interface SecurityInput {
+  ticker: string
+  name?: string | null
+  type?: string | null
+  cusip?: string | null
+  isin?: string | null
+  close_price?: string | null
+  close_price_as_of?: string | null
+  currency?: string
+  is_cash_equivalent?: boolean
+}
+
+export interface HoldingInput {
+  security_id: string
+  /** Fractional shares are normal in a retirement plan, so this is a decimal
+   *  string, not an integer. */
+  quantity: string
+  cost_basis?: string | null
+  institution_price?: string | null
+  as_of?: string
+}
+
+/** One recorded investment transaction on a manual account.
+ *
+ *  SIGN: `amount` is NEGATIVE for money moving INTO the portfolio (a
+ *  contribution) and positive for money leaving it. This matches Plaid and is
+ *  what the return calculations expect; getting it backwards inverts every
+ *  performance figure rather than producing an error. */
+export interface InvestmentTransaction {
+  id: string
+  date: string
+  source: 'plaid' | 'manual' | 'scheduled'
+  type: string
+  subtype: string | null
+  amount: string
+  quantity: string | null
+  price: string | null
+  fees: string | null
+  name: string | null
+  ticker: string | null
+  security_name: string | null
+}
+
+export interface InvestmentTransactionInput {
+  account_id: string
+  security_id?: string | null
+  type: string
+  subtype?: string | null
+  amount: string
+  quantity?: string | null
+  price?: string | null
+  fees?: string | null
+  date: string
+  name?: string | null
 }
 
 export interface Transaction {
@@ -386,8 +492,10 @@ export interface Transaction {
   plaid_category_detailed: string | null
   category_id: string | null
   notes: string | null
-  /** 'plaid' | 'csv' | 'manual'. Only 'manual' rows can be edited or deleted. */
-  source: string
+  /** Only 'manual' rows can be edited or deleted. 'scheduled' rows were posted
+   *  by the auto-posting worker from an obligation — editing one here would be
+   *  undone the next time it posted, so the obligation is what you change. */
+  source: 'plaid' | 'csv' | 'manual' | 'scheduled'
   /**
    * A hand-entered row that a later Plaid charge now appears to match (same
    * account, same amount, within four days) — likely the issuer finally
@@ -881,6 +989,19 @@ export interface Obligation {
   /** True once a human has edited it; re-detection then leaves it alone. */
   user_edited: boolean
   is_personal: boolean
+  /** When on, the worker materialises due occurrences as real transactions.
+   *  Off by default: an obligation is a forecast until someone says otherwise. */
+  auto_post: boolean
+  /** The account a posting CREDITS, as distinct from `account_id`, which is the
+   *  one the bill is paid FROM. Null means "same as account_id". */
+  posting_account_id: string | null
+  /** Occurrences on or before this date have been posted. */
+  last_posted_date: string | null
+}
+
+export interface AutoPostInput {
+  auto_post: boolean
+  posting_account_id?: string | null
 }
 
 export type ObligationUnit = 'day' | 'week' | 'month' | 'year'
@@ -1355,6 +1476,10 @@ export interface InvestmentAccount {
    */
   suggested_tax_treatment: TaxTreatment | ''
   is_managed: boolean | null
+  /** Whether positions and transactions can be entered by hand here. Only
+   *  manual accounts can — a Plaid account's are the institution's to report,
+   *  and a hand-entered row would be overwritten by the next sync. */
+  source: 'plaid' | 'manual'
 }
 
 export interface InvestmentOverview {
@@ -3213,6 +3338,54 @@ export const api = {
   // otherwise be recreated by the next detection pass.
   deleteObligation: (id: string) =>
     request<void>('DELETE', `/api/obligations/${id}`),
+
+  // Auto-posting is its own endpoint rather than a field on updateObligation
+  // because it is a different kind of decision: editing an obligation changes a
+  // forecast, enabling this starts writing transactions.
+  setObligationAutoPost: (id: string, input: AutoPostInput) =>
+    request<Obligation>('PUT', `/api/obligations/${id}/auto-post`, input),
+
+  // --- Manual accounts (doc 30) -------------------------------------------
+  // Every one of these refuses a Plaid-linked account id. A linked account's
+  // name and balance belong to the institution, and an edit here would last
+  // only until the next sync silently reverted it.
+
+  createManualAccount: (input: ManualAccountInput) =>
+    request<Account>('POST', '/api/accounts', input),
+
+  updateManualAccount: (id: string, input: ManualAccountInput) =>
+    request<Account>('PUT', `/api/accounts/${id}`, input),
+
+  deleteManualAccount: (id: string) =>
+    request<void>('DELETE', `/api/accounts/${id}`),
+
+  setManualAccountBalance: (id: string, input: SetBalanceInput) =>
+    request<Account>('PUT', `/api/accounts/${id}/balance`, input),
+
+  accountBalanceHistory: (id: string) =>
+    request<AccountBalanceEntry[]>('GET', `/api/accounts/${id}/balance-history`),
+
+  listSecurities: (search?: string) =>
+    request<Security[]>('GET', withQuery('/api/securities', { q: search })),
+
+  createManualSecurity: (input: SecurityInput) =>
+    request<Security>('POST', '/api/securities', input),
+
+  upsertManualHolding: (accountId: string, input: HoldingInput) =>
+    request<{ id: string }>('POST', `/api/accounts/${accountId}/holdings`, input),
+
+  deleteManualHolding: (id: string) =>
+    request<void>('DELETE', `/api/holdings/${id}`),
+
+  accountInvestmentTransactions: (accountId: string) =>
+    request<InvestmentTransaction[]>(
+      'GET', `/api/accounts/${accountId}/investment-transactions`),
+
+  createManualInvestmentTransaction: (input: InvestmentTransactionInput) =>
+    request<{ id: string }>('POST', '/api/investment-transactions', input),
+
+  deleteManualInvestmentTransaction: (id: string) =>
+    request<void>('DELETE', `/api/investment-transactions/${id}`),
 
   upcomingObligations: (days = 30) =>
     request<UpcomingObligations>('GET', withQuery('/api/obligations/upcoming', { days })),

@@ -69,6 +69,12 @@ const alertSweepInterval = 30 * time.Minute
 // lets a server that was off overnight still pay on the right day.
 const allowancePostInterval = time.Hour
 
+// scheduledPostInterval is how often auto-posting obligations are checked. Same
+// reasoning as allowancePostInterval directly above, and the same safety
+// property makes the frequency free: the per-obligation cursor and the unique
+// index on (obligation_id, date) mean a run with nothing due writes nothing.
+const scheduledPostInterval = time.Hour
+
 // insightInterval is how often every household's proactive feed is regenerated
 // independently of syncs, so a quiet household still surfaces a budget crossing
 // the calendar rolls into. Detection is cheap deterministic SQL; phrasing (when
@@ -280,6 +286,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register bond revaluation worker: %w", err)
 	}
 
+	// Scheduled transaction posting. Registered unconditionally for the same
+	// reason as the allowance worker: it needs neither Plaid nor an AI key, and
+	// the household it exists for is precisely the one whose account Plaid
+	// cannot reach. It needs the pool because each obligation's occurrences and
+	// its cursor advance commit as one transaction.
+	if err := river.AddWorkerSafely(workers, &PostScheduledTransactionsWorker{
+		Pool: pool, Queries: queries,
+	}); err != nil {
+		return nil, fmt.Errorf("register scheduled transaction worker: %w", err)
+	}
+
 	config.PeriodicJobs = []*river.PeriodicJob{
 		river.NewPeriodicJob(
 			river.PeriodicInterval(snapshotInterval),
@@ -306,6 +323,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(allowancePostInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return PostAllowancesArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(scheduledPostInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return PostScheduledTransactionsArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),

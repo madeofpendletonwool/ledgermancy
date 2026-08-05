@@ -135,6 +135,13 @@ var tableCoverage = map[string]Coverage{
 	// reasoning as net_worth_snapshots directly above. A house's five-year
 	// appreciation cannot be reconstructed from its present value.
 	"asset_valuations": InExport,
+	// The same argument as asset_valuations, one table over. accounts.current_-
+	// balance holds only what a manual account is worth TODAY; this is every
+	// balance the household ever recorded for it, and for an account Plaid
+	// cannot reach there is no sync that could rebuild a single row of it. It is
+	// also the audit trail for the scheduled-contribution worker — a
+	// reason='scheduled' row is the only record of why a balance moved.
+	"account_balance_history": InExport,
 	// account_terms is the sharper half of the pair above it. liabilities is a
 	// mirror of Plaid and a resync rebuilds it; account_terms is the APR and the
 	// monthly payment a person typed in, for the majority of institutions Plaid

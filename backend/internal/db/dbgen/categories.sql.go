@@ -32,11 +32,10 @@ func (q *Queries) ApplyCategory(ctx context.Context, arg ApplyCategoryParams) er
 const applyMerchantCategory = `-- name: ApplyMerchantCategory :exec
 UPDATE transactions t
 SET category_id = $3, category_source = 'llm'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.account_id = a.id
-  AND a.plaid_item_id = i.id
-  AND i.user_id = u.id
-  AND u.household_id = $1
+  AND v.account_id = a.id
+  AND v.household_id = $1
   AND t.merchant_key = $2
   AND t.category_source IS DISTINCT FROM 'manual'
 `
@@ -59,11 +58,10 @@ func (q *Queries) ApplyMerchantCategory(ctx context.Context, arg ApplyMerchantCa
 const applyMerchantCategoryRewritable = `-- name: ApplyMerchantCategoryRewritable :exec
 UPDATE transactions t
 SET category_id = $3, category_source = 'cache'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.account_id = a.id
-  AND a.plaid_item_id = i.id
-  AND i.user_id = u.id
-  AND u.household_id = $1
+  AND v.account_id = a.id
+  AND v.household_id = $1
   AND t.merchant_key = $2
   AND t.category_source IS DISTINCT FROM 'manual'
 `
@@ -378,9 +376,8 @@ SELECT t.id, t.merchant_key, t.merchant_name, t.name,
        t.plaid_pfc_primary, t.plaid_pfc_detailed
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
   AND t.category_id = $2
   AND t.category_source IS DISTINCT FROM 'manual'
   AND t.merchant_key IS NOT NULL
@@ -444,9 +441,8 @@ SELECT t.id, t.merchant_key, t.merchant_name, t.name,
        t.plaid_pfc_primary, t.plaid_pfc_detailed
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
   AND t.category_id IS NULL
 LIMIT $2
 `
@@ -553,13 +549,12 @@ func (q *Queries) ResolvePFCCategory(ctx context.Context, arg ResolvePFCCategory
 const setTransactionCategory = `-- name: SetTransactionCategory :one
 UPDATE transactions t
 SET category_id = $3, category_source = 'manual'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = $1
+  AND v.account_id = a.id
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $2
-RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
+  AND v.household_id = $2
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
 `
 
 type SetTransactionCategoryParams struct {
@@ -598,6 +593,7 @@ func (q *Queries) SetTransactionCategory(ctx context.Context, arg SetTransaction
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }

@@ -97,12 +97,15 @@ you do all the math. Ledgermancy is neither.
   </tr>
 </table>
 
-Plus **Accounts** (Plaid linking, per-institution history spans, sharing, sync),
-**Transactions** (multi-account + category filtering, CSV import, inline
-recategorise with "apply to all from this merchant"), **Categories**
-(spending / income / transfer typing, fixed-cost flags, custom colours), and
-**Documents** (an encrypted vault for receipts, tax returns, warranties and
-policies, attachable to any transaction, asset or goal, with expiry reminders).
+Plus **Accounts** (Plaid linking *and manual accounts for the institutions Plaid
+won't connect*, per-institution history spans, sharing, sync), **Transactions**
+(multi-account + category filtering, CSV import, inline recategorise with "apply
+to all from this merchant"), **Categories** (spending / income / transfer typing,
+fixed-cost flags, custom colours), **Documents** (an encrypted vault for receipts,
+tax returns, warranties and policies, attachable to any transaction, asset or
+goal, with expiry reminders), and **Paystubs** — gross pay, withholding, pooled
+IRS contribution limits, and a W-2-shaped year-end summary, closing the 30–45%
+of gross income a bank transaction can never show.
 
 And three forward-looking surfaces: **Schedule** (recurring obligations, a bill
 calendar, day-by-day projected balances), **Investments** (time- and
@@ -116,6 +119,14 @@ screen and it runs standalone, opens without a network, and re-renders the last
 figures it fetched — always under a banner stating the time they were saved,
 and always read-only, because a stale balance shown as a live one is worse than
 an error.
+
+Behind every figure is an honesty layer: **Paystubs** close the gross-income gap
+the bank feed leaves; **manual assets** depreciate along a published curve as a
+proposal you accept (and directly-held savings bonds accrue to their exact
+redemption value); the **insight feed** flags per-merchant outliers and duplicate
+charges; every long-horizon chart can be switched into **real, inflation-adjusted
+dollars** against a bundled CPI-U series; and a weekly **digest** recaps it all
+in-app, by push, or by email.
 
 Full, per-feature walkthroughs live in the
 [docs](https://madeofpendletonwool.github.io/ledgermancy/).

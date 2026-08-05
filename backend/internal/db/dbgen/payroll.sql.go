@@ -862,11 +862,10 @@ SELECT
     ABS(-t.amount - $1::numeric)::numeric AS delta
 FROM transactions t
 JOIN accounts    a ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users       u ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+WHERE v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND NOT t.excluded_from_reports

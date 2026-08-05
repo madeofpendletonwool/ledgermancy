@@ -15,6 +15,10 @@ The major-initiative waves are landing too: the bill calendar, dedicated
 investments page, and FIRE projections are in (wave 3), as are merchant
 canonicalization, the encrypted document vault, debt-payoff goals, the
 installable PWA, and household people + kid accounts + bill split (wave 4).
+**Wave 5 — the honesty / income / manual-accounts layer — is complete too:**
+predictive anomaly detection, paystub income tracking, the in-app digest,
+real-asset revaluation and depreciation, inflation-adjusted views, and manual
+accounts with full Investments-page parity.
 
 ## Known gaps
 
@@ -30,6 +34,27 @@ Deliberate gaps — not bugs:
 
 ## Recently shipped
 
+- **Predictive anomaly detection** — per-merchant outlier charges (judged
+  against a leave-one-out baseline) and duplicate-charge detection, surfacing on
+  the existing insight feed. A household sensitivity setting and a per-merchant
+  "this is normal" suppression keep it quiet when it should be.
+- **Pre-tax income & deduction tracking** — a [paystub](features/paystubs.md)
+  importer that closes the 30–45% of gross income the bank feed never sees: PDF
+  import or manual entry, a balancing check, contribution-room tracking against
+  pooled IRS limits, an effective tax rate, and a W-2-shaped year-end tax summary.
+- **In-app digest** — the weekly / monthly recap is now persisted on its own
+  [page](features/digest.md) and kept, with push and email as optional surfaces
+  beside it rather than the only ones.
+- **Real-asset revaluation & depreciation** — [manual assets](features/net-worth.md#manual-assets)
+  gain an append-only value history; vehicles depreciate along a published curve
+  as a *proposal* you accept; and directly-held Series I / EE savings bonds accrue
+  to their exact redemption value against bundled Treasury rates.
+- **Inflation-adjusted views** — every long-horizon chart (net-worth trend,
+  spending trend, investment returns) can be switched into real dollars against a
+  bundled CPI-U series. See [Concepts](concepts.md#real-dollars-and-nominal-dollars).
+- **Manual accounts** — [accounts without Plaid](features/accounts.md#accounts-without-plaid),
+  with full Investments-page parity (per-holding positions, TWR/MWR, dividends)
+  and auto-posting scheduled contributions that also adjust the manual balance.
 - **Household people, kid accounts, shared goals, bill split** — a *person* is
   now distinct from a *login*, so a child with a 529 exists without credentials.
   Custodial accounts are segregated from the nest egg; shared-goal contributions
@@ -68,15 +93,14 @@ alert body routes through.
 What remains is the next tier of major initiatives, each with an execution-ready
 plan in [`docs/plans/`](https://github.com/madeofpendletonwool/ledgermancy/blob/main/docs/plans/):
 
-- **Predictive anomaly detection** — per-merchant baselines, outlier charges,
-  duplicate detection.
-- **Pre-tax income & deduction tracking** — a paystub importer closing the
-  30–45% of gross income that is currently invisible.
 - **Proactive cash-flow advisor** — ranked, deterministic options for surplus
-  cash.
-- **In-app weekly digest**, **real-asset revaluation & depreciation**,
-  **inflation-adjusted views**, the **decision-modeling** what-if engine, and
-  (far future) **multi-currency**.
+  cash; an Advisor surface around the chat; a multi-bucket allocation planner;
+  and a Monte Carlo likelihood layer. (Wave 6.)
+- **Decision-modeling** what-if engine — rent-vs-buy, retirement stress tests,
+  solve-for-X. (Wave 7.)
+- **Multi-currency** — FX on transactions and conversion at aggregation time.
+  Highest blast radius in the backlog and worth nothing to a US-only user.
+  (Wave 7.)
 
 See the [plan docs README](https://github.com/madeofpendletonwool/ledgermancy/blob/main/docs/plans/README.md)
 for the wave order and dependency graph.

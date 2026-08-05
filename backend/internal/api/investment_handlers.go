@@ -15,6 +15,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
@@ -40,9 +41,14 @@ type investmentAccountResponse struct {
 	TaxTreatment *string `json:"tax_treatment"`
 	// SuggestedTaxTreatment is inferred from the Plaid subtype, empty when the
 	// subtype cannot distinguish (a 401k is reported the same whether it is
-	// traditional or Roth).
+	// traditional or Roth) and always empty for a manual account, which has no
+	// institution-reported subtype to infer from.
 	SuggestedTaxTreatment string `json:"suggested_tax_treatment"`
 	IsManaged             *bool  `json:"is_managed"`
+	// Source decides whether this account can be edited here. Holdings and
+	// investment transactions are enterable by hand only for manual accounts;
+	// a Plaid account's are the institution's to report.
+	Source string `json:"source"`
 }
 
 type investmentOverviewResponse struct {
@@ -94,10 +100,15 @@ func (s *Server) handleInvestmentOverview(w http.ResponseWriter, r *http.Request
 			InstitutionName: a.InstitutionName, Currency: a.Currency,
 			TaxTreatment: a.TaxTreatment, IsManaged: a.IsManaged,
 			Balance: nullDecimal(a.CurrentBalance),
+			Source:  a.Source,
 		}
 		if a.TaxTreatment == nil {
 			resp.UntaggedAccounts++
-			if a.Subtype != nil {
+			// Only Plaid subtypes carry an inference. A manual account's
+			// subtype is whatever the user typed, so treating it as evidence
+			// would be reading a suggestion back off the user's own guess and
+			// presenting it as the app's.
+			if a.Subtype != nil && a.Source == "plaid" {
 				item.SuggestedTaxTreatment = reporting.SuggestTaxTreatment(*a.Subtype)
 			}
 		}
@@ -655,13 +666,11 @@ func (s *Server) handleInvestmentDividends(w http.ResponseWriter, r *http.Reques
 // Account tagging
 // --------------------------------------------------------------------------
 
-// validTaxTreatments mirrors the CHECK constraint on accounts.tax_treatment.
-// Validated here so a bad value returns 400 with a readable message rather than
-// a 500 from a constraint violation.
-var validTaxTreatments = map[string]bool{
-	"taxable": true, "trad_401k": true, "roth_401k": true,
-	"trad_ira": true, "roth_ira": true, "529": true,
-	"hsa": true, "trust": true, "other": true,
+// taxTreatmentError is the 400 body for a value outside the vocabulary, built
+// from networth.TaxTreatments so the message cannot list a different set from
+// the one the check accepts.
+func taxTreatmentError() string {
+	return "tax_treatment must be one of: " + strings.Join(networth.TaxTreatments, ", ")
 }
 
 type taxTreatmentRequest struct {
@@ -698,9 +707,8 @@ func (s *Server) handleSetAccountTaxTreatment(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.TaxTreatment != nil && !validTaxTreatments[*req.TaxTreatment] {
-		writeError(w, http.StatusBadRequest,
-			"tax_treatment must be one of: taxable, trad_401k, roth_401k, trad_ira, roth_ira, 529, hsa, trust, other")
+	if req.TaxTreatment != nil && !networth.ValidTaxTreatment(*req.TaxTreatment) {
+		writeError(w, http.StatusBadRequest, taxTreatmentError())
 		return
 	}
 

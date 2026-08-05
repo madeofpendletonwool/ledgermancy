@@ -80,6 +80,39 @@ var custodialTreatments = map[string]bool{
 // dependent rather than to the household's retirement.
 func IsCustodial(treatment string) bool { return custodialTreatments[treatment] }
 
+// TaxTreatments is every value accounts.tax_treatment may take, in the order
+// the UI offers them: the household's own money first, then the custodial
+// treatments defined above.
+//
+// This is the ONE place the vocabulary lives on the Go side. It was in three
+// places before, and they had already drifted: the DB CHECK (00034) and the
+// frontend picker both carried 13 values while the API's own validation carried
+// 9, so classifying an account as a UTMA got a 400 from an endpoint whose
+// database would have accepted it happily. That was invisible while only Plaid
+// could create accounts — SuggestTaxTreatment never proposed the missing four —
+// and manual account creation surfaces it immediately, because a custodial
+// account is exactly the kind an institution tends not to link.
+//
+// Keep in step with accounts_tax_treatment_check (00034). Callers validate
+// through ValidTaxTreatment rather than re-listing these.
+var TaxTreatments = []string{
+	"taxable", "trad_401k", "roth_401k", "trad_ira", "roth_ira",
+	"hsa", "trust", "other",
+	"529", "utma_ugma", "coverdell", "custodial_roth", "trump",
+}
+
+var validTreatments = func() map[string]bool {
+	m := make(map[string]bool, len(TaxTreatments))
+	for _, t := range TaxTreatments {
+		m[t] = true
+	}
+	return m
+}()
+
+// ValidTaxTreatment reports whether a value will satisfy the DB constraint, so
+// a bad one returns a readable 400 rather than a 500 from a check violation.
+func ValidTaxTreatment(treatment string) bool { return validTreatments[treatment] }
+
 // isEducation reports whether this account funds a dependent rather than the
 // household's retirement. Named for the original 529 case; the set is now
 // every custodial treatment.

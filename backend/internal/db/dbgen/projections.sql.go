@@ -15,13 +15,12 @@ import (
 
 const deleteAccountContribution = `-- name: DeleteAccountContribution :exec
 DELETE FROM account_contributions c
-USING accounts a, plaid_items i, users u
+USING accounts a, account_access v
 WHERE c.account_id = $1
+  AND v.account_id = a.id
   AND a.id = c.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 `
 
 type DeleteAccountContributionParams struct {
@@ -45,9 +44,10 @@ SELECT id, household_id, real_return_rate, inflation_rate, withdrawal_rate, targ
 // Retirement projection inputs: household assumptions and the per-account
 // contribution plan.
 //
-// Reads carry the same visibility scoping as the rest of the reporting layer
-// (household membership plus `i.user_id = $2 OR i.is_shared`) so a member's
-// private institution never appears in a household projection.
+// Reads carry the same visibility scoping as the rest of the reporting layer,
+// resolved through the account_access view (00053): household membership plus
+// `v.user_id = $2 OR v.is_shared`, so a member's private institution never
+// appears in a household projection.
 func (q *Queries) GetProjectionAssumptions(ctx context.Context, householdID uuid.UUID) (ProjectionAssumption, error) {
 	row := q.db.QueryRow(ctx, getProjectionAssumptions, householdID)
 	var i ProjectionAssumption
@@ -75,7 +75,7 @@ SELECT
     a.subtype,
     a.current_balance,
     a.tax_treatment,
-    i.institution_name,
+    v.institution_name,
     c.monthly_contribution,
     c.employer_match_pct,
     c.annual_salary,
@@ -89,15 +89,14 @@ SELECT
     -- enters a birthdate.
     bp.birthdate AS beneficiary_birthdate
 FROM accounts a
-JOIN plaid_items i            ON i.id = a.plaid_item_id
-JOIN users u                  ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN account_contributions c ON c.account_id = a.id
 LEFT JOIN household_people bp     ON bp.id = a.beneficiary_person_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('investment', 'brokerage')
-ORDER BY i.institution_name, a.name
+ORDER BY v.institution_name, a.name
 `
 
 type ListProjectableAccountsParams struct {
@@ -178,11 +177,10 @@ SELECT
     $5::int,
     $6::int
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $7
-  AND u.household_id = $8
-  AND (i.user_id = $9 OR i.is_shared)
+  AND v.household_id = $8
+  AND (v.user_id = $9 OR v.is_shared)
 ON CONFLICT (account_id) DO UPDATE SET
     monthly_contribution    = EXCLUDED.monthly_contribution,
     employer_match_pct      = EXCLUDED.employer_match_pct,
