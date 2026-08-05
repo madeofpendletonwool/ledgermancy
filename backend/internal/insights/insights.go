@@ -81,5 +81,9 @@ func DefaultProducers() []Producer {
 		// everything else. Neither is complete alone.
 		merchantOutlierProducer{},
 		duplicateChargeProducer{},
+		// Asset revaluation nudges (assetstale.go). Bonds are excluded — they
+		// revalue themselves from published rates every month, so a nudge would
+		// be asking the user to confirm arithmetic the app already did.
+		assetStaleProducer{},
 	}
 }

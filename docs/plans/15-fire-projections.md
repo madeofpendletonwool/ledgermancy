@@ -96,7 +96,17 @@ say "limits for 2027 aren't configured" rather than silently applying 2026's.
 
 New file(s) in `backend/internal/networth/`, beside `project.go`. **Do not
 modify `Project`** — the Net Worth page depends on it and its simplicity is a
-feature. Add `ProjectByAccount` alongside it and let the two coexist.
+feature. Add an account-aware projection alongside it and let the two coexist.
+
+> **Shipped as `ProjectRetirement`, not `ProjectByAccount`.** This section
+> named the new function `ProjectByAccount`; `retirement.go` shipped it as
+> `ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now
+> time.Time) RetirementProjection`, with the per-account series on
+> `RetirementPoint.ByAccount` (a `map[string]AccountPoint` keyed by
+> `AccountPlan.ID`). Docs 28 and 32 both inherited the wrong name from here and
+> both told their implementer to "delegate to `ProjectByAccount`, do not fork
+> it" — an instruction that cannot be followed. **There is no
+> `ProjectByAccount` in the tree; use `ProjectRetirement`.**
 
 ### Account-aware accumulation
 

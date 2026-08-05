@@ -348,3 +348,112 @@ Extend the manual-assets section of `NetWorth.tsx`:
 - Tax on bond interest — federal deferral until redemption, the education
   exclusion, state exemption. `tax_exempt` is recorded and nothing reads it yet.
 - Tracking redemptions as income. A redeemed bond is edited or deleted by hand.
+
+---
+
+## Shipped notes
+
+Implemented on `wave5`. Migration `00051_asset_revaluation.sql` — **not** the
+`00050` this doc and the README reserved, which `00050_merchant_logos.sql` had
+already taken. Doc 27's `cpi_series` moved to `00057` as a consequence; the
+README's table is authoritative.
+
+### Where the numbers came from, and why that matters more here than usual
+
+Every rate in `savings_bond_rates` was read from treasurydirect.gov at
+implementation time, and the valuation algorithm is the one in the regulations
+rather than a plausible reconstruction of it:
+
+- **`FV = PV × [1 + (CR ÷ 2)]^(m ÷ 6)`**, rounded to the nearest cent at *each*
+  accrual date — 31 CFR 359.39. The per-period rounding is part of the
+  instrument. Dropping it lands cents away from Treasury's own figure.
+- **Composite = `fixed + 2×inflation + (fixed × inflation)`**, floored at zero.
+- **The $25 unit.** Treasury tabulates values for a $25 bond and scales, so a
+  $1,000 bond is 40 units and the rounding happens on the unit. This is
+  load-bearing: rounding on the total instead is wrong by cents, and rounding on
+  a $100 base (31 CFR 359.55's book-entry rule) is wrong by ~20¢ per $1,000. The
+  $25 basis was chosen because it is what Treasury's own public calculator
+  applies, and therefore the only one a user can check without logging in.
+- **The three-month penalty** is implemented as "the value the bond had three
+  months ago", per 31 CFR 351.35, with that section's floor: a redemption value
+  is never below the issue price.
+
+Fixtures in `networth/bonds_test.go` are quoted from Treasury's calculator
+(`treasurydirect.gov/BC/SBCPrice`) rather than recorded from our own output, and
+the implementation matches all of them to the cent:
+
+| Bond | Date | Treasury | Ours |
+|---|---|---|---|
+| $1,000 Series I, issued 10/2021 | 08/2026 | $1,232.00 (P5 penalty) | $1,232.00 |
+| $1,000 paper EE, issued 05/2005 | 04/2025 | $997.20 | $997.20 |
+| $1,000 paper EE, issued 05/2005 | 05/2025 | $1,000.00 | $1,000.00 |
+
+The I bond case also pins the rate plumbing end to end: Treasury reports its
+current rate as 3.12%, which is the *issue* period's fixed rate (May 2021,
+0.00%) combined with the inflation rate for the period the bond is *currently*
+in (April 2026, taking the November 2025 announcement of 1.56%). Getting either
+lookup wrong changes that number.
+
+### Two modelling errors this doc's text would have led to
+
+Both were caught by the fixtures, and both are worth recording because the doc
+as written implies the wrong thing:
+
+1. **"Compound the fixed rate, then at 20 years take `max(compounded, 2 ×
+   purchase_price)`."** That underprices every EE bond past year 20. The
+   doubling is not a final adjustment — the last ten years of the bond's life
+   compound *from* the doubled value. It is applied inside the accrual walk
+   (`unitFloor`), not bolted on at the end.
+2. **Rate lookup as "greatest `period_start` ≤ date".** That silently answers
+   for dates years past the end of the table, which is exactly the
+   extrapolation the doc forbids elsewhere. A row's coverage now *ends* — at the
+   next announcement, or six months for the most recent — so an unpublished
+   period returns `ok=false` instead of quietly reusing the last known rate.
+
+Also: only Series I consults the table period by period. An EE bond earns the
+fixed rate set at issue for its whole life, so it reads the table once. Besides
+being correct, this is why an EE bond can be valued years ahead while an I bond
+honestly cannot.
+
+### Scope decisions
+
+- **EE bonds issued before May 2005 are refused, not approximated.** They earned
+  variable market-based rates (90% of five-year Treasury averages) under
+  guarantee periods that changed several times. No table here describes them,
+  and running them through the fixed-rate model would produce a confident wrong
+  number. The refusal says so and invites a manual value.
+- **No auto-valuation adapter shipped, and no interface for one.** The doc
+  called it optional and warned the data sources may not exist; they largely
+  don't (Zestimate restricted, Redfin/Realtor ToS-blocked, KBB/Edmunds
+  commercial-only). Shipping an interface with no implementation would be a
+  placeholder posing as a seam. The manual + curve path is complete on its own.
+- **No twice-yearly rate-fetch job.** Manual entry is sufficient, the table is
+  editable through `PUT /api/savings-bond-rates`, and a bond spanning an
+  unseeded period refuses loudly rather than degrading quietly — so the failure
+  mode of a stale table is visible, which is what made the job optional.
+- **Consequently the README's "phones home to nothing but Plaid" line still
+  holds and was NOT changed.** Nothing in this feature makes a network call.
+- **The vehicle curve is the published 20%/15% shape** (CARFAX's depreciation
+  guide), cited in `networth/depreciation.go` and rendered in the UI beside the
+  figure. It is a generalisation and the copy says so.
+
+### The rule that shaped the code
+
+An estimate is a proposal; a bond valuation is a write. `GET
+/manual-assets/{id}/suggestion` computes and returns, and touches nothing —
+there is a test asserting `manual_assets.value` is unchanged after running the
+estimator. `jobs.RevalueBonds` writes without asking, and the justification is
+determinism rather than convenience. That distinction is stated at the top of
+`api/asset_handlers.go` and `jobs/bonds.go` because it is the thing most likely
+to be eroded by a later change.
+
+Equity is display-only and never enters the net-worth sum; the invariant is
+asserted in `db/asset_revaluation_test.go` by computing net worth before and
+after linking a loan.
+
+### Not done
+
+- Doc 21's `manual_assets.person_id` already exists, so attaching a bond to a
+  child works, but there is no UI for it in the asset panel yet — the person
+  picker lives on the People page.
+- `tax_exempt` is recorded and nothing reads it, as the doc intended.

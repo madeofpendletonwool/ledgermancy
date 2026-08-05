@@ -122,3 +122,60 @@ Every assumption is visible, adjustable, and echoed back in the response
 alongside an `estimate: true` flag. **Nothing here predicts markets.** The
 Financial Summary's Outlook section uses the same engine and carries the caveat
 on the page itself.
+
+---
+
+## Real dollars and nominal dollars
+
+Every figure the app stores is **nominal**: the dollars of the day it was
+recorded. That is correct for storage and wrong for comparison, because a 2019
+dollar and a 2026 dollar are not the same thing. "Net worth up 8% this year" in
+a 6% inflation year is 2% real growth, and an app that cannot say so is not
+telling you the truth.
+
+Any long-horizon chart can therefore be switched into **real (inflation-adjusted)
+dollars**:
+
+```
+real = nominal × index[base] / index[recorded]
+```
+
+Five rules keep that honest.
+
+**Nominal stays the default.** Real is opt-in, per user, and remembered.
+Quietly changing what an existing figure means would break every comparison you
+carry in your head.
+
+**Deflation is a view, applied at read time.** Nothing stored is ever rewritten.
+The stored number is what it was, in the dollars of its own day, permanently.
+
+**The base month is always stated.** Real figures are labelled "in June 2026
+dollars", not "in today's dollars" — the current month's index does not exist
+yet, so the base is the newest month BLS has published. A real number without
+the month it is denominated in is not a number you can use.
+
+**A month with no index is a gap, never a nominal figure in disguise.** The
+series has one permanent hole: **October 2025 was never published**, because
+that year's lapse in appropriations stopped collection, and BLS will not
+estimate it after the fact. Points dated there are dropped from a real chart and
+counted underneath it. Interpolating between September and November would have
+been within 0.2% and would still have been an invented number.
+
+**Returns are deflated by division, not subtraction.** Real return is
+`(1 + nominal) / (1 + inflation) − 1`. At 20% nominal and 6% inflation,
+subtraction says 14% and the truth is 13.2% — an error that always runs in the
+flattering direction, and compounds.
+
+The index is **CPI-U, U.S. city average, all items, not seasonally adjusted**
+(BLS `CUUR0000SA0`). Not seasonally adjusted on purpose: the SA series is
+revised annually for five years running, which would mean a figure you saw last
+month quietly changing.
+
+The series **ships bundled**, from January 2010, so this works with no outbound
+access at all. `CPI_FETCH_ENABLED` only adds new months as they are published;
+with it off, the app says the series is behind rather than pretending otherwise.
+See [Configuration → CPI refresh](configuration.md#cpi-refresh-inflation-adjusted-views).
+
+Short windows do not offer the toggle. Deflating one month by one month's price
+change moves the figure by a couple of tenths of a percent — noise dressed as
+precision.

@@ -12,8 +12,8 @@ import (
 
 type Account struct {
 	ID                  uuid.UUID           `json:"id"`
-	PlaidItemID         uuid.UUID           `json:"plaid_item_id"`
-	PlaidAccountID      string              `json:"plaid_account_id"`
+	PlaidItemID         *uuid.UUID          `json:"plaid_item_id"`
+	PlaidAccountID      *string             `json:"plaid_account_id"`
 	Name                string              `json:"name"`
 	OfficialName        *string             `json:"official_name"`
 	Mask                *string             `json:"mask"`
@@ -29,6 +29,30 @@ type Account struct {
 	TaxTreatment        *string             `json:"tax_treatment"`
 	IsManaged           *bool               `json:"is_managed"`
 	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
+	// plaid — identity and balance owned by the institution. manual — owned by the user; balance writes go through account_balance_history.
+	Source      string     `json:"source"`
+	UserID      *uuid.UUID `json:"user_id"`
+	IsShared    *bool      `json:"is_shared"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+}
+
+// Visibility resolution for accounts of either source. Join this rather than reaching through plaid_items; a manual account has no item.
+type AccountAccess struct {
+	AccountID       uuid.UUID `json:"account_id"`
+	HouseholdID     uuid.UUID `json:"household_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	IsShared        bool      `json:"is_shared"`
+	InstitutionName *string   `json:"institution_name"`
+}
+
+type AccountBalanceHistory struct {
+	ID        uuid.UUID       `json:"id"`
+	AccountID uuid.UUID       `json:"account_id"`
+	AsOf      stdtime.Time    `json:"as_of"`
+	Balance   decimal.Decimal `json:"balance"`
+	Reason    string          `json:"reason"`
+	Note      *string         `json:"note"`
+	CreatedAt stdtime.Time    `json:"created_at"`
 }
 
 type AccountContribution struct {
@@ -107,12 +131,48 @@ type AnomalyOverride struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+type AssetDetail struct {
+	ID            uuid.UUID           `json:"id"`
+	ManualAssetID uuid.UUID           `json:"manual_asset_id"`
+	Address       *string             `json:"address"`
+	Beds          decimal.NullDecimal `json:"beds"`
+	Baths         decimal.NullDecimal `json:"baths"`
+	Sqft          *int32              `json:"sqft"`
+	LotSqft       *int32              `json:"lot_sqft"`
+	Year          *int32              `json:"year"`
+	Make          *string             `json:"make"`
+	Model         *string             `json:"model"`
+	Trim          *string             `json:"trim"`
+	Mileage       *int32              `json:"mileage"`
+	AnnualMileage *int32              `json:"annual_mileage"`
+	BondSeries    *string             `json:"bond_series"`
+	IssueDate     *stdtime.Time       `json:"issue_date"`
+	PurchasePrice decimal.NullDecimal `json:"purchase_price"`
+	FaceValue     decimal.NullDecimal `json:"face_value"`
+	CouponRate    decimal.NullDecimal `json:"coupon_rate"`
+	MaturityDate  *stdtime.Time       `json:"maturity_date"`
+	TaxExempt     *bool               `json:"tax_exempt"`
+	Condition     *string             `json:"condition"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+	UpdatedAt     stdtime.Time        `json:"updated_at"`
+}
+
 type AssetPrice struct {
 	ID        uuid.UUID       `json:"id"`
 	Ticker    string          `json:"ticker"`
 	AsOf      stdtime.Time    `json:"as_of"`
 	Close     decimal.Decimal `json:"close"`
 	CreatedAt stdtime.Time    `json:"created_at"`
+}
+
+type AssetValuation struct {
+	ID            uuid.UUID       `json:"id"`
+	ManualAssetID uuid.UUID       `json:"manual_asset_id"`
+	Value         decimal.Decimal `json:"value"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	Source        string          `json:"source"`
+	Note          *string         `json:"note"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
 }
 
 type AuthEvent struct {
@@ -181,10 +241,33 @@ type CategoryRule struct {
 	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
+// CPI-U, U.S. city average, all items, NSA (BLS CUUR0000SA0). 1982-84 = 100.
+type CpiSeries struct {
+	ID         uuid.UUID       `json:"id"`
+	Period     stdtime.Time    `json:"period"`
+	IndexValue decimal.Decimal `json:"index_value"`
+	CreatedAt  stdtime.Time    `json:"created_at"`
+}
+
 type DigestDelivery struct {
 	UserID    uuid.UUID    `json:"user_id"`
 	PeriodKey string       `json:"period_key"`
 	SentAt    stdtime.Time `json:"sent_at"`
+}
+
+type DigestEntry struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Cadence     string        `json:"cadence"`
+	PeriodKey   string        `json:"period_key"`
+	PeriodStart stdtime.Time  `json:"period_start"`
+	PeriodEnd   stdtime.Time  `json:"period_end"`
+	Label       string        `json:"label"`
+	Payload     []byte        `json:"payload"`
+	Narrative   *string       `json:"narrative"`
+	ReadAt      *stdtime.Time `json:"read_at"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
 }
 
 type Document struct {
@@ -221,6 +304,17 @@ type DocumentLink struct {
 	AccountID     *uuid.UUID   `json:"account_id"`
 	GoalID        *uuid.UUID   `json:"goal_id"`
 	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
+type Employer struct {
+	ID           uuid.UUID    `json:"id"`
+	HouseholdID  uuid.UUID    `json:"household_id"`
+	Name         string       `json:"name"`
+	EinEncrypted []byte       `json:"ein_encrypted"`
+	Address      *string      `json:"address"`
+	PayFrequency string       `json:"pay_frequency"`
+	CreatedAt    stdtime.Time `json:"created_at"`
+	UpdatedAt    stdtime.Time `json:"updated_at"`
 }
 
 type Goal struct {
@@ -323,7 +417,7 @@ type InvestmentTransaction struct {
 	ID                           uuid.UUID           `json:"id"`
 	AccountID                    uuid.UUID           `json:"account_id"`
 	SecurityID                   *uuid.UUID          `json:"security_id"`
-	PlaidInvestmentTransactionID string              `json:"plaid_investment_transaction_id"`
+	PlaidInvestmentTransactionID *string             `json:"plaid_investment_transaction_id"`
 	Type                         string              `json:"type"`
 	Subtype                      *string             `json:"subtype"`
 	Amount                       decimal.Decimal     `json:"amount"`
@@ -336,6 +430,7 @@ type InvestmentTransaction struct {
 	Raw                          []byte              `json:"raw"`
 	CreatedAt                    stdtime.Time        `json:"created_at"`
 	UpdatedAt                    stdtime.Time        `json:"updated_at"`
+	Source                       string              `json:"source"`
 }
 
 type Liability struct {
@@ -359,18 +454,20 @@ type Liability struct {
 }
 
 type ManualAsset struct {
-	ID          uuid.UUID       `json:"id"`
-	HouseholdID uuid.UUID       `json:"household_id"`
-	CreatedBy   *uuid.UUID      `json:"created_by"`
-	Name        string          `json:"name"`
-	Kind        string          `json:"kind"`
-	Value       decimal.Decimal `json:"value"`
-	IsLiability bool            `json:"is_liability"`
-	AsOf        stdtime.Time    `json:"as_of"`
-	Notes       *string         `json:"notes"`
-	CreatedAt   stdtime.Time    `json:"created_at"`
-	UpdatedAt   stdtime.Time    `json:"updated_at"`
-	PersonID    *uuid.UUID      `json:"person_id"`
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID uuid.UUID  `json:"household_id"`
+	CreatedBy   *uuid.UUID `json:"created_by"`
+	Name        string     `json:"name"`
+	// home | vehicle | cash | collectible | bond | other | debt
+	Kind          string          `json:"kind"`
+	Value         decimal.Decimal `json:"value"`
+	IsLiability   bool            `json:"is_liability"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	Notes         *string         `json:"notes"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
+	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	PersonID      *uuid.UUID      `json:"person_id"`
+	LoanAccountID *uuid.UUID      `json:"loan_account_id"`
 }
 
 type MerchantAlias struct {
@@ -402,6 +499,17 @@ type MerchantEntity struct {
 	Color             *string      `json:"color"`
 	CreatedAt         stdtime.Time `json:"created_at"`
 	UpdatedAt         stdtime.Time `json:"updated_at"`
+}
+
+type MerchantLogo struct {
+	HouseholdID  uuid.UUID    `json:"household_id"`
+	MerchantKey  string       `json:"merchant_key"`
+	MerchantName string       `json:"merchant_name"`
+	Domain       *string      `json:"domain"`
+	ContentType  *string      `json:"content_type"`
+	Image        []byte       `json:"image"`
+	State        string       `json:"state"`
+	CheckedAt    stdtime.Time `json:"checked_at"`
 }
 
 type MerchantMergeRejection struct {
@@ -441,6 +549,38 @@ type NetWorthSnapshot struct {
 	NetWorth         decimal.Decimal `json:"net_worth"`
 	Breakdown        []byte          `json:"breakdown"`
 	CreatedAt        stdtime.Time    `json:"created_at"`
+}
+
+type Paystub struct {
+	ID            uuid.UUID           `json:"id"`
+	UserID        uuid.UUID           `json:"user_id"`
+	EmployerID    uuid.UUID           `json:"employer_id"`
+	PeriodStart   stdtime.Time        `json:"period_start"`
+	PeriodEnd     stdtime.Time        `json:"period_end"`
+	PayDate       stdtime.Time        `json:"pay_date"`
+	Gross         decimal.Decimal     `json:"gross"`
+	Net           decimal.Decimal     `json:"net"`
+	YtdGross      decimal.NullDecimal `json:"ytd_gross"`
+	YtdNet        decimal.NullDecimal `json:"ytd_net"`
+	Source        string              `json:"source"`
+	ConfirmedAt   *stdtime.Time       `json:"confirmed_at"`
+	IsShared      bool                `json:"is_shared"`
+	TransactionID *uuid.UUID          `json:"transaction_id"`
+	DocumentID    *uuid.UUID          `json:"document_id"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+	UpdatedAt     stdtime.Time        `json:"updated_at"`
+}
+
+type PaystubLine struct {
+	ID         uuid.UUID           `json:"id"`
+	PaystubID  uuid.UUID           `json:"paystub_id"`
+	Category   string              `json:"category"`
+	Label      string              `json:"label"`
+	Amount     decimal.Decimal     `json:"amount"`
+	YtdAmount  decimal.NullDecimal `json:"ytd_amount"`
+	PreTax     bool                `json:"pre_tax"`
+	IsEmployer bool                `json:"is_employer"`
+	CreatedAt  stdtime.Time        `json:"created_at"`
 }
 
 type PfcCategoryMap struct {
@@ -495,24 +635,27 @@ type ProjectionAssumption struct {
 }
 
 type RecurringObligation struct {
-	ID            uuid.UUID       `json:"id"`
-	HouseholdID   uuid.UUID       `json:"household_id"`
-	UserID        *uuid.UUID      `json:"user_id"`
-	IsShared      bool            `json:"is_shared"`
-	Label         string          `json:"label"`
-	Amount        decimal.Decimal `json:"amount"`
-	CategoryID    *uuid.UUID      `json:"category_id"`
-	AccountID     *uuid.UUID      `json:"account_id"`
-	IntervalCount int32           `json:"interval_count"`
-	IntervalUnit  string          `json:"interval_unit"`
-	AnchorDate    stdtime.Time    `json:"anchor_date"`
-	EndDate       *stdtime.Time   `json:"end_date"`
-	Source        string          `json:"source"`
-	MerchantKey   *string         `json:"merchant_key"`
-	UserEdited    bool            `json:"user_edited"`
-	IsActive      bool            `json:"is_active"`
-	CreatedAt     stdtime.Time    `json:"created_at"`
-	UpdatedAt     stdtime.Time    `json:"updated_at"`
+	ID               uuid.UUID       `json:"id"`
+	HouseholdID      uuid.UUID       `json:"household_id"`
+	UserID           *uuid.UUID      `json:"user_id"`
+	IsShared         bool            `json:"is_shared"`
+	Label            string          `json:"label"`
+	Amount           decimal.Decimal `json:"amount"`
+	CategoryID       *uuid.UUID      `json:"category_id"`
+	AccountID        *uuid.UUID      `json:"account_id"`
+	IntervalCount    int32           `json:"interval_count"`
+	IntervalUnit     string          `json:"interval_unit"`
+	AnchorDate       stdtime.Time    `json:"anchor_date"`
+	EndDate          *stdtime.Time   `json:"end_date"`
+	Source           string          `json:"source"`
+	MerchantKey      *string         `json:"merchant_key"`
+	UserEdited       bool            `json:"user_edited"`
+	IsActive         bool            `json:"is_active"`
+	CreatedAt        stdtime.Time    `json:"created_at"`
+	UpdatedAt        stdtime.Time    `json:"updated_at"`
+	AutoPost         bool            `json:"auto_post"`
+	LastPostedDate   *stdtime.Time   `json:"last_posted_date"`
+	PostingAccountID *uuid.UUID      `json:"posting_account_id"`
 }
 
 type RecurringOverride struct {
@@ -523,9 +666,19 @@ type RecurringOverride struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+type SavingsBondRate struct {
+	ID            uuid.UUID           `json:"id"`
+	Series        string              `json:"series"`
+	PeriodStart   stdtime.Time        `json:"period_start"`
+	FixedRate     decimal.Decimal     `json:"fixed_rate"`
+	InflationRate decimal.NullDecimal `json:"inflation_rate"`
+	SourceUrl     string              `json:"source_url"`
+	CreatedAt     stdtime.Time        `json:"created_at"`
+}
+
 type Security struct {
 	ID               uuid.UUID           `json:"id"`
-	PlaidSecurityID  string              `json:"plaid_security_id"`
+	PlaidSecurityID  *string             `json:"plaid_security_id"`
 	Name             *string             `json:"name"`
 	Ticker           *string             `json:"ticker"`
 	Type             *string             `json:"type"`
@@ -537,6 +690,8 @@ type Security struct {
 	IsCashEquivalent bool                `json:"is_cash_equivalent"`
 	CreatedAt        stdtime.Time        `json:"created_at"`
 	UpdatedAt        stdtime.Time        `json:"updated_at"`
+	Source           string              `json:"source"`
+	TickerKey        *string             `json:"ticker_key"`
 }
 
 type Session struct {
@@ -575,7 +730,8 @@ type Transaction struct {
 	CreatedAt            stdtime.Time    `json:"created_at"`
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 	// User state: a real but non-repeating event (loan payoff, tax bill, car purchase). Counted in the month it fell; skipped by trailing-average and recurring-detection queries that pass exclude_one_time. Preserved across Plaid sync, like excluded_from_reports and notes.
-	IsOneTime bool `json:"is_one_time"`
+	IsOneTime    bool       `json:"is_one_time"`
+	ObligationID *uuid.UUID `json:"obligation_id"`
 }
 
 type TransactionSplit struct {

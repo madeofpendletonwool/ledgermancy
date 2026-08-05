@@ -18,6 +18,7 @@ import {
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { ConnectAccount } from '../components/ConnectAccount'
 import { ReconnectAccount } from '../components/ReconnectAccount'
+import { AddManualAccount, ManualAccountsCard } from '../components/ManualAccounts'
 
 export function Accounts() {
   const items = useQuery({ queryKey: ['items'], queryFn: api.items })
@@ -27,6 +28,7 @@ export function Accounts() {
   const liabilities = useQuery({ queryKey: ['liabilities'], queryFn: api.liabilities })
 
   const grouped = groupByItem(accounts.data ?? [])
+  const manualAccounts = grouped.get(MANUAL_GROUP) ?? []
   const termsByAccount = new Map<string, Liability>(
     (liabilities.data ?? []).map((l) => [l.account_id, l]),
   )
@@ -37,10 +39,14 @@ export function Accounts() {
         <div>
           <h1 className="text-2xl font-semibold">Accounts</h1>
           <p className="mt-1 text-mist-300">
-            Connected institutions and the balances they report.
+            Connected institutions and the balances they report, plus anything
+            you track by hand.
           </p>
         </div>
-        <ConnectAccount />
+        <div className="flex flex-wrap items-center gap-2">
+          <ConnectAccount />
+          <AddManualAccount />
+        </div>
       </div>
 
       {items.isPending && (
@@ -50,13 +56,17 @@ export function Accounts() {
         </div>
       )}
 
-      {items.data?.length === 0 && (
+      {/* Only an empty state when there is genuinely nothing — a household
+          running entirely on manual accounts has connected no institutions and
+          should not be told it has no accounts. */}
+      {items.data?.length === 0 && manualAccounts.length === 0 && (
         <section className="glass p-10 text-center">
-          <p className="text-lg font-medium">No accounts connected yet</p>
+          <p className="text-lg font-medium">No accounts yet</p>
           <p className="mx-auto mt-2 max-w-md text-sm text-mist-300">
-            Connect a bank to pull in your accounts and transaction history.
-            Ledgermancy fetches as much history as your institution provides —
-            usually up to two years.
+            Connect a bank to pull in your accounts and transaction history —
+            Ledgermancy fetches as much history as your institution provides,
+            usually up to two years. For anything that cannot be linked, add it
+            manually and keep the balance yourself.
           </p>
         </section>
       )}
@@ -69,6 +79,8 @@ export function Accounts() {
           termsByAccount={termsByAccount}
         />
       ))}
+
+      <ManualAccountsCard accounts={manualAccounts} />
     </div>
   )
 }
@@ -509,15 +521,24 @@ function DebtTerms({
   )
 }
 
+/** The group key for manual accounts, which have no item id to group by. A
+ *  constant rather than a null key so they all land in one card. */
+const MANUAL_GROUP = 'manual'
+
 // Keyed by item, not by institution name. Two members of a household can each
 // link the same bank — grouping by name gave both "Capital One" cards the union
 // of everyone's Capital One accounts, so every account appeared on both.
+//
+// Manual accounts have no item at all, so they share one synthetic key: they
+// belong to no institution, but they do share the set of things you can do to
+// them, which is what the grouping is really for.
 function groupByItem(accounts: Account[]): Map<string, Account[]> {
   const map = new Map<string, Account[]>()
   for (const a of accounts) {
-    const list = map.get(a.item_id)
+    const key = a.item_id ?? MANUAL_GROUP
+    const list = map.get(key)
     if (list) list.push(a)
-    else map.set(a.item_id, [a])
+    else map.set(key, [a])
   }
   return map
 }

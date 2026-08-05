@@ -14,7 +14,7 @@ import {
 import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { Tile } from '../components/Tile'
 import { SkeletonDetail } from '../components/Skeleton'
@@ -222,7 +222,7 @@ export function CategoryDetail() {
                       </td>
                       <td className="max-w-xs py-2 pr-4">
                         <span className="flex items-center gap-2">
-                          <Monogram name={t.merchant} size="sm" />
+                          <MerchantAvatar name={t.merchant} merchantKey={t.merchant_key} size="sm" />
                           <span className="min-w-0">
                             <MerchantLink
                               name={t.merchant}
@@ -285,7 +285,7 @@ function MerchantBars({
             className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 py-1 sm:grid-cols-[14rem_1fr_7rem]"
           >
             <span className="flex min-w-0 items-center gap-2">
-              <Monogram name={m.merchant} size="sm" />
+              <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
               <MerchantLink
                 name={m.merchant}
                 merchantKey={m.merchant_key}

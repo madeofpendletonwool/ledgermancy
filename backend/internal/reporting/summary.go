@@ -137,6 +137,14 @@ func BuildMonthlySummaryInput(
 		savingsRate = pct.String() + "%"
 	}
 
+	// The gross-based counterpart, from confirmed paystubs. ADDED ALONGSIDE the
+	// figure above, never replacing it — doc 23 is explicit that silently
+	// redefining the existing savings rate would move the recap, the feed and
+	// the chat at once. Empty whenever no confirmed paystub covers the month,
+	// which is most months on most installs, and the prompt simply omits the
+	// lines then.
+	grossPay, grossSavingsRate := buildGrossPay(ctx, q, householdID, userID, from, to, leftover)
+
 	// A month is in progress when "now" falls inside its window; a completed past
 	// month gets the past tense and no as-of caveat.
 	inProgress := !asOf.Before(from) && !asOf.After(to)
@@ -155,6 +163,8 @@ func BuildMonthlySummaryInput(
 		FixedSpending:         formatUSD(summary.FixedSpending),
 		DiscretionarySpending: formatUSD(summary.DiscretionarySpending),
 		SavingsRate:           savingsRate,
+		GrossPay:              grossPay,
+		GrossSavingsRate:      grossSavingsRate,
 		RecurringTotal:        recurringTotal,
 		TransactionCount:      int(summary.TransactionCount),
 		TopCategories:         top,
@@ -228,6 +238,33 @@ func buildAboveBaseline(
 		deltas = append(deltas, s.delta)
 	}
 	return deltas
+}
+
+// buildGrossPay returns the month's confirmed paystub gross and the savings
+// rate measured against it, both as display strings.
+//
+// Both are empty unless confirmed paystubs actually cover the window. That is
+// the whole discipline of this feature: an unconfirmed stub is inert, and a
+// month with no stubs on file gets no gross figure rather than a zero that
+// would read as "you earned nothing before tax".
+//
+// A query failure is not fatal — the recap simply omits the two lines, exactly
+// as it does for a household that has never entered a paystub.
+func buildGrossPay(
+	ctx context.Context,
+	q *dbgen.Queries,
+	householdID, userID uuid.UUID,
+	from, to time.Time,
+	leftover decimal.Decimal,
+) (grossPay, grossSavingsRate string) {
+	row, err := q.GetConfirmedGrossForPeriod(ctx, dbgen.GetConfirmedGrossForPeriodParams{
+		HouseholdID: householdID, UserID: userID, FromDate: from, ToDate: to,
+	})
+	if err != nil || row.PaystubCount == 0 || !row.Gross.IsPositive() {
+		return "", ""
+	}
+	pct := leftover.Div(row.Gross).Mul(decimal.NewFromInt(100)).Round(0)
+	return formatUSD(row.Gross), pct.String() + "%"
 }
 
 // buildRecurringTotal sums the monthly-normalised cost of the household's

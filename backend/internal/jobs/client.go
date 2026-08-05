@@ -16,6 +16,8 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/logos"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/mailer"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
@@ -67,6 +69,12 @@ const alertSweepInterval = 30 * time.Minute
 // lets a server that was off overnight still pay on the right day.
 const allowancePostInterval = time.Hour
 
+// scheduledPostInterval is how often auto-posting obligations are checked. Same
+// reasoning as allowancePostInterval directly above, and the same safety
+// property makes the frequency free: the per-obligation cursor and the unique
+// index on (obligation_id, date) mean a run with nothing due writes nothing.
+const scheduledPostInterval = time.Hour
+
 // insightInterval is how often every household's proactive feed is regenerated
 // independently of syncs, so a quiet household still surfaces a budget crossing
 // the calendar rolls into. Detection is cheap deterministic SQL; phrasing (when
@@ -97,6 +105,32 @@ const summaryRefreshInterval = 24 * time.Hour
 // produce an identical review queue.
 const merchantSuggestInterval = 24 * time.Hour
 
+// merchantLogoInterval is how often every household is swept for merchants with
+// no cached logo. Daily, riding the same reasoning as the merge suggestion
+// sweep: the descriptor space barely moves, and a merchant is resolved and
+// fetched exactly once ever, so a tighter cadence would re-read an empty list.
+const merchantLogoInterval = 24 * time.Hour
+
+// bondRevalueInterval is how often directly-held bonds are revalued.
+//
+// Daily, even though a savings bond only changes value on an accrual date (the
+// first of the month). The job skips writing when the figure has not moved, so
+// the extra runs cost a read and nothing else — and a daily cadence means a
+// bond added mid-month is valued within a day rather than waiting for the next
+// month to roll over.
+const bondRevalueInterval = 24 * time.Hour
+
+// cpiRefreshInterval is how often the CPI-U tail is pulled from BLS.
+//
+// Daily, not monthly, even though the series only gains a point once a month.
+// BLS's release date moves around the middle of the following month and is not
+// something to hard-code; a daily tick picks the new month up within a day of
+// publication for the cost of one small request to a government API, where a
+// monthly tick would land on an arbitrary day and could sit up to thirty days
+// behind. Idempotent either way — the upsert makes a re-read of an unchanged
+// month a no-op.
+const cpiRefreshInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -120,10 +154,17 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // frontend origin used to build notification deep links.
 // backup carries the continuity dependencies, which the worker builds because
 // they need a cipher and a document store the api has already constructed.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, appURL string, benchmarks config.BenchmarkConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
+// mail is likewise always passed and may be unconfigured; the digest worker
+// checks Enabled() and the per-user opt-in before ever addressing a message.
+// merchantLogos is the opt-in logo fetcher's configuration; its Ready() already
+// folds in the AI dependency, so nothing here re-derives it.
+// cpi is the opt-in CPI-U refresh; with it off the worker is not registered and
+// the seeded series simply stops gaining months, which the UI says out loud.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, cpi config.CPIConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
+	logosEnabled := merchantLogos.Enabled && merchantLogos.Token != "" && aiEnabled
 
 	// The net-worth snapshot does not depend on Plaid, so it is registered
 	// whether or not credentials are configured — manual assets alone are
@@ -192,6 +233,30 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register merchant suggestion worker: %w", err)
 	}
 
+	// Merchant logos, unlike the suggestion pass above, are entirely opt-in:
+	// they add a host that is neither Plaid nor the AI provider. Not registered
+	// at all when off, for the same reason as the benchmark worker — an
+	// enqueued job must not be able to make that request by accident.
+	// The CPI refresh adds an outbound host (BLS), so like the benchmark and
+	// logo fetchers it is not registered at all when off. Unlike them, the
+	// feature it serves works without it: the series ships seeded, and this only
+	// ever pulls the tail.
+	if cpi.Enabled {
+		if err := river.AddWorkerSafely(workers, &RefreshCPIWorker{Queries: queries}); err != nil {
+			return nil, fmt.Errorf("register cpi refresh worker: %w", err)
+		}
+	}
+
+	if logosEnabled {
+		if err := river.AddWorkerSafely(workers, &FetchMerchantLogosWorker{
+			Queries: queries,
+			AI:      aiClient,
+			Fetcher: logos.NewFetcher(merchantLogos.Token, merchantLogos.Size, merchantLogos.MaxBytes),
+		}); err != nil {
+			return nil, fmt.Errorf("register merchant logo worker: %w", err)
+		}
+	}
+
 	config := &river.Config{
 		Queues: map[string]river.QueueConfig{
 			// A household has a handful of institutions; more concurrency
@@ -209,6 +274,27 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	// either is a perfectly ordinary way to run this app.
 	if err := river.AddWorkerSafely(workers, &PostAllowancesWorker{Queries: queries}); err != nil {
 		return nil, fmt.Errorf("register allowance worker: %w", err)
+	}
+
+	// Bond revaluation is deterministic arithmetic over the seeded rate table,
+	// so it is registered unconditionally — no API key, no network, nothing to
+	// configure. It needs the pool because each revaluation writes the current
+	// value and its history row in one transaction.
+	if err := river.AddWorkerSafely(workers, &RevalueBondsWorker{
+		Pool: pool, Queries: queries,
+	}); err != nil {
+		return nil, fmt.Errorf("register bond revaluation worker: %w", err)
+	}
+
+	// Scheduled transaction posting. Registered unconditionally for the same
+	// reason as the allowance worker: it needs neither Plaid nor an AI key, and
+	// the household it exists for is precisely the one whose account Plaid
+	// cannot reach. It needs the pool because each obligation's occurrences and
+	// its cursor advance commit as one transaction.
+	if err := river.AddWorkerSafely(workers, &PostScheduledTransactionsWorker{
+		Pool: pool, Queries: queries,
+	}); err != nil {
+		return nil, fmt.Errorf("register scheduled transaction worker: %w", err)
 	}
 
 	config.PeriodicJobs = []*river.PeriodicJob{
@@ -241,6 +327,13 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 		river.NewPeriodicJob(
+			river.PeriodicInterval(scheduledPostInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return PostScheduledTransactionsArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		river.NewPeriodicJob(
 			river.PeriodicInterval(alertSweepInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return EvaluateAlertsAllArgs{}, nil
@@ -260,6 +353,15 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(insightInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return GenerateInsightsAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Bond revaluation. RunOnStart because a bond added while the worker
+		// was down should not wait a day for its first honest figure.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(bondRevalueInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return RevalueBondsAllArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
@@ -304,6 +406,37 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 				return FetchBenchmarksArgs{}, nil
 			},
 			nil,
+		))
+	}
+
+	// RunOnStart, unlike the benchmark fetch above, and the difference is worth
+	// stating: a restart loop cannot turn into a burst of third-party requests
+	// here, because every merchant the pass has already considered carries a
+	// cached row — including the ones with no logo. A second run makes zero
+	// outbound requests. What RunOnStart buys is that switching the feature on
+	// shows logos after a deploy rather than after a day.
+	if logosEnabled {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(merchantLogoInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return FetchMerchantLogosAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
+	// RunOnStart, unlike the benchmark fetch: this is ONE request to a
+	// government API that answers in milliseconds, so a restart loop cannot turn
+	// it into anything worth calling a burst — and an operator who has just
+	// switched the feature on should see the current month without waiting a
+	// day for the first tick.
+	if cpi.Enabled {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(cpiRefreshInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return RefreshCPIArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}
 
@@ -400,6 +533,14 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register insights sweep worker: %w", err)
 	}
 
+	// The bond sweep enqueues per-household revaluations, so it needs the
+	// client and is registered after construction.
+	if err := river.AddWorkerSafely(workers, &RevalueBondsAllWorker{
+		Queries: queries, Client: client,
+	}); err != nil {
+		return nil, fmt.Errorf("register bond revaluation sweep worker: %w", err)
+	}
+
 	// The merchant sweep enqueues per-household passes, so it needs the client
 	// and is registered after construction.
 	if err := river.AddWorkerSafely(workers, &SuggestMerchantsAllWorker{
@@ -408,13 +549,22 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		return nil, fmt.Errorf("register merchant suggestion sweep worker: %w", err)
 	}
 
+	// The logo sweep fans out per household, so it needs the client too.
+	if logosEnabled {
+		if err := river.AddWorkerSafely(workers, &FetchMerchantLogosAllWorker{
+			Queries: queries, Client: client,
+		}); err != nil {
+			return nil, fmt.Errorf("register merchant logo sweep worker: %w", err)
+		}
+	}
+
 	// Digest sweep + per-user worker. Both enqueue other jobs (the sweep enqueues
 	// DigestArgs; the worker enqueues NotifyArgs), so they need the client and are
 	// registered after construction. Registered unconditionally — the deterministic
 	// parts (top insights) send without AI, and the summary call self-gates on
 	// Enabled() inside the worker.
 	if err := river.AddWorkerSafely(workers, &DigestWorker{
-		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+		Queries: queries, AI: aiClient, Client: client, Mail: mail, AppURL: appURL,
 	}); err != nil {
 		return nil, fmt.Errorf("register digest worker: %w", err)
 	}

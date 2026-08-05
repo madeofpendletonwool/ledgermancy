@@ -9,6 +9,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/logos"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
@@ -16,9 +17,28 @@ import (
 // so it can hide AI-only surfaces (summaries, chat) when no key is configured
 // rather than offering a button that only ever returns 503.
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	// Whether the operator opted in at all — what Settings needs in order to
+	// explain the state of the feature honestly, including the case where the
+	// household's own switch is on but nothing was ever enabled to fetch with.
+	logosAvailable := s.Config.MerchantLogos.Ready(s.Config.AI)
+
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"ai_enabled":     s.AI.Enabled(),
 		"notify_enabled": s.Config.NTFY.Enabled(),
+		// Whether an emailed digest can be offered at all. Off unless the
+		// operator configured a mail server, so Settings does not present a
+		// toggle that could never deliver anything.
+		"smtp_enabled": s.Config.SMTP.Enabled(),
+
+		"merchant_logos_available": logosAvailable,
+		// Whether an avatar should actually try to load an image: both switches
+		// folded into one answer, so a component rendered fifty times a page
+		// asks one question, and so a household's opt-out takes effect on the
+		// next render rather than when the cache is next cleared.
+		"merchant_logos_enabled": logosAvailable &&
+			logos.HouseholdEnabled(r.Context(), s.Queries, identity.HouseholdID),
 	})
 }
 

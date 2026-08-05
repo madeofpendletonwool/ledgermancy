@@ -228,10 +228,9 @@ WITH stats AS (
         (array_agg(COALESCE(t.merchant_name, t.name) ORDER BY t.date DESC))[1] AS sample_name
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.pending
       AND t.merchant_key IS NOT NULL
@@ -411,13 +410,12 @@ SELECT
     COALESCE(ma.source, '')::text                                          AS alias_source
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND t.merchant_key IS NOT NULL

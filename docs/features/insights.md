@@ -23,7 +23,22 @@ configured.
   is the one insight that can prevent an overdraft rather than explain it
   afterwards; a large one is high enough priority to push.
 - **Forecasts** — projected month-end cash position.
-- **Large transaction** — a single charge that stands out for its context.
+- **Large transaction** — a single charge that stands out for its context, judged
+  against the household-wide typical. For any merchant with five or more prior
+  charges it **yields to the per-merchant outlier below** — one behaviour, not
+  two — so a large charge at a known merchant raises one insight, not a pair.
+- **Merchant outlier** — a charge that is statistically implausible for *that
+  merchant*: Netflix normally $15.99, this one $900. Judged against the
+  merchant's own baseline (median and 95th percentile, computed leave-one-out
+  on demand), and only after five prior charges and a minimum dollar floor — a
+  $4 coffee that is 3× a $1.30 baseline is statistically odd and practically
+  noise. The comparison is shown inline: this charge, the typical charge, and
+  the sample size.
+- **Possible duplicate** — the same merchant, same amount, within a day. The
+  classic double-charge, and the most common real billing error. A habitual-repeat
+  check silences merchants that legitimately double up at a fixed price (transit
+  fares, the daily coffee), and a charge paired with its reversal is dropped by
+  sign.
 - **Income change** — your income shifting noticeably.
 - **Savings milestones** — savings-rate thresholds crossed.
 - **Goal progress** — a nudge where a [goal](goals.md) needs attention.
@@ -35,6 +50,24 @@ configured.
 
 Period-scoped insights **auto-expire** once their month passes, so the feed
 stays about the present rather than accumulating history.
+
+## Anomaly detection
+
+The merchant-outlier and duplicate-charge producers are the fraud-and-billing-mistake
+pair, and they are deterministic like everything else in this feed — a model is
+never asked to decide what is anomalous.
+
+A couple of behaviours worth knowing:
+
+- **Sensitivity** is a household setting (conservative / balanced / sensitive)
+  in **Settings**. The floor is fixed across all three so that tightening it can
+  never open a gap where neither the per-merchant outlier nor the household-wide
+  large-transaction producer fires.
+- **"This is normal"** on an outlier card writes a per-merchant suppression, so
+  a merchant you have decided is fine does not re-fire on the next pass.
+- **Dismissal survives regeneration.** Both anomaly kinds key on a stable
+  transaction id rather than the merchant, so merging that merchant later does
+  not silently resurrect an insight you dismissed.
 
 ## Using the page
 
@@ -52,10 +85,9 @@ are pull + digest.
 
 ### Digests
 
-A digest is a periodic recap — your monthly narrative plus the top insights —
-pushed to your notification channel on a schedule. Configure it under
-**Settings → Digest**:
+A digest is a periodic recap — the period's figures, your narrative and the top
+insights. It is kept in the app on the [Digest](digest.md) page, and can
+additionally be pushed to your notification channel or emailed to you.
 
-1. Set up a notification channel first (**Settings → Notifications** — ntfy).
-2. Toggle **Send me a digest** and pick weekly or monthly.
-3. Use **Send one now** to preview a digest immediately, ignoring the schedule.
+It needs no configuration to exist: the in-app digest is on by default and does
+not require a notification channel. See [Digest](digest.md).

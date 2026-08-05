@@ -344,11 +344,14 @@ export interface SyncResult {
 export interface Account {
   id: string
   /** The linked institution this belongs to. Group by this, never by
-   *  `institution_name` — two household members can link the same bank. */
-  item_id: string
+   *  `institution_name` — two household members can link the same bank.
+   *
+   *  Null for a manual account, which belongs to no institution. Those group
+   *  together under their own heading rather than under an invented key. */
+  item_id: string | null
   name: string
   mask: string | null
-  /** depository | credit | loan | investment | other */
+  /** depository | credit | loan | investment | brokerage | other */
   type: string
   subtype: string | null
   institution_name: string | null
@@ -357,6 +360,109 @@ export interface Account {
   available_balance: string | null
   currency: string
   is_own: boolean
+  /** Which affordances the row offers. A Plaid account syncs and reconnects; a
+   *  manual one is edited and has its balance set by hand. */
+  source: 'plaid' | 'manual'
+  tax_treatment: string | null
+  is_shared: boolean
+}
+
+/** Fields the manual-account editor sends. Balance is a string like every other
+ *  money value — a JS number would be a float. */
+export interface ManualAccountInput {
+  name: string
+  type: string
+  subtype?: string | null
+  mask?: string | null
+  currency?: string
+  tax_treatment?: string | null
+  is_shared?: boolean
+  /** Opening balance, on create only. Later changes go through
+   *  setManualAccountBalance, which records why the balance moved. */
+  balance?: string | null
+}
+
+/** One dated balance for a manual account. `scheduled` rows were written by the
+ *  auto-posting worker, not by hand. */
+export interface AccountBalanceEntry {
+  as_of: string
+  balance: string
+  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend'
+  note: string | null
+}
+
+export interface SetBalanceInput {
+  balance: string
+  as_of?: string
+  reason?: 'manual' | 'holding_revalue' | 'fee' | 'dividend'
+  note?: string | null
+}
+
+export interface Security {
+  id: string
+  ticker: string | null
+  name: string | null
+  type: string | null
+  close_price: string | null
+  close_price_as_of: string | null
+  currency: string
+  source: 'plaid' | 'manual'
+}
+
+export interface SecurityInput {
+  ticker: string
+  name?: string | null
+  type?: string | null
+  cusip?: string | null
+  isin?: string | null
+  close_price?: string | null
+  close_price_as_of?: string | null
+  currency?: string
+  is_cash_equivalent?: boolean
+}
+
+export interface HoldingInput {
+  security_id: string
+  /** Fractional shares are normal in a retirement plan, so this is a decimal
+   *  string, not an integer. */
+  quantity: string
+  cost_basis?: string | null
+  institution_price?: string | null
+  as_of?: string
+}
+
+/** One recorded investment transaction on a manual account.
+ *
+ *  SIGN: `amount` is NEGATIVE for money moving INTO the portfolio (a
+ *  contribution) and positive for money leaving it. This matches Plaid and is
+ *  what the return calculations expect; getting it backwards inverts every
+ *  performance figure rather than producing an error. */
+export interface InvestmentTransaction {
+  id: string
+  date: string
+  source: 'plaid' | 'manual' | 'scheduled'
+  type: string
+  subtype: string | null
+  amount: string
+  quantity: string | null
+  price: string | null
+  fees: string | null
+  name: string | null
+  ticker: string | null
+  security_name: string | null
+}
+
+export interface InvestmentTransactionInput {
+  account_id: string
+  security_id?: string | null
+  type: string
+  subtype?: string | null
+  amount: string
+  quantity?: string | null
+  price?: string | null
+  fees?: string | null
+  date: string
+  name?: string | null
 }
 
 export interface Transaction {
@@ -386,8 +492,10 @@ export interface Transaction {
   plaid_category_detailed: string | null
   category_id: string | null
   notes: string | null
-  /** 'plaid' | 'csv' | 'manual'. Only 'manual' rows can be edited or deleted. */
-  source: string
+  /** Only 'manual' rows can be edited or deleted. 'scheduled' rows were posted
+   *  by the auto-posting worker from an obligation — editing one here would be
+   *  undone the next time it posted, so the obligation is what you change. */
+  source: 'plaid' | 'csv' | 'manual' | 'scheduled'
   /**
    * A hand-entered row that a later Plaid charge now appears to match (same
    * account, same amount, within four days) — likely the issuer finally
@@ -570,6 +678,17 @@ export interface TrendPoint {
    */
   fixed_spending: string
   discretionary_spending: string
+  /**
+   * The same three headline figures in base-period dollars, present only when
+   * the request asked for `real` AND this month has a published CPI index.
+   *
+   * `undefined` means the month CANNOT be deflated — it predates the series, or
+   * it is one BLS never published. It never means "unchanged". Render a gap and
+   * say so; never fall back to the nominal figure under a real label.
+   */
+  real_income?: string
+  real_spending?: string
+  real_leftover?: string
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -870,6 +989,19 @@ export interface Obligation {
   /** True once a human has edited it; re-detection then leaves it alone. */
   user_edited: boolean
   is_personal: boolean
+  /** When on, the worker materialises due occurrences as real transactions.
+   *  Off by default: an obligation is a forecast until someone says otherwise. */
+  auto_post: boolean
+  /** The account a posting CREDITS, as distinct from `account_id`, which is the
+   *  one the bill is paid FROM. Null means "same as account_id". */
+  posting_account_id: string | null
+  /** Occurrences on or before this date have been posted. */
+  last_posted_date: string | null
+}
+
+export interface AutoPostInput {
+  auto_post: boolean
+  posting_account_id?: string | null
 }
 
 export type ObligationUnit = 'day' | 'week' | 'month' | 'year'
@@ -968,6 +1100,19 @@ export interface PeriodQuery {
 }
 
 /**
+ * Opt into inflation-adjusted figures on an endpoint that offers them.
+ *
+ * Omitting it, or sending `real: false` (which reaches the server as the string
+ * "false" and is read as nominal), gets the response the endpoint has always
+ * returned. Nominal is the default everywhere and stays that way: silently
+ * changing the meaning of a figure would break every comparison a user carries
+ * in their head.
+ */
+export interface RealQuery {
+  real?: boolean
+}
+
+/**
  * One proposed budget from POST /api/budgets/suggest. `computed_average` is the
  * exact SQL figure (never the model's); `suggested_amount` is a round target at
  * or above it. All money fields are decimal strings — never summed here.
@@ -1023,6 +1168,71 @@ export interface NetWorthPoint {
    * not decode — a backstop, not a live case.
    */
   breakdown?: NetWorthBreakdown
+  /**
+   * The same three figures in base-period dollars, present only when the
+   * request asked for `real` and this snapshot's month has a published CPI
+   * index. Absent means the point cannot be deflated — never that deflating it
+   * would have changed nothing. See `Inflation` for the base period every one
+   * of these is denominated in.
+   */
+  real_assets_total?: string
+  real_liabilities_total?: string
+  real_net_worth?: string
+}
+
+/**
+ * The CPI-U deflator behind every real ("inflation-adjusted") figure, from
+ * GET /api/inflation.
+ *
+ * Read this before rendering a real figure anywhere. `base_label` is not
+ * decoration — a real number without the month it is denominated in is not a
+ * number anybody can use, so the label ships beside the value, not in a
+ * footnote.
+ */
+export interface Inflation {
+  /** False when the series is empty. Hide the real toggle entirely. */
+  available: boolean
+  series: string
+  source_url: string
+  /** "2026-06" and "June 2026". Real figures are in THESE dollars. */
+  base_period?: string
+  base_label?: string
+  /** The span that can be deflated at all, as "YYYY-MM". */
+  earliest?: string
+  latest?: string
+  /** True once the series is more than two months behind; one is normal. */
+  stale: boolean
+  stale_note?: string
+  /**
+   * Months inside the covered span with no published index, as "YYYY-MM".
+   * Permanent holes, not a sync failure — BLS never collected them.
+   */
+  gaps: string[]
+  gap_note?: string
+  /** Inflation from last December to the base period, as a decimal fraction. */
+  ytd_rate?: string
+  ytd_from?: string
+  ytd_label?: string
+  context?: InflationContext
+  /**
+   * The shortest window on which a real view is worth offering. Below this,
+   * hide the toggle: deflating one month by one month's price change is noise
+   * dressed as precision.
+   */
+  min_span_months: number
+  basis: string
+}
+
+/** The household's own year set against the price level. Every field optional. */
+export interface InflationContext {
+  net_worth_change?: string
+  net_worth_real_change?: string
+  net_worth_from?: string
+  net_worth_to?: string
+  net_worth_start_value?: string
+  net_worth_end_value?: string
+  income_change?: string
+  income_note?: string
 }
 
 export interface Holding {
@@ -1123,6 +1333,107 @@ export interface ManualAsset {
   is_liability: boolean
   as_of: string
   notes: string | null
+
+  /**
+   * Equity, present only when a loan is linked. These are DISPLAY figures —
+   * net worth already counts the asset as an asset and the loan as a
+   * liability, so equity must never be added to a total.
+   */
+  loan_account_id?: string
+  loan_name?: string
+  loan_balance?: string
+  equity?: string
+  paid_fraction?: string
+  underwater?: boolean
+
+  /** The recorded value is old enough to have drifted. Bonds are never stale. */
+  stale: boolean
+  bond_series?: string
+}
+
+/** Class-specific asset metadata. Every field is optional by design. */
+export interface AssetDetail {
+  address: string | null
+  beds: string | null
+  baths: string | null
+  sqft: number | null
+  lot_sqft: number | null
+
+  year: number | null
+  make: string | null
+  model: string | null
+  trim: string | null
+  mileage: number | null
+  annual_mileage: number | null
+
+  bond_series: string | null
+  issue_date: string | null
+  purchase_price: string | null
+  face_value: string | null
+  coupon_rate: string | null
+  maturity_date: string | null
+  tax_exempt: boolean | null
+
+  condition: string | null
+}
+
+export interface AssetValuation {
+  value: string
+  as_of: string
+  /** 'manual' the user typed it, 'estimated' the app computed it, 'api' external. */
+  source: string
+  note: string | null
+}
+
+/**
+ * A proposed revaluation. It is a PROPOSAL: rendering it must never be mistaken
+ * for the app having changed anything, which is why `estimate` rides along in
+ * the payload rather than being assumed by the caller.
+ */
+export interface AssetSuggestion {
+  ok: boolean
+  reason?: string
+  value?: string
+  change?: string
+  current: string
+  basis?: string
+  estimate: boolean
+}
+
+/** One published rate period that went into a bond valuation. */
+export interface AppliedBondRate {
+  period_start: string
+  announced: string
+  fixed_rate: string
+  inflation_rate: string | null
+  composite_rate: string
+  months: number
+}
+
+export interface BondValue {
+  ok: boolean
+  reason?: string
+  /** What the bond could be turned into today — the figure that enters net worth. */
+  redemption_value: string
+  /** What it has earned. Higher than redemption inside the first five years. */
+  accrued_value: string
+  penalty_applied: boolean
+  doubling_applied: boolean
+  matured: boolean
+  as_of: string
+  valued_through: string
+  final_maturity?: string
+  basis?: string
+  months_to_doubling?: number
+  rates: AppliedBondRate[]
+}
+
+export interface SavingsBondRate {
+  series: string
+  period_start: string
+  fixed_rate: string
+  inflation_rate: string | null
+  source_url: string
 }
 
 // --- Investments ----------------------------------------------------------
@@ -1165,6 +1476,10 @@ export interface InvestmentAccount {
    */
   suggested_tax_treatment: TaxTreatment | ''
   is_managed: boolean | null
+  /** Whether positions and transactions can be entered by hand here. Only
+   *  manual accounts can — a Plaid account's are the institution's to report,
+   *  and a hand-entered row would be overwritten by the next sync. */
+  source: 'plaid' | 'manual'
 }
 
 export interface InvestmentOverview {
@@ -1203,6 +1518,31 @@ export interface InvestmentPerformance {
   mwr: string | null
   /** Non-empty exactly when `mwr` is null. */
   mwr_note: string
+  /**
+   * The inflation-adjusted view, present only when the request asked for `real`
+   * and both ends of the measured span have a published CPI index.
+   *
+   * RETURNS only — there is deliberately no real `start_value` or `net_flows`.
+   * Deflating a period's cash flows correctly needs each one converted on its
+   * own date, and converting them from the span's endpoints would be a
+   * precise-looking guess. `note` says exactly this; render it.
+   */
+  real?: RealPerformance
+}
+
+export interface RealPerformance {
+  /** Price-level change across the same span, as a fraction. */
+  inflation: string
+  /**
+   * That change compounded to an annual rate; null for spans under a year.
+   * This — not `inflation` — is what an already-annualised return (`mwr`) was
+   * deflated by.
+   */
+  annual_inflation: string | null
+  twr: string | null
+  annualised: string | null
+  mwr: string | null
+  note: string
 }
 
 export interface SeriesPoint {
@@ -1336,6 +1676,17 @@ export interface RetirementAssumptions {
   defaulted_spending: string
   spending_is_defaulted: boolean
   basis: string
+  /**
+   * What CPI-U actually did over the trailing decade, annualised, beside the
+   * rate the household assumed.
+   *
+   * Shown, NEVER applied: `inflation_rate` above is still the only inflation
+   * input the projection uses. This exists so choosing that rate is an informed
+   * act rather than accepting a 3% default nobody has checked.
+   */
+  measured_inflation?: string
+  measured_inflation_years?: number
+  measured_inflation_note?: string
 }
 
 export interface AccountPoint {
@@ -1784,6 +2135,112 @@ export interface Capabilities {
   ai_enabled: boolean
   /** Whether an ntfy server is configured, so Settings can gate push controls. */
   notify_enabled: boolean
+  /**
+   * Whether a mail server is configured. Gates the emailed-digest toggle, so
+   * Settings never offers a switch that could not deliver anything.
+   */
+  smtp_enabled: boolean
+  /**
+   * Whether the OPERATOR opted into the merchant logo fetcher
+   * (`MERCHANT_LOGOS_ENABLED`, plus a Logo.dev token and an AI key). Settings
+   * uses this to explain why a household switch would be doing nothing.
+   */
+  merchant_logos_available: boolean
+  /**
+   * Whether an avatar should try to load a logo at all: the operator switch AND
+   * the household's `merchant.logos` preference, resolved server-side so a
+   * component rendered fifty times a page asks one question rather than two.
+   */
+  merchant_logos_enabled: boolean
+}
+
+/**
+ * A stored digest: what one period's recap SAID, frozen when it was generated.
+ *
+ * `payload` is rendered as given and is never recomputed. That is the point of
+ * the feature — recategorise a transaction inside the period and last week's
+ * digest still reads exactly as it did when you read it. Nothing here should
+ * re-derive a figure from it: every money value is already a finished display
+ * string built server-side, in decimal, by the same formatter the recap uses.
+ */
+export interface DigestEntry {
+  id: string
+  cadence: string
+  period_key: string
+  period_start: string
+  period_end: string
+  label: string
+  payload: DigestPayload
+  /** The AI narrative, or null on an install running without an AI key. */
+  narrative: string | null
+  read_at: string | null
+  created_at: string
+}
+
+export interface DigestPayload {
+  version: number
+  cadence: string
+  label: string
+  period_start: string
+  period_end: string
+  in_progress: boolean
+
+  income: string
+  spending: string
+  leftover: string
+  prior_spending?: string
+  savings_rate?: string
+  gross_pay?: string
+  gross_savings_rate?: string
+  recurring_total?: string
+  transaction_count: number
+
+  top_categories: { name: string; slug: string; total: string }[]
+  above_baseline: {
+    name: string
+    this_month: string
+    typical: string
+    over: string
+  }[]
+  budgets: {
+    name: string
+    slug: string
+    available: string
+    spent: string
+    remaining: string
+    percent_used: number
+    over: boolean
+  }[]
+  largest_transactions: {
+    merchant: string
+    amount: string
+    date: string
+    category: string
+  }[]
+  net_worth?: {
+    current: string
+    as_of: string
+    start?: string
+    change?: string
+    direction?: 'up' | 'down' | 'flat'
+  }
+  insights: {
+    id: string
+    kind: string
+    title: string
+    body: string
+    priority: number
+  }[]
+  upcoming_bills: { label: string; amount: string; due_date: string }[]
+}
+
+/** One page of digest history, with the counts needed to page and to badge. */
+export interface DigestList {
+  entries: DigestEntry[]
+  total: number
+  unread: number
+  limit: number
+  offset: number
 }
 
 /**
@@ -2031,6 +2488,288 @@ export interface ReceiptExtraction {
   confidence: number
   notes: string
   matches: ReceiptMatch[]
+}
+
+// --- Payroll ---------------------------------------------------------------
+//
+// The pre-tax side of the ledger. Two things are worth stating once, because
+// getting either wrong would quietly put a wrong number on screen:
+//
+//   * Every money field is a decimal STRING computed server-side, like the rest
+//     of this file. Never sum one in JavaScript.
+//   * `confirmed` is not cosmetic. An unconfirmed paystub contributes to no
+//     reported figure anywhere — the filter lives in SQL — so the review queue
+//     is the only place an unconfirmed stub's numbers mean anything at all.
+
+/** How often an employer pays. Drives the "N pay periods left" figure. */
+export type PayFrequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly'
+
+export interface Employer {
+  id: string
+  name: string
+  address: string | null
+  pay_frequency: PayFrequency
+  /** Scoped to what the caller can see, never another member's private stubs. */
+  paystub_count: number
+  has_ein: boolean
+  /** "**-***6789". The full EIN is only ever returned by the tax summary. */
+  ein_masked: string | null
+}
+
+export interface EmployerInput {
+  name: string
+  /**
+   * Three-valued, and the API depends on it: omit to leave the stored EIN
+   * alone, send "" to remove it, send digits to replace it. A sealed column
+   * cannot be read back and compared, so there is no fourth option.
+   */
+  ein?: string
+  address?: string
+  pay_frequency: PayFrequency
+}
+
+/** A deduction category, as the server's taxonomy defines it. */
+export interface PayrollCategory {
+  category: string
+  label: string
+  /** tax | retirement | health | insurance | other */
+  group: string
+  is_tax: boolean
+  pre_tax_by_default: boolean
+  employer_only: boolean
+  /**
+   * True when pre-tax status is not the user's to choose — a tax is not a
+   * pre-tax deduction of itself, and a Roth deferral is post-tax by definition.
+   * The form omits the toggle rather than offering a choice the server rejects.
+   */
+  pre_tax_locked: boolean
+  /** "401k" | "ira" | "hsa" | "" — the shared IRS cap this counts against. */
+  limit_group: string
+}
+
+export interface PayrollTaxonomy {
+  categories: PayrollCategory[]
+  pay_frequencies: {
+    value: PayFrequency
+    label: string
+    periods_per_year: number
+  }[]
+}
+
+export interface PaystubLine {
+  id: string
+  category: string
+  /** The employer's own wording. */
+  label: string
+  /** The taxonomy's name for the category. */
+  category_label: string
+  group: string
+  amount: string
+  ytd_amount: string | null
+  pre_tax: boolean
+  is_employer: boolean
+  is_tax: boolean
+}
+
+export interface PaystubDeposit {
+  transaction_id: string
+  date: string
+  /** Positive: money in. Plaid's sign convention is handled server-side. */
+  amount: string
+}
+
+export interface PaystubBand {
+  group: string
+  label: string
+  amount: string
+}
+
+export interface Paystub {
+  id: string
+  employer_id: string
+  employer_name: string
+  pay_frequency: PayFrequency
+  period_start: string
+  period_end: string
+  pay_date: string
+  gross: string
+  net: string
+  ytd_gross: string | null
+  ytd_net: string | null
+  /** manual | pdf | plaid */
+  source: string
+  confirmed: boolean
+  confirmed_at: string | null
+  is_shared: boolean
+  /** False for a household member's shared stub: visible, not editable. */
+  is_own: boolean
+  document_id: string | null
+  deposit: PaystubDeposit | null
+  lines: PaystubLine[]
+  tax_total: string
+  /** A fraction, 0–1. Null when gross was zero. */
+  effective_tax_rate: string | null
+  employer_total: string
+  total_compensation: string
+  /** gross − deductions − net, within a cent. Confirmation requires it. */
+  balances: boolean
+  residual: string
+  breakdown: PaystubBand[]
+}
+
+export interface PaystubLineInput {
+  category: string
+  label: string
+  amount: string
+  ytd_amount?: string
+  pre_tax: boolean
+  is_employer: boolean
+}
+
+export interface PaystubInput {
+  employer_id: string
+  period_start: string
+  period_end: string
+  pay_date: string
+  gross: string
+  net: string
+  ytd_gross?: string
+  ytd_net?: string
+  source?: 'manual' | 'pdf'
+  /** Honoured only when the stub balances; the server refuses otherwise. */
+  confirm: boolean
+  is_shared: boolean
+  document_id?: string
+  lines: PaystubLineInput[]
+}
+
+/**
+ * A paystub read off a PDF's text layer. Every field is a SUGGESTION.
+ *
+ * Nothing was sent anywhere to produce this: the extraction is a local parse of
+ * the text a payroll provider already put in the file. A scanned stub has no
+ * text layer and comes back as a 422 telling the user to type it in.
+ */
+export interface PaystubProposal {
+  employer_name_hint: string
+  pay_date: string | null
+  period_start: string | null
+  period_end: string | null
+  gross: string | null
+  net: string | null
+  ytd_gross: string | null
+  ytd_net: string | null
+  lines: {
+    category: string
+    category_label: string
+    group: string
+    label: string
+    amount: string
+    ytd_amount: string | null
+    pre_tax: boolean
+    is_employer: boolean
+  }[]
+  /** Money-bearing lines the parser could not classify, for the user to assign. */
+  unmatched: string[]
+  warnings: string[]
+  balances: boolean
+  residual: string
+  source: 'pdf'
+  document_id: string | null
+}
+
+export interface DepositMatch {
+  transaction_id: string
+  date: string
+  amount: string
+  label: string
+  account_name: string
+  /** How far this deposit is from the stub's net pay. Zero is exact. */
+  delta: string
+  exact: boolean
+}
+
+export interface ContributionHeadroom {
+  /** The SHARED limit group — a traditional and a Roth 401(k) are one cap. */
+  group: string
+  label: string
+  contributed: string
+  limit: string
+  remaining: string
+  /** Non-zero means an excess deferral, which has to be withdrawn. */
+  over_by: string
+  periods_left: number | null
+  per_period: string | null
+}
+
+export interface PayrollSummary {
+  tax_year: number
+  has_data: boolean
+  paystub_count: number
+  unconfirmed_count: number
+  gross: string
+  net: string
+  tax_total: string
+  effective_tax_rate: string | null
+  employer_total: string
+  total_compensation: string
+  employers: {
+    employer_id: string
+    name: string
+    pay_frequency: PayFrequency
+    paystub_count: number
+    gross: string
+    net: string
+    last_pay_date: string | null
+  }[]
+  categories: {
+    category: string
+    label: string
+    group: string
+    amount: string
+    is_tax: boolean
+    is_employer: boolean
+  }[]
+  headroom: ContributionHeadroom[]
+  /** False when the app has no IRS limits for this year. Say so; never guess. */
+  limits_configured: boolean
+  latest_limit_year: number
+  /** False when no birthdate is known, so no catch-up was applied. */
+  age_known: boolean
+}
+
+/**
+ * Both savings rates, side by side.
+ *
+ * The net one is the app's existing figure and is unchanged. The gross one is
+ * the honest one and is normally a good deal lower, because 30–45% of gross
+ * never reaches an account at all.
+ */
+export interface GrossSavingsRate {
+  from: string
+  to: string
+  net_income: string
+  spending: string
+  leftover: string
+  savings_rate_net: string | null
+  gross_pay: string | null
+  savings_rate_gross: string | null
+  paystub_count: number
+  /** Non-empty when the paystubs on file only partly cover the window. */
+  coverage: string
+}
+
+export interface TaxSummary {
+  tax_year: number
+  employers: {
+    employer_id: string
+    employer_name: string
+    address: string | null
+    ein: string | null
+    boxes: { box: string; code: string; label: string; amount: string }[]
+  }[]
+  /** Rendered wherever this is shown or exported. It is not a W-2. */
+  disclaimer: string
 }
 
 /** One turn in a chatbot conversation. */
@@ -2526,7 +3265,7 @@ export const api = {
       withQuery('/api/reports/merchant-explorer', params),
     ),
 
-  trend: (params: PeriodQuery = {}) =>
+  trend: (params: PeriodQuery & RealQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
 
   /**
@@ -2600,6 +3339,54 @@ export const api = {
   deleteObligation: (id: string) =>
     request<void>('DELETE', `/api/obligations/${id}`),
 
+  // Auto-posting is its own endpoint rather than a field on updateObligation
+  // because it is a different kind of decision: editing an obligation changes a
+  // forecast, enabling this starts writing transactions.
+  setObligationAutoPost: (id: string, input: AutoPostInput) =>
+    request<Obligation>('PUT', `/api/obligations/${id}/auto-post`, input),
+
+  // --- Manual accounts (doc 30) -------------------------------------------
+  // Every one of these refuses a Plaid-linked account id. A linked account's
+  // name and balance belong to the institution, and an edit here would last
+  // only until the next sync silently reverted it.
+
+  createManualAccount: (input: ManualAccountInput) =>
+    request<Account>('POST', '/api/accounts', input),
+
+  updateManualAccount: (id: string, input: ManualAccountInput) =>
+    request<Account>('PUT', `/api/accounts/${id}`, input),
+
+  deleteManualAccount: (id: string) =>
+    request<void>('DELETE', `/api/accounts/${id}`),
+
+  setManualAccountBalance: (id: string, input: SetBalanceInput) =>
+    request<Account>('PUT', `/api/accounts/${id}/balance`, input),
+
+  accountBalanceHistory: (id: string) =>
+    request<AccountBalanceEntry[]>('GET', `/api/accounts/${id}/balance-history`),
+
+  listSecurities: (search?: string) =>
+    request<Security[]>('GET', withQuery('/api/securities', { q: search })),
+
+  createManualSecurity: (input: SecurityInput) =>
+    request<Security>('POST', '/api/securities', input),
+
+  upsertManualHolding: (accountId: string, input: HoldingInput) =>
+    request<{ id: string }>('POST', `/api/accounts/${accountId}/holdings`, input),
+
+  deleteManualHolding: (id: string) =>
+    request<void>('DELETE', `/api/holdings/${id}`),
+
+  accountInvestmentTransactions: (accountId: string) =>
+    request<InvestmentTransaction[]>(
+      'GET', `/api/accounts/${accountId}/investment-transactions`),
+
+  createManualInvestmentTransaction: (input: InvestmentTransactionInput) =>
+    request<{ id: string }>('POST', '/api/investment-transactions', input),
+
+  deleteManualInvestmentTransaction: (id: string) =>
+    request<void>('DELETE', `/api/investment-transactions/${id}`),
+
   upcomingObligations: (days = 30) =>
     request<UpcomingObligations>('GET', withQuery('/api/obligations/upcoming', { days })),
 
@@ -2624,8 +3411,15 @@ export const api = {
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),
 
-  netWorthHistory: (params: PeriodQuery = {}) =>
+  netWorthHistory: (params: PeriodQuery & RealQuery = {}) =>
     request<NetWorthPoint[]>('GET', withQuery('/api/networth/history', params)),
+
+  /**
+   * The CPI-U deflator: coverage, freshness, and the household's own year set
+   * against the price level. Read before rendering any real figure — it is
+   * where the base-period label comes from.
+   */
+  inflation: () => request<Inflation>('GET', '/api/inflation'),
 
   snapshotNetWorth: () => request<NetWorth>('POST', '/api/networth/snapshot'),
 
@@ -2674,13 +3468,42 @@ export const api = {
   deleteManualAsset: (id: string) =>
     request<void>('DELETE', `/api/manual-assets/${id}`),
 
+  assetDetail: (id: string) =>
+    request<AssetDetail>('GET', `/api/manual-assets/${id}/detail`),
+
+  saveAssetDetail: (id: string, input: Partial<AssetDetail>) =>
+    request<AssetDetail>('PUT', `/api/manual-assets/${id}/detail`, input),
+
+  assetValuations: (id: string) =>
+    request<AssetValuation[]>('GET', `/api/manual-assets/${id}/valuations`),
+
+  /** The ONLY call that changes an asset's value. Estimates never write. */
+  recordValuation: (
+    id: string,
+    input: { value: string; as_of?: string; source?: string; note?: string },
+  ) => request<ManualAsset>('POST', `/api/manual-assets/${id}/valuations`, input),
+
+  assetSuggestion: (id: string) =>
+    request<AssetSuggestion>('GET', `/api/manual-assets/${id}/suggestion`),
+
+  bondValue: (id: string) =>
+    request<BondValue>('GET', `/api/manual-assets/${id}/bond`),
+
+  linkAssetLoan: (id: string, loanAccountID: string | null) =>
+    request<ManualAsset>('PUT', `/api/manual-assets/${id}/loan`, {
+      loan_account_id: loanAccountID,
+    }),
+
+  savingsBondRates: () =>
+    request<SavingsBondRate[]>('GET', '/api/savings-bond-rates'),
+
   // --- Investments --------------------------------------------------------
   investments: () => request<InvestmentOverview>('GET', '/api/investments/'),
 
-  investmentPerformance: (period: InvestmentPeriod) =>
+  investmentPerformance: (period: InvestmentPeriod, real = false) =>
     request<InvestmentPerformance>(
       'GET',
-      withQuery('/api/investments/performance', { period }),
+      withQuery('/api/investments/performance', { period, real }),
     ),
 
   investmentBenchmarks: (period: InvestmentPeriod) =>
@@ -2794,8 +3617,21 @@ export const api = {
     request<{ status: string }>('POST', '/api/notifications/test'),
 
   // Queues a one-off digest for the caller now, bypassing cadence/dedupe. Async
-  // — resolves once queued; the push itself arrives shortly after.
+  // — resolves once queued; the entry (and any push) appears shortly after.
+  // Works with no notification channel configured: the in-app entry is always
+  // somewhere for it to go.
   sendDigestNow: () => request<{ status: string }>('POST', '/api/digest/test'),
+
+  // --- Digest history -----------------------------------------------------
+  // Scoped to the signed-in user server-side, not to the household: two members
+  // legitimately see different figures for the same period.
+  digests: (params: { limit?: number; offset?: number } = {}) =>
+    request<DigestList>('GET', withQuery('/api/digests/', params)),
+
+  digest: (id: string) => request<DigestEntry>('GET', `/api/digests/${id}`),
+
+  markDigestRead: (id: string) =>
+    request<void>('POST', `/api/digests/${id}/read`),
 
   // --- Continuity (owner-only operator surface) ---------------------------
   continuity: () => request<Continuity>('GET', '/api/admin/continuity'),
@@ -2811,6 +3647,20 @@ export const api = {
 
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),
+
+  /**
+   * The `<img src>` for a merchant's cached logo (MAD-38).
+   *
+   * A URL rather than a fetch: this is the one endpoint the browser is meant to
+   * load as an image, and it is same-origin, so the session cookie rides along
+   * without any of the plumbing `request` exists for. 404 is the normal answer
+   * for a merchant with no logo — MerchantAvatar's `onError` handles it.
+   *
+   * It never points at a logo host. The bytes were fetched server-side; that is
+   * the whole privacy argument for the feature.
+   */
+  merchantLogoUrl: (merchantKey: string) =>
+    withQuery('/api/merchants/logo', { key: merchantKey }),
 
   // The proactive feed. state 'all' includes dismissed insights; the default
   // 'unread' hides them.
@@ -2965,11 +3815,127 @@ export const api = {
   documentPreviewURL: (id: string, previewType: string) =>
     documentObjectURL(id, previewType),
 
+  // --- Payroll --------------------------------------------------------------
+
+  payrollTaxonomy: () =>
+    request<PayrollTaxonomy>('GET', '/api/payroll/taxonomy'),
+
+  paystubYears: () => request<number[]>('GET', '/api/payroll/years'),
+
+  payrollSummary: (year?: number, familyHSA?: boolean) =>
+    request<PayrollSummary>(
+      'GET',
+      withQuery('/api/payroll/summary', {
+        year,
+        family_hsa: familyHSA ? 'true' : undefined,
+      }),
+    ),
+
+  payrollSavingsRate: (params: PeriodQuery) =>
+    request<GrossSavingsRate>(
+      'GET',
+      withQuery('/api/payroll/savings-rate', params),
+    ),
+
+  payrollTaxSummary: (year: number) =>
+    request<TaxSummary>('GET', withQuery('/api/payroll/tax-summary', { year })),
+
+  employers: () => request<Employer[]>('GET', '/api/payroll/employers'),
+
+  createEmployer: (input: EmployerInput) =>
+    request<Employer>('POST', '/api/payroll/employers', input),
+
+  updateEmployer: (id: string, input: EmployerInput) =>
+    request<Employer>('PUT', `/api/payroll/employers/${id}`, input),
+
+  deleteEmployer: (id: string) =>
+    request<void>('DELETE', `/api/payroll/employers/${id}`),
+
+  paystubs: (year?: number) =>
+    request<Paystub[]>('GET', withQuery('/api/payroll/paystubs', { year })),
+
+  paystub: (id: string) =>
+    request<Paystub>('GET', `/api/payroll/paystubs/${id}`),
+
+  createPaystub: (input: PaystubInput) =>
+    request<Paystub>('POST', '/api/payroll/paystubs', input),
+
+  updatePaystub: (id: string, input: PaystubInput) =>
+    request<Paystub>('PUT', `/api/payroll/paystubs/${id}`, input),
+
+  deletePaystub: (id: string) =>
+    request<void>('DELETE', `/api/payroll/paystubs/${id}`),
+
+  // Refused with a 422 naming the gap when the stub does not balance. That is
+  // the point of the endpoint, not an edge case to swallow.
+  confirmPaystub: (id: string, confirmed: boolean) =>
+    request<Paystub>('POST', `/api/payroll/paystubs/${id}/confirm`, {
+      confirmed,
+    }),
+
+  setPaystubSharing: (id: string, isShared: boolean) =>
+    request<Paystub>('PATCH', `/api/payroll/paystubs/${id}/sharing`, {
+      is_shared: isShared,
+    }),
+
+  paystubDepositMatches: (id: string) =>
+    request<DepositMatch[]>(
+      'GET',
+      `/api/payroll/paystubs/${id}/deposit-matches`,
+    ),
+
+  // Null unlinks. Nothing else writes this field — the matcher only proposes.
+  linkPaystubDeposit: (id: string, transactionID: string | null) =>
+    request<Paystub>('PUT', `/api/payroll/paystubs/${id}/deposit`, {
+      transaction_id: transactionID,
+    }),
+
+  parsePaystubPDF: (file: File) => parsePaystubUpload(file),
+
+  parsePaystubDocument: (documentID: string) =>
+    request<PaystubProposal>('POST', '/api/payroll/parse-document', {
+      document_id: documentID,
+    }),
+
   // The chat endpoint streams its answer as Server-Sent Events: one
   // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
   // onDelta is called as text arrives so the UI can render it live.
   chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
     streamChat(messages, onDelta),
+}
+
+/**
+ * Posts a paystub PDF for local extraction.
+ *
+ * Bypasses `request` for the same reason uploadDocument does: the body is a
+ * FormData and setting a Content-Type by hand would omit the multipart
+ * boundary. Nothing is stored — the response is a proposal and the bytes are
+ * dropped.
+ */
+async function parsePaystubUpload(file: File): Promise<PaystubProposal> {
+  const form = new FormData()
+  form.set('file', file)
+
+  assertOnline()
+
+  const res = await fetch('/api/payroll/parse', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+    credentials: 'include',
+    body: form,
+  })
+
+  if (!res.ok) {
+    let message = res.statusText
+    try {
+      const parsed = await res.json()
+      if (parsed?.error) message = parsed.error
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, message)
+  }
+  return (await res.json()) as PaystubProposal
 }
 
 /**

@@ -2,6 +2,49 @@
 
 *(TODO.md "Next major initiatives" #10.)*
 
+**Shipped.** Migration `00049_digest_entries.sql` (**not** the `00038` reserved
+below — see the first note). A `Digest` route backed by `GET /api/digests`,
+`internal/mailer` for the optional SMTP, and `reporting.BuildDigestPayload` for
+the figures. Doc 24 had not shipped, so the advisor section is absent as the doc
+allows; doc 13 had, so upcoming bills are in.
+
+Four things anyone touching this should know — three of them places the plan
+below was wrong against the code.
+
+**The reserved migration number could not be used.** This doc reserved `00038`,
+but the plan docs have shipped out of order and the schema is already at
+`00048`. `goose.Up` refuses to apply a migration below the current version
+("found N missing migrations"), so a `00038` file would have failed **every
+existing deployment at boot**, not merely looked untidy. It is `00049`.
+Reserve-ahead numbering only holds while the docs land in order; when they do
+not, take the next free number. This applies to every unshipped doc in this
+directory.
+
+**`UNIQUE (user_id, cadence, period_start)` would have capped a weekly household
+at one digest a month.** `digestWindow` reports the **month-to-date** for a
+weekly cadence, so all four of July's weekly digests share `period_start =
+2026-07-01`. The uniqueness key is `(user_id, period_key)` instead — the same
+`'2026-W29'` / `'2026-06'` vocabulary `digest_deliveries` already uses, and the
+same vocabulary `digestDue` already returns. `period_start`/`period_end` are
+still stored, for display.
+
+**The sweep had to stop gating on the push opt-in, and that opened a hole worth
+knowing about.** `ListDigestEnabledUsers` is replaced by
+`ListDigestCandidateUsers`, which enumerates everyone and returns all three
+switches. It also filters `role <> 'child'`: a child login can write its own
+user-scoped preferences, so an unfiltered sweep would let a child turn a
+household spending recap on for themselves, past every adult-only route guard.
+The old query's `digest.enabled = true` join hid that; nothing else did.
+
+**Entries are write-once, including on a forced send.** `InsertDigestEntry` is
+`ON CONFLICT DO NOTHING`. A "send one now" for a period that is already stored
+pushes again but does not rewrite the stored copy, so the immutability invariant
+is unconditional rather than "unless somebody pressed the button". They are also
+classified `InExport` for continuity, **not** `Derived` — the tempting wrong
+answer. A digest looks like job output, but the job cannot reproduce it: the
+transactions behind it have since moved, so re-running the sweep writes a
+*different* digest. A lost entry is lost history.
+
 ## Context
 
 The digest machinery already exists and is well-built:

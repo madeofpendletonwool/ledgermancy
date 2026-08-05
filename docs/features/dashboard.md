@@ -14,6 +14,12 @@ breakdown rather than repeating them.
   when there is nothing to flag, so it never leaves an empty box.
 - **Due this week** — known bills falling due in the next seven days, with a link
   to the full [Schedule](schedule.md). Nothing renders when there are none.
+- **An inflation line** — what prices have done this year, set against what your
+  own net worth and income have done. The comparison is the point: "prices are up
+  3.1% and your net worth is up 2.4%" is a fact about your household, where the
+  inflation figure alone is trivia. Renders nothing when there is no comparison
+  to draw. See
+  [Real dollars and nominal dollars](../concepts.md#real-dollars-and-nominal-dollars).
 - **Four stat tiles:** accounts linked, cash & investments, debt, and this
   month's spend (with this month's income as the hint).
 - **This month · spend by day** — a bar chart with a pace verdict in the header

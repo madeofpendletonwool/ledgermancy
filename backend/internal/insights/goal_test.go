@@ -89,7 +89,7 @@ func TestGoalProducerCoachesBehind(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 
-	rows, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID, IncludeDismissed: true})
+	rows, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID, IncludeDismissed: true, AsOf: now})
 	if err != nil {
 		t.Fatalf("list insights: %v", err)
 	}

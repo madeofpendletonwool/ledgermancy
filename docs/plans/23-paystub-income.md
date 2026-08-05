@@ -2,6 +2,99 @@
 
 *(TODO.md "Next major initiatives" #8. The largest doc in the backlog.)*
 
+**Shipped.** Migration `00048_paystubs.sql` — **not** the `00037` this doc names
+below, which was void; the table in [README.md](README.md) is authoritative.
+Backend in `internal/payroll/`, HTTP under `/api/payroll`, frontend at
+`/paystubs`.
+
+Nine things anyone touching this should know. Six are places this doc was wrong
+against the code, and one is a hazard it could not have known about.
+
+**`00048` lands in a gap, and doc 30 has to move.** `00047_manual_accounts.sql`
+is reserved but unwritten. Goose runs strict-ordering, so once `00048` has been
+applied to an instance a later `00047` is refused outright. Doc 30 must ship
+before this reaches a live database, or renumber above it. There is no way to
+fix this from inside this doc's code; the reservation table is the only
+coordination point.
+
+**The schema as printed below cannot balance a normal paystub.** This doc's own
+verification rule is `gross − Σ(deduction lines) = net`, and `paystub_lines` as
+specified has no way to distinguish a deduction from an employer contribution —
+so the `401k_employer_match` category it also specifies gets summed as a
+deduction and every stub carrying a match reads as short by exactly the match.
+That is the most common paystub in America. `paystub_lines.is_employer` is the
+fix: employer lines are excluded from the balance equation and are the entire
+basis of the total-compensation figure. `TestBalanceExcludesEmployerLines` pins
+it.
+
+**`employers.pay_frequency` is stored, not inferred.** "You're $15,500 from
+maxing your 401k, 6 pay periods left" divides by a cadence, and inferring one
+from the gaps between stubs fails hardest in the case where the question is most
+urgent — a new job, with one stub on file and no history to infer from. The
+remaining-periods count is then derived from the CALENDAR rather than from
+"periods per year minus stubs entered", because a household that starts using
+this in June and enters three stubs has not been paid three times this year.
+
+**"Scope reads to the owning user by default" needed a column, and the doc did
+not give it one.** `paystubs.is_shared` defaults to **FALSE** — the one place
+this app inverts its sharing default, since `plaid_items.is_shared` and
+`documents.is_shared` both default TRUE. Read visibility and write permission
+are separate: a shared stub is visible to the household and editable only by its
+owner, resolved through `GetOwnedPaystub`, and a stub belonging to somebody else
+404s rather than 403s. `employers.ein` is stored as `ein_encrypted BYTEA` under
+the same key as Plaid tokens, returned in full by the tax-summary endpoint alone
+and masked everywhere else.
+
+**No AI path was built, and `ocrEligibleTypes` was not touched.** The doc's own
+"Extraction without an upload" section is right and route 1 turned out to be
+enough: `internal/payroll/pdftext.go` reads the text layer that ADP/Gusto/
+Paychex/UKG already put in the PDF — stdlib only (`compress/zlib`), no new
+dependency, no network, no model. `paystubs.source` is `'pdf'` rather than the
+doc's `'ocr'` for that reason. A stub with no text layer is reported as such and
+typed in; a font with a custom encoding is detected and refused rather than
+guessed at, because a gross salary derived from mis-decoded glyphs is worse than
+"we could not read it". The direct-upload endpoint **stores nothing** — the
+bytes are parsed in memory and dropped — and a PDF already in the vault can be
+parsed locally over its decrypted bytes, which involves no third party and so is
+not gated on `DOCUMENTS_OCR_ENABLED`.
+
+**Pre-tax is not one thing, and the W-2 mapping is wrong if you treat it as
+one.** A 401(k) deferral comes out before federal income tax and NOT before
+FICA; a Section 125 cafeteria item comes out before both. That is why box 1 and
+boxes 3/5 differ on every real W-2 of anybody contributing to a 401(k), and a
+summary that got it wrong would disagree with the form it exists to help check —
+in a way that looks like the employer made the mistake. `payroll.WageBasis`
+carries the distinction per category; the stored `pre_tax` flag decides whether
+a line reduces anything at all, the category decides what it reduces.
+
+**Deposit reconciliation ranks rather than matches.** An exact-amount matcher
+finds nothing for a household whose direct deposit is split between checking and
+savings, which is extremely ordinary. Candidates come back ordered by distance
+from net with the gap shown, and a deposit already claimed by another stub is
+not offered at all — so the doc's two-identical-deposits case cannot even be
+mis-offered, let alone auto-matched. Nothing writes the link except a request in
+which a human named the transaction.
+
+**Year-to-date totals take the LARGER of the printed YTD and the sum of the
+periods on file.** Each is wrong in a different direction — the sum is short for
+a partial history, the printed figure is short after a payroll-provider change —
+and understating a contribution total is the expensive direction, because it
+reports headroom that is not there. The 401(k) elective limit is pooled across
+employers, so the doc's mid-year-job-change case works;
+`TestMidYearEmployerChangePoolsOneLimit` is the guard.
+
+**The gross-based savings rate was added alongside the net one, never replacing
+it**, exactly as the doc asks: `MonthlySummaryInput.GrossSavingsRate` is a
+distinct field with its own prompt line, and `/api/payroll/savings-rate` returns
+both figures side by side with a warning when the stubs on file only partly
+cover the window.
+
+**Not built:** Plaid Payroll Income (needs the Income product enabled on the
+item, and there is nothing to test against), the local-OCR sidecar for genuinely
+scanned stubs, and any AI extraction path. Manual entry and PDF text extraction
+cover the population between them; the sidecar is the next thing to add if
+scanned stubs turn out to be common.
+
 ## Context
 
 The app only ever sees money that has already survived the gross-to-net

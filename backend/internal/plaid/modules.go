@@ -155,7 +155,7 @@ func (s *Syncer) SyncInvestments(ctx context.Context, accessToken string, accoun
 	securityIDs := make(map[string]uuid.UUID, len(page.Securities))
 	for _, sec := range page.Securities {
 		row, err := s.Queries.UpsertSecurity(ctx, dbgen.UpsertSecurityParams{
-			PlaidSecurityID:  sec.PlaidSecurityID,
+			PlaidSecurityID:  plaidID(sec.PlaidSecurityID),
 			Name:             sec.Name,
 			Ticker:           sec.Ticker,
 			Type:             sec.Type,
@@ -276,7 +276,7 @@ func (s *Syncer) syncInvestmentTransactions(
 		if err := s.Queries.UpsertInvestmentTransaction(ctx, dbgen.UpsertInvestmentTransactionParams{
 			AccountID:                    accountID,
 			SecurityID:                   securityID,
-			PlaidInvestmentTransactionID: t.PlaidInvestmentTransactionID,
+			PlaidInvestmentTransactionID: plaidID(t.PlaidInvestmentTransactionID),
 			Type:                         t.Type,
 			Subtype:                      optionalString(t.Subtype),
 			Amount:                       t.Amount,

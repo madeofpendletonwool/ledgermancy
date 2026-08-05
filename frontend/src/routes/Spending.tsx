@@ -7,8 +7,10 @@ import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { CategoryLink } from '../components/CategoryLink'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
+import { RealBasis, RealToggle } from '../components/RealToggle'
+import { useInflation, useRealPreference } from '../lib/inflation'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
 import { SpendingHeatmap } from '../components/charts/SpendingHeatmap'
@@ -65,7 +67,15 @@ export function Spending() {
     queryKey: ['cash-flow', range.from, range.to],
     queryFn: () => api.cashFlow(range),
   })
-  const trend = useQuery({ queryKey: ['trend'], queryFn: () => api.trend() })
+  // One trend query serves three charts here. Asking for `real` only ADDS
+  // fields — the nominal ones are always present and unchanged — so the savings
+  // rate and fixed/discretionary charts below are untouched by the toggle.
+  const inflation = useInflation()
+  const { enabled: real, setEnabled: setReal } = useRealPreference()
+  const trend = useQuery({
+    queryKey: ['trend', real],
+    queryFn: () => api.trend({ real }),
+  })
   // The category × month matrix is the trailing twelve months the trend chart
   // uses, fetched once and rendered two ways (heatmap + small multiples).
   const heatmap = useQuery({
@@ -190,13 +200,21 @@ export function Spending() {
       </section>
 
       <section className="glass p-6">
-        <h2 className="mb-1 text-lg font-medium">Income vs spending</h2>
+        <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
+          <h2 className="text-lg font-medium">Income vs spending</h2>
+          <RealToggle
+            enabled={real}
+            onChange={setReal}
+            inflation={inflation.data}
+          />
+        </div>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <TrendChart data={trend.data ?? []} />
+            <TrendChart data={trend.data ?? []} real={real} />
           </Reveal>
         )}
+        <RealBasis enabled={real} inflation={inflation.data} />
       </section>
 
       <section className="glass p-6">
@@ -547,7 +565,7 @@ function RecurringSection() {
                     <span className="flex items-center gap-2">
                       {/* The detector already groups by resolved key, which is
                           exactly what addresses the merchant detail view. */}
-                      <Monogram name={m.merchant} size="sm" />
+                      <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
                       <MerchantLink name={m.merchant} merchantKey={m.merchant_key} />
                       {creep && (
                         <span className="rounded border border-fern-400/30 bg-fern-400/10 px-1.5 py-0.5 text-[10px] text-fern-300">
@@ -624,7 +642,11 @@ function RecurringSection() {
                   {/* merchant_key_resolved, not merchant_key: the stored key is
                       what unsuppress acts on, but a suppression recorded before a
                       later merge would link nowhere. */}
-                  <Monogram name={s.merchant || s.merchant_key} size="xs" />
+                  <MerchantAvatar
+                    name={s.merchant || s.merchant_key}
+                    merchantKey={s.merchant_key_resolved}
+                    size="xs"
+                  />
                   <MerchantLink
                     name={s.merchant || s.merchant_key}
                     merchantKey={s.merchant_key_resolved}

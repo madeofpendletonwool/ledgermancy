@@ -96,7 +96,7 @@ func TestGenerateDetectsAndDedupes(t *testing.T) {
 	}
 
 	byKind := func() map[string]dbgen.Insight {
-		rows, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID})
+		rows, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID, AsOf: now})
 		if err != nil {
 			t.Fatalf("ListInsights: %v", err)
 		}
@@ -141,7 +141,7 @@ func TestGenerateDetectsAndDedupes(t *testing.T) {
 		t.Errorf("dismissed spending_spike reappeared in the unread feed")
 	}
 	// …but still present (and still dismissed) when dismissed rows are included.
-	all, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID, IncludeDismissed: true})
+	all, err := q.ListInsights(ctx, dbgen.ListInsightsParams{HouseholdID: householdID, IncludeDismissed: true, AsOf: now})
 	if err != nil {
 		t.Fatalf("ListInsights (all): %v", err)
 	}

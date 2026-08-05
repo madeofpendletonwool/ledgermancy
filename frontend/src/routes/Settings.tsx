@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, isAdult, isOwner } from '../lib/api'
 import type { AnomalyScope, PreferenceWrite } from '../lib/api'
@@ -9,7 +9,15 @@ import { Household } from './Household'
 import { Continuity } from './Continuity'
 import { SkeletonRows } from '../components/Skeleton'
 
-type Tab = 'profile' | 'security' | 'notifications' | 'digest' | 'anomalies' | 'household' | 'continuity'
+type Tab =
+  | 'profile'
+  | 'security'
+  | 'notifications'
+  | 'digest'
+  | 'anomalies'
+  | 'appearance'
+  | 'household'
+  | 'continuity'
 
 const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile' },
@@ -17,6 +25,8 @@ const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }
   { id: 'notifications', label: 'Notifications', adultOnly: true },
   { id: 'digest', label: 'Digest', adultOnly: true },
   { id: 'anomalies', label: 'Anomalies', adultOnly: true },
+  // Household-wide imagery, so adult-only like the other household settings.
+  { id: 'appearance', label: 'Appearance', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
   // Operator surface: the instance's recovery posture, not the household's
   // data. Owner-only, and enforced server-side by auth.RequireOwner.
@@ -71,6 +81,7 @@ export function Settings() {
       {activeTab === 'notifications' && <NotificationsSection />}
       {activeTab === 'digest' && <DigestSection />}
       {activeTab === 'anomalies' && <AnomaliesSection />}
+      {activeTab === 'appearance' && <AppearanceSection />}
       {activeTab === 'household' && <Household />}
       {activeTab === 'continuity' && <Continuity />}
     </div>
@@ -311,48 +322,66 @@ function NotificationsSection() {
   )
 }
 
+/**
+ * Digest settings: one cadence, and one switch per surface.
+ *
+ * The surfaces are deliberately independent. In-app is on by default and needs
+ * nothing configured; push needs a notification channel; email needs the
+ * operator to have set up SMTP. Turning one off never silences the others, and
+ * turning the cadence knob moves all three together — that is the only thing
+ * they share.
+ */
 function DigestSection() {
   const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
   const save = useSavePreferences()
 
-  const [enabled, setEnabled] = useState(false)
+  const [inApp, setInApp] = useState(true)
+  const [push, setPush] = useState(false)
+  const [email, setEmail] = useState(false)
   const [cadence, setCadence] = useState('weekly')
 
   useEffect(() => {
     const u = prefs.data?.user
     if (!u) return
-    setEnabled(asBool(u['digest.enabled']))
+    // in_app defaults ON, so an unset value must not read as false. The server
+    // sends the reserved default, but asBool would still turn an absent key
+    // into false — hence the explicit fallback.
+    setInApp(u['digest.in_app'] === undefined ? true : asBool(u['digest.in_app']))
+    setPush(asBool(u['digest.enabled']))
+    setEmail(asBool(u['digest.email']))
     setCadence(asString(u['digest.cadence'], 'weekly'))
   }, [prefs.data])
 
-  // Queues a digest immediately, independent of the cadence and opt-in above, so
-  // you can see what one looks like without waiting for the schedule.
+  const channel = asString(prefs.data?.user?.['notify.channel'], 'none')
+  const hasChannel = channel !== '' && channel !== 'none'
+  const smtpEnabled = capabilities.data?.smtp_enabled ?? false
+
+  // Queues a digest immediately, independent of the cadence and switches above,
+  // so you can see what one looks like without waiting for the schedule.
   const sendNow = useMutation({ mutationFn: () => api.sendDigestNow() })
 
   const onSave = () =>
     save.mutate([
-      { scope: 'user', key: 'digest.enabled', value: enabled },
+      { scope: 'user', key: 'digest.in_app', value: inApp },
+      { scope: 'user', key: 'digest.enabled', value: push },
+      { scope: 'user', key: 'digest.email', value: email },
       { scope: 'user', key: 'digest.cadence', value: cadence },
     ])
 
   return (
     <Section
       title="Digest"
-      description="A periodic recap — your monthly narrative plus the top insights — pushed to you on a schedule. It's delivered through your notification channel, so set one up in Notifications first."
+      description="A periodic recap — the period's figures, your narrative and the top insights. It's kept in the app, and can also be pushed or emailed to you."
     >
       {prefs.isPending ? (
-        <SkeletonRows count={3} />
+        <SkeletonRows count={4} />
       ) : (
         <div className="space-y-5">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-            />
-            Send me a digest
-          </label>
-
           <div>
             <label className="label" htmlFor="digest-cadence">
               Cadence
@@ -361,13 +390,55 @@ function DigestSection() {
               id="digest-cadence"
               className="field"
               value={cadence}
-              disabled={!enabled}
               onChange={(e) => setCadence(e.target.value)}
             >
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
             </select>
+            <p className="mt-1 text-xs text-mist-500">
+              Weekly digests are written on a Monday; monthly ones on the 1st,
+              covering the month just finished.
+            </p>
           </div>
+
+          <fieldset className="space-y-3">
+            <legend className="label">Where it goes</legend>
+
+            <Toggle
+              checked={inApp}
+              onChange={setInApp}
+              label="Keep it in the app"
+              hint={
+                <>
+                  Builds your <Link to="/digest" className="text-rune-300 hover:underline">Digest</Link>{' '}
+                  history. Nothing to configure, and past digests stay readable.
+                </>
+              }
+            />
+
+            <Toggle
+              checked={push}
+              onChange={setPush}
+              label="Push it to me"
+              hint={
+                hasChannel
+                  ? `Sent over your ${channel} channel.`
+                  : 'Set up a notification channel first — there is nowhere to push to yet.'
+              }
+            />
+
+            <Toggle
+              checked={email}
+              onChange={setEmail}
+              disabled={!smtpEnabled}
+              label="Email it to me"
+              hint={
+                smtpEnabled
+                  ? 'Plain text, to your account address.'
+                  : 'No mail server is configured on this deployment.'
+              }
+            />
+          </fieldset>
 
           <SaveRow save={save} onSave={onSave} />
 
@@ -386,11 +457,12 @@ function DigestSection() {
                 </span>
               ) : sendNow.isSuccess ? (
                 <span className="text-sm text-rune-300">
-                  Queued — it’ll arrive shortly.
+                  Queued — check your Digest page shortly.
                 </span>
               ) : (
                 <span className="text-sm text-mist-500">
-                  Sends a digest to your channel right now, ignoring the schedule.
+                  Writes a digest for the current period right now, ignoring the
+                  schedule.
                 </span>
               )}
             </div>
@@ -398,6 +470,38 @@ function DigestSection() {
         </div>
       )}
     </Section>
+  )
+}
+
+/** A labelled checkbox with a line of explanation under it. */
+function Toggle({
+  checked,
+  onChange,
+  label,
+  hint,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  hint: ReactNode
+  disabled?: boolean
+}) {
+  return (
+    <div>
+      <label
+        className={`flex items-center gap-2 text-sm ${disabled ? 'text-mist-500' : ''}`}
+      >
+        <input
+          type="checkbox"
+          checked={checked && !disabled}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        {label}
+      </label>
+      <p className="mt-0.5 pl-6 text-xs text-mist-500">{hint}</p>
+    </div>
   )
 }
 
@@ -517,6 +621,91 @@ function AnomaliesSection() {
               </ul>
             )}
           </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+/**
+ * Appearance: the household's merchant imagery.
+ *
+ * One switch today, and it is worth reading the two-layer shape before adding a
+ * second. Fetching a real logo means contacting a company that is neither Plaid
+ * nor your AI provider, so the decision to do that at all is the OPERATOR's
+ * (`MERCHANT_LOGOS_ENABLED` in `.env`, off by default, documented there with the
+ * destination). This toggle is the household's say over what it already permits:
+ * on by default once the operator opted in, and turning it off both stops the
+ * imagery and deletes what was already fetched.
+ *
+ * With the operator switch off, the toggle still saves — it just explains that
+ * nothing will happen until the deployment opts in, the same courtesy the
+ * Notifications tab extends when no ntfy server is configured.
+ */
+function AppearanceSection() {
+  const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
+  const qc = useQueryClient()
+  const save = useSavePreferences()
+
+  const [logos, setLogos] = useState(true)
+
+  useEffect(() => {
+    const h = prefs.data?.household
+    if (!h) return
+    setLogos(asBool(h['merchant.logos']))
+  }, [prefs.data])
+
+  const onSave = () => {
+    save.mutate([{ scope: 'household', key: 'merchant.logos', value: logos }], {
+      // Avatars read the resolved answer off /capabilities, so it is stale the
+      // moment this is saved.
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['capabilities'] }),
+    })
+  }
+
+  const available = capabilities.data?.merchant_logos_available === true
+
+  return (
+    <Section
+      title="Appearance"
+      description="How merchants look around the app. Every merchant has a coloured monogram built from its own name — no network, no third party, always there. Real logos are an extra on top of that, and an opt-in one."
+    >
+      {prefs.isPending ? (
+        <SkeletonRows count={2} />
+      ) : (
+        <div className="space-y-5">
+          {capabilities.data && !available && (
+            <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-mist-300">
+              Merchant logos are unavailable — this deployment has not opted in.
+              An operator enables them with <code>MERCHANT_LOGOS_ENABLED=true</code>,
+              a free Logo.dev token and an AI key. You can still set a preference
+              here; it takes effect if that happens.
+            </p>
+          )}
+
+          <Toggle
+            checked={logos}
+            onChange={setLogos}
+            label="Show merchant logos"
+            hint={
+              <>
+                When on, this app looks up each merchant’s website with your AI
+                provider and fetches that company’s logo from Logo.dev — on the
+                server, once per merchant, then cached and served from here. Your
+                browser never contacts Logo.dev, and no amount, balance or
+                transaction is ever sent; only the merchant’s name. Merchants
+                without a known logo keep their monogram. Turning this off stops
+                the lookups and deletes the logos already stored.
+              </>
+            }
+          />
+
+          <SaveRow save={save} onSave={onSave} />
         </div>
       )}
     </Section>

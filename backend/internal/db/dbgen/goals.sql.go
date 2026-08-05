@@ -241,9 +241,8 @@ func (q *Queries) GetGoal(ctx context.Context, arg GetGoalParams) (Goal, error) 
 const getGoalAccountBalance = `-- name: GetGoalAccountBalance :one
 SELECT COALESCE(a.current_balance, 0)::numeric AS balance
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE a.id = $1 AND u.household_id = $2
+JOIN account_access v ON v.account_id = a.id
+WHERE a.id = $1 AND v.household_id = $2
 `
 
 type GetGoalAccountBalanceParams struct {
@@ -275,13 +274,12 @@ SELECT
     l.interest_rate_percentage,
     l.minimum_payment
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE a.id = $1 AND u.household_id = $2
+WHERE a.id = $1 AND v.household_id = $2
 `
 
 type GetGoalDebtTermsParams struct {

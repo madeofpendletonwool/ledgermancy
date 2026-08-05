@@ -84,11 +84,42 @@ their private topic in the UI (**Settings → Notifications**).
 | `NTFY_BASE_URL` | `https://ntfy.sh` | Self-host ntfy → point at your instance. Otherwise defaults to the public ntfy.sh. |
 | `NTFY_TOKEN` | _(empty)_ | Optional Bearer token for a protected / self-hosted ntfy server |
 
+## Email (SMTP)
+
+Off by default, and this switch carries more weight than the others on this page:
+**until you set `SMTP_HOST`, Ledgermancy sends no email at all.** Configuring a
+mail server is how you withdraw that guarantee for your own deployment.
+
+The only thing ever mailed is the [digest](features/digest.md), and only to
+members who tick **Email it to me** in **Settings → Digest**. An operator with
+SMTP configured and nobody opted in still sends nothing.
+
+Setting `SMTP_HOST` without `SMTP_FROM` **fails at startup**, rather than
+discovering at 6am on a Monday that every message was rejected.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SMTP_HOST` | _(empty)_ | Mail server hostname. Empty = no email, ever. |
+| `SMTP_PORT` | `587` | `587` for STARTTLS, `465` for implicit TLS, `25` for a local relay |
+| `SMTP_FROM` | _(empty)_ | Envelope sender and `From:` header. **Required** when `SMTP_HOST` is set. |
+| `SMTP_USERNAME` | _(empty)_ | Leave blank for a relay that needs no authentication |
+| `SMTP_PASSWORD` | _(empty)_ | |
+| `SMTP_SECURITY` | `starttls` | `starttls`, `tls` (implicit, usually port 465), or `none` |
+
+!!! note "There is no certificate-verification bypass"
+    Both encrypted modes verify the server's certificate against `SMTP_HOST`. A
+    switch that turns an encrypted channel into an unauthenticated one is a
+    footgun; an operator with no usable certificate can say so honestly with
+    `SMTP_SECURITY=none` instead. Note that Go refuses to send a password over an
+    unencrypted connection to anything but localhost — that is correct, and is
+    not worked around.
+
 ## Benchmark prices (Investments page)
 
-Off by default. This is the **only** outbound request Ledgermancy makes to a host
-that is neither Plaid nor your AI provider, so it is opt-in rather than something
-you have to notice and disable. Enabling it lets a daily job fetch end-of-day
+Off by default. This is one of only two outbound requests Ledgermancy makes to a
+host that is neither Plaid nor your AI provider — the other is
+[merchant logos](#merchant-logos) — so it is opt-in rather than something you
+have to notice and disable. Enabling it lets a daily job fetch end-of-day
 index closes from [Stooq](https://stooq.com) so the Investments page can plot
 your portfolio's growth against the market. Only a ticker symbol is sent — no
 account, balance or transaction data leaves the host.
@@ -103,6 +134,112 @@ simply shows your own line with nothing to compare it against, and says so.
 
 A failed fetch degrades to a missing series: the job logs a warning, stores what
 it did get, and never fails or retry-storms over a chart decoration.
+
+## CPI refresh (inflation-adjusted views)
+
+**Off by default**, and the least consequential of the outbound switches,
+because the feature it serves works fully without it.
+
+The CPI-U series ships **seeded** — January 2010 onward, committed in migration
+`00052_cpi_series.sql`. Every real (inflation-adjusted) figure in the app is
+computed from that bundled series. An install with no route to the internet gets
+honest deflation from real published numbers; it simply stops gaining new months,
+and the UI says so rather than quietly showing older dollars as though they were
+today's.
+
+Turning this on adds one request a day to `api.bls.gov` for the tail of the
+series. No key and no account: the v1 endpoint serves a small number of series
+unregistered, which is all one series over two years needs. The request names a
+public series ID and a year range and is identical for every install; nothing
+about your household is in it.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `CPI_FETCH_ENABLED` | `false` | Set `true` to allow the daily CPI-U refresh |
+
+The job **upserts** on period rather than inserting, because BLS revises. It
+also skips months published as `-`: those were never collected — October 2025 is
+the live example, lost to that year's lapse in appropriations — and a figure
+dated in such a month is reported as undeflatable rather than being deflated
+against an interpolated guess.
+
+## Merchant logos
+
+**Off by default.** This is the second of the two switches that add a host which
+is neither Plaid nor your AI provider, and unlike the benchmark fetch above it
+sends a merchant *name* rather than a ticker.
+
+Every merchant already has imagery without this: a coloured tile carrying its
+first letter, generated locally from the name, identical on every reload. Turning
+this on replaces that tile with the company's real logo where one can be found,
+and leaves the tile everywhere else.
+
+**How it works.** Once a day the worker takes the merchants it has not seen
+before and asks your AI provider which website each one is — "Blue Bottle
+Coffee" → `bluebottlecoffee.com`. It then asks [Logo.dev](https://logo.dev) for
+that domain's logo, stores the image in the database, and serves it from this
+app. Both steps happen **once per merchant, ever**: a merchant with a logo is
+never re-fetched, and a merchant without one is recorded as having none and
+never asked about again.
+
+**What leaves the host.** To your AI provider, the merchant's name — which it
+already sees during categorisation, so this step adds no new destination. To
+Logo.dev, a domain, one request per merchant. No amount, balance, account, date
+or transaction reaches either one.
+
+**Your browser never contacts Logo.dev.** Every image is fetched server-side and
+served from this origin, so a page still loads nothing from a third party. The
+api never proxies either: if the worker has not cached a logo, the answer is a
+404 and the monogram is used.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `MERCHANT_LOGOS_ENABLED` | `false` | Set `true` to allow the daily resolve-and-fetch pass |
+| `LOGO_DEV_TOKEN` | — | Required when enabled. The **publishable** key (`pk_…`), not the secret one — see below. Free tier: 500,000 requests/month, no card. Sign up at [logo.dev](https://logo.dev) |
+| `MERCHANT_LOGOS_SIZE` | `128` | Requested square size in pixels. Logo.dev's ceiling is 800 |
+| `MERCHANT_LOGOS_MAX_BYTES` | `128KB` | Per-logo storage cap. A larger response is treated as "no logo" |
+
+Enabling this **also needs `AI_API_KEY`**: Logo.dev is keyed by domain only, and
+the AI provider is what turns a merchant name into one. The app refuses to start
+if the switch is on without a key or a token, rather than presenting a feature
+that quietly does nothing.
+
+Each household can switch the imagery off for itself in **Settings →
+Appearance**. Doing so stops the lookups for that household and deletes the
+logos already cached for it — the cache is derived data about where they shop,
+and keeping it past a "no" would be keeping the part they objected to.
+
+### Which Logo.dev key, and why only one
+
+Logo.dev issues two keys and only the **publishable** one (`pk_…`) belongs in
+`LOGO_DEV_TOKEN`. There is nowhere in this app to put the secret key.
+
+That is a consequence of using exactly one Logo.dev surface. The CDN image
+endpoint, `img.logo.dev/{domain}`, authenticates with `?token=pk_…` and is free
+at 500,000 requests a month. The **Brand API** (`api.logo.dev/brand/{domain}`),
+which is what the secret key is for, returns brand profiles — colours, socials,
+descriptions — at 5 credits per call, roughly 100 calls a month on the free
+plan. Nothing here wants a brand profile, and name→domain resolution goes
+through your AI provider precisely so that no part of this feature is metered.
+The result is that turning merchant logos on cannot generate a bill.
+
+Note that Logo.dev's publishable key is designed to sit in a public image URL.
+Here it never does — the browser never talks to Logo.dev at all — so it stays
+server-side as a matter of architecture rather than of secrecy.
+
+### Attribution
+
+Logo.dev requires a visible credit ("Logos provided by Logo.dev") only for
+**commercial** use of the free tier; a personal, self-hosted instance owned by an
+individual and earning nothing does not need one. Nothing in this app renders an
+attribution link, and a login-gated self-hosted app has no public page to put one
+on in the first place.
+
+If you deploy Ledgermancy commercially and enable this on the free tier, that
+obligation is yours rather than the project's: add the credit somewhere public,
+or move to a paid plan, which removes the requirement. Check Logo.dev's
+[attribution terms](https://www.logo.dev/docs/platform/attribution) rather than
+relying on this paragraph.
 
 ## Document vault
 

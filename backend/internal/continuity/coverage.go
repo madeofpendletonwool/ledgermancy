@@ -125,12 +125,29 @@ var tableCoverage = map[string]Coverage{
 	"liabilities":             InExport,
 	"manual_assets":           InExport,
 	"account_contributions":   InExport,
+	// The class-specific facts about an asset — a bond's series and issue date,
+	// a car's model year and odometer. Typed in by hand, and without them a
+	// restored bond cannot be valued at all: it falls back to a frozen number,
+	// which is the exact condition doc 26 exists to remove.
+	"asset_details": InExport,
+	// Every dated valuation. manual_assets.value carries only the CURRENT
+	// figure, so losing this loses the trend behind it permanently — the same
+	// reasoning as net_worth_snapshots directly above. A house's five-year
+	// appreciation cannot be reconstructed from its present value.
+	"asset_valuations": InExport,
+	// The same argument as asset_valuations, one table over. accounts.current_-
+	// balance holds only what a manual account is worth TODAY; this is every
+	// balance the household ever recorded for it, and for an account Plaid
+	// cannot reach there is no sync that could rebuild a single row of it. It is
+	// also the audit trail for the scheduled-contribution worker — a
+	// reason='scheduled' row is the only record of why a balance moved.
+	"account_balance_history": InExport,
 	// account_terms is the sharper half of the pair above it. liabilities is a
 	// mirror of Plaid and a resync rebuilds it; account_terms is the APR and the
 	// monthly payment a person typed in, for the majority of institutions Plaid
 	// declines to report terms for at all. Nothing anywhere can re-supply it.
-	"account_terms": InExport,
-	"projection_assumptions":  InExport,
+	"account_terms":          InExport,
+	"projection_assumptions": InExport,
 
 	// --- Recurring and obligations ----------------------------------------
 	"recurring_obligations": InExport,
@@ -153,9 +170,33 @@ var tableCoverage = map[string]Coverage{
 	"documents":      InExport,
 	"document_links": InExport,
 
+	// --- Payroll ----------------------------------------------------------
+	// Sharper than it first looks. A paystub is not re-syncable from anywhere:
+	// Plaid reports the deposit, never the withholding behind it, and an
+	// employer's self-service portal keeps two years at best and vanishes with
+	// the job. Every line was typed in or read off a PDF the household still has
+	// to find again, and the YTD figures a tax summary is built from cannot be
+	// reconstructed from the ledger at any price.
+	//
+	// The EIN column is bytea, so IsSensitive withholds it from the portable
+	// export by type while the dump still carries it — the same treatment as
+	// every other sealed value, and the reason that rule is a type rule.
+	"employers":     InExport,
+	"paystubs":      InExport,
+	"paystub_lines": InExport,
+
 	// --- Alerts -----------------------------------------------------------
 	// The rules are the user's; the events are the engine's output.
 	"alerts": InExport,
+
+	// --- Digests ----------------------------------------------------------
+	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
+	// looks like something a job produces. But the job cannot produce it again.
+	// Each entry is a snapshot of figures as they stood in a past period, and
+	// the transactions behind it have since been recategorised, corrected and
+	// added to. Re-running the sweep against today's data would write a
+	// different digest, not the same one — so a lost entry is lost history.
+	"digest_entries": InExport,
 
 	// --- Credentials: dump only, never a plain-JSON file ------------------
 	"plaid_items":         DumpOnly, // access tokens, sealed with ENCRYPTION_KEY
@@ -166,12 +207,31 @@ var tableCoverage = map[string]Coverage{
 	"digest_deliveries": DumpOnly, // per-period dedupe keys
 	"backup_runs":       DumpOnly, // this package's own state
 	"asset_prices":      DumpOnly, // cache of third-party closes, refetchable
-	"pfc_category_map":  DumpOnly, // seeded by migration 00002; a fresh schema has it
+	// Published Treasury rates, seeded by migration 00051 — a fresh schema has
+	// them. DumpOnly rather than InExport because none of it is the
+	// household's: it is public reference data, identical in every install, and
+	// the portable export exists to carry what is theirs. A household that
+	// edited a row keeps that edit through the dump, which is the restore path
+	// that matters.
+	"savings_bond_rates": DumpOnly,
+	// CPI-U, seeded by migration 00052 — a fresh schema already has the whole
+	// series. Same reasoning as savings_bond_rates: public reference data,
+	// identical in every install, so it rides along in the dump but stays out of
+	// the portable export, which exists to carry what is the household's.
+	"cpi_series":       DumpOnly,
+	"pfc_category_map": DumpOnly, // seeded by migration 00002; a fresh schema has it
 
 	// --- Derived: a job rebuilds these ------------------------------------
 	"alert_events":      Derived, // alerts.Evaluate, on the next sweep
 	"insights":          Derived, // insights.Generate, on the next sweep
 	"monthly_summaries": Derived, // jobs.SummaryRefreshWorker, per completed month
+	// jobs.FetchMerchantLogosWorker, on the next daily sweep. Derived rather
+	// than DumpOnly on purpose: it IS in the dump, so a restore does not spend
+	// a fresh round of third-party requests re-fetching what it already had —
+	// but nothing in it is the household's, so it stays out of the portable
+	// export, which exists to outlive this app. Public brand imagery is the
+	// last thing worth carrying into a spreadsheet.
+	"merchant_logos": Derived,
 
 	// --- Ephemeral --------------------------------------------------------
 	"sessions":       Ephemeral, // restoring these would resurrect logins

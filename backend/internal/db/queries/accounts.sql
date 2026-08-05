@@ -3,11 +3,16 @@
 -- existing account refreshes it in place rather than creating a duplicate.
 -- is_active is deliberately not touched: excluding an account from reports is
 -- a user decision that must survive every sync.
+--
+-- The WHERE on the conflict target is load-bearing: 00053 made this index
+-- PARTIAL (manual rows have no Plaid id and are not in it), and Postgres only
+-- accepts a partial index as an ON CONFLICT arbiter when the statement repeats
+-- its predicate.
 INSERT INTO accounts (
     plaid_item_id, plaid_account_id, name, official_name, mask,
     type, subtype, current_balance, available_balance, credit_limit, currency
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-ON CONFLICT (plaid_account_id) DO UPDATE SET
+ON CONFLICT (plaid_account_id) WHERE plaid_account_id IS NOT NULL DO UPDATE SET
     name              = EXCLUDED.name,
     official_name     = EXCLUDED.official_name,
     mask              = EXCLUDED.mask,
@@ -26,15 +31,41 @@ SELECT * FROM accounts WHERE plaid_account_id = $1;
 SELECT * FROM accounts WHERE plaid_item_id = $1 ORDER BY name;
 
 -- name: ListVisibleAccounts :many
--- Accounts belonging to items the caller can see. Mirrors ListVisiblePlaidItems.
-SELECT a.*, i.institution_name, i.user_id AS owner_id
+-- Every account the caller can see, of either source. institution_name is NULL
+-- for a manual account — there is no institution — and the UI labels those from
+-- accounts.source rather than inventing one here.
+--
+-- Columns are listed rather than `a.*` on purpose. accounts now carries its own
+-- user_id and is_shared, which are NULL on a Plaid row and meaningful only on a
+-- manual one; `a.*` alongside the view's resolved columns yields two fields
+-- with the same name, and the handler that picks the raw one silently reports a
+-- private institution as shared. owner_id/shared below are the RESOLVED values
+-- and the only ones a caller should read.
+SELECT
+    a.id,
+    a.plaid_item_id,
+    a.name,
+    a.official_name,
+    a.mask,
+    a.type,
+    a.subtype,
+    a.current_balance,
+    a.available_balance,
+    a.credit_limit,
+    a.currency,
+    a.tax_treatment,
+    a.is_managed,
+    a.beneficiary_person_id,
+    a.source,
+    v.institution_name,
+    v.user_id  AS owner_id,
+    v.is_shared AS shared
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
-ORDER BY i.institution_name, a.name;
+ORDER BY v.institution_name NULLS LAST, a.name;
 
 -- name: SetAccountActive :one
 UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING *;
@@ -48,11 +79,10 @@ UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING *;
 -- so neither id is trusted from the request. A NULL person clears it.
 UPDATE accounts a
 SET beneficiary_person_id = sqlc.narg('person_id')
-FROM plaid_items i, users u
+FROM account_access v
 WHERE a.id = sqlc.arg('id')
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = sqlc.arg('household_id')
+  AND v.account_id = a.id
+  AND v.household_id = sqlc.arg('household_id')
   AND (
         sqlc.narg('person_id')::uuid IS NULL
      OR EXISTS (
@@ -66,14 +96,13 @@ RETURNING a.*;
 -- name: ListAccountsForPerson :many
 -- Accounts held FOR one person. Read-only surface for a child, and the
 -- per-person net-worth lens for a parent.
-SELECT a.*, i.institution_name
+SELECT a.*, v.institution_name
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
   AND a.beneficiary_person_id = $2
   AND a.is_active
-ORDER BY i.institution_name, a.name;
+ORDER BY v.institution_name, a.name;
 
 -- name: ListPersonAssetTotals :many
 -- Per-person asset breakdown for the net-worth lens. This is a BREAKDOWN of a

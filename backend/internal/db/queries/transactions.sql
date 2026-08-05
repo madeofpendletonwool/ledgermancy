@@ -57,11 +57,10 @@ WHERE a.plaid_item_id = $1;
 -- them, returning its currency for imported rows. No row means "not yours".
 SELECT a.id, a.currency
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
   AND a.is_active;
 
 -- name: InsertImportedTransactionIfNew :one
@@ -88,7 +87,7 @@ WHERE NOT EXISTS (
 RETURNING id;
 
 -- name: ListVisibleTransactions :many
-SELECT t.*, a.name AS account_name, i.institution_name,
+SELECT t.*, a.name AS account_name, v.institution_name,
     -- The RESOLVED merchant key, so a row can address the merchant detail view.
     -- Raw t.merchant_key addresses one DESCRIPTOR; this addresses the BUSINESS,
     -- collapsing every fragment the household has grouped. Without it a row
@@ -111,14 +110,13 @@ SELECT t.*, a.name AS account_name, i.institution_name,
     )) AS is_possible_duplicate
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   -- Excluded rows are hidden by default, because the ledger should read like the
   -- reports it feeds. They are NOT hidden unconditionally: this list is the only
@@ -188,11 +186,10 @@ SELECT
     COALESCE(SUM(t.amount), 0)::numeric AS total
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -217,11 +214,10 @@ SELECT
     c.name AS category_name
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -254,11 +250,10 @@ SELECT
     COALESCE(SUM(t.amount)  FILTER (WHERE t.amount > 0), 0)::numeric AS total_out
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -303,11 +298,10 @@ SELECT
     t.source
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -356,11 +350,10 @@ WITH base AS (
         t.amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -423,11 +416,10 @@ SELECT
     'manual',
     false
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = sqlc.arg('account_id')
-  AND u.household_id = sqlc.arg('household_id')
-  AND (i.user_id = sqlc.arg('user_id') OR i.is_shared)
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared)
   AND a.is_active
 RETURNING *;
 
@@ -445,13 +437,12 @@ SET amount          = sqlc.arg('amount'),
     category_source = CASE WHEN sqlc.narg('category_id')::uuid IS NULL THEN NULL ELSE 'manual' END,
     notes           = sqlc.narg('notes'),
     updated_at      = now()
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = sqlc.arg('id')
+  AND v.account_id = a.id
   AND t.source = 'manual'
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = sqlc.arg('household_id')
+  AND v.household_id = sqlc.arg('household_id')
 RETURNING t.*;
 
 -- name: SetTransactionFlags :one
@@ -468,12 +459,11 @@ UPDATE transactions t
 SET excluded_from_reports = COALESCE(sqlc.narg('excluded_from_reports')::bool, t.excluded_from_reports),
     is_one_time           = COALESCE(sqlc.narg('is_one_time')::bool, t.is_one_time),
     updated_at            = now()
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = sqlc.arg('id')
+  AND v.account_id = a.id
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = sqlc.arg('household_id')
+  AND v.household_id = sqlc.arg('household_id')
 RETURNING t.*;
 
 -- name: DeleteManualTransaction :execrows
@@ -481,10 +471,9 @@ RETURNING t.*;
 -- when nothing matched (wrong household, or a Plaid id), which the handler maps
 -- to 404.
 DELETE FROM transactions t
-USING accounts a, plaid_items i, users u
+USING accounts a, account_access v
 WHERE t.id = sqlc.arg('id')
+  AND v.account_id = a.id
   AND t.source = 'manual'
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = sqlc.arg('household_id');
+  AND v.household_id = sqlc.arg('household_id');

@@ -10,7 +10,7 @@ import { SINGLE_SERIES, STATUS } from './charts/tokens'
 import { MerchantPareto } from './charts/MerchantPareto'
 import { MerchantLink } from './MerchantLink'
 import { CategoryLink } from './CategoryLink'
-import { Monogram } from './Monogram'
+import { MerchantAvatar } from './MerchantAvatar'
 import { merchantDetailPath } from '../lib/merchants'
 import { Link } from 'react-router-dom'
 import { SkeletonRows, SkeletonText } from './Skeleton'
@@ -300,7 +300,7 @@ function MerchantRow({
   return (
     <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 rounded-lg py-1.5 sm:grid-cols-[14rem_1fr_7rem_5rem]">
       <div className="flex min-w-0 items-center gap-2">
-        <Monogram name={m.merchant} size="sm" />
+        <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
         <MerchantLink
           name={m.merchant}
           merchantKey={m.merchant_key}
@@ -455,7 +455,7 @@ function NewMerchants({
           {fresh.map((m) => (
             <li key={m.merchant_key} className="flex items-center justify-between gap-3">
               <span className="flex min-w-0 items-center gap-2">
-                <Monogram name={m.merchant} size="sm" />
+                <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
                 <MerchantLink
                   name={m.merchant}
                   merchantKey={m.merchant_key}
@@ -504,7 +504,7 @@ function GoneQuiet({ merchants }: { merchants: LapsedMerchant[] }) {
                 className="flex items-center justify-between gap-3"
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <Monogram name={m.merchant} size="sm" />
+                  <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} size="sm" />
                   {/* No window on this link: these charges are outside the window
                       being explored, so carrying it through would open an empty
                       merchant page. */}

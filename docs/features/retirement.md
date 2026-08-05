@@ -40,6 +40,14 @@ disclosure triangle. **Every number below that panel is produced from these.**
 return with today's spending is the most common way a retirement projection lies,
 and it always lies in the flattering direction.
 
+The **Inflation** field shows what CPI-U actually did over the last decade,
+compounded, beside whatever you have set — with a button to adopt it. It is
+offered, never applied: the projection uses the rate you choose, and there is no
+second inflation input anywhere in the app. The default is 3%, and the point of
+showing the measured figure is that 3% should be a decision rather than a number
+nobody ever checked. See
+[Real dollars and nominal dollars](../concepts.md#real-dollars-and-nominal-dollars).
+
 ## What it answers
 
 Three headline figures:
@@ -131,7 +139,10 @@ Listed on the page rather than left to be discovered, because these are the
 places the projection could flatter:
 
 - **Tax on withdrawals** (traditional vs. Roth ordering). Real, large, and
-  dependent on income data the app does not yet hold.
+  dependent on a marginal-rate model the app does not yet have —
+  [paystubs](paystubs.md) supply effective-rate income, but ordering withdrawals
+  across traditional, Roth, and taxable accounts needs per-bracket math that is
+  still ahead.
 - **Required Minimum Distributions.**
 - **Return variability** beyond the opt-in panel above.
 

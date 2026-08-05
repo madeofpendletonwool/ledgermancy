@@ -16,7 +16,10 @@ import { DividendBars } from '../components/charts/DividendBars'
 import { lineDraw } from '../components/charts/motion'
 import { AnimatedNumber } from '../components/motion'
 import { SkeletonTiles } from '../components/Skeleton'
+import { RealToggle } from '../components/RealToggle'
+import { formatRate, realLabel, useInflation, useRealPreference } from '../lib/inflation'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
+import { ManualInvestmentEditor } from '../components/ManualInvestments'
 
 const PERIODS: { value: InvestmentPeriod; label: string }[] = [
   { value: 'ytd', label: 'YTD' },
@@ -80,9 +83,14 @@ export function Investments() {
   const [period, setPeriod] = useState<InvestmentPeriod>('1y')
 
   const overview = useQuery({ queryKey: ['investments'], queryFn: api.investments })
+  // The real figures ride along in the same response as extra fields, so the
+  // toggle changes which ones are DISPLAYED, not which numbers exist. The
+  // nominal figures are always there and are never overwritten.
+  const inflation = useInflation()
+  const { enabled: real, setEnabled: setReal } = useRealPreference()
   const performance = useQuery({
-    queryKey: ['investments', 'performance', period],
-    queryFn: () => api.investmentPerformance(period),
+    queryKey: ['investments', 'performance', period, real],
+    queryFn: () => api.investmentPerformance(period, real),
   })
   const benchmarks = useQuery({
     queryKey: ['investments', 'benchmarks', period],
@@ -183,9 +191,25 @@ export function Investments() {
                   accounts for when you paid in.
                 </p>
               </div>
-              <PeriodPicker value={period} onChange={setPeriod} />
+              <div className="space-y-2">
+                <PeriodPicker value={period} onChange={setPeriod} />
+                <RealToggle
+                  enabled={real}
+                  onChange={setReal}
+                  inflation={inflation.data}
+                  // A YTD window is not a year. Deflating a partial year by a
+                  // partial year's price change says considerably less than it
+                  // looks like it says; the other periods all clear the span.
+                  shouldRender={period !== 'ytd'}
+                />
+              </div>
             </div>
-            <Performance data={performance.data} loading={performance.isPending} />
+            <Performance
+              data={performance.data}
+              loading={performance.isPending}
+              real={real}
+              baseLabel={realLabel(inflation.data)}
+            />
           </section>
 
           <section className="glass p-6">
@@ -215,6 +239,10 @@ export function Investments() {
           )}
 
           <HoldingsTable holdings={holdings.data ?? []} />
+
+          <ManualInvestmentAccounts
+            accounts={data!.accounts.filter((a) => a.source === 'manual')}
+          />
 
           <div className="grid gap-4 sm:grid-cols-2">
             <section className="glass p-6">
@@ -298,9 +326,13 @@ function PeriodPicker({
 function Performance({
   data,
   loading,
+  real = false,
+  baseLabel,
 }: {
   data: InvestmentPerformance | undefined
   loading: boolean
+  real?: boolean
+  baseLabel?: string | null
 }) {
   if (loading)
     return (
@@ -318,28 +350,42 @@ function Performance({
     )
   }
 
+  // Real is shown only where a real figure actually exists. Where it does not —
+  // a span reaching outside the CPI series, or one too short to annualise — the
+  // tile stays nominal and says so, rather than relabelling a nominal number.
+  const showReal = real && data.real !== undefined
+  const twr = showReal ? (data.real!.twr ?? data.twr) : data.twr
+  const annualised = showReal ? (data.real!.annualised ?? null) : data.annualised
+  const mwr = showReal ? (data.real!.mwr ?? null) : data.mwr
+
   return (
     <div className="space-y-5">
       {data.caveat && <Disclosure>{data.caveat}</Disclosure>}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
-          label="Time-weighted"
-          value={data.twr}
+          label={showReal ? 'Time-weighted (real)' : 'Time-weighted'}
+          value={twr}
           format={(n) => formatPercent(String(n))}
           sub={
-            data.annualised
-              ? `${formatPercent(data.annualised)} a year`
+            annualised
+              ? `${formatPercent(annualised)} a year${showReal ? ', after inflation' : ''}`
               : 'Too short a span to annualise'
           }
-          tone={data.twr ? (Number(data.twr) >= 0 ? 'good' : 'debt') : undefined}
+          tone={twr ? (Number(twr) >= 0 ? 'good' : 'debt') : undefined}
         />
         <Stat
-          label="Money-weighted"
-          value={data.mwr}
+          label={showReal && mwr ? 'Money-weighted (real)' : 'Money-weighted'}
+          value={mwr}
           format={(n) => formatPercent(String(n))}
-          sub={data.mwr ? 'Annualised (IRR)' : data.mwr_note}
-          tone={data.mwr ? (Number(data.mwr) >= 0 ? 'good' : 'debt') : undefined}
+          sub={
+            mwr
+              ? `Annualised (IRR)${showReal ? ', after inflation' : ''}`
+              : showReal
+                ? 'Too short a span to state after inflation'
+                : data.mwr_note
+          }
+          tone={mwr ? (Number(mwr) >= 0 ? 'good' : 'debt') : undefined}
         />
         <Stat
           label="Market gain"
@@ -353,6 +399,27 @@ function Performance({
           sub={`${data.start} → ${data.end}`}
         />
       </div>
+
+      {showReal && (
+        <p className="text-xs text-mist-500">
+          Prices rose {formatRate(data.real!.inflation)} over this span
+          {data.real!.annual_inflation
+            ? ` (${formatRate(data.real!.annual_inflation)} a year)`
+            : ''}
+          . Nominally: {formatPercent(data.twr)} time-weighted
+          {data.mwr ? `, ${formatPercent(data.mwr)} money-weighted` : ''}.{' '}
+          {data.real!.note}
+          {baseLabel ? ` Dollar figures above are not deflated; a real dollar total would be ${baseLabel}.` : ''}
+        </p>
+      )}
+
+      {real && data.real === undefined && (
+        <p className="text-xs text-mist-500">
+          These figures are nominal: this span reaches outside the published
+          price index, so there is no honest way to state the return after
+          inflation.
+        </p>
+      )}
     </div>
   )
 }
@@ -726,9 +793,14 @@ function AccountTagRow({ account }: { account: InvestmentAccount }) {
           {account.name}
           {account.mask && <span className="text-mist-500"> ••{account.mask}</span>}
         </p>
+        {/* A manual account has no institution and no reported subtype — its
+            subtype is whatever the user typed, so quoting it back as evidence
+            would dress their own guess up as the bank's. */}
         <p className="text-xs text-mist-500">
-          {account.institution_name}
-          {account.subtype && ` · reported as "${account.subtype}"`}
+          {account.source === 'manual' ? 'Added manually' : account.institution_name}
+          {account.source === 'plaid' &&
+            account.subtype &&
+            ` · reported as "${account.subtype}"`}
         </p>
       </div>
 
@@ -879,4 +951,47 @@ function Stat({
 function trimQuantity(q: string): string {
   if (!q.includes('.')) return q
   return q.replace(/\.?0+$/, '')
+}
+
+/**
+ * The accounts on this page that Plaid does not maintain.
+ *
+ * Everything above this reads the same tables regardless of where a position
+ * came from — that is the whole design, and it is why a manual Voya plan shows
+ * up in the allocation and return figures without a single engine knowing about
+ * it. This section is the one place the difference surfaces, because it is the
+ * one place it matters: nothing will update these numbers except the household.
+ */
+function ManualInvestmentAccounts({ accounts }: { accounts: InvestmentAccount[] }) {
+  if (accounts.length === 0) return null
+
+  return (
+    <section className="glass p-6">
+      <h2 className="text-lg font-medium">Accounts you maintain</h2>
+      <p className="mt-1 text-sm text-mist-300">
+        These are not linked to an institution, so their positions and activity
+        are whatever you have entered. Everything above counts them the same as
+        a synced account.
+      </p>
+      <ul className="mt-5 space-y-4">
+        {accounts.map((a) => (
+          <li key={a.id} className="rounded-xl bg-white/5 px-4 py-3">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <p className="font-medium">
+                {a.name}
+                {a.mask && <span className="text-mist-500"> ••{a.mask}</span>}
+              </p>
+              <span className="text-xs text-mist-500">
+                {treatmentLabel(a.tax_treatment)}
+              </span>
+              <p className="tabular ml-auto font-medium text-rune-300">
+                {formatMoney(a.balance, a.currency)}
+              </p>
+            </div>
+            <ManualInvestmentEditor account={a} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
 }

@@ -513,6 +513,23 @@ func optionalString(s string) *string {
 	return &s
 }
 
+// plaidID adapts an identifier Plaid always supplies to the nullable column it
+// is now stored in.
+//
+// The columns holding Plaid identity (accounts.plaid_account_id,
+// securities.plaid_security_id, investment_transactions.plaid_investment_-
+// transaction_id) became nullable in 00053 so that manual rows, which have no
+// Plaid identity at all, can exist alongside synced ones. Nothing about the
+// sync path changed: every row it writes has these values.
+//
+// Deliberately NOT optionalString. That maps "" to NULL, and NULL is the one
+// value these columns must never take on a synced row: each is the ON CONFLICT
+// target of an upsert, a NULL conflicts with nothing, and the result would be a
+// fresh duplicate account on every single sync rather than a visible error.
+// Passing the value through as-is lets the accounts_plaid_owner CHECK reject it
+// loudly instead.
+func plaidID(s string) *string { return &s }
+
 // wrapErr surfaces Plaid's structured error details, which carry the error
 // code needed to distinguish "user must re-authenticate" from a transient
 // failure worth retrying.

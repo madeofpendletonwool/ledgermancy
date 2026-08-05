@@ -37,14 +37,53 @@ type Config struct {
 	EncryptionKey []byte
 	SessionSecret []byte
 
-	Plaid      PlaidConfig
-	AI         AIConfig
-	NTFY       NTFYConfig
-	Benchmarks BenchmarkConfig
-	Retirement RetirementConfig
-	Documents  DocumentsConfig
-	Backup     BackupConfig
+	Plaid         PlaidConfig
+	AI            AIConfig
+	NTFY          NTFYConfig
+	SMTP          SMTPConfig
+	Benchmarks    BenchmarkConfig
+	Retirement    RetirementConfig
+	Documents     DocumentsConfig
+	Backup        BackupConfig
+	MerchantLogos MerchantLogosConfig
+	CPI           CPIConfig
 }
+
+// SMTPConfig points at a mail server for the optional emailed digest.
+//
+// Off by default, and that default carries more weight than the other optional
+// switches: until this is set, the app sends no email at all, which is a claim
+// the README makes and which the code must keep true. Configuring a server is
+// how an operator withdraws that claim for their own deployment — nothing else
+// in the app ever mails anybody.
+//
+// Sending is per user on top of this: a member opts in with the `digest.email`
+// preference, so an operator with SMTP configured still mails nobody until
+// somebody asks for it.
+type SMTPConfig struct {
+	Host string
+	Port int
+	// From is the envelope sender and the From: header. Required whenever Host
+	// is set — most servers reject a message without one, and discovering that
+	// at 6am on a Monday is worse than failing at boot.
+	From     string
+	Username string
+	Password string
+
+	// Security is "starttls" (default), "tls" for an implicitly-encrypted port
+	// (usually 465), or "none".
+	//
+	// "none" exists for a mail relay on the same host or compose network, where
+	// there is no network to intercept. Note net/smtp refuses to send a password
+	// over an unencrypted connection to anything but localhost, which is the
+	// right behaviour and is not worked around here.
+	Security string
+}
+
+// Enabled reports whether email delivery will be attempted at all. Like
+// NTFYConfig.Enabled this is the deployment-level switch; the per-user opt-in is
+// separate and lives in the preferences store.
+func (s SMTPConfig) Enabled() bool { return s.Host != "" && s.From != "" }
 
 // BackupConfig configures the scheduled dump, vault archive, portable export,
 // and the restore test that makes the other three mean something.
@@ -207,6 +246,67 @@ type BenchmarkConfig struct {
 	Tickers []string
 }
 
+// CPIConfig controls the opt-in CPI-U refresh from the BLS public API.
+//
+// Off by default, like every other switch that adds an outbound host — but this
+// one is the least consequential of them, and the reason is worth stating: the
+// CPI series ships SEEDED, in migration 00052, covering January 2010 onward.
+// Inflation-adjusted views work fully with this off. All the job buys is the
+// tail: one new month, published around the middle of the following month.
+//
+// So an air-gapped install gets real deflation from real published numbers and
+// simply stops gaining new months, which the UI says out loud rather than
+// pretending the series is current. That is what lets the default be off
+// without the feature being broken — the standard this app holds every optional
+// outbound call to.
+//
+// No credential: the BLS v1 endpoint serves a small number of series without
+// registration, which is all this needs (one series, two years).
+type CPIConfig struct {
+	Enabled bool
+}
+
+// MerchantLogosConfig controls the opt-in merchant logo fetcher.
+//
+// Off by default, for the same reason as BenchmarkConfig and one more besides.
+// Turning it on adds a host (Logo.dev) to the two the app otherwise talks to,
+// and it does so with a *name* rather than a ticker: the AI provider is asked
+// which domain a merchant is, and Logo.dev is then asked for that domain's
+// logo. The provider already sees merchant names during categorisation, so the
+// resolution step widens nothing — but Logo.dev learns which businesses the
+// household shops at, one domain at a time, and no default should decide that.
+//
+// The browser never talks to Logo.dev. Fetching happens in the worker, the
+// bytes are cached in the database, and the app serves them from its own
+// origin — so enabling this does not put a third party in the page.
+//
+// Enabled implies an AI key: without one there is no way to turn "BLUE BOTTLE
+// COFFEE" into a domain, and Logo.dev is keyed by domain only. Load refuses to
+// start on that combination rather than leaving a switch that quietly does
+// nothing.
+type MerchantLogosConfig struct {
+	Enabled bool
+
+	// Token is the Logo.dev publishable key. Free tier, no card; see
+	// .env.example. It is publishable rather than secret, but it is still a
+	// credential and lives in the environment, never in an image or in source.
+	Token string
+
+	// Size is the square pixel size requested, and MaxBytes the ceiling on what
+	// is stored per merchant. Both exist to keep a few hundred cached logos
+	// small enough that they ride along in pg_dump without anyone noticing —
+	// the vault's size discipline applied to a much smaller problem.
+	Size     int
+	MaxBytes int64
+}
+
+// Enabled reports whether the fetcher should run at all. Written as a method so
+// callers read `cfg.MerchantLogos.Ready(cfg.AI)` rather than re-deriving the
+// AI dependency at each site.
+func (m MerchantLogosConfig) Ready(ai AIConfig) bool {
+	return m.Enabled && m.Token != "" && ai.Enabled()
+}
+
 // PlaidConfig holds Plaid API credentials and the set of enabled products.
 type PlaidConfig struct {
 	Env      string
@@ -289,12 +389,32 @@ func Load() (Config, error) {
 			BaseURL: env("NTFY_BASE_URL", "https://ntfy.sh"),
 			Token:   os.Getenv("NTFY_TOKEN"),
 		},
+		SMTP: SMTPConfig{
+			Host:     strings.TrimSpace(os.Getenv("SMTP_HOST")),
+			Port:     envInt("SMTP_PORT", 587),
+			From:     strings.TrimSpace(os.Getenv("SMTP_FROM")),
+			Username: os.Getenv("SMTP_USERNAME"),
+			Password: os.Getenv("SMTP_PASSWORD"),
+			Security: strings.ToLower(env("SMTP_SECURITY", "starttls")),
+		},
 		Benchmarks: BenchmarkConfig{
 			Enabled: envBool("BENCHMARK_PRICES_ENABLED", false),
 			Tickers: splitList(env("BENCHMARK_TICKERS", "SPY,VTI,BND,QQQ")),
 		},
 		Retirement: RetirementConfig{
 			MonteCarloEnabled: envBool("RETIREMENT_MONTE_CARLO_ENABLED", false),
+		},
+		CPI: CPIConfig{
+			Enabled: envBool("CPI_FETCH_ENABLED", false),
+		},
+		MerchantLogos: MerchantLogosConfig{
+			Enabled: envBool("MERCHANT_LOGOS_ENABLED", false),
+			Token:   strings.TrimSpace(os.Getenv("LOGO_DEV_TOKEN")),
+			// 128px covers every avatar the UI renders (the largest is 48 CSS
+			// pixels) with room for a HiDPI screen, and keeps a PNG in the low
+			// tens of kilobytes.
+			Size:     envInt("MERCHANT_LOGOS_SIZE", 128),
+			MaxBytes: envBytes("MERCHANT_LOGOS_MAX_BYTES", 128<<10), // 128 KiB
 		},
 		Documents: DocumentsConfig{
 			Enabled:      envBool("DOCUMENTS_ENABLED", true),
@@ -349,8 +469,65 @@ func Load() (Config, error) {
 	if err := validateBackup(cfg.Backup); err != nil {
 		return Config{}, err
 	}
+	if err := validateSMTP(cfg.SMTP); err != nil {
+		return Config{}, err
+	}
+	if err := validateMerchantLogos(cfg.MerchantLogos, cfg.AI); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+// validateMerchantLogos fails startup on a logo fetcher that could never fetch
+// anything.
+//
+// Same fail-fast reasoning as the S3 vault and the mail server: the alternative
+// is an operator who set MERCHANT_LOGOS_ENABLED=true, saw no error, and is left
+// wondering for a week why every merchant still shows a monogram. Both missing
+// pieces are unrecoverable at runtime, so neither is worth starting without.
+func validateMerchantLogos(m MerchantLogosConfig, ai AIConfig) error {
+	if !m.Enabled {
+		return nil
+	}
+	if m.Token == "" {
+		return fmt.Errorf("MERCHANT_LOGOS_ENABLED=true needs LOGO_DEV_TOKEN (free tier, no card: https://logo.dev)")
+	}
+	if !ai.Enabled() {
+		return fmt.Errorf("MERCHANT_LOGOS_ENABLED=true needs AI_API_KEY: Logo.dev is keyed by domain, and the AI provider is what turns a merchant name into one")
+	}
+	if m.Size <= 0 || m.Size > 800 {
+		return fmt.Errorf("MERCHANT_LOGOS_SIZE must be between 1 and 800 (Logo.dev's ceiling), got %d", m.Size)
+	}
+	if m.MaxBytes <= 0 {
+		return fmt.Errorf("MERCHANT_LOGOS_MAX_BYTES must be positive")
+	}
+	return nil
+}
+
+// validateSMTP fails startup on a half-configured mail server.
+//
+// Same fail-fast reasoning as the S3 vault and the backup destination: the
+// alternative is a subsystem that looks configured, shows an "Email" toggle in
+// Settings, and silently drops every message.
+func validateSMTP(s SMTPConfig) error {
+	if s.Host == "" {
+		// Not configured at all. A stray SMTP_FROM without a host is inert
+		// rather than wrong, so it is not worth refusing to start over.
+		return nil
+	}
+	if s.From == "" {
+		return fmt.Errorf("SMTP_FROM is required when SMTP_HOST is set (mail servers reject a message with no sender)")
+	}
+	if s.Port <= 0 || s.Port > 65535 {
+		return fmt.Errorf("SMTP_PORT must be between 1 and 65535, got %d", s.Port)
+	}
+	switch s.Security {
+	case "starttls", "tls", "none":
+	default:
+		return fmt.Errorf("SMTP_SECURITY must be \"starttls\", \"tls\" or \"none\", got %q", s.Security)
+	}
+	return nil
 }
 
 // validateBackup fails startup on a backup configuration that would appear to

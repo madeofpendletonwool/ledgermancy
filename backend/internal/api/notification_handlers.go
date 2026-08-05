@@ -55,16 +55,14 @@ func (s *Server) handleTestNotification(w http.ResponseWriter, r *http.Request) 
 
 // handleSendDigestNow queues a one-off digest for the caller, bypassing cadence
 // and the per-period dedupe. It's async (a digest may call the model), so the
-// button confirms "queued" and the push arrives shortly after.
+// button confirms "queued" and the digest appears shortly after.
+//
+// It no longer requires a notification channel. Since doc 25 a digest always has
+// somewhere to go — the in-app history — and refusing to generate one because
+// ntfy is unconfigured was exactly the assumption that made the digest invisible
+// to anyone who had not set push up.
 func (s *Server) handleSendDigestNow(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
-
-	channel := s.userStringPref(r.Context(), identity.UserID, "notify.channel")
-	if channel == "" || channel == "none" {
-		writeError(w, http.StatusBadRequest,
-			"Set up a notification channel first — a digest has nowhere to go without one.")
-		return
-	}
 
 	if err := jobs.EnqueueDigestNow(r.Context(), s.Jobs, identity.UserID, identity.HouseholdID); err != nil {
 		s.internalError(w, "enqueue digest", err)

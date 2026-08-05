@@ -22,7 +22,10 @@ type accountResponse struct {
 	// ItemID is what the accounts page groups by. Institution *name* is not a
 	// key: two household members can each link the same bank, and grouping by
 	// name merges their accounts into every one of those institutions' cards.
-	ItemID           uuid.UUID        `json:"item_id"`
+	//
+	// NULL for a manual account, which has no Plaid item to belong to. The page
+	// groups those under their own heading rather than inventing an item id.
+	ItemID           *uuid.UUID       `json:"item_id"`
 	Name             string           `json:"name"`
 	Mask             *string          `json:"mask"`
 	Type             string           `json:"type"`
@@ -32,6 +35,13 @@ type accountResponse struct {
 	AvailableBalance *decimal.Decimal `json:"available_balance"`
 	Currency         string           `json:"currency"`
 	IsOwn            bool             `json:"is_own"`
+	// Source decides which affordances the row offers: a Plaid account syncs
+	// and reconnects, a manual one is edited and has its balance set by hand.
+	Source string `json:"source"`
+	// What the manual-account editor round-trips. Both are meaningful for Plaid
+	// accounts too; they were simply not needed by this endpoint before.
+	TaxTreatment *string `json:"tax_treatment"`
+	IsShared     bool    `json:"is_shared"`
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +69,14 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			CurrentBalance:   nullDecimal(a.CurrentBalance),
 			AvailableBalance: nullDecimal(a.AvailableBalance),
 			Currency:         a.Currency,
-			IsOwn:            a.OwnerID == identity.UserID,
+			// OwnerID and Shared are the RESOLVED values from account_access —
+			// the manual account's own owner, or the Plaid item's. Reading
+			// accounts.user_id/is_shared directly would report every Plaid
+			// account as unowned and shared.
+			IsOwn:        a.OwnerID == identity.UserID,
+			Source:       a.Source,
+			TaxTreatment: a.TaxTreatment,
+			IsShared:     a.Shared,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

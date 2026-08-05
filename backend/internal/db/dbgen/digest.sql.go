@@ -9,7 +9,30 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	stdtime "time"
 )
+
+const countDigestEntries = `-- name: CountDigestEntries :one
+SELECT
+    COUNT(*)::bigint                                     AS total,
+    COUNT(*) FILTER (WHERE read_at IS NULL)::bigint      AS unread
+FROM digest_entries
+WHERE user_id = $1
+`
+
+type CountDigestEntriesRow struct {
+	Total  int64 `json:"total"`
+	Unread int64 `json:"unread"`
+}
+
+// Total and unread counts, so the client can page and badge without walking the
+// whole table.
+func (q *Queries) CountDigestEntries(ctx context.Context, userID uuid.UUID) (CountDigestEntriesRow, error) {
+	row := q.db.QueryRow(ctx, countDigestEntries, userID)
+	var i CountDigestEntriesRow
+	err := row.Scan(&i.Total, &i.Unread)
+	return i, err
+}
 
 const digestDeliveryExists = `-- name: DigestDeliveryExists :one
 SELECT EXISTS (
@@ -22,8 +45,8 @@ type DigestDeliveryExistsParams struct {
 	PeriodKey string    `json:"period_key"`
 }
 
-// True once a digest for this (user, period) has been recorded, so the sweep and
-// the worker both skip a user already served this week/month.
+// True once a PUSH for this (user, period) has been recorded, so the worker
+// skips a user already pushed to this week/month.
 func (q *Queries) DigestDeliveryExists(ctx context.Context, arg DigestDeliveryExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, digestDeliveryExists, arg.UserID, arg.PeriodKey)
 	var exists bool
@@ -31,42 +54,238 @@ func (q *Queries) DigestDeliveryExists(ctx context.Context, arg DigestDeliveryEx
 	return exists, err
 }
 
-const listDigestEnabledUsers = `-- name: ListDigestEnabledUsers :many
+const digestPeriodSatisfied = `-- name: DigestPeriodSatisfied :one
+SELECT (
+    EXISTS (SELECT 1 FROM digest_deliveries d WHERE d.user_id = $1 AND d.period_key = $2)
+    OR
+    EXISTS (SELECT 1 FROM digest_entries    e WHERE e.user_id = $1 AND e.period_key = $2)
+)::boolean AS satisfied
+`
+
+type DigestPeriodSatisfiedParams struct {
+	UserID    uuid.UUID `json:"user_id"`
+	PeriodKey string    `json:"period_key"`
+}
+
+// True when this (user, period) has produced anything at all — a recorded push
+// OR a stored in-app entry. The sweep's cheap pre-check: a push-only user is
+// covered by the first, an in-app-only user by the second, and neither surface
+// can be silently starved because the other one happens to be off.
+func (q *Queries) DigestPeriodSatisfied(ctx context.Context, arg DigestPeriodSatisfiedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, digestPeriodSatisfied, arg.UserID, arg.PeriodKey)
+	var satisfied bool
+	err := row.Scan(&satisfied)
+	return satisfied, err
+}
+
+const getDigestEntry = `-- name: GetDigestEntry :one
+SELECT id, household_id, user_id, cadence, period_key, period_start, period_end, label, payload, narrative, read_at, created_at FROM digest_entries
+WHERE id = $1 AND user_id = $2
+`
+
+type GetDigestEntryParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// One entry, scoped to its owner so an id alone never reads another member's.
+func (q *Queries) GetDigestEntry(ctx context.Context, arg GetDigestEntryParams) (DigestEntry, error) {
+	row := q.db.QueryRow(ctx, getDigestEntry, arg.ID, arg.UserID)
+	var i DigestEntry
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.UserID,
+		&i.Cadence,
+		&i.PeriodKey,
+		&i.PeriodStart,
+		&i.PeriodEnd,
+		&i.Label,
+		&i.Payload,
+		&i.Narrative,
+		&i.ReadAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertDigestEntry = `-- name: InsertDigestEntry :execrows
+
+INSERT INTO digest_entries (
+    household_id, user_id, cadence, period_key,
+    period_start, period_end, label, payload, narrative
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8, $9
+)
+ON CONFLICT (user_id, period_key) DO NOTHING
+`
+
+type InsertDigestEntryParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Cadence     string       `json:"cadence"`
+	PeriodKey   string       `json:"period_key"`
+	PeriodStart stdtime.Time `json:"period_start"`
+	PeriodEnd   stdtime.Time `json:"period_end"`
+	Label       string       `json:"label"`
+	Payload     []byte       `json:"payload"`
+	Narrative   *string      `json:"narrative"`
+}
+
+// --------------------------------------------------------------------------
+// Stored entries: the in-app surface.
+//
+// Every read here is scoped by user_id, never by household. A digest entry is
+// one member's view of the household's money, and another member reading it
+// would defeat the visibility scoping the figures were computed under.
+// --------------------------------------------------------------------------
+// Write-once. DO NOTHING (rather than DO UPDATE) is the immutability guarantee:
+// once a period's digest is stored, nothing — a second sweep, a retry, a manual
+// "send one now" — rewrites what it said. Returns 0 rows when the period was
+// already stored, which the worker treats as "nothing to do", not an error.
+func (q *Queries) InsertDigestEntry(ctx context.Context, arg InsertDigestEntryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertDigestEntry,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Cadence,
+		arg.PeriodKey,
+		arg.PeriodStart,
+		arg.PeriodEnd,
+		arg.Label,
+		arg.Payload,
+		arg.Narrative,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listDigestCandidateUsers = `-- name: ListDigestCandidateUsers :many
 
 SELECT
     u.id           AS user_id,
     u.household_id AS household_id,
-    COALESCE(c.value #>> '{}', 'weekly')::text AS cadence
+    u.email        AS email,
+    COALESCE(c.value #>> '{}', 'weekly')::text          AS cadence,
+    COALESCE(p.value = 'true'::jsonb, FALSE)::boolean   AS push_enabled,
+    COALESCE(a.value <> 'false'::jsonb, TRUE)::boolean  AS in_app_enabled,
+    COALESCE(m.value = 'true'::jsonb, FALSE)::boolean   AS email_enabled
 FROM users u
-JOIN preferences e
-  ON e.scope = 'user' AND e.user_id = u.id
- AND e.key = 'digest.enabled' AND e.value = 'true'::jsonb
 LEFT JOIN preferences c
   ON c.scope = 'user' AND c.user_id = u.id AND c.key = 'digest.cadence'
+LEFT JOIN preferences p
+  ON p.scope = 'user' AND p.user_id = u.id AND p.key = 'digest.enabled'
+LEFT JOIN preferences a
+  ON a.scope = 'user' AND a.user_id = u.id AND a.key = 'digest.in_app'
+LEFT JOIN preferences m
+  ON m.scope = 'user' AND m.user_id = u.id AND m.key = 'digest.email'
+WHERE u.role <> 'child'
 `
 
-type ListDigestEnabledUsersRow struct {
-	UserID      uuid.UUID `json:"user_id"`
-	HouseholdID uuid.UUID `json:"household_id"`
-	Cadence     string    `json:"cadence"`
+type ListDigestCandidateUsersRow struct {
+	UserID       uuid.UUID `json:"user_id"`
+	HouseholdID  uuid.UUID `json:"household_id"`
+	Email        string    `json:"email"`
+	Cadence      string    `json:"cadence"`
+	PushEnabled  bool      `json:"push_enabled"`
+	InAppEnabled bool      `json:"in_app_enabled"`
+	EmailEnabled bool      `json:"email_enabled"`
 }
 
-// Scheduled digest: who is opted in, the dedupe guard, and the top unread
-// insights the digest carries. Opt-in is per user, so the sweep enumerates
-// users (not households) and resolves each user's household for the figures.
-// Users who have turned the digest on, with their household and cadence. The
-// cadence is read out of JSONB as text (defaulting to weekly) so the sweep can
-// gate on it without a second per-user lookup.
-func (q *Queries) ListDigestEnabledUsers(ctx context.Context) ([]ListDigestEnabledUsersRow, error) {
-	rows, err := q.db.Query(ctx, listDigestEnabledUsers)
+// Scheduled digest: who is a candidate, the dedupe guards, the top unread
+// insights the digest carries, and the stored entries that back the in-app
+// surface. Opt-in is per user, so the sweep enumerates users (not households)
+// and resolves each user's household for the figures.
+// Every adult who might be due a digest, with their household, cadence and the
+// three per-surface switches resolved in one pass.
+//
+// This deliberately does NOT filter on an opt-in the way its predecessor
+// (ListDigestEnabledUsers) did. The in-app digest defaults ON and needs no
+// notification channel, so gating the whole sweep on the push preference is
+// exactly the bug doc 25 exists to fix. The caller skips a user for whom all
+// three switches are off.
+//
+// Preference semantics, matching what the API stores as raw JSONB:
+//
+//	digest.enabled — push. Defaults FALSE: sending someone an unrequested push
+//	                 is not a safe default, and this is the pre-existing key.
+//	digest.in_app  — the in-app entry. Defaults TRUE, so "what happened with my
+//	                 money this week" exists without configuring anything.
+//	digest.email   — SMTP. Defaults FALSE, and inert unless the operator has
+//	                 configured a server at all.
+//
+// Children are excluded. Every financial surface in the app is adult-only, and
+// a child login can write its own user-scoped preferences — so without this
+// filter a child could turn a household spending recap on for themselves.
+func (q *Queries) ListDigestCandidateUsers(ctx context.Context) ([]ListDigestCandidateUsersRow, error) {
+	rows, err := q.db.Query(ctx, listDigestCandidateUsers)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDigestEnabledUsersRow{}
+	items := []ListDigestCandidateUsersRow{}
 	for rows.Next() {
-		var i ListDigestEnabledUsersRow
-		if err := rows.Scan(&i.UserID, &i.HouseholdID, &i.Cadence); err != nil {
+		var i ListDigestCandidateUsersRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.HouseholdID,
+			&i.Email,
+			&i.Cadence,
+			&i.PushEnabled,
+			&i.InAppEnabled,
+			&i.EmailEnabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDigestEntries = `-- name: ListDigestEntries :many
+SELECT id, household_id, user_id, cadence, period_key, period_start, period_end, label, payload, narrative, read_at, created_at FROM digest_entries
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListDigestEntriesParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Limit  int32     `json:"limit"`
+	Offset int32     `json:"offset"`
+}
+
+// The caller's digests, newest first. Paginated by offset rather than a cursor:
+// entries arrive one per period, so the list grows by ~52 rows a year and never
+// reaches the size where offset paging costs anything.
+func (q *Queries) ListDigestEntries(ctx context.Context, arg ListDigestEntriesParams) ([]DigestEntry, error) {
+	rows, err := q.db.Query(ctx, listDigestEntries, arg.UserID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DigestEntry{}
+	for rows.Next() {
+		var i DigestEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.HouseholdID,
+			&i.UserID,
+			&i.Cadence,
+			&i.PeriodKey,
+			&i.PeriodStart,
+			&i.PeriodEnd,
+			&i.Label,
+			&i.Payload,
+			&i.Narrative,
+			&i.ReadAt,
+			&i.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -122,6 +341,25 @@ func (q *Queries) ListUnreadInsightsForDigest(ctx context.Context, arg ListUnrea
 		return nil, err
 	}
 	return items, nil
+}
+
+const markDigestEntryRead = `-- name: MarkDigestEntryRead :exec
+UPDATE digest_entries
+SET read_at = now()
+WHERE id = $1 AND user_id = $2 AND read_at IS NULL
+`
+
+type MarkDigestEntryReadParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// Idempotent, and a no-op for an id that is not the caller's — the same shape
+// as MarkInsightRead. A second mark leaves the original read time alone, so
+// "when did I first read this" survives a re-visit.
+func (q *Queries) MarkDigestEntryRead(ctx context.Context, arg MarkDigestEntryReadParams) error {
+	_, err := q.db.Exec(ctx, markDigestEntryRead, arg.ID, arg.UserID)
+	return err
 }
 
 const recordDigestDelivery = `-- name: RecordDigestDelivery :exec
