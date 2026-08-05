@@ -390,9 +390,19 @@ asset values (26), and honest long-horizon dollars (27).
   are the single exception to this doc's "an estimate is a proposal, never a
   write" rule. Soft tie to 21: savings bonds for a child attach through
   `manual_assets.person_id`.
-- **[27-inflation-adjusted-views.md](27-inflation-adjusted-views.md)** — a CPI
-  series and a real/nominal toggle. *TODO #12.* Small and self-contained; good
-  candidate to bundle with 14 or 15.
+- **[27-inflation-adjusted-views.md](27-inflation-adjusted-views.md)** —
+  **shipped.** A seeded CPI-U series and an opt-in real/nominal toggle on the
+  net-worth trend, the spending trend and investment returns. Migration
+  `00052_cpi_series.sql` is taken. *TODO #12.*
+
+  Read that doc's shipped notes before touching this area. Two reach outside it.
+  **The CPI series has a permanent hole:** BLS never published October 2025 and
+  never will, so any figure dated in that month is reported as undeflatable
+  rather than deflated against an interpolation — anything reading the series
+  must handle an interior gap, not just a missing tail. And **doc 15's
+  `projection_assumptions.inflation_rate` is still the only inflation input**;
+  27 surfaces the measured CPI rate beside it as something to adopt, and
+  deliberately did not add a second one.
 - **[30-manual-accounts.md](30-manual-accounts.md)** — accounts without Plaid,
   per-holding manual investment tracking with full Investments-page parity
   (TWR/MWR, allocation, dividends, snapshots), and auto-posting scheduled
@@ -545,13 +555,23 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00051_asset_revaluation.sql` (doc 26) is the latest.** Applied before it:
+  **`00052_cpi_series.sql` (doc 27) is the latest.** Applied before it:
   `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, `00043`–`00046`, and
-  `00047`–`00050` (`00043_account_terms`, `00044_loan_account_outflow`,
+  `00047`–`00051` (`00043_account_terms`, `00044_loan_account_outflow`,
   `00045_one_time_transactions` are out-of-wave bugfixes; `00050_merchant_logos`
   is an out-of-wave feature).
 
-  **Reserve-ahead numbering has now been broken twice by the same mechanism**,
+  **The reservation table has now been broken a third time, and this time by
+  its own allocation rather than by an out-of-wave migration.** Doc 27 was
+  reserved `00057`, above wave 6/7's `00052`–`00056` — but doc 27 is wave 5, and
+  wave 5 ships first. Landing it at `00057` would have put the schema past all
+  five of those numbers and voided every one of them, which is precisely the
+  failure this table exists to prevent. It took `00052` instead and the wave 6/7
+  rows each moved up one. **The lesson is not "check the table"; it is that a
+  reservation ABOVE an unshipped one is not a reservation at all** — allocate in
+  ship order, or do not allocate.
+
+  **Reserve-ahead numbering had already been broken twice by another mechanism**,
   and it is worth naming: a reservation is only safe while the docs land in the
   order the table assumes. `00050_merchant_logos.sql` was not a plan doc at all,
   took the next free number as it must, and thereby consumed doc 26's
@@ -608,12 +628,12 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00049_digest_entries.sql`~~ | 25 | `digest_entries` table — **taken** |
   | ~~`00050_merchant_logos.sql`~~ | (out of wave) | `merchant_logos` — **taken**. Not a plan doc; the logo fetcher landed between wave-5 docs and needed a number above everything applied. It consumed doc 26's reservation, which is why the next two rows moved. |
   | ~~`00051_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations` (+ backfill), `savings_bond_rates` (+ seed), `manual_assets.loan_account_id` — **taken**. Renumbered from the reserved `00050`, which `00050_merchant_logos.sql` had already taken. |
-  | `00057_cpi_series.sql` | 27 | `cpi_series` table. Moved up from `00051`: doc 26 had to take that number, and wave 6/7's `00052`–`00056` were already spoken for. |
-  | `00052_advisor_surface.sql` | 31 | `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) |
-  | `00053_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans` |
-  | `00054_likelihood_layer.sql` | 33 | `plan_trackings` |
-  | `00055_scenarios.sql` | 28 | `scenarios` table |
-  | `00056_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates` |
+  | ~~`00052_cpi_series.sql`~~ | 27 | `cpi_series` table (+ seed, Jan 2010 onward) — **taken**. Renumbered DOWN from the reserved `00057`, and the reason matters more than the row: `00057` was allocated on the assumption that wave 6/7's `00052`–`00056` would land first, but **wave 5 ships first**. Under strict ordering, a wave-5 doc taking `00057` would have voided all five of those reservations at once. Taking the next free number above everything applied shifts them by exactly one instead, which is what the five rows below now say. |
+  | `00053_advisor_surface.sql` | 31 | `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) Was `00052`; +1 for `00052_cpi_series.sql`. |
+  | `00054_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans`. Was `00053`. |
+  | `00055_likelihood_layer.sql` | 33 | `plan_trackings`. Was `00054`. |
+  | `00056_scenarios.sql` | 28 | `scenarios` table. Was `00055`. |
+  | `00057_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates`. Was `00056`. Note `fx_rates` is the third table in the (`asset_prices`, `cpi_series`, `fx_rates`) family — keep the shape consistent. |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
   **these reservations are load-bearing** — take only your own number, and only

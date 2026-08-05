@@ -13,6 +13,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
 // period resolves the from/to query parameters, defaulting to the current
@@ -171,10 +172,27 @@ type trendPoint struct {
 	// the cent. Drives the fixed-vs-discretionary stacked bars (item #9).
 	FixedSpending         decimal.Decimal `json:"fixed_spending"`
 	DiscretionarySpending decimal.Decimal `json:"discretionary_spending"`
+
+	// The same three headline figures in base-period dollars, present only when
+	// `real=1` was asked for AND this month has a published CPI index. Absent
+	// means the month cannot be deflated, never that it needed no deflating.
+	//
+	// Only the headline three, not the fixed/discretionary split: that split is
+	// a decomposition of Spending, so deflating it would have to produce two
+	// numbers that still sum to RealSpending to the cent — a column of
+	// arithmetic carrying no information the reader does not already have.
+	RealIncome   *decimal.Decimal `json:"real_income,omitempty"`
+	RealSpending *decimal.Decimal `json:"real_spending,omitempty"`
+	RealLeftover *decimal.Decimal `json:"real_leftover,omitempty"`
 }
 
 // handleTrend returns income/spending/leftover per month. Defaults to the
 // trailing twelve months, which is the span this app is built around.
+//
+// `real=1` adds base-period figures beside the nominal ones and changes nothing
+// else. This is the endpoint where deflation earns its keep most plainly: a
+// five-year nominal spending trend shows a household spending more every year
+// even when it is buying less every year.
 func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
@@ -197,16 +215,36 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var (
+		series  *reporting.CPISeries
+		base    time.Time
+		deflate bool
+	)
+	if realRequested(r) {
+		series, err = s.loadCPI(r.Context())
+		if err != nil {
+			s.internalError(w, "load cpi series", err)
+			return
+		}
+		base, deflate = series.BasePeriod(now.UTC())
+	}
+
 	out := make([]trendPoint, 0, len(rows))
 	for _, m := range rows {
-		out = append(out, trendPoint{
+		point := trendPoint{
 			Month:                 m.Month.Format("2006-01"),
 			Income:                m.Income,
 			Spending:              m.Spending,
 			Leftover:              m.Income.Sub(m.Spending),
 			FixedSpending:         m.FixedSpending,
 			DiscretionarySpending: m.DiscretionarySpending,
-		})
+		}
+		if deflate {
+			point.RealIncome = realOrNil(point.Income, m.Month, base, series)
+			point.RealSpending = realOrNil(point.Spending, m.Month, base, series)
+			point.RealLeftover = realOrNil(point.Leftover, m.Month, base, series)
+		}
+		out = append(out, point)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

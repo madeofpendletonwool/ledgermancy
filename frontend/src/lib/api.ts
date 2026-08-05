@@ -570,6 +570,17 @@ export interface TrendPoint {
    */
   fixed_spending: string
   discretionary_spending: string
+  /**
+   * The same three headline figures in base-period dollars, present only when
+   * the request asked for `real` AND this month has a published CPI index.
+   *
+   * `undefined` means the month CANNOT be deflated — it predates the series, or
+   * it is one BLS never published. It never means "unchanged". Render a gap and
+   * say so; never fall back to the nominal figure under a real label.
+   */
+  real_income?: string
+  real_spending?: string
+  real_leftover?: string
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -968,6 +979,19 @@ export interface PeriodQuery {
 }
 
 /**
+ * Opt into inflation-adjusted figures on an endpoint that offers them.
+ *
+ * Omitting it, or sending `real: false` (which reaches the server as the string
+ * "false" and is read as nominal), gets the response the endpoint has always
+ * returned. Nominal is the default everywhere and stays that way: silently
+ * changing the meaning of a figure would break every comparison a user carries
+ * in their head.
+ */
+export interface RealQuery {
+  real?: boolean
+}
+
+/**
  * One proposed budget from POST /api/budgets/suggest. `computed_average` is the
  * exact SQL figure (never the model's); `suggested_amount` is a round target at
  * or above it. All money fields are decimal strings — never summed here.
@@ -1023,6 +1047,71 @@ export interface NetWorthPoint {
    * not decode — a backstop, not a live case.
    */
   breakdown?: NetWorthBreakdown
+  /**
+   * The same three figures in base-period dollars, present only when the
+   * request asked for `real` and this snapshot's month has a published CPI
+   * index. Absent means the point cannot be deflated — never that deflating it
+   * would have changed nothing. See `Inflation` for the base period every one
+   * of these is denominated in.
+   */
+  real_assets_total?: string
+  real_liabilities_total?: string
+  real_net_worth?: string
+}
+
+/**
+ * The CPI-U deflator behind every real ("inflation-adjusted") figure, from
+ * GET /api/inflation.
+ *
+ * Read this before rendering a real figure anywhere. `base_label` is not
+ * decoration — a real number without the month it is denominated in is not a
+ * number anybody can use, so the label ships beside the value, not in a
+ * footnote.
+ */
+export interface Inflation {
+  /** False when the series is empty. Hide the real toggle entirely. */
+  available: boolean
+  series: string
+  source_url: string
+  /** "2026-06" and "June 2026". Real figures are in THESE dollars. */
+  base_period?: string
+  base_label?: string
+  /** The span that can be deflated at all, as "YYYY-MM". */
+  earliest?: string
+  latest?: string
+  /** True once the series is more than two months behind; one is normal. */
+  stale: boolean
+  stale_note?: string
+  /**
+   * Months inside the covered span with no published index, as "YYYY-MM".
+   * Permanent holes, not a sync failure — BLS never collected them.
+   */
+  gaps: string[]
+  gap_note?: string
+  /** Inflation from last December to the base period, as a decimal fraction. */
+  ytd_rate?: string
+  ytd_from?: string
+  ytd_label?: string
+  context?: InflationContext
+  /**
+   * The shortest window on which a real view is worth offering. Below this,
+   * hide the toggle: deflating one month by one month's price change is noise
+   * dressed as precision.
+   */
+  min_span_months: number
+  basis: string
+}
+
+/** The household's own year set against the price level. Every field optional. */
+export interface InflationContext {
+  net_worth_change?: string
+  net_worth_real_change?: string
+  net_worth_from?: string
+  net_worth_to?: string
+  net_worth_start_value?: string
+  net_worth_end_value?: string
+  income_change?: string
+  income_note?: string
 }
 
 export interface Holding {
@@ -1304,6 +1393,31 @@ export interface InvestmentPerformance {
   mwr: string | null
   /** Non-empty exactly when `mwr` is null. */
   mwr_note: string
+  /**
+   * The inflation-adjusted view, present only when the request asked for `real`
+   * and both ends of the measured span have a published CPI index.
+   *
+   * RETURNS only — there is deliberately no real `start_value` or `net_flows`.
+   * Deflating a period's cash flows correctly needs each one converted on its
+   * own date, and converting them from the span's endpoints would be a
+   * precise-looking guess. `note` says exactly this; render it.
+   */
+  real?: RealPerformance
+}
+
+export interface RealPerformance {
+  /** Price-level change across the same span, as a fraction. */
+  inflation: string
+  /**
+   * That change compounded to an annual rate; null for spans under a year.
+   * This — not `inflation` — is what an already-annualised return (`mwr`) was
+   * deflated by.
+   */
+  annual_inflation: string | null
+  twr: string | null
+  annualised: string | null
+  mwr: string | null
+  note: string
 }
 
 export interface SeriesPoint {
@@ -1437,6 +1551,17 @@ export interface RetirementAssumptions {
   defaulted_spending: string
   spending_is_defaulted: boolean
   basis: string
+  /**
+   * What CPI-U actually did over the trailing decade, annualised, beside the
+   * rate the household assumed.
+   *
+   * Shown, NEVER applied: `inflation_rate` above is still the only inflation
+   * input the projection uses. This exists so choosing that rate is an informed
+   * act rather than accepting a 3% default nobody has checked.
+   */
+  measured_inflation?: string
+  measured_inflation_years?: number
+  measured_inflation_note?: string
 }
 
 export interface AccountPoint {
@@ -3015,7 +3140,7 @@ export const api = {
       withQuery('/api/reports/merchant-explorer', params),
     ),
 
-  trend: (params: PeriodQuery = {}) =>
+  trend: (params: PeriodQuery & RealQuery = {}) =>
     request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
 
   /**
@@ -3113,8 +3238,15 @@ export const api = {
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),
 
-  netWorthHistory: (params: PeriodQuery = {}) =>
+  netWorthHistory: (params: PeriodQuery & RealQuery = {}) =>
     request<NetWorthPoint[]>('GET', withQuery('/api/networth/history', params)),
+
+  /**
+   * The CPI-U deflator: coverage, freshness, and the household's own year set
+   * against the price level. Read before rendering any real figure — it is
+   * where the base-period label comes from.
+   */
+  inflation: () => request<Inflation>('GET', '/api/inflation'),
 
   snapshotNetWorth: () => request<NetWorth>('POST', '/api/networth/snapshot'),
 
@@ -3195,10 +3327,10 @@ export const api = {
   // --- Investments --------------------------------------------------------
   investments: () => request<InvestmentOverview>('GET', '/api/investments/'),
 
-  investmentPerformance: (period: InvestmentPeriod) =>
+  investmentPerformance: (period: InvestmentPeriod, real = false) =>
     request<InvestmentPerformance>(
       'GET',
-      withQuery('/api/investments/performance', { period }),
+      withQuery('/api/investments/performance', { period, real }),
     ),
 
   investmentBenchmarks: (period: InvestmentPeriod) =>

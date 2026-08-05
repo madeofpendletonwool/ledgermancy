@@ -499,9 +499,25 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Delete("/{splitID}/settle", s.handleUnsettleSplit)
 		})
 
+		// The CPI-U deflator behind every real ("inflation-adjusted") figure:
+		// what it covers, how fresh it is, and the household's own year set
+		// against it. Read-only, unlike the savings-bond rate table beside it —
+		// that one is editable because a household might legitimately correct a
+		// row, and nothing about a published price index invites that.
+		//
+		// Every client that renders a real figure reads this first, because the
+		// base period is not decoration: a real number without the month it is
+		// denominated in is not a number anybody can use.
+		r.Route("/inflation", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleInflation)
+		})
+
 		r.Route("/networth", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleNetWorth)
+			// `real=1` adds inflation-adjusted figures beside the nominal ones.
+			// Nominal stays the default; see inflation_handlers.go.
 			r.Get("/history", s.handleNetWorthHistory)
 			r.Post("/snapshot", s.handleSnapshotNow)
 			r.Get("/projection", s.handleProjection)

@@ -26,6 +26,16 @@ to zero squashed the trend into the bottom of the plot where no movement was
 visible. Zero is pulled in whenever the data comes near it, so a crossing into
 positive net worth is never hidden. A dashed zero line appears when relevant.
 
+**Nominal / Real.** The chart can be switched into inflation-adjusted dollars.
+Nominal is the default and stays that way; the choice is remembered per user.
+When real is on, every point is restated in the base month's dollars and the
+chart says which month that is — "in June 2026 dollars", never "today's", since
+the current month's index is not published yet.
+
+A reading whose month has no published price index is **dropped and counted
+underneath the chart**, not carried over at its nominal value. See
+[Real dollars and nominal dollars](../concepts.md#real-dollars-and-nominal-dollars).
+
 ## What it is made of
 
 A breakdown of:

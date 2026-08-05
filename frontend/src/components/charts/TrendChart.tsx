@@ -19,15 +19,32 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * Both series are dollars, so they share ONE y-axis — a second scale would let
  * the two lines cross wherever the axes happened to be set and imply
  * relationships that are not in the data.
+ *
+ * `real` swaps every figure for its base-period equivalent. It is done by
+ * PROJECTING the points once, up front, rather than by teaching each of the
+ * dozen read sites below to pick a field: one place to get it wrong instead of
+ * twelve, and a month with no published index drops out of the projection
+ * entirely rather than appearing on a real axis with a nominal value.
  */
-export function TrendChart({ data }: { data: TrendPoint[] }) {
+export function TrendChart({
+  data: input,
+  real = false,
+}: {
+  data: TrendPoint[]
+  real?: boolean
+}) {
   const [active, setActive] = useState<number | null>(null)
   const reduce = useReducedMotion() ?? false
+
+  const data = real ? input.flatMap(toRealPoint) : input
+  const dropped = input.length - data.length
 
   if (data.length === 0) {
     return (
       <p className="py-12 text-center text-sm" style={{ color: CHART.textMuted }}>
-        Not enough history yet to chart a trend.
+        {real && input.length > 0
+          ? 'None of these months have a published price index, so there is nothing to show in real terms.'
+          : 'Not enough history yet to chart a trend.'}
       </p>
     )
   }
@@ -213,8 +230,45 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
           </div>
         )}
       </div>
+
+      {dropped > 0 && (
+        <p className="text-xs" style={{ color: CHART.textMuted }}>
+          {dropped} month{dropped === 1 ? '' : 's'} left out: no published price
+          index, so there is no honest way to restate{' '}
+          {dropped === 1 ? 'it' : 'them'} in today’s dollars.
+        </p>
+      )}
     </div>
   )
+}
+
+/**
+ * One month restated in base-period dollars, or nothing at all.
+ *
+ * Returns an empty array — so `flatMap` drops the month — when the server could
+ * not deflate it. That is the only correct answer: the alternative is putting a
+ * nominal figure on a real axis, which is invisible to the reader and wrong by
+ * however much prices moved.
+ *
+ * The fixed/discretionary split is deliberately left nominal and is not plotted
+ * by this chart; nothing here reads those fields.
+ */
+function toRealPoint(d: TrendPoint): TrendPoint[] {
+  if (
+    d.real_income === undefined ||
+    d.real_spending === undefined ||
+    d.real_leftover === undefined
+  ) {
+    return []
+  }
+  return [
+    {
+      ...d,
+      income: d.real_income,
+      spending: d.real_spending,
+      leftover: d.real_leftover,
+    },
+  ]
 }
 
 function LegendKey({ color, label }: { color: string; label: string }) {

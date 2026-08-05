@@ -114,6 +114,17 @@ const merchantLogoInterval = 24 * time.Hour
 // month to roll over.
 const bondRevalueInterval = 24 * time.Hour
 
+// cpiRefreshInterval is how often the CPI-U tail is pulled from BLS.
+//
+// Daily, not monthly, even though the series only gains a point once a month.
+// BLS's release date moves around the middle of the following month and is not
+// something to hard-code; a daily tick picks the new month up within a day of
+// publication for the cost of one small request to a government API, where a
+// monthly tick would land on an arbitrary day and could sit up to thirty days
+// behind. Idempotent either way — the upsert makes a re-read of an unchanged
+// month a no-op.
+const cpiRefreshInterval = 24 * time.Hour
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -141,7 +152,9 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // checks Enabled() and the per-user opt-in before ever addressing a message.
 // merchantLogos is the opt-in logo fetcher's configuration; its Ready() already
 // folds in the AI dependency, so nothing here re-derives it.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
+// cpi is the opt-in CPI-U refresh; with it off the worker is not registered and
+// the seeded series simply stops gaining months, which the UI says out loud.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, cpi config.CPIConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
@@ -218,6 +231,16 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	// they add a host that is neither Plaid nor the AI provider. Not registered
 	// at all when off, for the same reason as the benchmark worker — an
 	// enqueued job must not be able to make that request by accident.
+	// The CPI refresh adds an outbound host (BLS), so like the benchmark and
+	// logo fetchers it is not registered at all when off. Unlike them, the
+	// feature it serves works without it: the series ships seeded, and this only
+	// ever pulls the tail.
+	if cpi.Enabled {
+		if err := river.AddWorkerSafely(workers, &RefreshCPIWorker{Queries: queries}); err != nil {
+			return nil, fmt.Errorf("register cpi refresh worker: %w", err)
+		}
+	}
+
 	if logosEnabled {
 		if err := river.AddWorkerSafely(workers, &FetchMerchantLogosWorker{
 			Queries: queries,
@@ -373,6 +396,21 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			river.PeriodicInterval(merchantLogoInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return FetchMerchantLogosAllArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
+	// RunOnStart, unlike the benchmark fetch: this is ONE request to a
+	// government API that answers in milliseconds, so a restart loop cannot turn
+	// it into anything worth calling a burst — and an operator who has just
+	// switched the feature on should see the current month without waiting a
+	// day for the first tick.
+	if cpi.Enabled {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(cpiRefreshInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return RefreshCPIArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: true},
 		))

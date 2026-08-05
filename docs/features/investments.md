@@ -52,6 +52,24 @@ stripped out) and **net paid in**.
 - **No annualised figure** below a year of history. A 5% gain over three weeks is
   not an 87% annual return in any sense a reader would understand.
 
+### Real returns
+
+The **Real** toggle restates both return figures after inflation, using the
+bundled CPI-U series over the same span. The arithmetic is
+`(1 + nominal) / (1 + inflation) - 1` — not subtraction, which is wrong by the
+product of the two and always in the flattering direction.
+
+Only the **returns** are deflated. Market gain and net paid in stay nominal, and
+the page says so: deflating a period's cash flows correctly needs each one
+converted on its own date, and converting them from the period's endpoints would
+be a precise-looking guess. The money-weighted figure is deflated by the
+*annualised* price change, since it is itself already annualised.
+
+The toggle is not offered on YTD — a partial year deflated by a partial year's
+price change says considerably less than it looks like it says. Where a span
+reaches outside the published index the page shows the nominal figures and
+explains why.
+
 ## Against the market
 
 Your portfolio's growth, rebased to 100 at the start of the period, optionally

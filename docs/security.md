@@ -285,7 +285,7 @@ open sign-up form on the public internet. See [Households](features/households.m
   Make it non-world-readable (`chmod 600 .env`) — it holds the database password
   and both encryption keys.
 - The app **sends no email unless you configure SMTP**, and phones home to
-  nothing but Plaid and (optionally) your AI provider. Three opt-in exceptions:
+  nothing but Plaid and (optionally) your AI provider. Four opt-in exceptions:
     - Setting `SMTP_HOST` enables the emailed
       [digest](features/digest.md). Off by default; the digest is the only thing
       the app ever mails, and only to members who tick the box themselves in
@@ -297,5 +297,11 @@ open sign-up form on the public internet. See [Households](features/households.m
       default, sends only a ticker symbol, and carries no account data.
     - Setting `MERCHANT_LOGOS_ENABLED=true` lets a daily job fetch merchant
       logos from Logo.dev. Off by default; see below.
+    - Setting `CPI_FETCH_ENABLED=true` lets a daily job pull the newest month of
+      the CPI-U series from the BLS public API. Off by default, and the least
+      consequential of the four: the series ships bundled from January 2010, so
+      inflation-adjusted views work fully without it. The request names one
+      public series and a year range — identical for every install on earth,
+      with nothing about your household in it.
 - **Back up the database** — it's the only record of net-worth history. See
   [Deployment](deployment.md#back-up-the-database).

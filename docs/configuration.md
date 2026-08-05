@@ -135,6 +135,34 @@ simply shows your own line with nothing to compare it against, and says so.
 A failed fetch degrades to a missing series: the job logs a warning, stores what
 it did get, and never fails or retry-storms over a chart decoration.
 
+## CPI refresh (inflation-adjusted views)
+
+**Off by default**, and the least consequential of the outbound switches,
+because the feature it serves works fully without it.
+
+The CPI-U series ships **seeded** — January 2010 onward, committed in migration
+`00052_cpi_series.sql`. Every real (inflation-adjusted) figure in the app is
+computed from that bundled series. An install with no route to the internet gets
+honest deflation from real published numbers; it simply stops gaining new months,
+and the UI says so rather than quietly showing older dollars as though they were
+today's.
+
+Turning this on adds one request a day to `api.bls.gov` for the tail of the
+series. No key and no account: the v1 endpoint serves a small number of series
+unregistered, which is all one series over two years needs. The request names a
+public series ID and a year range and is identical for every install; nothing
+about your household is in it.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `CPI_FETCH_ENABLED` | `false` | Set `true` to allow the daily CPI-U refresh |
+
+The job **upserts** on period rather than inserting, because BLS revises. It
+also skips months published as `-`: those were never collected — October 2025 is
+the live example, lost to that year's lapse in appropriations — and a figure
+dated in such a month is reported as undeflatable rather than being deflated
+against an interpolated guess.
+
 ## Merchant logos
 
 **Off by default.** This is the second of the two switches that add a host which

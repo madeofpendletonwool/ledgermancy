@@ -20,6 +20,7 @@ import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
 import { SpendSparkline } from '../components/charts/SpendSparkline'
+import { InflationStrip } from '../components/InflationStrip'
 import { InsightFeed } from '../components/InsightFeed'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
@@ -155,6 +156,10 @@ export function Dashboard() {
       <InsightFeed variant="card" limit={3} />
 
       <BillsDueStrip bills={billsThisWeek.data?.items ?? []} total={billsThisWeek.data?.total} />
+
+      {/* What prices did this year, set against what this household's money
+          did. Renders nothing when there is no series or no comparison. */}
+      <InflationStrip />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile

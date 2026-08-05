@@ -62,6 +62,34 @@ by-day, trend, averages, merchants, recurring, net-worth + history + projection,
 holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
 preferences/capabilities).
 
+### Inflation-adjusted figures
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/inflation` | ✓ | The CPI-U deflator: `base_period`/`base_label` (real figures are in THOSE dollars), the covered span, `stale`, `gaps`, YTD inflation, and the household's own year set against it. `available: false` when the series is empty |
+
+Three endpoints take **`real=1`**: `/api/networth/history`,
+`/api/reports/trend` and `/api/investments/performance`.
+
+The parameter **adds fields and changes nothing else**. Without it each returns
+exactly what it always has, byte for byte — every added field is omitted rather
+than nulled.
+
+An added field is **absent when the figure cannot be deflated**: its month has
+no published index, either because it predates the series or because BLS never
+published it (October 2025). Absent never means "same as nominal" — render a gap
+and say why. The base month and the gap list both come from `/api/inflation`.
+
+`/api/investments/performance?real=1` deflates **returns only** — `real.twr`,
+`real.annualised`, `real.mwr`. The dollar figures beside them stay nominal,
+because deflating a period's cash flows correctly needs each one converted on its
+own date. `real.mwr` is deflated by `real.annual_inflation` rather than
+`real.inflation`, since MWR arrives already annualised.
+
+`/api/projections/assumptions` gained `measured_inflation` — what CPI-U actually
+did over the trailing decade, compounded. It is informational: the projection
+still uses the household's own `inflation_rate`.
+
 ### Merchant logos
 
 | Method | Path | Auth | Notes |

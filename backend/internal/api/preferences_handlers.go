@@ -34,6 +34,17 @@ var reservedUserPreferenceDefaults = map[string]json.RawMessage{
 	"digest.in_app":     json.RawMessage(`true`),
 	"digest.email":      json.RawMessage(`false`),
 	"digest.cadence":    json.RawMessage(`"weekly"`),
+	// The nominal/real switch on long-horizon charts (doc 27). FALSE, and that
+	// default is load-bearing rather than incidental: every figure this app has
+	// ever shown is nominal, and quietly changing what those figures mean on
+	// upgrade would break every comparison a user carries in their head. Real is
+	// something you turn on.
+	//
+	// User-scoped rather than household-scoped because it is a reading
+	// preference, not a fact about the household's money — two people sharing a
+	// ledger can disagree about it harmlessly, which is not true of, say,
+	// anomaly sensitivity.
+	"views.real": json.RawMessage(`false`),
 }
 
 // The household-scoped equivalent. A setting belongs here rather than above

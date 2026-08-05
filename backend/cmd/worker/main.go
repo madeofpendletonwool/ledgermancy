@@ -108,7 +108,12 @@ func run() error {
 			"size", cfg.MerchantLogos.Size)
 	}
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, mail, cfg.FrontendOrigin, cfg.Benchmarks, cfg.MerchantLogos, backupDeps)
+	if cfg.CPI.Enabled {
+		slog.Info("cpi refresh enabled; the CPI-U tail is pulled daily from the " +
+			"BLS public API. The series ships seeded, so this only adds new months.")
+	}
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, mail, cfg.FrontendOrigin, cfg.Benchmarks, cfg.MerchantLogos, cfg.CPI, backupDeps)
 	if err != nil {
 		return err
 	}

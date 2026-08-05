@@ -18,6 +18,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
 type netWorthResponse struct {
@@ -59,9 +60,22 @@ type snapshotResponse struct {
 	// `{}`, which decodes to a zero-valued struct, so this is a backstop rather
 	// than a live case.
 	Breakdown *networth.Breakdown `json:"breakdown,omitempty"`
+
+	// The same three figures in base-period dollars, present ONLY when the
+	// caller asked for `real=1` and this point's month has a published CPI
+	// index. Absent means "not deflatable", and the client draws a gap; it never
+	// means "same as nominal". The base period itself comes from /api/inflation,
+	// which is where every label for these figures is built.
+	RealAssetsTotal      *decimal.Decimal `json:"real_assets_total,omitempty"`
+	RealLiabilitiesTotal *decimal.Decimal `json:"real_liabilities_total,omitempty"`
+	RealNetWorth         *decimal.Decimal `json:"real_net_worth,omitempty"`
 }
 
 // handleNetWorthHistory returns the recorded trend, defaulting to two years.
+//
+// `real=1` adds base-period figures alongside the nominal ones. It ADDS: the
+// nominal fields are untouched and a request without the parameter is
+// byte-identical to what this endpoint returned before doc 27.
 func (s *Server) handleNetWorthHistory(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
@@ -79,9 +93,25 @@ func (s *Server) handleNetWorthHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Loaded once for the whole series rather than per point, and only when
+	// asked for — a nominal request must not pay for a query it does not use.
+	var (
+		series  *reporting.CPISeries
+		base    time.Time
+		deflate bool
+	)
+	if realRequested(r) {
+		series, err = s.loadCPI(r.Context())
+		if err != nil {
+			s.internalError(w, "load cpi series", err)
+			return
+		}
+		base, deflate = series.BasePeriod(time.Now().UTC())
+	}
+
 	out := make([]snapshotResponse, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, snapshotResponse{
+		item := snapshotResponse{
 			AsOf:             s.AsOf.Format(time.DateOnly),
 			AssetsTotal:      s.AssetsTotal,
 			LiabilitiesTotal: s.LiabilitiesTotal,
@@ -92,9 +122,32 @@ func (s *Server) handleNetWorthHistory(w http.ResponseWriter, r *http.Request) {
 			// call. A malformed row is reported but does not fail the whole
 			// trend — one bad point among many is still a useful chart.
 			Breakdown: decodeBreakdown(s.Breakdown),
-		})
+		}
+		if deflate {
+			item.RealAssetsTotal = realOrNil(s.AssetsTotal, s.AsOf, base, series)
+			item.RealLiabilitiesTotal = realOrNil(s.LiabilitiesTotal, s.AsOf, base, series)
+			item.RealNetWorth = realOrNil(s.NetWorth, s.AsOf, base, series)
+		}
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// realOrNil deflates one figure, or reports that it cannot be.
+//
+// nil is the whole contract: an unconvertible month yields an ABSENT field, not
+// the nominal figure wearing a real label. Every caller here would rather draw
+// a gap and explain it.
+func realOrNil(
+	nominal decimal.Decimal,
+	asOf, base time.Time,
+	series *reporting.CPISeries,
+) *decimal.Decimal {
+	v, err := reporting.Real(nominal, asOf, base, series)
+	if err != nil {
+		return nil
+	}
+	return &v
 }
 
 // decodeBreakdown parses the JSONB breakdown column a snapshot carries. Returns

@@ -163,9 +163,42 @@ type performanceResponse struct {
 	// MWRNote is non-empty exactly when MWR is null, and says why. A refusal is
 	// a legitimate answer for an IRR and must be shown as one.
 	MWRNote string `json:"mwr_note"`
+
+	// Real is the inflation-adjusted view, present only when `real=1` was asked
+	// for and both endpoints of the measured span have a published CPI index.
+	Real *realPerformance `json:"real,omitempty"`
 }
 
+// realPerformance carries RETURNS only, never dollar figures, and the omission
+// is the honest part.
+//
+// StartValue and NetFlows cannot be deflated from the span's endpoints: the
+// flows landed on their own dates throughout it, and converting them as though
+// they all arrived on day one would produce a figure that looks precise and is
+// not. A return is exactly what the ratio of two index values converts
+// correctly, so a return is all that appears here.
+type realPerformance struct {
+	// Inflation is the price-level change across the same span, as a fraction.
+	// AnnualInflation is that change compounded to an annual rate, null for
+	// spans under a year. Both are shown, because the reader needs to see what
+	// the returns beside them were deflated BY.
+	Inflation       decimal.Decimal  `json:"inflation"`
+	AnnualInflation *decimal.Decimal `json:"annual_inflation"`
+	// TWR, Annualised and MWR mirror the nominal fields above, deflated by
+	// (1 + nominal) / (1 + inflation) − 1 — not by subtraction, which is wrong
+	// by the product of the two and wrong in the flattering direction.
+	TWR        *decimal.Decimal `json:"twr"`
+	Annualised *decimal.Decimal `json:"annualised"`
+	MWR        *decimal.Decimal `json:"mwr"`
+	Note       string           `json:"note"`
+}
+
+const realPerformanceNote = "Return figures only. The dollar figures stay nominal: deflating a period's cash flows correctly needs each one converted on its own date, and converting them from the span's endpoints would be a precise-looking guess."
+
 // handleInvestmentPerformance returns TWR / IRR / gain for one period.
+//
+// `real=1` adds the deflated return figures and changes nothing else. A request
+// without it returns exactly what this endpoint returned before doc 27.
 func (s *Server) handleInvestmentPerformance(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
@@ -203,6 +236,27 @@ func (s *Server) handleInvestmentPerformance(w http.ResponseWriter, r *http.Requ
 		resp.Annualised = perf.Annualised
 		resp.MWR = perf.MWR
 		resp.MWRNote = perf.MWRNote
+
+		if realRequested(r) {
+			series, err := s.loadCPI(r.Context())
+			if err != nil {
+				s.internalError(w, "load cpi series", err)
+				return
+			}
+			// Absent rather than approximated when the span reaches outside the
+			// series, or when there was no nominal TWR to deflate in the first
+			// place. The page then shows the nominal figures alone.
+			if real, ok := series.Deflate(perf.Performance); ok {
+				resp.Real = &realPerformance{
+					Inflation:       real.Inflation,
+					AnnualInflation: real.AnnualInflation,
+					TWR:             real.TWR,
+					Annualised:      real.Annualised,
+					MWR:             real.MWR,
+					Note:            realPerformanceNote,
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

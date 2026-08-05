@@ -41,7 +41,11 @@ you do all the math. Ledgermancy is neither.
 - **The numbers are honest.** Money is never a float: every figure is computed
   in exact decimal inside Postgres, never in JavaScript. Credit-card payments
   are transfers, not spending, so a dollar spent on credit isn't counted twice.
-  Monthly averages divide by elapsed months, not months touched. See
+  Monthly averages divide by elapsed months, not months touched. And any
+  long-horizon chart can be switched into **real (inflation-adjusted) dollars**
+  against the bundled CPI-U series, because "net worth up 8%" in a 6% inflation
+  year is 2% real growth and an app that cannot say so is not telling you the
+  truth. See
   [Concepts](https://madeofpendletonwool.github.io/ledgermancy/concepts/) for
   every rule that keeps the totals correct.
 - **It's a household, not a single login.** Invite your spouse; share the
@@ -67,8 +71,10 @@ you do all the math. Ledgermancy is neither.
   benchmark chart (`BENCHMARK_PRICES_ENABLED`), receipt OCR through your AI
   provider (`DOCUMENTS_OCR_ENABLED`), merchant logos fetched server-side and
   cached locally (`MERCHANT_LOGOS_ENABLED` — your browser never talks to the
-  logo host), and an S3 bucket you nominate for document storage. All five are
-  off by default.
+  logo host), a daily CPI-U refresh from the BLS public API
+  (`CPI_FETCH_ENABLED` — the price series ships bundled, so this only ever adds
+  the newest month), and an S3 bucket you nominate for document storage. All six
+  are off by default.
 
 ## Features
 

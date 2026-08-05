@@ -217,6 +217,14 @@ type CategoryRule struct {
 	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
+// CPI-U, U.S. city average, all items, NSA (BLS CUUR0000SA0). 1982-84 = 100.
+type CpiSeries struct {
+	ID         uuid.UUID       `json:"id"`
+	Period     stdtime.Time    `json:"period"`
+	IndexValue decimal.Decimal `json:"index_value"`
+	CreatedAt  stdtime.Time    `json:"created_at"`
+}
+
 type DigestDelivery struct {
 	UserID    uuid.UUID    `json:"user_id"`
 	PeriodKey string       `json:"period_key"`

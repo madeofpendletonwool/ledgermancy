@@ -55,7 +55,29 @@ type assumptionsResponse struct {
 
 	// Basis is rendered verbatim beside the numbers.
 	Basis string `json:"basis"`
+
+	// MeasuredInflation is what CPI-U actually did over the trailing ten years,
+	// annualised, beside the rate the household assumed (doc 27).
+	//
+	// It is SHOWN, never applied. Doc 27's rule is that no second inflation
+	// input appears — InflationRate above stays the one the projection uses —
+	// and this exists so choosing it is an informed act rather than accepting a
+	// 3% default nobody has ever checked. Null when the series does not reach
+	// back far enough.
+	MeasuredInflation      *decimal.Decimal `json:"measured_inflation,omitempty"`
+	MeasuredInflationYears int              `json:"measured_inflation_years,omitempty"`
+	MeasuredInflationNote  string           `json:"measured_inflation_note,omitempty"`
 }
+
+// measuredInflationYears is the window the observed rate is taken over.
+//
+// Ten years, long enough to span a full cycle — the last decade contains both a
+// near-zero-inflation stretch and the 2021-23 surge, and a shorter window would
+// hand the user whichever of those it happened to land in as though it were the
+// norm.
+const measuredInflationYears = 10
+
+const measuredInflationNote = "What CPI-U actually did over this window, annualised. Shown for comparison only — the projection uses the rate you set above, not this one."
 
 // realBasis is the sentence that keeps the whole page honest. Everything is in
 // today's dollars because every rate is real; a nominal return against today's
@@ -106,8 +128,31 @@ func (s *Server) defaultTargetSpending(
 	return summary.Spending.Round(2), nil
 }
 
+// measuredInflation is the trailing compound annual CPI-U change.
+//
+// Best-effort by design: it decorates the assumptions form and nothing depends
+// on it, so a failed read or a series that does not reach back far enough
+// returns nil and the page renders exactly as it did before. It must never turn
+// a working projection into an error.
+func (s *Server) measuredInflation(ctx context.Context, now time.Time) *decimal.Decimal {
+	series, err := s.loadCPI(ctx)
+	if err != nil || series.Empty() {
+		return nil
+	}
+	base, ok := series.BasePeriod(now)
+	if !ok {
+		return nil
+	}
+	rate, ok := series.AnnualisedChange(base.AddDate(-measuredInflationYears, 0, 0), base)
+	if !ok {
+		return nil
+	}
+	rounded := rate.Round(4)
+	return &rounded
+}
+
 func (s *Server) buildAssumptionsResponse(
-	row dbgen.ProjectionAssumption, defaulted decimal.Decimal,
+	ctx context.Context, row dbgen.ProjectionAssumption, defaulted decimal.Decimal,
 ) assumptionsResponse {
 	resp := assumptionsResponse{
 		RealReturnRate:      row.RealReturnRate,
@@ -126,6 +171,11 @@ func (s *Server) buildAssumptionsResponse(
 	} else {
 		resp.SpendingIsDefaulted = true
 	}
+	if measured := s.measuredInflation(ctx, time.Now()); measured != nil {
+		resp.MeasuredInflation = measured
+		resp.MeasuredInflationYears = measuredInflationYears
+		resp.MeasuredInflationNote = measuredInflationNote
+	}
 	return resp
 }
 
@@ -143,7 +193,7 @@ func (s *Server) handleGetAssumptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.buildAssumptionsResponse(row, defaulted))
+	writeJSON(w, http.StatusOK, s.buildAssumptionsResponse(r.Context(), row, defaulted))
 }
 
 // assumptionsRequest carries every field on every save, so the form is the whole
@@ -244,7 +294,7 @@ func (s *Server) handleSaveAssumptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.buildAssumptionsResponse(row, defaulted))
+	writeJSON(w, http.StatusOK, s.buildAssumptionsResponse(r.Context(), row, defaulted))
 }
 
 // --------------------------------------------------------------------------
@@ -542,7 +592,7 @@ func (s *Server) handleRetirementProjection(w http.ResponseWriter, r *http.Reque
 	plans := toAccountPlans(rows, now)
 
 	resp := retirementResponse{
-		Assumptions:       s.buildAssumptionsResponse(stored, defaulted),
+		Assumptions:       s.buildAssumptionsResponse(ctx, stored, defaulted),
 		Projection:        networth.ProjectRetirement(plans, assumptions, now),
 		MonteCarloEnabled: s.Config.Retirement.MonteCarloEnabled,
 		Estimate:          true,

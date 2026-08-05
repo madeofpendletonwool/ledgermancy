@@ -207,7 +207,12 @@ var tableCoverage = map[string]Coverage{
 	// edited a row keeps that edit through the dump, which is the restore path
 	// that matters.
 	"savings_bond_rates": DumpOnly,
-	"pfc_category_map":   DumpOnly, // seeded by migration 00002; a fresh schema has it
+	// CPI-U, seeded by migration 00052 — a fresh schema already has the whole
+	// series. Same reasoning as savings_bond_rates: public reference data,
+	// identical in every install, so it rides along in the dump but stays out of
+	// the portable export, which exists to carry what is the household's.
+	"cpi_series":       DumpOnly,
+	"pfc_category_map": DumpOnly, // seeded by migration 00002; a fresh schema has it
 
 	// --- Derived: a job rebuilds these ------------------------------------
 	"alert_events":      Derived, // alerts.Evaluate, on the next sweep

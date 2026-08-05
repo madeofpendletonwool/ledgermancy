@@ -9,12 +9,24 @@ import { AssetDetailPanel } from '../components/AssetDetailPanel'
 import { NetWorthComposition } from '../components/charts/NetWorthComposition'
 import { lineDraw } from '../components/charts/motion'
 import { AnimatedNumber } from '../components/motion'
+import { RealBasis, RealToggle } from '../components/RealToggle'
+import { useInflation, useRealPreference } from '../lib/inflation'
 import { CHART, SERIES, SINGLE_SERIES, STATUS } from '../components/charts/tokens'
 
 export function NetWorth() {
   const qc = useQueryClient()
   const current = useQuery({ queryKey: ['networth'], queryFn: api.netWorth })
-  const history = useQuery({ queryKey: ['networth-history'], queryFn: () => api.netWorthHistory() })
+
+  // The real/nominal choice is part of the query key, so switching refetches
+  // rather than reusing a nominal payload that carries no real fields. The
+  // default window is two years, comfortably past the minimum span a real view
+  // is offered on.
+  const inflation = useInflation()
+  const { enabled: real, setEnabled: setReal } = useRealPreference()
+  const history = useQuery({
+    queryKey: ['networth-history', real],
+    queryFn: () => api.netWorthHistory({ real }),
+  })
   const holdings = useQuery({ queryKey: ['holdings'], queryFn: api.holdings })
   const liabilities = useQuery({ queryKey: ['liabilities'], queryFn: api.liabilities })
   const manual = useQuery({ queryKey: ['manual-assets'], queryFn: api.manualAssets })
@@ -58,12 +70,20 @@ export function NetWorth() {
       </div>
 
       <section className="glass p-6">
-        <h2 className="mb-1 text-lg font-medium">Over time</h2>
+        <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
+          <h2 className="text-lg font-medium">Over time</h2>
+          <RealToggle
+            enabled={real}
+            onChange={setReal}
+            inflation={inflation.data}
+          />
+        </div>
         <p className="mb-5 text-sm text-mist-300">
           Recorded daily. Balances have no history of their own, so the line starts
           the day Ledgermancy did.
         </p>
-        <NetWorthChart data={history.data ?? []} />
+        <NetWorthChart data={history.data ?? []} real={real} />
+        <RealBasis enabled={real} inflation={inflation.data} />
       </section>
 
       <section className="glass p-6">
@@ -312,15 +332,34 @@ function ByPerson() {
   )
 }
 
-function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
+/**
+ * `real` plots each snapshot in base-period dollars instead of the dollars of
+ * its own day.
+ *
+ * Points the server could not deflate are DROPPED, not carried over nominal:
+ * `real_net_worth` is absent exactly when that month has no published index,
+ * and plotting the nominal figure in its place would put a differently-scaled
+ * number on a real axis. The count of dropped points is reported under the
+ * chart rather than left as an unexplained gap.
+ */
+function NetWorthChart({ data: raw, real }: { data: NetWorthPoint[]; real: boolean }) {
   const reduce = useReducedMotion() ?? false
+
+  const data = real
+    ? raw.filter((d) => d.real_net_worth !== undefined)
+    : raw
+  const dropped = raw.length - data.length
+  const valueOf = (d: NetWorthPoint) =>
+    Number(real ? d.real_net_worth : d.net_worth)
 
   if (data.length < 2) {
     return (
       <p className="py-10 text-center text-sm" style={{ color: CHART.textMuted }}>
-        {data.length === 1
-          ? 'One reading so far — the trend appears once there are at least two.'
-          : 'No readings yet.'}
+        {real && raw.length >= 2
+          ? 'None of these readings fall in a month with a published price index, so there is nothing to show in real terms.'
+          : data.length === 1
+            ? 'One reading so far — the trend appears once there are at least two.'
+            : 'No readings yet.'}
       </p>
     )
   }
@@ -331,7 +370,7 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
   const plotW = W - PAD.left - PAD.right
   const plotH = H - PAD.top - PAD.bottom
 
-  const values = data.map((d) => Number(d.net_worth))
+  const values = data.map(valueOf)
   const lo = Math.min(...values)
   const hi = Math.max(...values)
 
@@ -354,7 +393,7 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
   const y = (v: number) => PAD.top + plotH - ((v - min) / span) * plotH
 
   const path = data
-    .map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(Number(d.net_worth))}`)
+    .map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(valueOf(d))}`)
     .join(' ')
 
   return (
@@ -380,9 +419,9 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
           {...lineDraw(path, reduce)}
         />
         {data.map((d, i) => (
-          <circle key={d.as_of} cx={x(i)} cy={y(Number(d.net_worth))} r={4}
+          <circle key={d.as_of} cx={x(i)} cy={y(valueOf(d))} r={4}
             fill={SERIES.leftover} stroke={CHART.surface} strokeWidth={2}>
-            <title>{`${d.as_of}: ${formatMoney(d.net_worth)}`}</title>
+            <title>{`${d.as_of}: ${formatMoney(String(valueOf(d)))}`}</title>
           </circle>
         ))}
         <text x={PAD.left} y={H - 6} fontSize="11" fill={CHART.textMuted}>{data[0].as_of}</text>
@@ -390,6 +429,13 @@ function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
           {data[data.length - 1].as_of}
         </text>
       </svg>
+      {dropped > 0 && (
+        <p className="mt-2 text-xs" style={{ color: CHART.textMuted }}>
+          {dropped} reading{dropped === 1 ? '' : 's'} left out: no published
+          price index for {dropped === 1 ? 'its' : 'their'} month, so there is no
+          honest way to state {dropped === 1 ? 'it' : 'them'} in today’s dollars.
+        </p>
+      )}
     </div>
   )
 }

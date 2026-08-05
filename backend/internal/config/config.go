@@ -46,6 +46,7 @@ type Config struct {
 	Documents     DocumentsConfig
 	Backup        BackupConfig
 	MerchantLogos MerchantLogosConfig
+	CPI           CPIConfig
 }
 
 // SMTPConfig points at a mail server for the optional emailed digest.
@@ -245,6 +246,26 @@ type BenchmarkConfig struct {
 	Tickers []string
 }
 
+// CPIConfig controls the opt-in CPI-U refresh from the BLS public API.
+//
+// Off by default, like every other switch that adds an outbound host — but this
+// one is the least consequential of them, and the reason is worth stating: the
+// CPI series ships SEEDED, in migration 00052, covering January 2010 onward.
+// Inflation-adjusted views work fully with this off. All the job buys is the
+// tail: one new month, published around the middle of the following month.
+//
+// So an air-gapped install gets real deflation from real published numbers and
+// simply stops gaining new months, which the UI says out loud rather than
+// pretending the series is current. That is what lets the default be off
+// without the feature being broken — the standard this app holds every optional
+// outbound call to.
+//
+// No credential: the BLS v1 endpoint serves a small number of series without
+// registration, which is all this needs (one series, two years).
+type CPIConfig struct {
+	Enabled bool
+}
+
 // MerchantLogosConfig controls the opt-in merchant logo fetcher.
 //
 // Off by default, for the same reason as BenchmarkConfig and one more besides.
@@ -382,6 +403,9 @@ func Load() (Config, error) {
 		},
 		Retirement: RetirementConfig{
 			MonteCarloEnabled: envBool("RETIREMENT_MONTE_CARLO_ENABLED", false),
+		},
+		CPI: CPIConfig{
+			Enabled: envBool("CPI_FETCH_ENABLED", false),
 		},
 		MerchantLogos: MerchantLogosConfig{
 			Enabled: envBool("MERCHANT_LOGOS_ENABLED", false),
