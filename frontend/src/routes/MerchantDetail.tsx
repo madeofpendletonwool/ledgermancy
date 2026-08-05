@@ -14,7 +14,7 @@ import { CategoryBars } from '../components/charts/CategoryBars'
 import { MonthlyBars } from '../components/charts/MonthlyBars'
 import { Tile } from '../components/Tile'
 import { SkeletonDetail } from '../components/Skeleton'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { categoryDetailPath } from '../lib/categories'
 import { merchantDetailPath } from '../lib/merchants'
 
@@ -106,7 +106,12 @@ export function MerchantDetail() {
         <div className="flex min-w-0 items-start gap-4">
           {/* The resolved name drives the avatar, so a grouped merchant reads
               as one identity regardless of which descriptor fed a given charge. */}
-          <Monogram name={d.merchant} size="xl" className="mt-6 sm:mt-7" />
+          <MerchantAvatar
+            name={d.merchant}
+            merchantKey={d.merchant_key}
+            size="xl"
+            className="mt-6 sm:mt-7"
+          />
           <div className="min-w-0">
             <Link
               className="text-xs text-mist-400 underline underline-offset-2 hover:text-mist-100"

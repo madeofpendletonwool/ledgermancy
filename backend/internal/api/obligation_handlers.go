@@ -50,6 +50,16 @@ type obligationResponse struct {
 	// it can say so rather than leave the user wondering if a fix will stick.
 	UserEdited bool `json:"user_edited"`
 	IsPersonal bool `json:"is_personal"`
+	// Auto-posting (doc 30). AutoPost off — the default — means this row is a
+	// forecast and nothing else, which is what every obligation was before.
+	// PostingAccountID is the account a posting CREDITS, as distinct from
+	// AccountID above, which is the one the bill is paid FROM.
+	AutoPost         bool       `json:"auto_post"`
+	PostingAccountID *uuid.UUID `json:"posting_account_id"`
+	// LastPostedDate is the worker's cursor: occurrences on or before it have
+	// been materialised. Surfaced so the UI can say what has actually happened
+	// rather than only what is scheduled to.
+	LastPostedDate *string `json:"last_posted_date"`
 }
 
 func (s *Server) handleListObligations(w http.ResponseWriter, r *http.Request) {
@@ -81,22 +91,28 @@ func (s *Server) handleListObligations(w http.ResponseWriter, r *http.Request) {
 func buildObligationResponse(o dbgen.RecurringObligation, nextDue time.Time, now time.Time) obligationResponse {
 	cadence := obligations.Cadence{Count: o.IntervalCount, Unit: o.IntervalUnit}
 	resp := obligationResponse{
-		ID:              o.ID,
-		Label:           o.Label,
-		Amount:          o.Amount.StringFixed(2),
-		CategoryID:      o.CategoryID,
-		AccountID:       o.AccountID,
-		IntervalCount:   o.IntervalCount,
-		IntervalUnit:    o.IntervalUnit,
-		Cadence:         cadence.Label(),
-		AnchorDate:      o.AnchorDate.Format(time.DateOnly),
-		MonthlyEstimate: obligations.MonthlyEstimate(o.Amount, cadence).StringFixed(2),
-		Source:          o.Source,
-		MerchantKey:     o.MerchantKey,
-		IsShared:        o.IsShared,
-		IsActive:        o.IsActive,
-		UserEdited:      o.UserEdited,
-		IsPersonal:      o.UserID != nil && !o.IsShared,
+		ID:               o.ID,
+		Label:            o.Label,
+		Amount:           o.Amount.StringFixed(2),
+		CategoryID:       o.CategoryID,
+		AccountID:        o.AccountID,
+		IntervalCount:    o.IntervalCount,
+		IntervalUnit:     o.IntervalUnit,
+		Cadence:          cadence.Label(),
+		AnchorDate:       o.AnchorDate.Format(time.DateOnly),
+		MonthlyEstimate:  obligations.MonthlyEstimate(o.Amount, cadence).StringFixed(2),
+		Source:           o.Source,
+		MerchantKey:      o.MerchantKey,
+		IsShared:         o.IsShared,
+		IsActive:         o.IsActive,
+		UserEdited:       o.UserEdited,
+		IsPersonal:       o.UserID != nil && !o.IsShared,
+		AutoPost:         o.AutoPost,
+		PostingAccountID: o.PostingAccountID,
+	}
+	if o.LastPostedDate != nil {
+		d := o.LastPostedDate.Format(time.DateOnly)
+		resp.LastPostedDate = &d
 	}
 	if o.EndDate != nil {
 		e := o.EndDate.Format(time.DateOnly)
@@ -509,4 +525,85 @@ func horizonDays(r *http.Request) int {
 		days = obligations.MaxHorizonDays
 	}
 	return days
+}
+
+// --------------------------------------------------------------------------
+// Auto-posting (doc 30)
+// --------------------------------------------------------------------------
+
+type autoPostRequest struct {
+	AutoPost bool `json:"auto_post"`
+	// The account a posting credits. Null means "the obligation's own
+	// account_id", which is right for an ordinary bill paid from and recorded
+	// against the same account. A retirement contribution is the case where the
+	// two differ: money leaves checking and arrives at the plan.
+	PostingAccountID *uuid.UUID `json:"posting_account_id"`
+}
+
+// handleSetObligationAutoPost turns materialisation on or off for one
+// obligation.
+//
+// This is deliberately its own endpoint rather than a field on
+// handleUpdateObligation, because it is a categorically different decision.
+// Editing an obligation changes a forecast; enabling this starts writing
+// transactions the user will see in their ledger and, for a manual investment
+// account, moves a balance. A toggle with that consequence should not ride
+// along inside a form save.
+func (s *Server) handleSetObligationAutoPost(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+
+	obligationID, err := uuid.Parse(chi.URLParam(r, "obligationID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid obligation id")
+		return
+	}
+
+	var req autoPostRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// The posting account must be one the caller can actually see. Without this
+	// check the obligation would accept any uuid and the worker — which runs
+	// unscoped, by design — would happily post into it.
+	if req.PostingAccountID != nil {
+		if _, err := s.Queries.GetVisibleAccount(r.Context(), dbgen.GetVisibleAccountParams{
+			ID: *req.PostingAccountID, HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+		}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "posting account not found")
+			return
+		} else if err != nil {
+			s.internalError(w, "check posting account", err)
+			return
+		}
+	}
+
+	o, err := s.Queries.SetObligationAutoPost(r.Context(), dbgen.SetObligationAutoPostParams{
+		ID:               obligationID,
+		HouseholdID:      identity.HouseholdID,
+		UserID:           &identity.UserID,
+		AutoPost:         req.AutoPost,
+		PostingAccountID: req.PostingAccountID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Either the obligation is not the caller's, or auto_post was requested
+		// with nowhere to post to. The query folds both into no rows; the
+		// second is the one worth naming, because it is a fixable mistake.
+		writeError(w, http.StatusBadRequest,
+			"obligation not found, or auto-posting was enabled without a posting account")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "set obligation auto-post", err)
+		return
+	}
+
+	next, err := obligations.NextDue(r.Context(), s.Queries, identity.HouseholdID, identity.UserID,
+		[]dbgen.RecurringObligation{o}, time.Now().UTC())
+	if err != nil {
+		s.internalError(w, "derive next due date", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buildObligationResponse(o, next[o.ID], time.Now().UTC()))
 }

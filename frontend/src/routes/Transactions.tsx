@@ -11,7 +11,7 @@ import {
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
@@ -452,6 +452,7 @@ function TransactionRow({
   const qc = useQueryClient()
   const amount = formatTransactionAmount(t.amount, t.currency)
   const isManual = t.source === 'manual'
+  const isScheduled = t.source === 'scheduled'
   const [editingCat, setEditingCat] = useState(false)
   const online = useOnline()
 
@@ -479,7 +480,10 @@ function TransactionRow({
         {formatDate(t.date)}
       </div>
 
-      <Monogram name={t.merchant_name ?? t.name} />
+      <MerchantAvatar
+        name={t.merchant_name ?? t.name}
+        merchantKey={t.merchant_key_resolved}
+      />
 
       {/*
         The merchant column. Two lines:
@@ -508,6 +512,18 @@ function TransactionRow({
             {isManual && (
               <span className="shrink-0 rounded-full border border-arcane-500/30 bg-arcane-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-arcane-400">
                 Manual
+              </span>
+            )}
+            {/* Posted by the scheduled worker from an obligation. Read-only,
+                like a Plaid row and for the same reason: an edit here would be
+                undone the next time the obligation posted, so the honest place
+                to change it is the obligation. */}
+            {isScheduled && (
+              <span
+                className="shrink-0 rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rune-300"
+                title="Posted automatically from a scheduled obligation. Edit the obligation to change it."
+              >
+                Scheduled
               </span>
             )}
             {t.is_one_time && (

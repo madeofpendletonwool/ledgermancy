@@ -1,9 +1,14 @@
 -- name: UpsertSecurity :one
+--
+-- The WHERE on the conflict target is load-bearing: 00053 made this index
+-- PARTIAL (manual rows have no Plaid id and are not in it), and Postgres only
+-- accepts a partial index as an ON CONFLICT arbiter when the statement repeats
+-- its predicate.
 INSERT INTO securities (
     plaid_security_id, name, ticker, type, cusip, isin,
     close_price, close_price_as_of, currency, is_cash_equivalent
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (plaid_security_id) DO UPDATE SET
+ON CONFLICT (plaid_security_id) WHERE plaid_security_id IS NOT NULL DO UPDATE SET
     name              = EXCLUDED.name,
     ticker            = EXCLUDED.ticker,
     type              = EXCLUDED.type,
@@ -44,14 +49,13 @@ SELECT
     s.type    AS security_type,
     s.is_cash_equivalent,
     a.name    AS account_name,
-    i.institution_name
+    v.institution_name
 FROM holdings h
 JOIN securities s  ON s.id = h.security_id
 JOIN accounts a    ON a.id = h.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
 ORDER BY h.institution_value DESC NULLS LAST;
 
@@ -110,7 +114,7 @@ SELECT
     a.type,
     a.subtype,
     a.current_balance,
-    i.institution_name,
+    v.institution_name,
     l.apr,
     l.interest_rate_percentage,
     l.minimum_payment,
@@ -124,14 +128,13 @@ SELECT
     -- quoting a figure the calendar disagrees with.
     o.amount          AS obligation_amount
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
 ORDER BY a.current_balance DESC NULLS LAST;
@@ -147,7 +150,7 @@ SELECT
     a.type,
     a.subtype,
     a.current_balance,
-    i.institution_name,
+    v.institution_name,
     l.apr,
     l.interest_rate_percentage,
     l.minimum_payment,
@@ -161,14 +164,13 @@ SELECT
     -- quoting a figure the calendar disagrees with.
     o.amount          AS obligation_amount
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
   AND a.id = $3;
@@ -192,11 +194,10 @@ SELECT a.id,
        sqlc.narg('payment_obligation_id')::uuid,
        sqlc.arg('updated_by')
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = sqlc.arg('account_id')
-  AND u.household_id = sqlc.arg('household_id')
-  AND (i.user_id = sqlc.arg('updated_by') OR i.is_shared)
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('updated_by') OR v.is_shared)
   AND a.is_active
   AND a.type IN ('credit', 'loan')
 ON CONFLICT (account_id) DO UPDATE SET
@@ -214,11 +215,10 @@ RETURNING *;
 SELECT t.*
 FROM account_terms t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE t.account_id = sqlc.arg('account_id')
-  AND u.household_id = sqlc.arg('household_id')
-  AND (i.user_id = sqlc.arg('user_id') OR i.is_shared);
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared);
 
 -- name: ListNextPaymentDueDates :many
 -- The next payment date for every debt whose bill the household has scheduled.
@@ -238,10 +238,9 @@ WITH linked AS (
     FROM account_terms t
     JOIN recurring_obligations o ON o.id = t.payment_obligation_id
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND o.is_active
 ),
@@ -287,13 +286,12 @@ ORDER BY b.account_id, d.due_date;
 -- Same strict visibility rule as UpsertAccountTerms: clearing someone's terms is
 -- a write.
 DELETE FROM account_terms t
-USING accounts a, plaid_items i, users u
+USING accounts a, account_access v
 WHERE t.account_id = a.id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
+  AND v.account_id = a.id
   AND a.id = sqlc.arg('account_id')
-  AND u.household_id = sqlc.arg('household_id')
-  AND (i.user_id = sqlc.arg('user_id') OR i.is_shared);
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared);
 
 -- name: ListManualAssets :many
 SELECT * FROM manual_assets WHERE household_id = $1 ORDER BY is_liability, value DESC;
@@ -329,9 +327,8 @@ DELETE FROM manual_assets WHERE id = $1 AND household_id = $2;
 WITH visible_accounts AS (
     SELECT a.type, a.current_balance
     FROM accounts a
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
-    WHERE u.household_id = $1
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
       AND a.is_active
       AND a.current_balance IS NOT NULL
 ),

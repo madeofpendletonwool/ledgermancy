@@ -38,6 +38,12 @@ transactions filtered to that category and month.
 A 12-month trailing trend chart of income against spending, so you can see the
 shape of your year.
 
+The chart can be switched into **real (inflation-adjusted) dollars**, which is
+where deflation earns its keep most plainly: a multi-year nominal spending trend
+shows a household spending more every year even when it is buying less every
+year. Nominal is the default. See
+[Real dollars and nominal dollars](../concepts.md#real-dollars-and-nominal-dollars).
+
 ## Typical month
 
 A table of every category with its **average per month** and **total per year**

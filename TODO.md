@@ -40,6 +40,92 @@ not bugs:
 
 ### Recently shipped
 
+- **Predictive anomaly detection** — two producers on the existing insight spine,
+  `merchant_outlier` and `duplicate_charge` (`insights/anomaly.go`), over
+  `db/queries/anomaly.sql`. Migration `00046_anomaly_overrides.sql`.
+
+  The load-bearing decision is that **there is no `merchant_baselines` table.**
+  A baseline used to judge a charge has to be leave-one-out — computed excluding
+  the candidate — or `PERCENTILE_DISC(0.95)` over a merchant whose largest-ever
+  charge *is* the candidate returns the candidate and the detector fires on
+  everything. Mean and count are subtractable (so leave-one-out is recoverable
+  from them) but **median and p95 are order statistics and are not**, so the
+  candidate can never be backed out afterwards. A stored table would be a cache
+  that is wrong, not merely redundant. Baselines are computed on demand in a
+  `CROSS JOIN LATERAL`.
+
+  `large_transaction` and `merchant_outlier` are two halves of one behaviour:
+  the per-merchant outlier claims any merchant with 5+ prior charges (its message
+  strictly dominates), and `large_transaction` covers everything else — which is
+  where most genuine fraud lands. Dedupe keys are transaction ids rather than
+  merchant-keyed, so merging a merchant later does not resurrect a dismissed
+  insight.
+
+- **Pre-tax income & deduction tracking (paystub importer)** — closes the 30–45%
+  of gross income the bank feed never sees. Migration `00048_paystubs.sql`
+  (`employers`, `paystubs`, `paystub_lines`). PDF import is local text-layer
+  extraction with **no network call and no model**; a scanned stub is refused
+  rather than sent off-host. A stub is inert until confirmed, and confirmation
+  requires it to balance — `gross − Σdeductions = net` within a cent. See
+  [Paystubs](docs/features/paystubs.md).
+
+  Two correctness rules worth naming. An employer 401(k) match is recorded
+  separately and is *not* part of that equation (it is money added on top of
+  gross, not taken out). And **two jobs in one year share one 401(k) limit** —
+  naive year-to-date addition reports roughly twice the room you have, so
+  contributions are pooled against a single cap and going over is shown loudly.
+  The EIN is stored sealed (`ein_encrypted BYTEA`); the tax summary is the only
+  endpoint that returns a full one, and the disclaimer travels in the payload.
+
+- **In-app digest** — the weekly / monthly recap is persisted to `digest_entries`
+  and kept on its own page, with push and SMTP as optional surfaces beside it
+  rather than the only ones. Migration `00049_digest_entries.sql`. A push that
+  fails no longer loses the digest: the entry is written **before** delivery is
+  attempted, so the content survives an unreachable ntfy server or a mail server
+  that is down. Digests are write-once — nothing recomputes a stored one, so a
+  digest that disagrees with today's Spending page is correct rather than stale.
+
+- **Real-asset revaluation & depreciation** — `manual_assets` gain an append-only
+  value history (`asset_valuations`), class-specific detail (`asset_details`),
+  and directly-held bonds. Migration `00051_asset_revaluation.sql`, with
+  `savings_bond_rates` seeded from treasurydirect.gov.
+
+  The defining rule: **an estimate is a proposal, never a write.** A vehicle is
+  depreciated along a published curve (≈20% the first year, 15% of the remainder
+  after, with a mileage tilt and a salvage floor) and the page shows the figure,
+  the curve, and every input — then waits for you to accept it. Bonds are the one
+  exception, because a savings bond's value is arithmetic over published rates,
+  not a judgement: a Series I (fixed + inflation, semiannual compounding,
+  three-month forfeiture before five years) or EE (guaranteed to double at 20
+  years — a cliff, not a curve) accrues to its exact redemption value, and the
+  rate table names where each row came from.
+
+- **Inflation-adjusted views** — every long-horizon chart can be switched into
+  real dollars against a bundled CPI-U series. Migration `00052_cpi_series.sql`,
+  seeded January 2010 onward. Nominal stays the default and the choice is
+  remembered per user; the base month is always stated ("in June 2026 dollars",
+  never "today's"). The series has a permanent hole — **October 2025 was never
+  published** — and a point dated there is dropped and counted rather than
+  interpolated. Returns are deflated by division, not subtraction (subtraction
+  is wrong by the product of the two and always flatters). See
+  [Concepts](docs/concepts.md#real-dollars-and-nominal-dollars).
+
+- **Manual accounts, manual investments, scheduled transactions** — accounts
+  Plaid cannot link (TreasuryDirect, a Voya plan, a private holding) now exist as
+  first-class accounts with full Investments-page parity. Migration
+  `00053_manual_accounts.sql`. The defining decision was to **relax the existing
+  tables** (a `source` column, NULLable Plaid ids) rather than build parallel
+  manual ones, so every report query "just works" — the engines filter on
+  visibility, not Plaid identity. See [Accounts → Accounts without
+  Plaid](docs/features/accounts.md#accounts-without-plaid).
+
+  Manual balances are the first user-owned balance-write path, and every change
+  is paired with an `account_balance_history` row in the same transaction. A
+  scheduled obligation can auto-post as a transaction **and** adjust the manual
+  balance — the Voya monthly contribution case — atomically. The manual
+  endpoints refuse a linked account's id outright; there is deliberately no merge
+  path back to Plaid.
+
 - **Installable PWA with read-only offline** — a manifest, a maskable icon, and
   a service worker that precaches the app shell and keeps the most recent
   read-only API responses, so the app installs to a home screen and still opens
@@ -284,7 +370,7 @@ gaps versus competitor products, the third because it makes every existing
 feature better as a side effect.
 
 > **Every item below now has an execution-ready plan doc** in
-> [`docs/plans/`](docs/plans/) (docs 13–29), each scoped so one agent can pick it
+> [`docs/plans/`](docs/plans/) (docs 13–33), each scoped so one agent can pick it
 > up cold: data model, reserved migration number, backend/frontend work,
 > verification, and out-of-scope. See [`docs/plans/README.md`](docs/plans/README.md)
 > for the wave order, the dependency graph, and the migration reservation table.
@@ -356,7 +442,7 @@ Budgets page, the Dashboard. A new `recurring_obligations` table and a new
 `balance_projection` query are the main new data structures; everything else
 is wiring into existing producers and views.
 
-#### 2. Predictive anomaly detection
+#### 2. Predictive anomaly detection — **shipped**
 
 **Problem.** Insights currently flags "spikes" as a category-level spend
 increase. That misses the most actionable anomalies: a subscription that crept
@@ -514,7 +600,11 @@ retire" via tool calls over these projections).
 
 Delivered as described below; see "Recently shipped" for what landed. One note
 on the description: entity logos stayed out deliberately — they are an outbound
-dependency the app otherwise does not have.
+dependency the app otherwise does not have. They have since landed as an
+explicitly opt-in one (MAD-38, `MERCHANT_LOGOS_ENABLED`, off by default), which
+is the shape that reservation was asking for rather than a reversal of it: the
+default imagery is still the locally-generated monogram, and the browser still
+contacts nothing.
 
 **Problem.** Every finance app suffers from merchant-string fragmentation:
 `AMAZON.COM AMZN.COM/BILL WA`, `AMZ*ORDER 1234`, `AMAZON.COM*ABCD1` are all
@@ -591,7 +681,7 @@ household-scoped, with the same ownership pattern as manual assets), Insights
 
 ### Income & payroll
 
-#### 8. Pre-tax income & deduction tracking (paystub importer)
+#### 8. Pre-tax income & deduction tracking (paystub importer) — **shipped**
 
 **Problem.** Today the app only sees money that has already survived the
 gross-to-net transformation — every transaction synced via Plaid is post-tax,
@@ -707,7 +797,7 @@ Rocket Money, and it is under-used today. The household model and per-institutio
 sharing already exist; the features below extend them into the parts of
 household money management that currently have no in-app answer.
 
-#### 9. Shared goals, bill split, kid sub-accounts
+#### 9. Shared goals, bill split, kid sub-accounts — **shipped**
 
 **Scope.**
 
@@ -735,7 +825,7 @@ ownership pattern enforced across all path-parameter handlers.
 
 ### Platform & delivery
 
-#### 10. Weekly digest, in-app first
+#### 10. Weekly digest, in-app first — **shipped**
 
 **Problem.** The app already generates a periodic digest
 (`backend/internal/jobs/digest.go`) and can push highlights via ntfy, but the
@@ -798,7 +888,7 @@ Two cross-cutting correctness issues that affect every aggregate the app
 produces. Both are lower priority than the core feature work above but
 genuinely matter to the "honest money" brand promise.
 
-#### 12. Inflation-adjusted views
+#### 12. Inflation-adjusted views — **shipped**
 
 **Problem.** Any long-term trend currently compares nominal dollars across
 years, which is exactly the kind of arithmetic dishonesty the app rejects
@@ -856,7 +946,7 @@ non-US adoption becomes a real concern.
 
 ### Real assets
 
-#### 14. Real-asset revaluation and depreciation
+#### 14. Real-asset revaluation and depreciation — **shipped**
 
 **Problem.** Manual assets today are a static number typed in once. For most
 households the home is the largest line on the net-worth sheet and its value

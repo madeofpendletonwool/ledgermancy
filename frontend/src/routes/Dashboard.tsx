@@ -20,9 +20,10 @@ import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
 import { DayBars } from '../components/charts/DayBars'
 import { SpendSparkline } from '../components/charts/SpendSparkline'
+import { InflationStrip } from '../components/InflationStrip'
 import { InsightFeed } from '../components/InsightFeed'
 import { MerchantLink } from '../components/MerchantLink'
-import { Monogram } from '../components/Monogram'
+import { MerchantAvatar } from '../components/MerchantAvatar'
 import { AnimatedNumber } from '../components/motion'
 import { SkeletonChart, SkeletonRows, Reveal } from '../components/Skeleton'
 import { EmptyState } from '../components/EmptyState'
@@ -155,6 +156,10 @@ export function Dashboard() {
       <InsightFeed variant="card" limit={3} />
 
       <BillsDueStrip bills={billsThisWeek.data?.items ?? []} total={billsThisWeek.data?.total} />
+
+      {/* What prices did this year, set against what this household's money
+          did. Renders nothing when there is no series or no comparison. */}
+      <InflationStrip />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
@@ -492,7 +497,7 @@ function MerchantRow({ merchant: m, index }: { merchant: MerchantSpend; index: n
   // rather than becoming a link that goes nowhere.
   const body = (
     <>
-      <Monogram name={m.merchant} />
+      <MerchantAvatar name={m.merchant} merchantKey={m.merchant_key} />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{m.merchant}</p>
         <p className="text-xs text-mist-500">
@@ -526,7 +531,11 @@ function RecentRow({ transaction: t }: { transaction: Transaction }) {
   return (
     <li className="flex items-center gap-4 py-3">
       <div className="w-16 shrink-0 text-xs text-mist-500">{formatDate(t.date)}</div>
-      <Monogram name={t.merchant_name ?? t.name} size="sm" />
+      <MerchantAvatar
+        name={t.merchant_name ?? t.name}
+        merchantKey={t.merchant_key_resolved}
+        size="sm"
+      />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">
           <MerchantLink

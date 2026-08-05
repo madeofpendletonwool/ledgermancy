@@ -287,6 +287,18 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Post("/test", s.handleSendDigestNow)
 		})
 
+		// The in-app digest history. Separate from /digest above, which is the
+		// "send one now" action rather than a resource: these are the stored
+		// entries, and each one is scoped to the requesting USER inside the
+		// queries — the adult-only group here is necessary but not sufficient,
+		// exactly as it is for /payroll.
+		r.Route("/digests", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListDigests)
+			r.Get("/{digestID}", s.handleGetDigest)
+			r.Post("/{digestID}/read", s.handleMarkDigestRead)
+		})
+
 		// Operator surface. This is the instance's recovery posture, not a
 		// household's data: it names paths on the host, reports on the backup
 		// subsystem, and can trigger a full database dump. Owner-only,
@@ -319,6 +331,33 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// account mutation: a child must not set the figures the household's
 			// payoff plans are computed from.
 			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
+
+			// Manual accounts (doc 30). Every one of these refuses a
+			// source='plaid' id — a linked account's identity and balance
+			// belong to the institution, and an edit here would survive only
+			// until the next sync silently reverted it.
+			r.Post("/", s.handleCreateManualAccount)
+			r.Put("/{accountID}", s.handleUpdateManualAccount)
+			r.Delete("/{accountID}", s.handleDeleteManualAccount)
+			r.Put("/{accountID}/balance", s.handleSetManualBalance)
+			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+			r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
+			r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
+		})
+
+		// Securities are reference data, not household data: a row states what
+		// a ticker is, which is true for everyone and says nothing about who
+		// holds it. Ownership lives in holdings, and those are scoped.
+		r.Route("/securities", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListSecurities)
+			r.Post("/", s.handleCreateManualSecurity)
+		})
+
+		r.Route("/investment-transactions", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Post("/", s.handleCreateManualInvestmentTx)
+			r.Delete("/{txID}", s.handleDeleteManualInvestmentTx)
 		})
 
 		r.Route("/transactions", func(r chi.Router) {
@@ -344,6 +383,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// Ahead of the /{merchantID} routes below, so chi does not read
 			// "detail" as a merchant id.
 			r.Get("/detail", s.handleMerchantDetail)
+			// The cached avatar image (MAD-38). Keyed by resolved merchant key
+			// in the query string rather than in the path: a merchant key is
+			// free-form text, and a path segment would have to survive escaping
+			// on both sides for no benefit. 404 whenever there is nothing to
+			// show, which the frontend treats as "use the monogram".
+			r.Get("/logo", s.handleMerchantLogo)
 			r.Post("/merge", s.handleMergeMerchants)
 			r.Post("/split", s.handleSplitMerchant)
 			r.Post("/scan", s.handleScanMerchants)
@@ -372,6 +417,45 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/{documentID}/matches", s.handleDocumentMatches)
 			r.Post("/{documentID}/links", s.handleLinkDocument)
 			r.Delete("/{documentID}/links/{linkID}", s.handleUnlinkDocument)
+		})
+
+		// Payroll: the pre-tax side of the ledger. Adult-only like every other
+		// financial surface, but note that adult-only is NOT the whole access
+		// story here — a paystub is private to the person whose pay it is, and
+		// the group guard does nothing about one adult reading another's
+		// salary. That is enforced per row, in SQL. See queries/payroll.sql.
+		//
+		// /parse and /parse-document read a PDF's text layer locally and return
+		// a proposal. Neither sends anything to an AI provider; see
+		// payroll_import_handlers.go before changing that.
+		r.Route("/payroll", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+
+			r.Get("/taxonomy", s.handlePayrollTaxonomy)
+			r.Get("/years", s.handleListPaystubYears)
+			r.Get("/summary", s.handlePayrollSummary)
+			r.Get("/savings-rate", s.handlePayrollSavingsRate)
+			r.Get("/tax-summary", s.handlePayrollTaxSummary)
+
+			r.Post("/parse", s.handleParsePaystubUpload)
+			r.Post("/parse-document", s.handleParsePaystubDocument)
+
+			r.Get("/employers", s.handleListEmployers)
+			r.Post("/employers", s.handleCreateEmployer)
+			r.Put("/employers/{employerID}", s.handleUpdateEmployer)
+			r.Delete("/employers/{employerID}", s.handleDeleteEmployer)
+
+			r.Get("/paystubs", s.handleListPaystubs)
+			r.Post("/paystubs", s.handleCreatePaystub)
+			r.Get("/paystubs/{paystubID}", s.handleGetPaystub)
+			r.Put("/paystubs/{paystubID}", s.handleUpdatePaystub)
+			r.Delete("/paystubs/{paystubID}", s.handleDeletePaystub)
+			r.Post("/paystubs/{paystubID}/confirm", s.handleConfirmPaystub)
+			r.Patch("/paystubs/{paystubID}/sharing", s.handleSetPaystubSharing)
+			// The match only ever proposes; the PUT is where a human's choice
+			// is recorded.
+			r.Get("/paystubs/{paystubID}/deposit-matches", s.handleMatchPaystubDeposit)
+			r.Put("/paystubs/{paystubID}/deposit", s.handleLinkPaystubDeposit)
 		})
 
 		r.Route("/categories", func(r chi.Router) {
@@ -407,6 +491,7 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/projection", s.handleObligationProjection)
 			r.Put("/{obligationID}", s.handleUpdateObligation)
 			r.Delete("/{obligationID}", s.handleDeleteObligation)
+			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
 		})
 
 		// Goals are the one mixed group. Reads are visibility-scoped in SQL
@@ -442,9 +527,25 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Delete("/{splitID}/settle", s.handleUnsettleSplit)
 		})
 
+		// The CPI-U deflator behind every real ("inflation-adjusted") figure:
+		// what it covers, how fresh it is, and the household's own year set
+		// against it. Read-only, unlike the savings-bond rate table beside it —
+		// that one is editable because a household might legitimately correct a
+		// row, and nothing about a published price index invites that.
+		//
+		// Every client that renders a real figure reads this first, because the
+		// base period is not decoration: a real number without the month it is
+		// denominated in is not a number anybody can use.
+		r.Route("/inflation", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleInflation)
+		})
+
 		r.Route("/networth", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleNetWorth)
+			// `real=1` adds inflation-adjusted figures beside the nominal ones.
+			// Nominal stays the default; see inflation_handlers.go.
 			r.Get("/history", s.handleNetWorthHistory)
 			r.Post("/snapshot", s.handleSnapshotNow)
 			r.Get("/projection", s.handleProjection)
@@ -470,6 +571,9 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/holdings", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListHoldings)
+			// Manual positions only; a Plaid holding deleted here would come
+			// straight back on the next sync.
+			r.Delete("/{holdingID}", s.handleDeleteManualHolding)
 		})
 
 		// The Investments surface. Every read is scoped the same way as the
@@ -498,6 +602,27 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/", s.handleListManualAssets)
 			r.Post("/", s.handleCreateManualAsset)
 			r.Delete("/{assetID}", s.handleDeleteManualAsset)
+
+			// Revaluation, depreciation and bonds (doc 26). Note which of these
+			// write: only POST /valuations does. The suggestion endpoint
+			// computes a proposal and returns it — net worth never moves on an
+			// estimate the user has not accepted.
+			r.Get("/{assetID}/detail", s.handleGetAssetDetail)
+			r.Put("/{assetID}/detail", s.handleUpsertAssetDetail)
+			r.Get("/{assetID}/valuations", s.handleListValuations)
+			r.Post("/{assetID}/valuations", s.handleCreateValuation)
+			r.Get("/{assetID}/suggestion", s.handleAssetSuggestion)
+			r.Get("/{assetID}/bond", s.handleBondValue)
+			r.Put("/{assetID}/loan", s.handleLinkAssetLoan)
+		})
+
+		// The published savings-bond rate table. Readable and editable on
+		// purpose: a bundled table of numbers is only defensible if the user
+		// can check it against treasurydirect.gov and correct a row.
+		r.Route("/savings-bond-rates", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleListBondRates)
+			r.Put("/", s.handleUpsertBondRate)
 		})
 
 		r.Route("/export", func(r chi.Router) {

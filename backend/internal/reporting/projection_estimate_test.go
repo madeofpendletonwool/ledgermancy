@@ -9,7 +9,7 @@ import (
 
 func TestNetExtraSpend(t *testing.T) {
 	cases := []struct {
-		name                     string
+		name                    string
 		medianSpend, knownMonth string
 		want                    string
 	}{

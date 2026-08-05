@@ -62,6 +62,71 @@ by-day, trend, averages, merchants, recurring, net-worth + history + projection,
 holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
 preferences/capabilities).
 
+### Inflation-adjusted figures
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/inflation` | ✓ | The CPI-U deflator: `base_period`/`base_label` (real figures are in THOSE dollars), the covered span, `stale`, `gaps`, YTD inflation, and the household's own year set against it. `available: false` when the series is empty |
+
+Three endpoints take **`real=1`**: `/api/networth/history`,
+`/api/reports/trend` and `/api/investments/performance`.
+
+The parameter **adds fields and changes nothing else**. Without it each returns
+exactly what it always has, byte for byte — every added field is omitted rather
+than nulled.
+
+An added field is **absent when the figure cannot be deflated**: its month has
+no published index, either because it predates the series or because BLS never
+published it (October 2025). Absent never means "same as nominal" — render a gap
+and say why. The base month and the gap list both come from `/api/inflation`.
+
+`/api/investments/performance?real=1` deflates **returns only** — `real.twr`,
+`real.annualised`, `real.mwr`. The dollar figures beside them stay nominal,
+because deflating a period's cash flows correctly needs each one converted on its
+own date. `real.mwr` is deflated by `real.annual_inflation` rather than
+`real.inflation`, since MWR arrives already annualised.
+
+`/api/projections/assumptions` gained `measured_inflation` — what CPI-U actually
+did over the trailing decade, compounded. It is informational: the projection
+still uses the household's own `inflation_rate`.
+
+### Merchant logos
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/merchants/logo` | ✓ | `key` = the **resolved** merchant key. Returns the cached image bytes, with the content type **sniffed from the bytes** rather than read from the stored column, plus `nosniff` and `Cache-Control: private`. Adult-only |
+
+`404` is the ordinary answer, and the frontend is built around it: the operator
+never enabled the feature, the household opted out in **Settings → Appearance**,
+the merchant never resolved to a domain, or the domain had no logo — all four
+return the same response and the avatar falls back to its monogram. Nothing here
+reveals which.
+
+This endpoint is **not a proxy**. It never contacts Logo.dev: a logo is fetched
+by the worker, once per merchant, and cached, so a page render never depends on
+a third party being reachable. See
+[Security](security.md#merchant-logos-add-a-host-but-never-to-the-browser).
+
+### Digests
+
+The stored digest history. Unlike every other read on this page these are scoped
+to the requesting **user**, not the household: a digest entry records one
+member's view of the money, computed under their own visibility, so another
+member reading it would be handed figures from institutions deliberately not
+shared with them.
+
+`payload` is returned as the exact JSON that was frozen when the digest was
+generated. It is never recomputed, so a digest that disagrees with today's
+reporting endpoints is correct rather than stale — see
+[Digest](features/digest.md).
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/digests/` | ✓ | `limit` (≤50, default 12), `offset`. Returns the page plus `total` and `unread` |
+| GET | `/api/digests/{id}` | ✓ | One entry. 404 for an id belonging to anyone else |
+| POST | `/api/digests/{id}/read` | ✓ | Stamps `read_at`, once. 204 either way |
+| POST | `/api/digest/test` | ✓ | Queues a digest for the current period now, ignoring cadence and dedupe. Needs no notification channel |
+
 ### Investments
 
 | Method | Path | Auth | Notes |
@@ -74,6 +139,55 @@ preferences/capabilities).
 | GET | `/api/investments/fees` | ✓ | Fund expense drag, always with its coverage disclosed |
 | GET | `/api/investments/dividends` | ✓ | Dividends by month, from investment transactions |
 | PATCH | `/api/investments/accounts/{id}/tax-treatment` | ✓ | Confirms a classification. `null` clears it back to untagged |
+
+### Manual accounts
+
+Accounts Plaid cannot link (TreasuryDirect, a Voya plan, a private holding) are
+first-class accounts created here, with full Investments-page parity. The
+organising rule: **a manual endpoint never touches a Plaid row** — every mutation
+resolves through a `source='manual'` query, so a linked account's id gets a 404
+rather than an edit the next sync would silently revert. Manual balances are the
+only user-owned balance-write path; every change is paired with an
+`account_balance_history` row in the same transaction. See
+[Accounts → Accounts without Plaid](features/accounts.md#accounts-without-plaid).
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| POST | `/api/accounts` | ✓ | Create a manual account. `type` ∈ depository\|investment\|brokerage\|credit\|loan\|other; balance is a decimal string |
+| PUT | `/api/accounts/{id}` | ✓ | Manual only — a `source='plaid'` id 404s |
+| DELETE | `/api/accounts/{id}` | ✓ | Manual only; cascades its transactions |
+| PUT | `/api/accounts/{id}/balance` | ✓ | `{as_of, balance, reason, note}`. Re-running the same `as_of` updates in place |
+| GET | `/api/accounts/{id}/balance-history` | ✓ | The append-only balance trail |
+| POST | `/api/accounts/{id}/holdings` | ✓ | Upsert a manual holding (keys on account + security) |
+| GET | `/api/accounts/{id}/investment-transactions` | ✓ | The account's manual investment transactions |
+| GET | `/api/securities` | ✓ | Reference data — a security states what a ticker is, not who holds it. For the picker |
+| POST | `/api/securities` | ✓ | Create a manual security keyed on lowercased `ticker_key` |
+| POST | `/api/investment-transactions` | ✓ | `type`/`subtype` from the same vocabulary Plaid uses; a contribution is an external flow that moves TWR/MWR |
+| DELETE | `/api/investment-transactions/{id}` | ✓ | Manual only |
+| DELETE | `/api/holdings/{id}` | ✓ | Manual positions only; a Plaid holding deleted here would reappear on the next sync |
+
+The existing `GET /api/accounts` (above) and the `/api/investments/*` reads need
+no change — they call the same queries, which now return manual rows too.
+
+### Manual assets, valuations & bonds
+
+The revaluation surface for [manual assets](features/net-worth.md#manual-assets).
+The defining rule: **only `POST /valuations` writes a value**. The suggestion
+endpoint computes a proposal and returns it — net worth never moves on an
+estimate the user has not accepted. Bonds are the exception, because a savings
+bond's value is arithmetic over published rates rather than a judgement.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/manual-assets/{id}/detail` | ✓ | Class-specific metadata (real estate / vehicle / bond fields) |
+| PUT | `/api/manual-assets/{id}/detail` | ✓ | Upsert the detail row |
+| GET | `/api/manual-assets/{id}/valuations` | ✓ | The append-only value history |
+| POST | `/api/manual-assets/{id}/valuations` | ✓ | The one write that moves a value, paired with the authoritative current column atomically |
+| GET | `/api/manual-assets/{id}/suggestion` | ✓ | A depreciation proposal — never a write. `ok=false` with a `reason` when the curve has nothing to say |
+| GET | `/api/manual-assets/{id}/bond` | ✓ | A savings bond's redemption value, computed against `savings_bond_rates` |
+| PUT | `/api/manual-assets/{id}/loan` | ✓ | Link an asset to a loan account for equity, without double-counting |
+| GET | `/api/savings-bond-rates` | ✓ | The published rate table, seeded. Each row names its source |
+| PUT | `/api/savings-bond-rates` | ✓ | Correct a row against treasurydirect.gov — a bundled table is only defensible if it is checkable |
 
 ### Documents
 
@@ -98,6 +212,46 @@ used to probe whether an id exists in another household. All routes report
 | DELETE | `/api/documents/{id}/links/{linkId}` | ✓ | Detach |
 | POST | `/api/documents/{id}/extract` | ✓ | Receipt OCR. **Suggestions only** — returns fields plus candidate transactions and writes no ledger data. `403` unless `DOCUMENTS_OCR_ENABLED`, **and `403` for any `doc_type` other than `receipt`**, checked before the file is decrypted. `415` for a non-image. The reading is cached on the document, so call this once per receipt |
 | GET | `/api/documents/{id}/matches` | ✓ | Re-runs the transaction match against the cached reading. **No decryption, no upload, no model call** — this is what finds the charge for a receipt scanned before it posted. Empty list when the receipt has not been read |
+
+### Payroll
+
+The pre-tax side of the ledger. Adult-only like every other financial surface,
+but the group guard is **not** the whole access story here: a paystub is private
+to the person whose pay it is, and the `(owner OR shared)` predicate is enforced
+per row in SQL. Reads use it; every mutation uses a stricter owner-only lookup,
+because seeing a shared stub is not permission to change it. Misses are **404,
+never 403** — the distinction would confirm that another member has a stub.
+
+Two invariants every consumer inherits:
+
+- **Unconfirmed paystubs are inert.** They appear in the listing — that is the
+  review queue — and contribute nothing to `/summary`, `/savings-rate` or
+  `/tax-summary`. The filter lives in SQL, once.
+- **Confirmation requires the stub to balance**, `gross − Σ(deductions) = net`
+  within a cent. `422` otherwise, with the gap named in the message.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/payroll/taxonomy` | ✓ | Line categories and pay frequencies. Served rather than duplicated client-side — the wage-base rules are a server fact |
+| GET | `/api/payroll/years` | ✓ | Tax years with confirmed stubs, newest first |
+| GET | `/api/payroll/summary` | ✓ | `year`, `family_hsa`. Year roll-up: gross, net, effective tax rate, total comp, per-category totals, contribution headroom. `limits_configured: false` when the app has no IRS limits for that year — it never substitutes an adjacent one |
+| GET | `/api/payroll/savings-rate` | ✓ | `from`, `to`. Both rates side by side: the existing net-based figure **unchanged**, the gross-based one beside it, plus a coverage warning when the stubs on file only partly cover the window |
+| GET | `/api/payroll/tax-summary` | ✓ | `year`. Confirmed stubs mapped onto W-2 boxes, per employer. The only endpoint that returns a full EIN. Carries its own disclaimer **in the payload** — it is not a W-2 and will be printed away from the page that framed it |
+| POST | `/api/payroll/parse` | ✓ | `multipart/form-data`: `file`. Local PDF text-layer extraction — **no network call, no AI provider, nothing stored**. Returns a proposal and writes nothing. `422` for a scan with no text layer, `415` for a non-PDF |
+| POST | `/api/payroll/parse-document` | ✓ | The same local parse over a vault document's decrypted bytes. Deliberately **not** gated on `DOCUMENTS_OCR_ENABLED`: that switch governs what may be uploaded to a third party, and nothing here is |
+| GET | `/api/payroll/employers` | ✓ | Paystub counts are visibility-scoped; the EIN is masked |
+| POST | `/api/payroll/employers` | ✓ | `409` on a duplicate name — two rows for one employer would break the shared-limit pooling |
+| PUT | `/api/payroll/employers/{id}` | ✓ | `ein` is three-valued: omit to keep, `""` to clear, digits to replace |
+| DELETE | `/api/payroll/employers/{id}` | ✓ | `409` while paystubs exist. The FK cascades, which is exactly why |
+| GET | `/api/payroll/paystubs` | ✓ | `year`. Includes unconfirmed stubs — the review queue |
+| POST | `/api/payroll/paystubs` | ✓ | `confirm: true` requires a balancing stub (`422`). `409` on a duplicate employer + pay date |
+| GET | `/api/payroll/paystubs/{id}` | ✓ | Lines plus every derived figure |
+| PUT | `/api/payroll/paystubs/{id}` | ✓ | Lines are replaced wholesale; an edit re-opens the review |
+| DELETE | `/api/payroll/paystubs/{id}` | ✓ | Owner only |
+| POST | `/api/payroll/paystubs/{id}/confirm` | ✓ | `{confirmed}`. `422` naming the gap when the stub does not reconcile |
+| PATCH | `/api/payroll/paystubs/{id}/sharing` | ✓ | Private by default — the one place this app inverts its sharing default |
+| GET | `/api/payroll/paystubs/{id}/deposit-matches` | ✓ | Candidate deposits ranked by distance from net. A **proposal**; a deposit already claimed by another stub is not offered at all |
+| PUT | `/api/payroll/paystubs/{id}/deposit` | ✓ | `{transaction_id}`, null to unlink. The only thing that ever writes the link |
 
 ## CSRF
 

@@ -159,15 +159,14 @@ SELECT
     a.mask,
     a.subtype,
     COALESCE(a.current_balance, 0)::numeric AS current_balance,
-    i.institution_name
+    v.institution_name
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type = 'depository'
-ORDER BY i.institution_name, a.name;
+ORDER BY v.institution_name, a.name;
 
 -- name: UpsertDetectedObligation :one
 -- Promotion from the recurring detector. Idempotent by construction: the
@@ -268,14 +267,13 @@ SELECT
     (mode() WITHIN GROUP (ORDER BY t.category_id))::uuid AS category_id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -284,3 +282,140 @@ WHERE u.household_id = $1
   AND t.amount > 0
   AND t.date >= $3
 GROUP BY COALESCE(ma.entity_id::text, t.merchant_key);
+
+-- --------------------------------------------------------------------------
+-- Auto-posting (doc 30)
+-- --------------------------------------------------------------------------
+
+-- name: SetObligationAutoPost :one
+-- Turns materialisation on or off for one obligation, and names the account a
+-- posting credits. Separate from UpdateObligation because it is a different
+-- decision with a different blast radius: editing a label changes a forecast,
+-- turning this on starts writing transactions.
+--
+-- last_posted_date is reset to NULL when auto_post is switched OFF, so
+-- re-enabling it later does not silently backfill every occurrence that fell in
+-- the gap. Re-enabling starts from the anchor's next due date, and the handler
+-- says so.
+UPDATE recurring_obligations
+SET auto_post          = sqlc.arg('auto_post'),
+    posting_account_id = sqlc.narg('posting_account_id'),
+    last_posted_date   = CASE WHEN sqlc.arg('auto_post') THEN last_posted_date ELSE NULL END,
+    user_edited        = TRUE,
+    updated_at         = now()
+WHERE id = sqlc.arg('id')
+  AND household_id = sqlc.arg('household_id')
+  AND (user_id IS NULL OR user_id = sqlc.arg('user_id') OR is_shared)
+  -- An obligation cannot post without a target. The DB CHECK says the same
+  -- thing; repeating it here turns a constraint violation into "no rows", which
+  -- the handler reports as a 400 rather than a 500.
+  AND (NOT sqlc.arg('auto_post')
+       OR sqlc.narg('posting_account_id')::uuid IS NOT NULL
+       OR account_id IS NOT NULL)
+RETURNING *;
+
+-- name: ListObligationsDueForPosting :many
+-- The worker's queue: every auto-posting obligation with at least one occurrence
+-- on or before today that has not been posted yet.
+--
+-- Deliberately NOT household-scoped — this is a background sweep over every
+-- household, like the snapshot jobs. Nothing here is returned to a user;
+-- visibility is enforced when the resulting transactions are read.
+--
+-- The occurrence expansion is the same arithmetic as ListUpcomingObligations,
+-- and for the same reason it lives in SQL: anchor_date + n whole periods
+-- clamps a month end (2025-01-31 + 1 month is 2025-02-28), where stepping from
+-- the previous occurrence would drift off the 31st permanently and Go's
+-- time.AddDate would roll forward into March.
+WITH due AS (
+    SELECT *
+    FROM recurring_obligations
+    WHERE auto_post
+      AND is_active
+      AND (end_date IS NULL OR end_date >= anchor_date)
+      AND (account_id IS NOT NULL OR posting_account_id IS NOT NULL)
+),
+bounded AS (
+    SELECT
+        due.*,
+        CASE interval_unit
+            WHEN 'day'   THEN (sqlc.arg('today')::date - anchor_date) / interval_count
+            WHEN 'week'  THEN (sqlc.arg('today')::date - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM sqlc.arg('today')::date)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM sqlc.arg('today')::date)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM sqlc.arg('today')::date)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM due
+)
+SELECT
+    b.id                                      AS obligation_id,
+    b.household_id,
+    b.label,
+    b.amount,
+    b.category_id,
+    COALESCE(b.posting_account_id, b.account_id)::uuid AS target_account_id,
+    b.account_id                              AS source_account_id,
+    -- The target's shape decides how much of the posting happens. A manual
+    -- investment account gets the full treatment (transaction + investment
+    -- transaction + balance move); anything else gets the transaction only,
+    -- because an institution owns that balance and reports the movement itself.
+    ta.type                                   AS target_type,
+    ta.source                                 AS target_source,
+    d.due_date::date                          AS due_date
+FROM bounded b
+JOIN accounts ta ON ta.id = COALESCE(b.posting_account_id, b.account_id)
+                AND ta.is_active
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    SELECT b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ) AS due_date
+) d
+WHERE d.due_date <= sqlc.arg('today')::date
+  AND (b.last_posted_date IS NULL OR d.due_date > b.last_posted_date)
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+  -- Bounds how far back a newly-enabled obligation reaches. Without it, turning
+  -- auto-post on for a bill anchored in 2019 posts six years of transactions in
+  -- one batch.
+  AND d.due_date >= sqlc.arg('earliest')::date
+ORDER BY b.id, d.due_date;
+
+-- name: MarkObligationPosted :execrows
+-- Advances the cursor. Runs in the same transaction as the rows it accounts
+-- for: a crash before the commit replays from the same cursor, and a crash
+-- after it has already written everything the cursor claims.
+--
+-- The WHERE repeats the cursor predicate so two workers racing on one
+-- obligation produce exactly one winner, matching MarkAllowancePosted.
+UPDATE recurring_obligations
+SET last_posted_date = sqlc.arg('posted_through'),
+    updated_at       = now()
+WHERE id = sqlc.arg('id')
+  AND auto_post
+  AND (last_posted_date IS NULL OR last_posted_date < sqlc.arg('posted_through'));
+
+-- name: InsertScheduledTransaction :one
+-- The materialised row. obligation_id ties it back to the template, and the
+-- partial unique index on (obligation_id, date) makes a duplicate posting
+-- impossible rather than merely unlikely — ON CONFLICT DO NOTHING turns a
+-- replay into zero rows instead of a second charge.
+INSERT INTO transactions (
+    account_id, amount, currency, date, name, merchant_key,
+    category_id, category_source, source, pending, obligation_id
+)
+SELECT
+    a.id, sqlc.arg('amount'), a.currency, sqlc.arg('date'), sqlc.arg('name'),
+    sqlc.narg('merchant_key'), sqlc.narg('category_id'),
+    CASE WHEN sqlc.narg('category_id')::uuid IS NULL THEN NULL ELSE 'manual' END,
+    'scheduled', false, sqlc.arg('obligation_id')
+FROM accounts a
+WHERE a.id = sqlc.arg('account_id')
+ON CONFLICT (obligation_id, date) WHERE obligation_id IS NOT NULL DO NOTHING
+RETURNING *;

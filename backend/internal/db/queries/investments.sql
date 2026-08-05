@@ -2,8 +2,11 @@
 -- and account tax-treatment tagging.
 --
 -- Every read here carries the same visibility scoping as the rest of the
--- reporting layer: household membership plus `i.user_id = $2 OR i.is_shared`,
--- so a member's private institution never leaks into a household view.
+-- reporting layer, resolved through the account_access view (00053): household
+-- membership plus `v.user_id = $2 OR v.is_shared`, so a member's private
+-- institution never leaks into a household view. Reaching through plaid_items
+-- directly is now wrong as well as duplicated — a manual account has no item,
+-- and an inner join through one drops it silently from every figure here.
 
 -- name: ListInvestmentAccounts :many
 -- Investment accounts the caller can see, with the tags the Investments page
@@ -19,15 +22,15 @@ SELECT
     a.currency,
     a.tax_treatment,
     a.is_managed,
-    i.institution_name
+    a.source,
+    v.institution_name
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND a.type IN ('investment', 'brokerage')
-ORDER BY i.institution_name, a.name;
+ORDER BY v.institution_name, a.name;
 
 -- name: SetAccountTaxTreatment :one
 -- Confirms a classification. Scoped by household through the item's owner so a
@@ -37,12 +40,11 @@ ORDER BY i.institution_name, a.name;
 UPDATE accounts a
 SET tax_treatment = sqlc.narg('tax_treatment'),
     is_managed    = sqlc.narg('is_managed')
-FROM plaid_items i, users u
+FROM account_access v
 WHERE a.id = $1
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.account_id = a.id
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 RETURNING a.id, a.name, a.tax_treatment, a.is_managed;
 
 -- name: ListVisibleHoldingsDetailed :many
@@ -65,25 +67,33 @@ SELECT
     s.is_cash_equivalent,
     a.name              AS account_name,
     a.tax_treatment,
-    i.institution_name
+    v.institution_name
 FROM holdings h
 JOIN securities s  ON s.id = h.security_id
 JOIN accounts a    ON a.id = h.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
 ORDER BY h.institution_value DESC NULLS LAST;
 
 -- name: UpsertInvestmentTransaction :exec
 -- Plaid is authoritative for investment transactions, so a re-fetch of an
 -- overlapping window refreshes the row rather than duplicating it.
+--
+-- The WHERE on the conflict target is not optional. 00053 made the unique index
+-- PARTIAL so manual rows, which have no Plaid id, are simply not in it — and
+-- Postgres only accepts a partial index as an arbiter when the statement
+-- repeats its predicate exactly. Without it this fails outright with "no unique
+-- or exclusion constraint matching the ON CONFLICT specification", which is the
+-- good outcome: the alternative would have been a silent duplicate per sync.
 INSERT INTO investment_transactions (
     account_id, security_id, plaid_investment_transaction_id,
     type, subtype, amount, quantity, price, fees, date, name, currency, raw
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-ON CONFLICT (plaid_investment_transaction_id) DO UPDATE SET
+ON CONFLICT (plaid_investment_transaction_id)
+    WHERE plaid_investment_transaction_id IS NOT NULL
+DO UPDATE SET
     account_id  = EXCLUDED.account_id,
     security_id = EXCLUDED.security_id,
     type        = EXCLUDED.type,
@@ -112,10 +122,9 @@ SELECT
     t.name
 FROM investment_transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND t.date >= $3
   AND t.date <= $4
@@ -175,10 +184,9 @@ SELECT
     COUNT(*)::bigint                           AS account_count
 FROM investment_snapshots s
 JOIN accounts a    ON a.id = s.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND s.as_of >= $3
   AND s.as_of <= $4
@@ -189,10 +197,9 @@ ORDER BY s.as_of;
 SELECT s.as_of, s.market_value, s.cost_basis
 FROM investment_snapshots s
 JOIN accounts a    ON a.id = s.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND s.account_id = $3
   AND s.as_of >= $4
   AND s.as_of <= $5
@@ -205,10 +212,9 @@ ORDER BY s.as_of;
 SELECT MIN(s.as_of)::date AS as_of
 FROM investment_snapshots s
 JOIN accounts a    ON a.id = s.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
 -- MIN over an empty set is one row containing NULL, which cannot be scanned
 -- into a date. The HAVING turns "no history" into no rows, so the caller sees
@@ -244,10 +250,9 @@ SELECT
     (-SUM(t.amount))::numeric         AS total
 FROM investment_transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND t.subtype IN (
       'dividend', 'qualified dividend', 'non-qualified dividend',

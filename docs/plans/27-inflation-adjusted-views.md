@@ -2,6 +2,18 @@
 
 *(TODO.md "Next major initiatives" #12.)*
 
+> **Shipped.** What follows is the plan as written. Five things came out
+> differently, and the reasons are worth more than the plan text below —
+> see **[Shipped notes](#shipped-notes)** at the end before touching this area.
+>
+> The short version: the migration is `00052`, not `00051` and not the `00057`
+> the reservation table named; **the CPI series has a permanent hole in the
+> middle of it** (October 2025), not just at the tail; investment returns are
+> deflated but investment *dollar* figures are not; the FIRE page gained a
+> measured-inflation figure to adopt rather than a nominal/real toggle; and the
+> real toggle lives on a user preference so two people sharing a ledger can read
+> the same chart differently.
+
 ## Context
 
 Every long-term trend in the app compares **nominal dollars across years**. "Net
@@ -144,3 +156,114 @@ one-month deflation is noise dressed as precision.
 - Currency conversion (doc 29).
 - Retroactively rewriting stored historical figures. Deflation is a view, applied
   at read time, always.
+
+## Shipped notes
+
+Five departures from the plan above, in descending order of how far they reach.
+
+### 1. The series has a hole in the middle, and it is permanent
+
+The plan anticipated one failure mode — "handle a missing most-recent month" —
+and that is not the one the real series has. **BLS never published October 2025**
+and has said it will not estimate it after the fact: the 2025 lapse in
+appropriations stopped collection. The API returns that month with a value of
+`-` and a footnote saying so.
+
+So `cpi_series` covers January 2010 to the present with exactly one interior
+gap, and **anything reading this series must handle a hole, not just a short
+tail.** Concretely:
+
+- `reporting.Real` returns `ErrNoIndex` for a figure dated in that month. It
+  does not interpolate. September 2025 and November 2025 differ by 0.2%, so
+  interpolating would have been *within noise* — which is exactly the reasoning
+  this app rejects everywhere else, and rejecting it here cost nothing.
+- The `real=1` endpoints return an **absent** field for such a point, never the
+  nominal figure under a real name. The clients drop the point and say how many
+  they dropped and why.
+- `/api/inflation` publishes `gaps` so a client can name the months rather than
+  drawing a line through them.
+
+`CPISeries.Gaps()` exists for this. Do not "fix" it by filling the hole.
+
+### 2. Migration `00052`, and the reservation table was wrong in an instructive way
+
+Doc 27 was reserved `00057`, which sits **above** wave 6/7's `00052`–`00056`.
+Doc 27 is wave 5, and wave 5 ships first — so taking `00057` would have pushed
+the schema past all five of those reservations and voided every one of them
+under goose's strict ordering. It took `00052`; the wave 6/7 rows each moved up
+one, and `docs/plans/README.md` has been updated.
+
+The general lesson, now recorded there: **a reservation above an unshipped one
+is not a reservation.** Allocate in ship order, or do not allocate.
+
+### 3. Investment RETURNS are deflated; investment DOLLARS are not
+
+The plan said "investment performance" without saying which figures. Returns are
+deflated — TWR, its annualised form, and the money-weighted IRR. `start_value`,
+`net_flows` and `gain` are **not**, and this is deliberate rather than
+unfinished: deflating a period's cash flows correctly needs each flow converted
+on its own date, and converting them from the span's endpoints would produce a
+figure that looks precise and is not. A ratio of two index values converts a
+return exactly; it does not convert a stream of dated flows. The response's
+`real.note` says this, and the page renders it.
+
+One consequence worth knowing: **MWR is deflated by the ANNUALISED price change,
+not the total**, because MWR arrives already annualised. Deflating an annualised
+return by a five-year total would understate it by the entire compounding of the
+span — 16% instead of 3%. `RealReturns.AnnualInflation` is that figure, and it is
+null under a year, which is why real MWR is absent on short spans.
+
+### 4. FIRE got a measured rate to adopt, not a nominal toggle
+
+The plan asked for "an explicit nominal/real toggle" on doc 15's projections.
+That was not built, and the reason is that doc 15 does not have the problem the
+bullet describes. Its every figure is already real, and it says so at the top of
+the page in `realBasis` — it is not "presenting one as the truth", it is stating
+which one it is. Adding a nominal view would have meant inflating a
+thirty-year projection forward by an assumed rate, whose entire visible effect is
+to make the numbers larger.
+
+What the plan's *other* sentence about doc 15 asked for was built, and it is the
+valuable half: "making it switchable properly rather than an assumed constant."
+`GET /api/projections/assumptions` now returns `measured_inflation` — what CPI-U
+actually did over the trailing decade, compounded — beside the household's
+assumed rate, with a button to adopt it. It is **shown, never applied**:
+`projection_assumptions.inflation_rate` remains the only inflation input in the
+app, per this doc's own "do not add a second inflation input".
+
+If a nominal projection is wanted later, it is a display transform over
+`RetirementProjection` and needs no new stored input.
+
+### 5. The toggle is a user preference, and short windows do not get one
+
+`views.real`, user-scoped, defaulting false. User-scoped because it is a reading
+preference rather than a fact about the household's money — two people sharing a
+ledger can disagree about it harmlessly, which is not true of anomaly
+sensitivity.
+
+The plan's "short-horizon views should not offer the toggle" is enforced by
+publishing `min_span_months` (12) from `/api/inflation` and having the clients
+hide the control below it, rather than by rejecting the parameter server-side. A
+`real=1` on a one-month window is answered honestly; it is simply not *offered*,
+because deflating one month by one month's price change moves the figure by a
+couple of tenths of a percent and invites a conclusion the data cannot support.
+
+### Also worth knowing
+
+- **The series is NSA** (`CUUR0000SA0`), not seasonally adjusted. The SA series
+  is revised annually for five years running as BLS re-estimates seasonal
+  factors, which would mean a deflated figure a user saw last month quietly
+  changing. NSA is the published index of record and does not move once released.
+- **The fetch job is off by default and the feature still works**, because the
+  series ships seeded from January 2010 — sixteen years, well past the fifteen
+  this doc asked for, and past anything a Plaid-backed history can reach. This
+  is the reason `CPI_FETCH_ENABLED` can default off without the README's
+  "phones home to nothing but Plaid" line becoming a half-truth.
+- **The base period is the newest published month, not today.** BLS publishes
+  mid-following-month, so the current month never has an index. Every real figure
+  is labelled "in June 2026 dollars" rather than "in today's dollars", which is
+  both accurate and stops the label from silently overstating how fresh the
+  series is.
+- `cpi_series` is classified `DumpOnly` in `continuity/coverage.go` — public
+  reference data, identical in every install, so it rides the dump but stays out
+  of the portable export. Same call as `savings_bond_rates`.

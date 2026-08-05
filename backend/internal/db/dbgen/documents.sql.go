@@ -760,10 +760,9 @@ SELECT
     COALESCE(t.merchant_name, t.name)::text AS label
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND (
@@ -925,11 +924,10 @@ func (q *Queries) SaveDocumentExtraction(ctx context.Context, arg SaveDocumentEx
 const targetAccountInHousehold = `-- name: TargetAccountInHousehold :one
 SELECT a.id
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 `
 
 type TargetAccountInHouseholdParams struct {
@@ -985,11 +983,10 @@ const targetTransactionInHousehold = `-- name: TargetTransactionInHousehold :one
 SELECT t.id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE t.id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
 `
 
 type TargetTransactionInHouseholdParams struct {

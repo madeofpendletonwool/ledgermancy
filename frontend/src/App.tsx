@@ -12,6 +12,7 @@ import { CategoryDetail } from './routes/CategoryDetail'
 import { MerchantDetail } from './routes/MerchantDetail'
 import { Merchants } from './routes/Merchants'
 import { Dashboard } from './routes/Dashboard'
+import { Digest } from './routes/Digest'
 import { Documents } from './routes/Documents'
 import { Goals } from './routes/Goals'
 import { Insights } from './routes/Insights'
@@ -19,6 +20,7 @@ import { Investments } from './routes/Investments'
 import { Transactions } from './routes/Transactions'
 import { Login } from './routes/Login'
 import { NetWorth } from './routes/NetWorth'
+import { Paystubs } from './routes/Paystubs'
 import { Spending } from './routes/Spending'
 import { Register } from './routes/Register'
 import { Report } from './routes/Report'
@@ -67,6 +69,10 @@ export default function App() {
               the API regardless of what the router renders. */}
           <Route index element={<Home />} />
           <Route path="/insights" element={<Insights />} />
+          {/* The stored digest history. Also the ntfy deep link target, so a
+              push always lands on the kept copy rather than a feed that has
+              moved on since. */}
+          <Route path="/digest" element={<Digest />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/spending" element={<Spending />} />
           <Route path="/budgets" element={<Budgets />} />
@@ -89,6 +95,7 @@ export default function App() {
               raw descriptor can contain a slash. */}
           <Route path="/merchants/detail" element={<MerchantDetail />} />
           <Route path="/documents" element={<Documents />} />
+          <Route path="/paystubs" element={<Paystubs />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/assistant" element={<Assistant />} />
           <Route path="/settings" element={<Settings />} />

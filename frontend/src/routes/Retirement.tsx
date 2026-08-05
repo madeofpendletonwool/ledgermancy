@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -9,6 +9,7 @@ import {
   type RetirementResponse,
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import { formatRate } from '../lib/inflation'
 import { CHART, SERIES, STATUS } from '../components/charts/tokens'
 
 /**
@@ -185,6 +186,22 @@ function AssumptionsPanel({ assumptions }: { assumptions: RetirementAssumptions 
             hint="Used to label the basis, not to gross figures up."
             value={form.inflation}
             onChange={set('inflation')}
+            // The measured rate is OFFERED, never applied. Doc 27 puts the real
+            // CPI series behind this field so the number is a choice rather
+            // than a 3% default nobody has ever checked — but the projection
+            // still uses whatever is typed here, and there is no second
+            // inflation input anywhere in the app.
+            footer={
+              assumptions.measured_inflation ? (
+                <MeasuredInflation
+                  measured={assumptions.measured_inflation}
+                  years={assumptions.measured_inflation_years}
+                  onUse={() =>
+                    set('inflation')(toPercentField(assumptions.measured_inflation!))
+                  }
+                />
+              ) : null
+            }
           />
           <Field
             id="withdrawal"
@@ -306,7 +323,7 @@ function fromForm(f: AssumptionsForm): AssumptionsInput {
 }
 
 function Field({
-  id, label, value, onChange, hint, prefix, suffix, placeholder,
+  id, label, value, onChange, hint, prefix, suffix, placeholder, footer,
 }: {
   id: string
   label: string
@@ -316,6 +333,8 @@ function Field({
   prefix?: string
   suffix?: string
   placeholder?: string
+  /** Rendered under the hint. Used for the measured-inflation offer. */
+  footer?: ReactNode
 }) {
   return (
     <div>
@@ -333,7 +352,38 @@ function Field({
         {suffix && <span className="text-sm text-mist-500">{suffix}</span>}
       </div>
       {hint && <p className="mt-1.5 text-xs text-mist-500">{hint}</p>}
+      {footer}
     </div>
+  )
+}
+
+/**
+ * What CPI-U actually did, offered as a value to adopt.
+ *
+ * A button, not an automatic fill. The assumption stays the household's — the
+ * app's job here is to make sure the number they choose is one they have seen
+ * the alternative to, which is a different thing from choosing it for them.
+ */
+function MeasuredInflation({
+  measured,
+  years,
+  onUse,
+}: {
+  measured: string
+  years?: number
+  onUse: () => void
+}) {
+  return (
+    <p className="mt-1 text-xs text-mist-500">
+      Actual: {formatRate(measured, 2)} a year over the last {years ?? 10}.{' '}
+      <button
+        type="button"
+        onClick={onUse}
+        className="text-rune-300 underline underline-offset-2"
+      >
+        Use it
+      </button>
+    </p>
   )
 }
 

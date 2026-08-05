@@ -52,6 +52,24 @@ stripped out) and **net paid in**.
 - **No annualised figure** below a year of history. A 5% gain over three weeks is
   not an 87% annual return in any sense a reader would understand.
 
+### Real returns
+
+The **Real** toggle restates both return figures after inflation, using the
+bundled CPI-U series over the same span. The arithmetic is
+`(1 + nominal) / (1 + inflation) - 1` — not subtraction, which is wrong by the
+product of the two and always in the flattering direction.
+
+Only the **returns** are deflated. Market gain and net paid in stay nominal, and
+the page says so: deflating a period's cash flows correctly needs each one
+converted on its own date, and converting them from the period's endpoints would
+be a precise-looking guess. The money-weighted figure is deflated by the
+*annualised* price change, since it is itself already annualised.
+
+The toggle is not offered on YTD — a partial year deflated by a partial year's
+price change says considerably less than it looks like it says. Where a span
+reaches outside the published index the page shows the nominal figures and
+explains why.
+
 ## Against the market
 
 Your portfolio's growth, rebased to 100 at the start of the period, optionally
@@ -62,9 +80,10 @@ balance. Plotting the raw balance here would make a portfolio that received a
 large deposit appear to beat every benchmark while having underperformed all of
 them — the most convincing wrong thing the app could draw.
 
-Benchmark prices are **off by default**. Fetching them is the only outbound
-request Ledgermancy makes to a host that is neither Plaid nor your AI provider,
-so it is opt-in — see
+Benchmark prices are **off by default**. Fetching them is one of only two
+outbound requests Ledgermancy makes to a host that is neither Plaid nor your AI
+provider — the other is [merchant logos](merchants.md#merchant-imagery) — so it
+is opt-in; see
 [Benchmark prices](../configuration.md#benchmark-prices-investments-page). With
 it off, your own line still plots.
 
@@ -103,6 +122,43 @@ name, and exportable to CSV.
 An unknown cost basis shows as an em dash, never `$0.00` — and the CSV exports it
 as an empty cell, so a spreadsheet summing the column cannot silently treat
 "unknown" as zero.
+
+## Manual investment accounts
+
+A [manual investment account](accounts.md#accounts-without-plaid) — the Voya
+plan Plaid will not link, a TreasuryDirect position, anything held outside a
+linked brokerage — gets **full parity** on this page: holdings, performance,
+allocation, dividends, fee drag, and snapshots. The engines read tables, not
+Plaid, so a manual account is indistinguishable from a working linked one in
+every report.
+
+Two editors cover the write side, both per-account:
+
+- **Holdings.** *Add holding* picks a security by ticker (search the existing
+  set, or create one inline), then quantity, optional cost basis, and an
+  optional institution price that falls back to the security's close price.
+- **Investment transactions.** Buy / sell / cash / fee / transfer, with an
+  optional security, quantity, price, fees, amount, and date. The uses are the
+  ones a linked account gets for free: record a contribution (cash /
+  contribution), a dividend (cash / dividend), or a buy.
+
+Three honest limitations:
+
+- **Tax treatment has no suggestion.** A linked account's tag is inferred from
+  its Plaid subtype; a manual account has none, so the picker reads *Choose a
+  tax treatment* with nothing pre-selected. The tag still matters — it is what
+  puts a manual Roth or 529 in the right allocation bucket and retirement
+  projection — so it stays on the page until you set it.
+- **Backfill is impossible.** There are no historical holdings before you start
+  entering them, exactly as for a linked account, and the "N days of history"
+  disclosure above the performance figures says so.
+- **No auto price fetch.** Manual price entry is the default; pulling live
+  quotes for tickers you hold would be a different privacy contract than the
+  operator-configured benchmark set, and is not added here.
+
+A contribution that lands through the [auto-posting schedule](accounts.md#auto-posting-scheduled-transactions)
+is recorded as an external cash flow and moves TWR/MWR correctly — the same path
+a hand-entered contribution takes.
 
 ## Fund fees
 

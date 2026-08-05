@@ -200,11 +200,10 @@ GROUP BY dl.transaction_id;
 SELECT t.id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE t.id = @id
-  AND u.household_id = @household_id
-  AND (i.user_id = @user_id OR i.is_shared);
+  AND v.household_id = @household_id
+  AND (v.user_id = @user_id OR v.is_shared);
 
 -- name: TargetManualAssetInHousehold :one
 SELECT id FROM manual_assets WHERE id = @id AND household_id = @household_id;
@@ -212,11 +211,10 @@ SELECT id FROM manual_assets WHERE id = @id AND household_id = @household_id;
 -- name: TargetAccountInHousehold :one
 SELECT a.id
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = @id
-  AND u.household_id = @household_id
-  AND (i.user_id = @user_id OR i.is_shared);
+  AND v.household_id = @household_id
+  AND (v.user_id = @user_id OR v.is_shared);
 
 -- name: TargetGoalInHousehold :one
 SELECT id FROM goals
@@ -252,10 +250,9 @@ SELECT
     COALESCE(t.merchant_name, t.name)::text AS label
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = @household_id
-  AND (i.user_id = @user_id OR i.is_shared)
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = @household_id
+  AND (v.user_id = @user_id OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND (

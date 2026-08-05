@@ -55,10 +55,9 @@ SELECT t.id, ABS(t.amount)::numeric AS amount, t.date,
        COALESCE(t.merchant_name, t.name) AS merchant
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
+WHERE v.household_id = $1
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -92,13 +91,12 @@ WITH firsts AS (
         MIN(t.date) AS first_seen
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
-    WHERE u.household_id = $1
+    WHERE v.household_id = $1
       AND t.merchant_key IS NOT NULL
       AND NOT t.pending
     GROUP BY COALESCE(ma.entity_id::text, t.merchant_key)
@@ -110,8 +108,7 @@ SELECT DISTINCT ON (COALESCE(ma.entity_id::text, t.merchant_key))
        COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
@@ -119,7 +116,7 @@ LEFT JOIN merchant_aliases ma
 LEFT JOIN merchant_entities me ON me.id = ma.entity_id
 JOIN firsts f ON f.merchant_key = COALESCE(ma.entity_id::text, t.merchant_key)
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
+WHERE v.household_id = $1
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -146,10 +143,9 @@ SELECT
         SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
-        JOIN plaid_items i ON i.id = a.plaid_item_id
-        JOIN users u       ON u.id = i.user_id
-        WHERE u.household_id = b.household_id
-          AND i.is_shared
+        JOIN account_access v ON v.account_id = a.id
+        WHERE v.household_id = b.household_id
+          AND v.is_shared
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
@@ -168,11 +164,10 @@ WITH visible AS (
     SELECT t.amount, a.type AS account_type, c.is_income, c.is_transfer
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
-    WHERE u.household_id = $1
-      AND i.is_shared
+    WHERE v.household_id = $1
+      AND v.is_shared
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -223,10 +218,10 @@ FROM alert_events e
 JOIN alerts al          ON al.id = e.alert_id
 LEFT JOIN transactions t ON t.id = e.transaction_id
 LEFT JOIN accounts a    ON a.id = t.account_id
-LEFT JOIN plaid_items i  ON i.id = a.plaid_item_id
+LEFT JOIN account_access v ON v.account_id = a.id
 WHERE al.household_id = $1
   AND e.triggered_at >= $2
-  AND (e.transaction_id IS NULL OR i.is_shared)
+  AND (e.transaction_id IS NULL OR v.is_shared)
   AND NOT EXISTS (
       SELECT 1 FROM insights ins
       WHERE ins.household_id = al.household_id
@@ -263,9 +258,9 @@ FROM alert_events e
 JOIN alerts al           ON al.id = e.alert_id
 LEFT JOIN transactions t ON t.id = e.transaction_id
 LEFT JOIN accounts a     ON a.id = t.account_id
-LEFT JOIN plaid_items i  ON i.id = a.plaid_item_id
+LEFT JOIN account_access v ON v.account_id = a.id
 WHERE al.household_id = $1
-  AND (e.transaction_id IS NULL OR i.user_id = $2 OR i.is_shared)
+  AND (e.transaction_id IS NULL OR v.user_id = $2 OR v.is_shared)
 ORDER BY (e.read_at IS NULL) DESC, e.triggered_at DESC
 LIMIT $3;
 
@@ -275,24 +270,24 @@ FROM alert_events e
 JOIN alerts al           ON al.id = e.alert_id
 LEFT JOIN transactions t ON t.id = e.transaction_id
 LEFT JOIN accounts a     ON a.id = t.account_id
-LEFT JOIN plaid_items i  ON i.id = a.plaid_item_id
+LEFT JOIN account_access v ON v.account_id = a.id
 WHERE al.household_id = $1
   AND e.read_at IS NULL
-  AND (e.transaction_id IS NULL OR i.user_id = $2 OR i.is_shared);
+  AND (e.transaction_id IS NULL OR v.user_id = $2 OR v.is_shared);
 
 -- name: MarkAlertEventRead :exec
 UPDATE alert_events e
 SET read_at = now()
 WHERE e.id = $1
   AND e.read_at IS NULL
-  AND e.alert_id IN (SELECT id FROM alerts WHERE household_id = $2)
+  AND e.alert_id IN (SELECT al.id FROM alerts al WHERE al.household_id = $2)
   AND (
       e.transaction_id IS NULL
       OR EXISTS (
           SELECT 1 FROM transactions t
           JOIN accounts a    ON a.id = t.account_id
-          JOIN plaid_items i ON i.id = a.plaid_item_id
-          WHERE t.id = e.transaction_id AND (i.user_id = $3 OR i.is_shared)
+          JOIN account_access v ON v.account_id = a.id
+          WHERE t.id = e.transaction_id AND (v.user_id = $3 OR v.is_shared)
       )
   );
 
@@ -300,13 +295,13 @@ WHERE e.id = $1
 UPDATE alert_events e
 SET read_at = now()
 WHERE e.read_at IS NULL
-  AND e.alert_id IN (SELECT id FROM alerts WHERE household_id = $1)
+  AND e.alert_id IN (SELECT al.id FROM alerts al WHERE al.household_id = $1)
   AND (
       e.transaction_id IS NULL
       OR EXISTS (
           SELECT 1 FROM transactions t
           JOIN accounts a    ON a.id = t.account_id
-          JOIN plaid_items i ON i.id = a.plaid_item_id
-          WHERE t.id = e.transaction_id AND (i.user_id = $2 OR i.is_shared)
+          JOIN account_access v ON v.account_id = a.id
+          WHERE t.id = e.transaction_id AND (v.user_id = $2 OR v.is_shared)
       )
   );

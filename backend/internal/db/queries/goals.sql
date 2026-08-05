@@ -94,9 +94,8 @@ WHERE household_id = $1 AND scope = 'household' AND archived_at IS NULL;
 -- can never read another household's account. Coalesced to 0 when unknown.
 SELECT COALESCE(a.current_balance, 0)::numeric AS balance
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE a.id = $1 AND u.household_id = $2;
+JOIN account_access v ON v.account_id = a.id
+WHERE a.id = $1 AND v.household_id = $2;
 
 -- name: GetGoalDebtTerms :one
 -- Everything a debt-payoff goal needs to know about its linked account: whether
@@ -136,13 +135,12 @@ SELECT
     l.interest_rate_percentage,
     l.minimum_payment
 FROM accounts a
-JOIN plaid_items i        ON i.id = a.plaid_item_id
-JOIN users u              ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN liabilities l   ON l.account_id = a.id
 LEFT JOIN account_terms t ON t.account_id = a.id
 LEFT JOIN recurring_obligations o
        ON o.id = t.payment_obligation_id AND o.is_active
-WHERE a.id = $1 AND u.household_id = $2;
+WHERE a.id = $1 AND v.household_id = $2;
 
 -- --------------------------------------------------------------------------
 -- Contributions

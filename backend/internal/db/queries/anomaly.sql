@@ -68,16 +68,15 @@ WITH spend AS (
         t.is_one_time
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = @household_id
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
     LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-    WHERE u.household_id = @household_id
-      AND (i.user_id = @user_id OR i.is_shared)
+    WHERE v.household_id = @household_id
+      AND (v.user_id = @user_id OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -208,16 +207,15 @@ WITH spend AS (
         t.is_one_time
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = @household_id
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
     LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-    WHERE u.household_id = @household_id
-      AND (i.user_id = @user_id OR i.is_shared)
+    WHERE v.household_id = @household_id
+      AND (v.user_id = @user_id OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending

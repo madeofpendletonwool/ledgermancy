@@ -66,6 +66,9 @@ const CACHEABLE_API_PATHS = [
   '/api/budgets',
   '/api/capabilities',
   '/api/categories',
+  // Stored digests are immutable snapshots, which makes them the one thing here
+  // a cached copy cannot be stale about in any way that matters.
+  '/api/digests',
   '/api/goals',
   '/api/holdings',
   '/api/insights',

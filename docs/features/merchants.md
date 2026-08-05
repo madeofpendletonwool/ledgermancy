@@ -117,9 +117,27 @@ fixes things across the app at once:
 An unmapped merchant behaves exactly as it did before this page existed. The
 feature is additive: a household that never opens it sees no change at all.
 
+## Merchant imagery
+
+Every merchant carries an avatar: a coloured tile with its first letter,
+generated from the name itself. It needs no network, it is identical on every
+reload and in every browser, and two descriptors that resolve to one name share
+one avatar — which is what makes a grouped merchant read as a single identity
+regardless of which fragment fed a given charge.
+
+Real company logos sit on top of that, and they are **off by default**, because
+they add a host the app otherwise never contacts. When an operator opts in with
+`MERCHANT_LOGOS_ENABLED`, the worker asks your AI provider which website a
+merchant is and fetches that company's logo from Logo.dev — server-side, once
+per merchant, cached, and then served from this app, so your browser never talks
+to a logo host. A merchant with no known logo keeps its monogram, and a
+household can switch the imagery off entirely in **Settings → Appearance**.
+
+See [Configuration](../configuration.md#merchant-logos) for the switches and
+[Security](../security.md#merchant-logos-add-a-host-but-never-to-the-browser)
+for exactly what is sent where.
+
 ## Not included
 
-- **Merchant logos.** A nice touch, but an outbound dependency the app otherwise
-  does not have.
 - **Cross-household shared merchant data.** Everything here is household-scoped,
   matching every other surface.

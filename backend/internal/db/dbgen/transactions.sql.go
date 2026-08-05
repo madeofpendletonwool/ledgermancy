@@ -28,11 +28,10 @@ WITH base AS (
         t.amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -142,7 +141,7 @@ JOIN accounts a ON a.id = t.account_id
 WHERE a.plaid_item_id = $1
 `
 
-func (q *Queries) CountTransactionsForItem(ctx context.Context, plaidItemID uuid.UUID) (int64, error) {
+func (q *Queries) CountTransactionsForItem(ctx context.Context, plaidItemID *uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countTransactionsForItem, plaidItemID)
 	var count int64
 	err := row.Scan(&count)
@@ -168,13 +167,12 @@ SELECT
     'manual',
     false
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $8
-  AND u.household_id = $9
-  AND (i.user_id = $10 OR i.is_shared)
+  AND v.household_id = $9
+  AND (v.user_id = $10 OR v.is_shared)
   AND a.is_active
-RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time, obligation_id
 `
 
 type CreateManualTransactionParams struct {
@@ -237,19 +235,19 @@ func (q *Queries) CreateManualTransaction(ctx context.Context, arg CreateManualT
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }
 
 const deleteManualTransaction = `-- name: DeleteManualTransaction :execrows
 DELETE FROM transactions t
-USING accounts a, plaid_items i, users u
+USING accounts a, account_access v
 WHERE t.id = $1
+  AND v.account_id = a.id
   AND t.source = 'manual'
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $2
+  AND v.household_id = $2
 `
 
 type DeleteManualTransactionParams struct {
@@ -298,11 +296,10 @@ func (q *Queries) DeleteTransactionByPlaidID(ctx context.Context, plaidTransacti
 const getImportAccount = `-- name: GetImportAccount :one
 SELECT a.id, a.currency
 FROM accounts a
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $1
-  AND u.household_id = $2
-  AND (i.user_id = $3 OR i.is_shared)
+  AND v.household_id = $2
+  AND (v.user_id = $3 OR v.is_shared)
   AND a.is_active
 `
 
@@ -387,11 +384,10 @@ SELECT
     c.name AS category_name
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -475,11 +471,10 @@ SELECT
     t.source
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -586,7 +581,7 @@ func (q *Queries) ListQueriedTransactions(ctx context.Context, arg ListQueriedTr
 }
 
 const listVisibleTransactions = `-- name: ListVisibleTransactions :many
-SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, a.name AS account_name, i.institution_name,
+SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id, a.name AS account_name, v.institution_name,
     -- The RESOLVED merchant key, so a row can address the merchant detail view.
     -- Raw t.merchant_key addresses one DESCRIPTOR; this addresses the BUSINESS,
     -- collapsing every fragment the household has grouped. Without it a row
@@ -609,14 +604,13 @@ SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date,
     )) AS is_possible_duplicate
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   -- Excluded rows are hidden by default, because the ledger should read like the
   -- reports it feeds. They are NOT hidden unconditionally: this list is the only
@@ -713,6 +707,7 @@ type ListVisibleTransactionsRow struct {
 	CreatedAt            stdtime.Time    `json:"created_at"`
 	UpdatedAt            stdtime.Time    `json:"updated_at"`
 	IsOneTime            bool            `json:"is_one_time"`
+	ObligationID         *uuid.UUID      `json:"obligation_id"`
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
 	ResolvedMerchantKey  string          `json:"resolved_merchant_key"`
@@ -766,6 +761,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.IsOneTime,
+			&i.ObligationID,
 			&i.AccountName,
 			&i.InstitutionName,
 			&i.ResolvedMerchantKey,
@@ -786,13 +782,12 @@ UPDATE transactions t
 SET excluded_from_reports = COALESCE($1::bool, t.excluded_from_reports),
     is_one_time           = COALESCE($2::bool, t.is_one_time),
     updated_at            = now()
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = $3
+  AND v.account_id = a.id
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $4
-RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
+  AND v.household_id = $4
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
 `
 
 type SetTransactionFlagsParams struct {
@@ -844,6 +839,7 @@ func (q *Queries) SetTransactionFlags(ctx context.Context, arg SetTransactionFla
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }
@@ -854,11 +850,10 @@ SELECT
     COALESCE(SUM(t.amount), 0)::numeric AS total
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -916,11 +911,10 @@ SELECT
     COALESCE(SUM(t.amount)  FILTER (WHERE t.amount > 0), 0)::numeric AS total_out
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1008,14 +1002,13 @@ SET amount          = $1,
     category_source = CASE WHEN $6::uuid IS NULL THEN NULL ELSE 'manual' END,
     notes           = $7,
     updated_at      = now()
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = $8
+  AND v.account_id = a.id
   AND t.source = 'manual'
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $9
-RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time
+  AND v.household_id = $9
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
 `
 
 type UpdateManualTransactionParams struct {
@@ -1071,6 +1064,7 @@ func (q *Queries) UpdateManualTransaction(ctx context.Context, arg UpdateManualT
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }
@@ -1099,7 +1093,7 @@ ON CONFLICT (plaid_transaction_id) DO UPDATE SET
                            THEN transactions.category_id ELSE NULL END,
     category_source = CASE WHEN transactions.category_source = 'manual'
                            THEN transactions.category_source ELSE NULL END
-RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time
+RETURNING id, account_id, plaid_transaction_id, amount, currency, date, authorized_date, name, merchant_name, merchant_key, pending, pending_transaction_id, plaid_pfc_primary, plaid_pfc_detailed, category_id, category_source, is_recurring, excluded_from_reports, notes, source, raw, created_at, updated_at, is_one_time, obligation_id
 `
 
 type UpsertTransactionParams struct {
@@ -1175,6 +1169,7 @@ func (q *Queries) UpsertTransaction(ctx context.Context, arg UpsertTransactionPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.IsOneTime,
+		&i.ObligationID,
 	)
 	return i, err
 }

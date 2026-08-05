@@ -155,6 +155,122 @@ again". This is a privacy property as much as a performance one: without the
 cache, matching a receipt to a charge that posted three days later would mean
 uploading it a second time.
 
+## Merchant logos add a host, but never to the browser
+
+`MERCHANT_LOGOS_ENABLED` is off by default and is a **separate switch from
+`AI_API_KEY`**, for the same reason receipt OCR is: configuring a model to sort
+your spending is not the same as agreeing to tell a logo company which shops you
+use.
+
+**Nothing changes in the browser's request list.** The obvious way to build this
+feature is an `<img src="https://img.logo.dev/...">`, and that is precisely what
+is not done here — it would put a third party in the page, hand it your IP and
+`Referer` on every render, and let it count your visits. Instead the worker
+fetches each logo once, stores the bytes in the database, and the api serves
+them from this origin. The api is **not a proxy**: if the worker has not cached
+a logo, the answer is a 404 and the app's own monogram is drawn. No page render
+ever depends on a third party being reachable.
+
+**What is sent, and to whom.** Your AI provider is asked which website a
+merchant is, by name — a name it already sees during categorisation, so this
+step adds no destination that categorisation had not already added. Logo.dev is
+sent a bare domain. Neither is sent an amount, a balance, an account, a date or
+a transaction. What Logo.dev can learn is the set of businesses this deployment
+has merchants for, one domain at a time, and that is the honest cost of the
+feature.
+
+**Each merchant costs one request, ever.** A resolved logo is cached; a merchant
+with no logo is cached as having none and is never asked about again. There is
+no re-fetch schedule and no refresh — so switching the feature on produces a
+burst of requests once and then effectively nothing.
+
+**Households can refuse it.** Even with the operator switch on, a household can
+turn the imagery off in **Settings → Appearance**. That stops the lookups on
+their behalf and **deletes the logos already cached for them**: the cache is
+derived data about where they shop, and keeping it past a "no" would be keeping
+the part they objected to.
+
+Bytes coming back are treated as untrusted input, because they end up rendered
+on this app's origin. The response header is ignored and the content type is
+sniffed from the bytes, SVG is refused outright (it is a script-bearing document
+format wearing an image's clothes — the same call the document vault makes), and
+anything over `MERCHANT_LOGOS_MAX_BYTES` is discarded as "no logo".
+
+The domain the model returns is validated before it is used: it must be a bare
+lowercase hostname, so a path, a port, credentials, an IP address or a scheme is
+refused before any request is made. The model's input ultimately arrives from a
+bank feed, and this is the boundary where that stops mattering.
+
+## Paystubs raise the sensitivity ceiling of the database
+
+Paystub tracking stores gross salary, an employer, and — optionally — an EIN.
+That is a step up in sensitivity from anything else the app holds, and the
+schema is built around three consequences.
+
+**Paystubs are private by default, and this is the one place the app inverts its
+sharing default.** Linked institutions (`plaid_items.is_shared`) and vault
+documents (`documents.is_shared`) both default to *shared*, because a
+household's accounts and paperwork are normally joint. A salary is not. In a
+two-earner household, the other member learning what you make has to be a
+decision somebody made, never the consequence of a column default — so
+`paystubs.is_shared` defaults to **false** and every read is scoped to
+`(owner OR shared)`. The adult-only route guard does nothing about this; it is
+enforced per row, in SQL.
+
+Seeing a shared stub is also not permission to change it. Confirming, editing,
+deleting and linking a deposit all resolve the row through an owner-scoped
+query, and a stub belonging to another member returns **404** rather than 403 —
+the distinction would confirm that it exists.
+
+**An EIN is sealed with `ENCRYPTION_KEY`,** the same key that protects Plaid
+tokens and vault documents, so it is not readable from a database dump alone and
+is excluded from the portable JSON export by type. It is returned in full by
+exactly one endpoint — the annual tax summary, the only place it is needed —
+and every other response shows `**-***6789`. The same consequence applies as for
+the vault: losing the key loses this column, which is the right trade for a
+field you can retype off a W-2 in ten seconds.
+
+**Personal identifiers are stripped before storage, not before display.** Any
+text taken off a stub — a line label, an unclassified row — is redacted of
+anything matching an SSN or a masked account number on the way *in*. A database
+that has never contained an SSN is a materially different thing to back up, to
+export, and to lose.
+
+### Paystub PDFs never leave the host
+
+There is no AI path for paystubs, deliberately.
+
+A PDF stub from a payroll provider is a **generated** document: the text is
+already in the file, in a fixed layout, so reading it is a parsing problem
+rather than a perception one. The importer pulls that text layer out locally
+(`internal/payroll/pdftext.go`) with no network call and no model. A scanned or
+photographed stub has no text layer, and the app says so and asks you to type it
+in — which is the fallback that has to work anyway.
+
+That is a stronger position than the receipt OCR above rather than a weaker one,
+and it is not an accident of scope. A paystub is *more* sensitive than the tax
+documents the OCR allowlist already refuses to send, so widening
+`ocrEligibleTypes` to include one would have been a single line and exactly the
+wrong line. Local extraction is also simply more accurate: transcribing a known
+field out of a text layer cannot misread a digit, and a misread year-to-date
+figure flowing into a tax summary is the expensive failure here.
+
+Reading a stub already in the vault is the same local parse over decrypted
+bytes, so it involves no third party either, and is not gated on
+`DOCUMENTS_OCR_ENABLED` — that switch decides what may be *uploaded* somewhere,
+which is a different question.
+
+### Unconfirmed paystubs are inert
+
+A paystub that has not been reviewed contributes to **no reported figure**: not
+the savings rate, not the effective tax rate, not contribution totals, not the
+tax summary. The filter lives in SQL, once, so no consumer can forget it.
+
+Confirmation additionally requires the stub to reconcile — gross minus the
+deductions must equal net, within a cent. A stub that does not balance can be
+saved as a draft but never confirmed, because silently storing a mis-entry would
+put its gap into every figure derived from it.
+
 ## Registration
 
 **Invite-only after the first account.** The first account creates the
@@ -168,10 +284,24 @@ open sign-up form on the public internet. See [Households](features/households.m
 - `.env` is gitignored. **Do not commit real Plaid credentials or secrets.**
   Make it non-world-readable (`chmod 600 .env`) — it holds the database password
   and both encryption keys.
-- The app **sends no email** and phones home to nothing but Plaid and
-  (optionally) your AI provider. One opt-in exception: setting
-  `BENCHMARK_PRICES_ENABLED=true` lets a daily job fetch end-of-day index closes
-  from Stooq for the Investments benchmark chart. It is off by default, sends
-  only a ticker symbol, and carries no account data.
+- The app **sends no email unless you configure SMTP**, and phones home to
+  nothing but Plaid and (optionally) your AI provider. Four opt-in exceptions:
+    - Setting `SMTP_HOST` enables the emailed
+      [digest](features/digest.md). Off by default; the digest is the only thing
+      the app ever mails, and only to members who tick the box themselves in
+      **Settings → Digest**. SMTP configured with nobody opted in sends nothing.
+      Both encrypted transports verify the server's certificate, and there is no
+      bypass setting.
+    - Setting `BENCHMARK_PRICES_ENABLED=true` lets a daily job fetch end-of-day
+      index closes from Stooq for the Investments benchmark chart. It is off by
+      default, sends only a ticker symbol, and carries no account data.
+    - Setting `MERCHANT_LOGOS_ENABLED=true` lets a daily job fetch merchant
+      logos from Logo.dev. Off by default; see below.
+    - Setting `CPI_FETCH_ENABLED=true` lets a daily job pull the newest month of
+      the CPI-U series from the BLS public API. Off by default, and the least
+      consequential of the four: the series ships bundled from January 2010, so
+      inflation-adjusted views work fully without it. The request names one
+      public series and a year range — identical for every install on earth,
+      with nothing about your household in it.
 - **Back up the database** — it's the only record of net-worth history. See
   [Deployment](deployment.md#back-up-the-database).

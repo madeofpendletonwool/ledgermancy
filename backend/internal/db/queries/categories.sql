@@ -84,12 +84,11 @@ WHERE merchant_category_map.source <> 'manual' OR EXCLUDED.source = 'manual';
 -- the sync upsert preserves it, so Plaid can never overwrite it.
 UPDATE transactions t
 SET category_id = $3, category_source = 'manual'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.id = $1
+  AND v.account_id = a.id
   AND a.id = t.account_id
-  AND i.id = a.plaid_item_id
-  AND u.id = i.user_id
-  AND u.household_id = $2
+  AND v.household_id = $2
 RETURNING t.*;
 
 -- name: ListUncategorisedTransactions :many
@@ -100,9 +99,8 @@ SELECT t.id, t.merchant_key, t.merchant_name, t.name,
        t.plaid_pfc_primary, t.plaid_pfc_detailed
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
   AND t.category_id IS NULL
 LIMIT $2;
 
@@ -122,9 +120,8 @@ SELECT t.id, t.merchant_key, t.merchant_name, t.name,
        t.plaid_pfc_primary, t.plaid_pfc_detailed
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
-WHERE u.household_id = $1
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
   AND t.category_id = $2
   AND t.category_source IS DISTINCT FROM 'manual'
   AND t.merchant_key IS NOT NULL
@@ -142,11 +139,10 @@ LIMIT $3;
 -- choice.
 UPDATE transactions t
 SET category_id = $3, category_source = 'llm'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.account_id = a.id
-  AND a.plaid_item_id = i.id
-  AND i.user_id = u.id
-  AND u.household_id = $1
+  AND v.account_id = a.id
+  AND v.household_id = $1
   AND t.merchant_key = $2
   AND t.category_source IS DISTINCT FROM 'manual';
 
@@ -158,11 +154,10 @@ WHERE t.account_id = a.id
 -- in merchant_category_map (source 'manual'), which also catches future syncs.
 UPDATE transactions t
 SET category_id = $3, category_source = 'cache'
-FROM accounts a, plaid_items i, users u
+FROM accounts a, account_access v
 WHERE t.account_id = a.id
-  AND a.plaid_item_id = i.id
-  AND i.user_id = u.id
-  AND u.household_id = $1
+  AND v.account_id = a.id
+  AND v.household_id = $1
   AND t.merchant_key = $2
   AND t.category_source IS DISTINCT FROM 'manual';
 

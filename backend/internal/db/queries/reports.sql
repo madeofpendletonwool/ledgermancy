@@ -40,11 +40,10 @@ WITH visible AS (
     SELECT t.amount, a.type AS account_type, c.is_income, c.is_transfer, c.is_fixed
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -77,11 +76,10 @@ SELECT
     COUNT(*)::bigint       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -117,11 +115,10 @@ SELECT
     COUNT(*)::bigint       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -156,11 +153,10 @@ SELECT
                                      AND is_spend(t.amount, a.type)), 0)::numeric AS discretionary_spending
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -197,11 +193,10 @@ SELECT
     SUM(ABS(t.amount))::numeric       AS total
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -238,11 +233,10 @@ SELECT
     SUM(ABS(t.amount))::numeric       AS total
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
@@ -266,11 +260,10 @@ SELECT
                                      AND is_spend(t.amount, a.type)), 0)::numeric AS spending
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -309,11 +302,10 @@ SELECT
     COUNT(*)::bigint                              AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -355,16 +347,15 @@ SELECT
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
 LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -419,16 +410,15 @@ WITH window_spend AS (
         )                                           AS descriptor_match
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
     LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -451,15 +441,14 @@ prior_spend AS (
         SUM(ABS(t.amount))::numeric                                 AS total
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -477,15 +466,14 @@ seen_before AS (
     SELECT DISTINCT COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS merchant_key
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -505,15 +493,14 @@ merchant_category AS (
         SUM(ABS(t.amount))::numeric AS total
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     JOIN categories c  ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -601,16 +588,15 @@ WITH tx AS (
         ABS(t.amount)::numeric AS amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
     LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       -- Unconditional here, unlike the period reports: this query exists ONLY to
@@ -766,11 +752,10 @@ SELECT
     COUNT(*)::bigint                    AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -857,14 +842,13 @@ SELECT
     COALESCE(MAX(ABS(t.amount)), 0)::numeric AS max_amount
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = @household_id
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = @household_id
-  AND (i.user_id = @user_id OR i.is_shared)
+WHERE v.household_id = @household_id
+  AND (v.user_id = @user_id OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -893,16 +877,15 @@ WITH tx AS (
         ABS(t.amount)::numeric AS amount
     FROM transactions t
     JOIN accounts a    ON a.id = t.account_id
-    JOIN plaid_items i ON i.id = a.plaid_item_id
-    JOIN users u       ON u.id = i.user_id
+    JOIN account_access v ON v.account_id = a.id
     LEFT JOIN categories c ON c.id = t.category_id
     LEFT JOIN merchant_aliases ma
            ON ma.household_id = $1
           AND ma.merchant_key = t.merchant_key
           AND ma.source <> 'suggested'
     LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-    WHERE u.household_id = $1
-      AND (i.user_id = $2 OR i.is_shared)
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
       AND a.is_active
       AND NOT t.excluded_from_reports
       AND NOT t.pending
@@ -976,10 +959,9 @@ SELECT
         SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
-        JOIN plaid_items i ON i.id = a.plaid_item_id
-        JOIN users u       ON u.id = i.user_id
-        WHERE u.household_id = b.household_id
-          AND (i.user_id = @user_id OR i.is_shared)
+        JOIN account_access v ON v.account_id = a.id
+        WHERE v.household_id = b.household_id
+          AND (v.user_id = @user_id OR v.is_shared)
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
@@ -998,10 +980,9 @@ SELECT
         SELECT SUM(ABS(t.amount))
         FROM transactions t
         JOIN accounts a    ON a.id = t.account_id
-        JOIN plaid_items i ON i.id = a.plaid_item_id
-        JOIN users u       ON u.id = i.user_id
-        WHERE u.household_id = b.household_id
-          AND (i.user_id = @user_id OR i.is_shared)
+        JOIN account_access v ON v.account_id = a.id
+        WHERE v.household_id = b.household_id
+          AND (v.user_id = @user_id OR v.is_shared)
           AND a.is_active
           AND NOT t.excluded_from_reports
           AND NOT t.pending
@@ -1055,17 +1036,16 @@ SELECT
     t.amount,
     t.currency,
     a.name AS account_name,
-    i.institution_name,
+    v.institution_name,
     c.name AS category_name,
     COALESCE(c.is_transfer, FALSE) AS is_transfer,
     COALESCE(c.is_income, FALSE)   AS is_income
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1085,11 +1065,10 @@ SELECT
     COALESCE(c.name, '')              AS category_name
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1128,15 +1107,14 @@ SELECT
     COALESCE(MAX(t.date)::text, '')::text AS last_seen
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1156,15 +1134,14 @@ SELECT
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1190,15 +1167,14 @@ SELECT
     COUNT(*)::bigint       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 JOIN categories c  ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1226,15 +1202,14 @@ SELECT
     c.id                              AS category_id
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1258,15 +1233,14 @@ SELECT
     ARRAY_AGG(DISTINCT t.merchant_key)::text[]                     AS descriptors
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
 LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.pending
   AND COALESCE(ma.entity_id::text, t.merchant_key) = sqlc.arg('resolved_key')::text
@@ -1303,11 +1277,10 @@ SELECT
     COALESCE(MAX(t.date)::text, '')::text  AS last_seen
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1330,11 +1303,10 @@ SELECT
     COUNT(*)::bigint                  AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1364,16 +1336,15 @@ SELECT
     COUNT(*)::bigint                                       AS transaction_count
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
 LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending
@@ -1401,16 +1372,15 @@ SELECT
     a.name                                                 AS account_name
 FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
-JOIN plaid_items i ON i.id = a.plaid_item_id
-JOIN users u       ON u.id = i.user_id
+JOIN account_access v ON v.account_id = a.id
 LEFT JOIN categories c ON c.id = t.category_id
 LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
 LEFT JOIN merchant_entities me ON me.id = ma.entity_id
-WHERE u.household_id = $1
-  AND (i.user_id = $2 OR i.is_shared)
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
   AND NOT t.excluded_from_reports
   AND NOT t.pending

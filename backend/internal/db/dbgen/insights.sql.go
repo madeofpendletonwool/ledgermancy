@@ -70,15 +70,16 @@ WHERE household_id = $1
     $2::bool
     OR (
       dismissed_at IS NULL
-      AND (period IS NULL OR period >= date_trunc('month', now())::date)
+      AND (period IS NULL OR period >= date_trunc('month', $3::timestamptz)::date)
     )
   )
 ORDER BY priority DESC, created_at DESC
 `
 
 type ListInsightsParams struct {
-	HouseholdID      uuid.UUID `json:"household_id"`
-	IncludeDismissed bool      `json:"include_dismissed"`
+	HouseholdID      uuid.UUID    `json:"household_id"`
+	IncludeDismissed bool         `json:"include_dismissed"`
+	AsOf             stdtime.Time `json:"as_of"`
 }
 
 // Feed order. The default feed shows non-dismissed insights that are still
@@ -88,8 +89,16 @@ type ListInsightsParams struct {
 // no period (event-anchored) are always current until dismissed. With
 // include_dismissed true, everything is returned (the full history view),
 // dismissed and past-period alike.
+//
+// The "current period" cutoff is taken from a caller-supplied as_of rather than
+// SQL now(): Generate writes period-scoped insights against a now IT is handed,
+// so the read must judge "has this month passed?" against the SAME clock for the
+// two to agree. The API passes time.Now(); tests pin both detection and this
+// read to one instant. A real-time now() here diverged from a pinned detection
+// now and hid a just-raised insight once the calendar month rolled over — the
+// TestGenerateDetectsAndDedupes flake.
 func (q *Queries) ListInsights(ctx context.Context, arg ListInsightsParams) ([]Insight, error) {
-	rows, err := q.db.Query(ctx, listInsights, arg.HouseholdID, arg.IncludeDismissed)
+	rows, err := q.db.Query(ctx, listInsights, arg.HouseholdID, arg.IncludeDismissed, arg.AsOf)
 	if err != nil {
 		return nil, err
 	}
