@@ -418,6 +418,33 @@ func educationHorizonPassed(p AccountPlan, month int) bool {
 	return month > yearsToGo*12
 }
 
+// AnnualMatch is annualMatch for callers outside this package: the match the
+// employer actually pays at the plan's CURRENT deferral. Doc 24's advisor
+// subtracts it from the match available at a full deferral to get the unclaimed
+// headroom, and doc 24's own verification requires the two agree to the cent —
+// which only holds while there is one implementation.
+func AnnualMatch(p AccountPlan) decimal.Decimal { return annualMatch(p) }
+
+// FullAnnualMatch is the match the employer would pay if the employee deferred
+// enough to capture all of it: the percentage-of-salary figure held at its cap,
+// WITHOUT annualMatch's "nobody matches a contribution that was never made"
+// clamp.
+//
+// The pair is the whole employer-match option. annualMatch answers "what is
+// being paid"; this answers "what is on the table", and the gap between them is
+// money the household is leaving there. Computing the second by re-deriving
+// pct × salary somewhere else is how the two would drift.
+func FullAnnualMatch(p AccountPlan) decimal.Decimal {
+	if !p.EmployerMatchPct.IsPositive() || !p.AnnualSalary.IsPositive() {
+		return decimal.Zero
+	}
+	match := p.EmployerMatchPct.Mul(p.AnnualSalary)
+	if p.EmployerMatchLimit.IsPositive() && match.GreaterThan(p.EmployerMatchLimit) {
+		match = p.EmployerMatchLimit
+	}
+	return match
+}
+
 // annualMatch is the employer's yearly contribution: a percentage of salary,
 // held at its annual cap.
 //

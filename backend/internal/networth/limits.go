@@ -149,6 +149,13 @@ func AnnualLimitFor(treatment string, age int, l TaxYearLimits, familyHSA bool) 
 	}
 }
 
+// LimitGroup is limitGroup for callers outside this package. Doc 24's advisor
+// pools tax-advantaged headroom per shared cap, and two 401(k)s sharing one
+// elective limit must not each be offered the whole of it. Exported rather than
+// reimplemented: a second grouping table is a household told it may contribute
+// twice what the IRS allows.
+func LimitGroup(treatment string) string { return limitGroup(treatment) }
+
 // limitGroup is the key contributions are pooled under before a cap is applied.
 // Two 401(k)s share one elective limit; a traditional and a Roth IRA share one
 // IRA limit. Anything with no shared cap gets its own group so it is never

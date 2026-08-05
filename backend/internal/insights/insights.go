@@ -85,5 +85,10 @@ func DefaultProducers() []Producer {
 		// revalue themselves from published rates every month, so a nudge would
 		// be asking the user to confirm arithmetic the app already did.
 		assetStaleProducer{},
+		// Proactive cash-flow advisor (advisor.go). ONE insight per run,
+		// carrying the whole ranked list — the ranking itself is entirely
+		// deterministic and lives in internal/advisor. Registered last because
+		// it is the only producer that proposes rather than reports.
+		advisorProducer{},
 	}
 }

@@ -22,6 +22,7 @@ import { DayBars } from '../components/charts/DayBars'
 import { SpendSparkline } from '../components/charts/SpendSparkline'
 import { InflationStrip } from '../components/InflationStrip'
 import { InsightFeed } from '../components/InsightFeed'
+import { AdvisorPanel } from '../components/AdvisorPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { AnimatedNumber } from '../components/motion'
@@ -154,6 +155,12 @@ export function Dashboard() {
       {/* Proactive feed — the app noticing things. Renders nothing when there
           is nothing to flag, so it never leaves an empty box at the top. */}
       <InsightFeed variant="card" limit={3} />
+
+      {/* The proactive advisor — what this month's slack would DO if it were not
+          spent. Sits below the feed because the feed reports things that have
+          already happened and this proposes something that has not. Renders
+          nothing when the slack is not worth a suggestion. */}
+      <AdvisorPanel />
 
       <BillsDueStrip bills={billsThisWeek.data?.items ?? []} total={billsThisWeek.data?.total} />
 

@@ -959,6 +959,100 @@ export interface SafeToSpend {
 }
 
 /**
+ * One row of an option's "how this was calculated" panel: an input's label and
+ * the finished figure that went into the ranking.
+ */
+export interface AdviceBasis {
+  label: string
+  value: string
+}
+
+/**
+ * One computed use of one marginal dollar.
+ *
+ * Every figure is finished server-side in exact decimal. NOTHING HERE IS
+ * RECOMPUTED IN JS — not the value, not the order. `tier` is the waterfall step
+ * that placed it and the list arrives already sorted; re-sorting it in the
+ * client would silently replace a published rule with a different one.
+ */
+export interface AdviceOption {
+  /** Stable (kind, subject) identity — what a household suppresses. */
+  key: string
+  kind: string
+  subject_id?: string
+  /** 1–7; 0 with `unranked` true means it could not be placed. */
+  tier: number
+  label: string
+  detail: string
+  amount: string
+  /**
+   * What `amount` buys. `value_kind` says in what unit — for
+   * 'months_earlier' this is a COUNT OF MONTHS, not money, and rendering it
+   * with a currency symbol is the mistake that makes the panel untrustworthy.
+   */
+  value: string
+  value_kind:
+    | 'interest_avoided'
+    | 'match_captured'
+    | 'months_earlier'
+    | 'gap_closed'
+    | 'headroom'
+    | 'projected_growth'
+  /**
+   * An input the option needed is missing — in practice a debt with no APR
+   * anywhere. Listed and labelled rather than dropped or defaulted to zero: a
+   * debt with an unknown rate is the one most likely to be expensive.
+   */
+  unranked: boolean
+  /**
+   * Tier 7. These are shown SIDE BY SIDE rather than ranked against each other
+   * — the app has no opinion on a guaranteed 3.5% versus an assumed 7%.
+   */
+  tradeoff: boolean
+  /** A debt that never clears at its current payment; `value` is then zero. */
+  unbounded: boolean
+  note?: string
+  basis: AdviceBasis[]
+}
+
+/**
+ * One advisor run.
+ *
+ * `slack` is the SAME figure the Budgets page prints as safe-to-spend, and the
+ * copy around it must stay CONDITIONAL — "if you don't spend this" — never "you
+ * have this available". Two surfaces giving opposite instructions about one
+ * number is how a household stops trusting both.
+ */
+export interface Advice {
+  slack: string
+  /** 'after_bills' when known bills were used; 'typical_month' otherwise. */
+  slack_basis: 'after_bills' | 'typical_month'
+  obligation_coverage: number
+  income_months: number
+  threshold: string
+  /** False when there is nothing worth saying; `options` is then empty. */
+  significant: boolean
+  /** The APR, as a percentage, above which guaranteed beats assumed. */
+  hurdle: string
+  hurdle_basis: string
+  slack_parts: {
+    expected_income: string
+    fixed_costs: string
+    fixed_costs_after_bills: string
+    budgeted_discretionary: string
+    goal_contributions: string
+    upcoming_obligations: string
+  }
+  options: AdviceOption[]
+  suppressed: string[]
+  /**
+   * The model's phrasing of the list. EMPTY IS NORMAL — with no API key the
+   * options render as a plain list and nothing is missing but the prose.
+   */
+  narrative: string
+}
+
+/**
  * A recurring obligation: a bill the app knows is coming. `next_due` and
  * `monthly_estimate` are DERIVED server-side, never stored — a stored next-due
  * date is a cache that goes stale the moment the calendar rolls over.
@@ -3314,6 +3408,11 @@ export const api = {
   // budgets, and goal contributions — computed server-side from typical income.
   safeToSpend: () =>
     request<SafeToSpend>('GET', '/api/budgets/safe-to-spend'),
+
+  // The proactive advisor: the same slack figure safeToSpend returns, plus a
+  // ranked list of what it would do if it were not spent. Read-only — the
+  // advisor executes nothing.
+  advisor: () => request<Advice>('GET', '/api/advisor'),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when

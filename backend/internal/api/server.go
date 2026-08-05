@@ -597,6 +597,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Get("/", s.handleListLiabilities)
 		})
 
+		// The proactive advisor. Read-only by design and permanently so: it
+		// presents computed tradeoffs and EXECUTES NOTHING. RequireAdult
+		// because it reads the household's whole financial position — debts,
+		// salary, retirement balances — into one response, and its settings are
+		// household preferences written through /preferences.
+		r.Route("/advisor", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleAdvisor)
+		})
+
 		r.Route("/manual-assets", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListManualAssets)
