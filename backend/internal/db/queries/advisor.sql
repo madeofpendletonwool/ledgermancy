@@ -105,9 +105,16 @@ RETURNING *;
 -- name: UpdateHouseholdProfile :one
 -- The two profile columns doc 31 adds. NULL clears a field, which is a real
 -- answer: "I have not told you my filing status" is not "single".
+--
+-- magi/magi_tax_year join them in doc 32: the Roth phase-out is keyed by filing
+-- status AND income, and the app cannot compute a MAGI, so it is typed in here
+-- beside the status it pairs with. The year travels with the figure so a stale
+-- one is visible rather than silently reused — see networth/eligibility.go.
 UPDATE households
 SET filing_status       = $2,
     risk_drawdown_floor = $3,
+    magi                = $4,
+    magi_tax_year       = $5,
     updated_at          = now()
 WHERE id = $1
 RETURNING *;

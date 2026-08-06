@@ -424,21 +424,36 @@ const updateHouseholdProfile = `-- name: UpdateHouseholdProfile :one
 UPDATE households
 SET filing_status       = $2,
     risk_drawdown_floor = $3,
+    magi                = $4,
+    magi_tax_year       = $5,
     updated_at          = now()
 WHERE id = $1
-RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor
+RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year
 `
 
 type UpdateHouseholdProfileParams struct {
 	ID                uuid.UUID           `json:"id"`
 	FilingStatus      *string             `json:"filing_status"`
 	RiskDrawdownFloor decimal.NullDecimal `json:"risk_drawdown_floor"`
+	Magi              decimal.NullDecimal `json:"magi"`
+	MagiTaxYear       *int32              `json:"magi_tax_year"`
 }
 
 // The two profile columns doc 31 adds. NULL clears a field, which is a real
 // answer: "I have not told you my filing status" is not "single".
+//
+// magi/magi_tax_year join them in doc 32: the Roth phase-out is keyed by filing
+// status AND income, and the app cannot compute a MAGI, so it is typed in here
+// beside the status it pairs with. The year travels with the figure so a stale
+// one is visible rather than silently reused — see networth/eligibility.go.
 func (q *Queries) UpdateHouseholdProfile(ctx context.Context, arg UpdateHouseholdProfileParams) (Household, error) {
-	row := q.db.QueryRow(ctx, updateHouseholdProfile, arg.ID, arg.FilingStatus, arg.RiskDrawdownFloor)
+	row := q.db.QueryRow(ctx, updateHouseholdProfile,
+		arg.ID,
+		arg.FilingStatus,
+		arg.RiskDrawdownFloor,
+		arg.Magi,
+		arg.MagiTaxYear,
+	)
 	var i Household
 	err := row.Scan(
 		&i.ID,
@@ -447,6 +462,8 @@ func (q *Queries) UpdateHouseholdProfile(ctx context.Context, arg UpdateHousehol
 		&i.UpdatedAt,
 		&i.FilingStatus,
 		&i.RiskDrawdownFloor,
+		&i.Magi,
+		&i.MagiTaxYear,
 	)
 	return i, err
 }

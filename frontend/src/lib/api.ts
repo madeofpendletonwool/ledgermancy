@@ -365,6 +365,13 @@ export interface Account {
   source: 'plaid' | 'manual'
   tax_treatment: string | null
   is_shared: boolean
+  /**
+   * User-entered deposit yield as a PERCENT string ("4.50"), on a depository
+   * account. Null means nobody has entered one — UNKNOWN, never zero. The
+   * cash-drag detector stays silent on a null rather than reporting a
+   * high-yield savings account as the household's worst drag.
+   */
+  deposit_apy: string | null
 }
 
 /** Fields the manual-account editor sends. Balance is a string like every other
@@ -1944,7 +1951,13 @@ export interface AlertEvent {
 }
 
 /** The two kinds of goal: put money aside, or clear a debt. */
-export type GoalKind = 'savings' | 'debt_payoff'
+/**
+ * 'college' joins the two original kinds in doc 32. Its target_amount is ONE
+ * YEAR'S cost in today's dollars, not the multi-year total — the engine inflates
+ * each year separately and draws them down, which is what makes "funded through
+ * sophomore year, short in junior year" computable.
+ */
+export type GoalKind = 'savings' | 'debt_payoff' | 'college'
 
 /**
  * The amortization detail behind a debt_payoff goal. Every figure is computed
@@ -2047,6 +2060,11 @@ export interface Goal {
   created_at: string
   /** Present only on a debt_payoff goal. */
   payoff?: GoalPayoff
+  /** Years of study a college goal funds. Defaults to 4; ignored on other kinds. */
+  college_years: number
+  /** Present only on a college goal: the sentence that stops target_amount
+   *  being read as the whole cost of a degree. */
+  college_basis?: string
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
@@ -2059,6 +2077,9 @@ export interface GoalInput {
   target_date?: string
   /** Defaults to 'savings'. A 'debt_payoff' goal must set `account_id`. */
   kind?: GoalKind
+  /** Years of study, for a 'college' goal. Defaults to 4 on create; omitting it
+   *  on an UPDATE leaves the stored value alone rather than resetting it. */
+  college_years?: number
   scope?: 'household' | 'user' | 'person'
   /** Required when scope is 'person'. */
   person_id?: string | null
@@ -2997,6 +3018,296 @@ export interface HouseholdProfile {
   filing_status: FilingStatus | null
   /** A PERCENT, e.g. "20.00" for a 20% drawdown floor. */
   risk_drawdown_floor: string | null
+  /**
+   * Modified AGI for magi_tax_year, doc 32's Roth-eligibility input. Null is a
+   * real answer and the important one: without it the eligibility check reports
+   * `unknown`, never `eligible`. Ledgermancy cannot compute a MAGI — it is not
+   * an AGI and it is not gross income — so it is typed in or it is absent.
+   */
+  magi: string | null
+  /**
+   * The tax year the MAGI is for. A figure from a different year is treated as
+   * absent rather than silently reused.
+   */
+  magi_tax_year: number | null
+}
+
+// --- Allocation planner (doc 32) -------------------------------------------
+
+/**
+ * Which arithmetic a bucket needs. Only an investment bucket compounds; a debt
+ * amortizes and cash accrues, and the UI renders a different formula for each.
+ * Showing a credit card a compound-growth formula would be worse than showing
+ * nothing.
+ */
+export type BucketKind = 'investment' | 'debt' | 'cash'
+
+/** One account money can be allocated to. */
+export interface AllocationBucket {
+  account_id: string
+  name: string
+  institution?: string
+  kind: BucketKind
+  treatment?: string
+  subtype?: string
+  balance: string
+  /** What is already being paid in, before this plan adds anything. */
+  existing_monthly: string
+  /** A PERCENT. Absent means nobody has entered one — unknown, never zero. */
+  deposit_apy?: string
+  /** Null where unknown. A genuine 0% card and an unknown rate are different. */
+  apr?: string
+  minimum_payment?: string
+}
+
+export interface AllocationBuckets {
+  buckets: AllocationBucket[]
+  real_return_rate: string
+  inflation_rate: string
+  excluded_accounts: string[]
+  filing_status?: string
+  magi_known: boolean
+  age_known: boolean
+}
+
+/** One line of a proposed split. Percentages 0–100, as decimal strings. */
+export interface AllocationSplitInput {
+  account_id: string
+  lump_pct: string
+  monthly_pct: string
+  /** A FRACTION ("0.06"); omit to use the household's assumed rate. */
+  real_return_rate?: string | null
+}
+
+export interface AllocationRunInput {
+  lump: string
+  monthly: string
+  horizon_years: number
+  target_nest_egg?: string | null
+  family_hsa?: boolean
+  splits: AllocationSplitInput[]
+}
+
+export interface PayoffSummary {
+  monthly_payment: string
+  never_pays_off: boolean
+  months: number
+  total_interest: string
+  payoff_date?: string
+  monthly_interest: string
+}
+
+export interface AllocationBucketResult {
+  account_id: string
+  name: string
+  institution?: string
+  kind: BucketKind
+  treatment?: string
+
+  /** What the split asked for vs what actually went in after eligibility. */
+  allocated_lump: string
+  allocated_monthly: string
+  applied_lump: string
+  applied_monthly: string
+
+  engine: 'compound' | 'amortization' | 'accrual'
+  /** The arithmetic spelled out with this bucket's own numbers. */
+  formula: string
+
+  start_balance: string
+  /**
+   * The value at the horizon. NOT a P50 — this is the projected value at the
+   * assumed return, and compounding at the mean is a different statistic from
+   * the median of a simulation. Doc 33's fan chart renders beside it.
+   */
+  projected_value: string
+  contributed: string
+  growth: string
+  return_rate: string
+  rate_is_household: boolean
+  deposit_apy?: string
+
+  cap_group?: string
+  annual_limit?: string
+  eligibility?: string
+  eligibility_note?: string
+  /** Money the eligibility check refused, as distinct from money the cap did. */
+  eligibility_spill: string
+
+  payoff_base?: PayoffSummary
+  payoff_plan?: PayoffSummary
+  interest_avoided: string
+  months_saved: number
+
+  notes: string[]
+}
+
+export interface AllocationCapNote {
+  group: string
+  planned_annual: string
+  allowed_annual: string
+  spill_annual: string
+}
+
+export interface AllocationGoalMapping {
+  goal_id: string
+  name: string
+  kind: string
+  plan_monthly: string
+  linked: boolean
+  target: string
+  current: string
+  remaining: string
+  required_monthly: string
+  shortfall: string
+  on_track: boolean
+  open_ended: boolean
+  achieved: boolean
+  months_left: number
+}
+
+export interface CollegeYearDetail {
+  year: number
+  cost: string
+  covered: string
+  shortfall: string
+  balance_after: string
+}
+
+export interface CollegeResult {
+  goal_id: string
+  name: string
+  projectable: boolean
+  note?: string
+  account_id?: string
+  account_name?: string
+  years_to_enrollment: number
+  years: number
+  annual_cost_today: string
+  inflation_rate: string
+  real_excess_rate: string
+  balance_at_enrollment: string
+  total_cost: string
+  total_covered: string
+  total_shortfall: string
+  funded_pct: string
+  first_shortfall_year: number
+  monthly_needed?: string
+  years_detail: CollegeYearDetail[]
+  basis: string
+}
+
+export interface AllocationHorizonFlag {
+  goal_id: string
+  goal_name: string
+  bucket_name: string
+  months_left: number
+  message: string
+}
+
+export interface AllocationResult {
+  horizon_years: number
+  as_of: string
+  horizon_date: string
+  lump: string
+  monthly: string
+  unallocated_lump: string
+  unallocated_monthly: string
+  buckets: AllocationBucketResult[]
+  /** Investment + cash. Debt is NOT added in — a retired balance is not a portfolio. */
+  projected_assets: string
+  baseline_assets: string
+  delta: string
+  total_interest_avoided: string
+  target_nest_egg?: string
+  target_met?: boolean
+  cap_notes: AllocationCapNote[]
+  limits_year: number
+  limits_configured: boolean
+  cap_basis: string
+  goals: AllocationGoalMapping[]
+  college: CollegeResult[]
+  horizon_flags: AllocationHorizonFlag[]
+  excluded_accounts: string[]
+  notes: string[]
+  estimate: boolean
+  basis: string
+}
+
+export interface AllocationPlanSummary {
+  id: string
+  name: string
+  input_version: number
+  inputs: {
+    lump: string
+    monthly: string
+    horizon_years: number
+    target?: string
+    family_hsa: boolean
+    buckets: {
+      account_id: string
+      lump_pct: string
+      monthly_pct: string
+      real_return_rate?: string
+    }[]
+  }
+  assumptions: {
+    real_return_rate: string
+    inflation_rate: string
+    withdrawal_rate: string
+    college_inflation_rate: string
+    current_age: number
+    age_known: boolean
+    filing_status?: string
+    magi_known: boolean
+    tax_year: number
+  }
+  created_at: string
+  updated_at: string
+  /** Present on a single-plan read: the plan RECOMPUTED against live data. */
+  result?: AllocationResult
+  result_error?: string
+}
+
+export interface IdleCashItem {
+  account_id: string
+  name: string
+  institution?: string
+  subtype?: string
+  balance: string
+  apy: string
+  operating_float: string
+  idle_balance: string
+  annual_drag: string
+  detail: string
+}
+
+export interface IdleCashReport {
+  /** False when no deposit yield is on file anywhere: the detector stays silent. */
+  has_benchmark: boolean
+  benchmark: string
+  benchmark_account?: string
+  items: IdleCashItem[]
+  total_annual_drag: string
+  total_idle: string
+  unknown_yield_accounts: string[]
+  note: string
+  basis: string
+}
+
+export interface AssetLocationRule {
+  asset_class: string
+  preferred_account: string
+  reason: string
+  assumption: string
+}
+
+export interface AssetLocationDisclosure {
+  rules: AssetLocationRule[]
+  /** Always false. In the payload so this cannot be rendered as advice by accident. */
+  is_recommendation: boolean
+  bracket_known: boolean
+  note: string
 }
 
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
@@ -3591,7 +3902,56 @@ export const api = {
   updateHouseholdProfile: (input: {
     filing_status: FilingStatus | null
     risk_drawdown_floor: string | null
+    magi?: string | null
+    magi_tax_year?: number | null
   }) => request<HouseholdProfile>('PUT', '/api/household/profile/', input),
+
+  // --- Allocation planner (doc 32) -----------------------------------------
+  // Splitting a lump and a monthly surplus across buckets, with caps,
+  // eligibility, per-bucket projections and goal mapping.
+  //
+  // runAllocation is a POST that WRITES NOTHING. It is a POST because the
+  // request carries a body the engine needs, not because it mutates anything —
+  // the plan is computed and returned, and the household's accounts, goals and
+  // contributions come out of it byte-identical.
+  allocationBuckets: () =>
+    request<AllocationBuckets>('GET', '/api/allocation/buckets'),
+
+  runAllocation: (input: AllocationRunInput) =>
+    request<AllocationResult>('POST', '/api/allocation/plan', input),
+
+  allocationPlans: () =>
+    request<AllocationPlanSummary[]>('GET', '/api/allocation/plans'),
+
+  // Opening a saved plan RECOMPUTES it against today's baseline. Results are
+  // deliberately never stored: a saved projection is a figure that quietly
+  // stops being true and keeps being displayed.
+  allocationPlan: (id: string) =>
+    request<AllocationPlanSummary>('GET', `/api/allocation/plans/${id}`),
+
+  saveAllocationPlan: (name: string, input: AllocationRunInput) =>
+    request<AllocationPlanSummary>('POST', '/api/allocation/plans', {
+      name,
+      ...input,
+    }),
+
+  deleteAllocationPlan: (id: string) =>
+    request<void>('DELETE', `/api/allocation/plans/${id}`),
+
+  idleCash: () => request<IdleCashReport>('GET', '/api/accounts/idle-cash'),
+
+  assetLocation: () =>
+    request<AssetLocationDisclosure>('GET', '/api/allocation/asset-location'),
+
+  // A PERCENT ("4.50" = 4.5%). Null CLEARS it, which is a real operation: an
+  // empty field means "nobody has said", and the cash-drag detector stays
+  // silent on it rather than reading it as zero.
+  setDepositApy: (accountId: string, depositApy: string | null) =>
+    request<{ id: string; name: string; deposit_apy: string | null }>(
+      'PUT',
+      `/api/accounts/${accountId}/deposit-apy`,
+      { deposit_apy: depositApy },
+    ),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when

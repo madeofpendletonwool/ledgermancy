@@ -61,6 +61,9 @@ func TestToolSetMembersAllExist(t *testing.T) {
 	for _, d := range chatAdvisorToolDefs() {
 		catalogue[d.Name] = true
 	}
+	for _, d := range chatAllocationToolDefs() {
+		catalogue[d.Name] = true
+	}
 
 	for _, set := range ToolSets() {
 		for _, name := range toolSetNames(set) {

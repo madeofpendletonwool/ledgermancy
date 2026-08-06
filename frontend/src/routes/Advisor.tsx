@@ -17,6 +17,7 @@ import {
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
 import { AdvisorPanel } from '../components/AdvisorPanel'
+import { BucketAllocator } from '../components/BucketAllocator'
 import { ChartAttachment } from '../components/ChartAttachment'
 
 /**
@@ -34,7 +35,7 @@ import { ChartAttachment } from '../components/ChartAttachment'
  * the same rule every other AI-touched surface in this app follows.
  */
 
-type Tab = 'chat' | 'horizon' | 'options' | 'actions' | 'assumptions'
+type Tab = 'chat' | 'horizon' | 'options' | 'allocate' | 'actions' | 'assumptions'
 
 /**
  * How many turns of a saved thread travel with a new question.
@@ -69,6 +70,11 @@ export function Advisor() {
     ...(aiEnabled ? [{ id: 'chat' as Tab, label: 'Conversation' }] : []),
     { id: 'horizon', label: 'Horizon' },
     { id: 'options', label: 'Options' },
+    // The allocator sits after Options for a reason: Options ranks SINGLE
+    // picks ("the highest-value thing is to pay the card"), and this is the
+    // multi-bucket answer to the same money. Reading them in that order is
+    // reading the advice getting more specific.
+    { id: 'allocate', label: 'Allocate' },
     { id: 'actions', label: 'Action items' },
     { id: 'assumptions', label: 'Assumptions' },
   ]
@@ -110,6 +116,7 @@ export function Advisor() {
       {tab === 'chat' && aiEnabled && <Conversation />}
       {tab === 'horizon' && <HorizonView briefing={briefing.data} />}
       {tab === 'options' && <OptionsTab />}
+      {tab === 'allocate' && <BucketAllocator />}
       {tab === 'actions' && <ActionItemsTray />}
       {tab === 'assumptions' && <AssumptionsPanel />}
     </div>
@@ -1062,12 +1069,16 @@ function AssumptionsPanel() {
 
   const [filing, setFiling] = useState<string>('')
   const [floor, setFloor] = useState('')
+  const [magi, setMagi] = useState('')
+  const [magiYear, setMagiYear] = useState<string>(String(new Date().getFullYear()))
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     if (!profile.data) return
     setFiling(profile.data.filing_status ?? '')
     setFloor(profile.data.risk_drawdown_floor ?? '')
+    setMagi(profile.data.magi ?? '')
+    if (profile.data.magi_tax_year != null) setMagiYear(String(profile.data.magi_tax_year))
   }, [profile.data])
 
   const save = useMutation({
@@ -1075,6 +1086,8 @@ function AssumptionsPanel() {
       api.updateHouseholdProfile({
         filing_status: filing === '' ? null : (filing as FilingStatus),
         risk_drawdown_floor: floor.trim() === '' ? null : floor.trim(),
+        magi: magi.trim() === '' ? null : magi.trim(),
+        magi_tax_year: magi.trim() === '' ? null : Number(magiYear),
       }),
     onSuccess: () => {
       setSaved(true)
@@ -1155,6 +1168,38 @@ function AssumptionsPanel() {
             contribution, not just how much the cap allows.
           </span>
         </label>
+
+        <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
+          <label className="block">
+            <span className="mb-1 block text-sm text-mist-300">
+              Modified AGI (optional)
+            </span>
+            <input
+              className="field w-full"
+              inputMode="decimal"
+              placeholder="e.g. 185000.00"
+              value={magi}
+              onChange={(e) => setMagi(e.target.value)}
+            />
+            <span className="mt-1 block text-xs text-mist-500">
+              Ledgermancy cannot work this out — a MAGI is not your gross income and
+              not your AGI. Without it, Roth eligibility is reported as{' '}
+              <em>unknown</em> rather than assumed to be fine.
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm text-mist-300">Tax year</span>
+            <input
+              className="field w-full"
+              inputMode="numeric"
+              value={magiYear}
+              onChange={(e) => setMagiYear(e.target.value)}
+            />
+            <span className="mt-1 block text-xs text-mist-500">
+              A figure from another year is treated as absent.
+            </span>
+          </label>
+        </div>
 
         <label className="block">
           <span className="mb-1 block text-sm text-mist-300">

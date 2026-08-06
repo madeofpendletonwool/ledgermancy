@@ -567,13 +567,26 @@ type householdProfileResponse struct {
 	// RiskDrawdownFloor is a PERCENT: "20.00" means a 20% drawdown is the floor
 	// this household is willing to plan around.
 	RiskDrawdownFloor *string `json:"risk_drawdown_floor"`
+	// MAGI is doc 32's eligibility input: the household's modified AGI for
+	// MAGITaxYear. The app CANNOT compute this — a MAGI is not an AGI is not
+	// gross income, and a real one needs a tax return — so it is typed in or it
+	// is absent, and absent means the Roth check returns `unknown` rather than
+	// the flattering `eligible`.
+	MAGI *string `json:"magi"`
+	// MAGITaxYear is what keeps the figure honest a year later. A MAGI is a
+	// statement about ONE tax year, and networth.EligibilityFor treats a value
+	// whose year is not the year being checked as absent.
+	MAGITaxYear *int `json:"magi_tax_year"`
 }
 
 type updateProfileRequest struct {
-	// Both pointers, and both nullable on the wire: clearing a field is a real
-	// operation. "I have not told you my filing status" is not "single".
+	// Every field is a pointer, and every one is nullable on the wire: clearing
+	// a field is a real operation. "I have not told you my filing status" is not
+	// "single", and a cleared MAGI is not an income of zero.
 	FilingStatus      *string `json:"filing_status"`
 	RiskDrawdownFloor *string `json:"risk_drawdown_floor"`
+	MAGI              *string `json:"magi"`
+	MAGITaxYear       *int    `json:"magi_tax_year"`
 }
 
 var validFilingStatuses = map[string]bool{
@@ -637,8 +650,40 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The MAGI and its year travel together or not at all. A figure with no year
+	// is unusable — the eligibility check cannot tell whether it is current —
+	// and a year with no figure is bookkeeping about nothing.
+	var magi decimal.NullDecimal
+	var magiYear *int32
+	if req.MAGI != nil {
+		if v := strings.TrimSpace(*req.MAGI); v != "" {
+			d, err := decimal.NewFromString(v)
+			if err != nil {
+				writeError(w, http.StatusBadRequest,
+					"magi must be a decimal amount, e.g. \"185000.00\"")
+				return
+			}
+			if d.IsNegative() {
+				writeError(w, http.StatusBadRequest, "magi cannot be negative")
+				return
+			}
+			year := time.Now().UTC().Year()
+			if req.MAGITaxYear != nil {
+				year = *req.MAGITaxYear
+			}
+			if year < minMAGIYear || year > maxMAGIYear {
+				writeError(w, http.StatusBadRequest, "magi_tax_year is out of range")
+				return
+			}
+			magi = decimal.NullDecimal{Decimal: d, Valid: true}
+			y := int32(year)
+			magiYear = &y
+		}
+	}
+
 	h, err := s.Queries.UpdateHouseholdProfile(r.Context(), dbgen.UpdateHouseholdProfileParams{
 		ID: identity.HouseholdID, FilingStatus: filing, RiskDrawdownFloor: floor,
+		Magi: magi, MagiTaxYear: magiYear,
 	})
 	if err != nil {
 		s.internalError(w, "update household profile", err)
@@ -647,11 +692,27 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toProfileResponse(h))
 }
 
+// minMAGIYear / maxMAGIYear bound the tax year. Not an opinion about which
+// years matter — they reject a typo that would silently make a current MAGI
+// look stale (or a stale one look current) to the eligibility check.
+const (
+	minMAGIYear = 2000
+	maxMAGIYear = 2100
+)
+
 func toProfileResponse(h dbgen.Household) householdProfileResponse {
 	out := householdProfileResponse{FilingStatus: h.FilingStatus}
 	if h.RiskDrawdownFloor.Valid {
 		v := h.RiskDrawdownFloor.Decimal.StringFixed(2)
 		out.RiskDrawdownFloor = &v
+	}
+	if h.Magi.Valid {
+		v := h.Magi.Decimal.StringFixed(2)
+		out.MAGI = &v
+	}
+	if h.MagiTaxYear != nil {
+		y := int(*h.MagiTaxYear)
+		out.MAGITaxYear = &y
 	}
 	return out
 }

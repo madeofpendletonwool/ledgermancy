@@ -14,10 +14,28 @@
 -- checked server-side; a child session always passes false.
 
 -- name: CreateGoal :one
+-- college_years is only meaningful for a 'college' goal; every other kind
+-- carries the default of 4 and ignores it. For a college goal target_amount is
+-- ONE YEAR'S cost in today's dollars — see allocation/college.go, which inflates
+-- each year separately and draws them down, and the migration comment on
+-- goals.college_years.
+--
+-- NULLABLE, and COALESCEd rather than taken as a plain argument. A plain one
+-- makes the Go zero value (0) a real argument, and 0 violates the column's
+-- CHECK — so every caller that had no opinion about college years, including
+-- ones written years before this column existed, would start failing on INSERT.
+-- "I did not say" has to be expressible, and here it means four.
+--
+-- The literal 4 mirrors the column DEFAULT in 00055_allocation_planner.sql and
+-- api.defaultCollegeYears. Three copies is two too many, but a column default
+-- cannot be read from a parameterised INSERT; keep them in step.
 INSERT INTO goals (
     household_id, scope, user_id, person_id, kind, name, target_amount,
-    target_date, account_id, category_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    target_date, account_id, category_id, college_years
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+    COALESCE(sqlc.narg('college_years')::smallint, 4)
+)
 RETURNING *;
 
 -- name: ListGoals :many
@@ -50,7 +68,12 @@ SET name = sqlc.arg('name'),
     target_amount = sqlc.arg('target_amount'),
     target_date = sqlc.narg('target_date'),
     account_id = sqlc.narg('account_id'),
-    category_id = sqlc.narg('category_id')
+    category_id = sqlc.narg('category_id'),
+    -- NULL leaves it alone. The update body is otherwise the whole state, but
+    -- a client that has never heard of college_years (every client written
+    -- before doc 32) would otherwise silently reset a five-year programme to
+    -- four every time somebody renamed the goal.
+    college_years = COALESCE(sqlc.narg('college_years')::smallint, college_years)
 WHERE id = sqlc.arg('id')
   AND household_id = sqlc.arg('household_id')
   AND (

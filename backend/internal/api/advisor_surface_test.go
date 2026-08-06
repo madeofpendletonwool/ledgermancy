@@ -475,10 +475,22 @@ func TestHouseholdProfile(t *testing.T) {
 // AnnualLimitFor answers "what is the cap for this account type at this age" and
 // nothing else. A Roth IRA has a MAGI phase-out, and above it the correct
 // headroom is $0 rather than $7,500. The tool therefore ships `eligibility` as
-// its own field from day one — "unknown" in this doc's cycle, and doc 32's
-// phase-out table makes it more. A client that renders "you have $7,500 of room"
-// has nowhere to put "…but you may not be allowed to use it" if the field
-// arrives later.
+// its own field.
+//
+// DOC 31 SHIPPED THAT FIELD HARD-CODED TO "unknown" and said doc 32's phase-out
+// table would make it more; doc 32 did, so the assertion below is no longer
+// "every group says unknown" but the contract that actually matters. Per group:
+//
+//   - 401k — no income test exists, so "eligible" is a claim the app can stand
+//     behind.
+//   - ira  — checked as a ROTH, because the traditional-IRA phase-out is on
+//     DEDUCTIBILITY rather than on the contribution. This fixture's household
+//     has no filing status and no MAGI, so the honest answer is "unknown".
+//   - hsa  — needs HDHP coverage, which this app has no data for. Permanently
+//     unknown.
+//
+// The flattering failure is the one to guard: a household that has told us
+// NOTHING must never be reported as eligible for a Roth contribution.
 func TestContributionRoomSeparatesCapFromPermission(t *testing.T) {
 	f := newAdvisorSurfaceFixture(t)
 
@@ -508,10 +520,24 @@ func TestContributionRoomSeparatesCapFromPermission(t *testing.T) {
 	if !out.LimitsConfigured || len(out.Groups) == 0 {
 		t.Fatalf("2026 limits should be configured with groups, got %+v", out)
 	}
+	// The fixture household has neither a filing status nor a MAGI on file.
+	wantEligibility := map[string]string{
+		"401k": "eligible",
+		"ira":  "unknown",
+		"hsa":  "unknown",
+	}
 	for _, g := range out.Groups {
-		if g.Eligibility != "unknown" {
-			t.Errorf("%s eligibility = %q; this doc ships the field as unknown, and it must be PRESENT",
-				g.Group, g.Eligibility)
+		if g.Eligibility == "" {
+			t.Errorf("%s has no eligibility field; it must be PRESENT and separate from the cap", g.Group)
+		}
+		if want, ok := wantEligibility[g.Group]; ok && g.Eligibility != want {
+			t.Errorf("%s eligibility = %q, want %q", g.Group, g.Eligibility, want)
+		}
+		// THE FLATTERING FAILURE. With no income on file, an IRA reported as
+		// eligible would be the app telling a household it may make a Roth
+		// contribution it might not be allowed to make.
+		if g.Group == "ira" && g.Eligibility == "eligible" {
+			t.Error("Roth eligibility reported as eligible with no MAGI on file")
 		}
 		if g.AnnualLimit == "" {
 			t.Errorf("%s has no annual_limit", g.Group)

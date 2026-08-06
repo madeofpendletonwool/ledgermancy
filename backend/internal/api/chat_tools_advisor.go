@@ -137,6 +137,9 @@ func toolSetDefs(set string) []ai.Tool {
 	for _, t := range chatBaseToolDefs() {
 		catalogue[t.Name] = t
 	}
+	for _, t := range chatAllocationToolDefs() {
+		catalogue[t.Name] = t
+	}
 	for _, t := range chatAdvisorToolDefs() {
 		catalogue[t.Name] = t
 	}
@@ -788,10 +791,20 @@ func (s *Server) retirementTool(
 //     on file, because zero-by-default implies full headroom).
 //   - eligibility  — eligible / phased_out / ineligible / unknown.
 //
-// eligibility is "unknown" in this doc's cycle: doc 32 owns the phase-out table
-// that makes it more. Shipping the SHAPE from day one is the point — a client
-// that renders "you have $7,500 of room" has nowhere to put "…but you may not be
-// allowed to use it" if the field arrives later.
+// Doc 31 shipped the SHAPE with eligibility hard-coded to "unknown"; doc 32
+// filled it in from networth.EligibilityFor, and the per-group mapping below is
+// the part worth reading:
+//
+//   - 401k — no MAGI test exists. Always eligible.
+//   - ira  — the group's representative treatment is trad_ira, which has no
+//     CONTRIBUTION phase-out (its phase-out is on DEDUCTIBILITY, a different
+//     question). The limit the household may actually be barred from using is
+//     the ROTH one, so the check is run against roth_ira and reported as such.
+//   - hsa  — needs HDHP coverage for the month, which this app has no data for.
+//     Permanently `unknown`, and it says why.
+//
+// A household with no filing status or no MAGI on file gets `unknown` with a
+// note, never `eligible`.
 func (s *Server) contributionRoom(
 	ctx context.Context, identity auth.Identity, taxYear int, familyHSA bool, now time.Time,
 ) (map[string]any, error) {
@@ -801,24 +814,50 @@ func (s *Server) contributionRoom(
 	}
 	age, ageKnown := s.resolveCallerAge(ctx, identity, now)
 
+	// The eligibility inputs. A failed read here must not take the headroom
+	// figures with it — a cap the household can see is worth more than a 500 —
+	// so the household read degrades to "no filing status, no MAGI", which the
+	// eligibility check reports as `unknown` anyway.
+	filingStatus, magi := "", decimal.NullDecimal{}
+	if household, herr := s.Queries.GetHousehold(ctx, identity.HouseholdID); herr == nil {
+		if household.FilingStatus != nil {
+			filingStatus = *household.FilingStatus
+		}
+		// A MAGI is a statement about ONE tax year; one from a different year is
+		// treated as absent rather than silently reused. Same rule the allocator
+		// applies.
+		if household.Magi.Valid && household.MagiTaxYear != nil && int(*household.MagiTaxYear) == taxYear {
+			magi = household.Magi
+		}
+	}
+
 	headroom, configured := year.ContributionHeadroom(age, familyHSA)
 	groups := make([]map[string]any, 0, len(headroom))
 	for _, h := range headroom {
+		elig, yearOK := groupEligibility(h.Group, taxYear, filingStatus, magi, h.Limit)
 		g := map[string]any{
-			"group":        h.Group,
-			"label":        h.Label,
-			"annual_limit": h.Limit.StringFixed(2),
-			"used_ytd":     h.Contributed.StringFixed(2),
-			"remaining":    h.Remaining.StringFixed(2),
-			"over_by":      h.OverBy.StringFixed(2),
-			// Doc 32 replaces this with a real answer keyed on
-			// households.filing_status. Until then the field exists and says so.
-			"eligibility":      "unknown",
-			"eligibility_note": "Income phase-outs and coverage requirements are not yet checked, so a cap here is not a guarantee you may use it.",
+			"group":            h.Group,
+			"label":            h.Label,
+			"annual_limit":     h.Limit.StringFixed(2),
+			"used_ytd":         h.Contributed.StringFixed(2),
+			"remaining":        h.Remaining.StringFixed(2),
+			"over_by":          h.OverBy.StringFixed(2),
+			"eligibility":      elig.Status,
+			"eligibility_note": elig.Note,
 			// Without a confirmed stub the year's deferrals are not zero, they
 			// are unmeasured — and reporting them as zero implies full headroom
 			// that may not exist.
 			"used_ytd_verified": stubCount > 0,
+		}
+		// Where the household is inside the Roth phase-out, the cap that
+		// actually applies is smaller than the group's. Both are reported: the
+		// group limit is still the traditional-IRA cap, and the reduced one is
+		// what a Roth contribution is held to.
+		if elig.Status == networth.EligibilityPhasedOut {
+			g["eligible_limit"] = elig.Limit.StringFixed(2)
+		}
+		if !yearOK {
+			g["eligibility_year_configured"] = false
 		}
 		if h.PeriodsLeft != nil {
 			g["pay_periods_left"] = *h.PeriodsLeft
@@ -845,7 +884,27 @@ func (s *Server) contributionRoom(
 	// AnnualLimitFor honestly declines to invent one. Saying so is better than
 	// omitting them and letting a reader conclude they were forgotten.
 	out["uncapped_account_types"] = []string{"taxable", "529", "trust", "utma"}
+	out["filing_status_set"] = filingStatus != ""
+	out["magi_known"] = magi.Valid
 	return out, nil
+}
+
+// groupEligibility maps a shared-limit GROUP onto the eligibility question that
+// actually applies to it. See the comment on contributionRoom for why the IRA
+// group is checked as a Roth.
+func groupEligibility(
+	group string, taxYear int, filingStatus string, magi decimal.NullDecimal, limit decimal.Decimal,
+) (networth.Eligibility, bool) {
+	switch group {
+	case "ira":
+		return networth.EligibilityFor("roth_ira", taxYear, filingStatus, magi, limit)
+	case "hsa":
+		return networth.EligibilityFor("hsa", taxYear, filingStatus, magi, limit)
+	default:
+		// A 401(k) elective deferral has no income test. Saying "eligible" here
+		// is a claim this app can actually stand behind.
+		return networth.Eligibility{Status: networth.EligibilityEligible, Limit: limit}, true
+	}
 }
 
 // --------------------------------------------------------------------------

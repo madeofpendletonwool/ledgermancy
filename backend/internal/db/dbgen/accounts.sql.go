@@ -14,7 +14,7 @@ import (
 )
 
 const getAccountByPlaidID = `-- name: GetAccountByPlaidID :one
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id FROM accounts WHERE plaid_account_id = $1
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id, deposit_apy FROM accounts WHERE plaid_account_id = $1
 `
 
 func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID *string) (Account, error) {
@@ -43,12 +43,13 @@ func (q *Queries) GetAccountByPlaidID(ctx context.Context, plaidAccountID *strin
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }
 
 const listAccountsForItem = `-- name: ListAccountsForItem :many
-SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id FROM accounts WHERE plaid_item_id = $1 ORDER BY name
+SELECT id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id, deposit_apy FROM accounts WHERE plaid_item_id = $1 ORDER BY name
 `
 
 func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID *uuid.UUID) ([]Account, error) {
@@ -83,6 +84,7 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID *uuid.UUI
 			&i.UserID,
 			&i.IsShared,
 			&i.HouseholdID,
+			&i.DepositApy,
 		); err != nil {
 			return nil, err
 		}
@@ -95,7 +97,7 @@ func (q *Queries) ListAccountsForItem(ctx context.Context, plaidItemID *uuid.UUI
 }
 
 const listAccountsForPerson = `-- name: ListAccountsForPerson :many
-SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, v.institution_name
+SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, a.deposit_apy, v.institution_name
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
 WHERE v.household_id = $1
@@ -132,6 +134,7 @@ type ListAccountsForPersonRow struct {
 	UserID              *uuid.UUID          `json:"user_id"`
 	IsShared            *bool               `json:"is_shared"`
 	HouseholdID         *uuid.UUID          `json:"household_id"`
+	DepositApy          decimal.NullDecimal `json:"deposit_apy"`
 	InstitutionName     *string             `json:"institution_name"`
 }
 
@@ -169,6 +172,7 @@ func (q *Queries) ListAccountsForPerson(ctx context.Context, arg ListAccountsFor
 			&i.UserID,
 			&i.IsShared,
 			&i.HouseholdID,
+			&i.DepositApy,
 			&i.InstitutionName,
 		); err != nil {
 			return nil, err
@@ -249,6 +253,10 @@ SELECT
     a.credit_limit,
     a.currency,
     a.tax_treatment,
+    -- User-entered deposit yield as a PERCENT; NULL means nobody has said, and
+    -- doc 32's cash-drag detector stays silent on it rather than reading it as
+    -- zero. Carried here so the Accounts page can show and edit it.
+    a.deposit_apy,
     a.is_managed,
     a.beneficiary_person_id,
     a.source,
@@ -281,6 +289,7 @@ type ListVisibleAccountsRow struct {
 	CreditLimit         decimal.NullDecimal `json:"credit_limit"`
 	Currency            string              `json:"currency"`
 	TaxTreatment        *string             `json:"tax_treatment"`
+	DepositApy          decimal.NullDecimal `json:"deposit_apy"`
 	IsManaged           *bool               `json:"is_managed"`
 	BeneficiaryPersonID *uuid.UUID          `json:"beneficiary_person_id"`
 	Source              string              `json:"source"`
@@ -321,6 +330,7 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 			&i.CreditLimit,
 			&i.Currency,
 			&i.TaxTreatment,
+			&i.DepositApy,
 			&i.IsManaged,
 			&i.BeneficiaryPersonID,
 			&i.Source,
@@ -339,7 +349,7 @@ func (q *Queries) ListVisibleAccounts(ctx context.Context, arg ListVisibleAccoun
 }
 
 const setAccountActive = `-- name: SetAccountActive :one
-UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id
+UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id, deposit_apy
 `
 
 type SetAccountActiveParams struct {
@@ -373,6 +383,7 @@ func (q *Queries) SetAccountActive(ctx context.Context, arg SetAccountActivePara
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }
@@ -392,7 +403,7 @@ WHERE a.id = $2
               AND p.household_id = $3
         )
   )
-RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id
+RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, a.deposit_apy
 `
 
 type SetAccountBeneficiaryParams struct {
@@ -433,6 +444,7 @@ func (q *Queries) SetAccountBeneficiary(ctx context.Context, arg SetAccountBenef
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }
@@ -452,7 +464,7 @@ ON CONFLICT (plaid_account_id) WHERE plaid_account_id IS NOT NULL DO UPDATE SET
     available_balance = EXCLUDED.available_balance,
     credit_limit      = EXCLUDED.credit_limit,
     currency          = EXCLUDED.currency
-RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id
+RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id, deposit_apy
 `
 
 type UpsertAccountParams struct {
@@ -516,6 +528,7 @@ func (q *Queries) UpsertAccount(ctx context.Context, arg UpsertAccountParams) (A
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }

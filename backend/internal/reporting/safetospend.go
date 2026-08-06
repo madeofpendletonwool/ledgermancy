@@ -429,7 +429,12 @@ func goalContributions(ctx context.Context, q *dbgen.Queries, householdID uuid.U
 	}
 	total := decimal.Zero
 	for _, g := range rows {
-		if g.Kind != "savings" {
+		// Accumulating kinds only. A debt-payoff goal's payment is already in
+		// fixed costs, so counting it here would subtract it twice — but a
+		// COLLEGE goal's contribution is real money leaving every month that
+		// nothing else in this calculation sees, and omitting it would overstate
+		// safe-to-spend. Which is the error direction that actually hurts.
+		if g.Kind != "savings" && g.Kind != "college" {
 			continue
 		}
 

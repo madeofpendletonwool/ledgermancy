@@ -140,10 +140,18 @@ function GoalCard({ goal }: { goal: Goal }) {
               <>
                 <AnimatedNumber value={goal.current_amount} /> of{' '}
                 <AnimatedNumber value={goal.target_amount} />
+                {goal.kind === 'college' &&
+                  ` — one year of ${goal.college_years}, in today's dollars`}
               </>
             )}
             {goal.target_date && ` · by ${formatDate(goal.target_date)}`}
           </p>
+          {/* The target above is ONE year, so the bar reads as progress toward
+              one year. Saying so beside it is the difference between a figure a
+              parent can use and one they will misread as the whole degree. */}
+          {goal.college_basis && (
+            <p className="mt-1 text-xs text-mist-500">{goal.college_basis}</p>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span
@@ -491,6 +499,8 @@ function CreateGoal() {
   const people = useQuery({ queryKey: ['people'], queryFn: api.people })
 
   const isPayoff = kind === 'debt_payoff'
+  const isCollege = kind === 'college'
+  const [collegeYears, setCollegeYears] = useState('4')
 
   const create = useCreateGoal(() => {
     setName('')
@@ -514,6 +524,7 @@ function CreateGoal() {
       kind,
       target_amount: isPayoff ? undefined : amount,
       target_date: date || undefined,
+      college_years: isCollege ? Number(collegeYears) : undefined,
       scope: forPerson ? 'person' : personal ? 'user' : 'household',
       person_id: forPerson || undefined,
       account_id: accountID || null,
@@ -527,7 +538,9 @@ function CreateGoal() {
       <p className="mb-5 text-sm text-mist-300">
         {isPayoff
           ? 'Pick the debt. The balance to clear, the rate and the payment come from the account, and the payoff date is worked out from them.'
-          : 'Set a target. Link an account to track progress by its balance, or leave it unlinked to track your accumulated surplus.'}
+          : isCollege
+            ? 'Enter ONE YEAR of cost in today’s dollars and link the 529. Each year is inflated separately and drawn down on the Advisor page, which is where the per-year shortfall lives — a single lump target cannot say “funded through sophomore year”.'
+            : 'Set a target. Link an account to track progress by its balance, or leave it unlinked to track your accumulated surplus.'}
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -549,8 +562,30 @@ function CreateGoal() {
           >
             <option value="savings">Save toward something</option>
             <option value="debt_payoff">Pay off a debt</option>
+            <option value="college">Fund college</option>
           </select>
         </div>
+
+        {isCollege && (
+          <div>
+            <label className="label" htmlFor="goal-college-years">
+              Years of study
+            </label>
+            <input
+              id="goal-college-years"
+              className="field w-full"
+              type="number"
+              min="1"
+              max="10"
+              value={collegeYears}
+              onChange={(e) => setCollegeYears(e.target.value)}
+            />
+            <p className="mt-1 text-xs text-mist-500">
+              Four is the usual answer, not the only one — transfers and
+              five-year programmes exist.
+            </p>
+          </div>
+        )}
 
         <div>
           <label className="label" htmlFor="goal-name">

@@ -331,6 +331,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// account mutation: a child must not set the figures the household's
 			// payoff plans are computed from.
 			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
+			// The deposit yield the cash-drag detector measures against
+			// (doc 32). User-entered because Plaid does not serve it
+			// reliably; a null CLEARS it, and an empty field means
+			// unknown rather than zero.
+			r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
+			r.Get("/idle-cash", s.handleIdleCash)
 
 			// Manual accounts (doc 30). Every one of these refuses a
 			// source='plaid' id — a linked account's identity and balance
@@ -635,6 +641,26 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleGetProfile)
 			r.Put("/", s.handleUpdateProfile)
+		})
+
+		// The allocation planner (doc 32). Adult-only and household-scoped
+		// for the same reason the advisor is: it reads the household's whole
+		// position — balances, debts, salary-derived headroom, filing status
+		// — into one response.
+		//
+		// EXECUTES NOTHING, permanently. A plan is a projection; the user
+		// acts on it. POST /plan runs and returns without writing, and the
+		// only write in the group is a saved plan's own row.
+		r.Route("/allocation", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/buckets", s.handleAllocationBuckets)
+			r.Post("/plan", s.handleRunAllocation)
+			r.Get("/asset-location", s.handleAssetLocation)
+
+			r.Get("/plans", s.handleListPlans)
+			r.Post("/plans", s.handleSavePlan)
+			r.Get("/plans/{planID}", s.handleGetPlan)
+			r.Delete("/plans/{planID}", s.handleDeletePlan)
 		})
 
 		r.Route("/manual-assets", func(r chi.Router) {

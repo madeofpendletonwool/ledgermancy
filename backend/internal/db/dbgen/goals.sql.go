@@ -49,9 +49,12 @@ const createGoal = `-- name: CreateGoal :one
 
 INSERT INTO goals (
     household_id, scope, user_id, person_id, kind, name, target_amount,
-    target_date, account_id, category_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id
+    target_date, account_id, category_id, college_years
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+    COALESCE($11::smallint, 4)
+)
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years
 `
 
 type CreateGoalParams struct {
@@ -65,6 +68,7 @@ type CreateGoalParams struct {
 	TargetDate   *stdtime.Time   `json:"target_date"`
 	AccountID    *uuid.UUID      `json:"account_id"`
 	CategoryID   *uuid.UUID      `json:"category_id"`
+	CollegeYears *int16          `json:"college_years"`
 }
 
 // Goals: savings/target goals and the derived-progress lookups behind them.
@@ -82,6 +86,21 @@ type CreateGoalParams struct {
 // `all_person_goals` carries the adult/child decision into the SQL rather than
 // letting each caller re-derive it. It is set from the caller's role, which is
 // checked server-side; a child session always passes false.
+// college_years is only meaningful for a 'college' goal; every other kind
+// carries the default of 4 and ignores it. For a college goal target_amount is
+// ONE YEAR'S cost in today's dollars — see allocation/college.go, which inflates
+// each year separately and draws them down, and the migration comment on
+// goals.college_years.
+//
+// NULLABLE, and COALESCEd rather than taken as a plain argument. A plain one
+// makes the Go zero value (0) a real argument, and 0 violates the column's
+// CHECK — so every caller that had no opinion about college years, including
+// ones written years before this column existed, would start failing on INSERT.
+// "I did not say" has to be expressible, and here it means four.
+//
+// The literal 4 mirrors the column DEFAULT in 00055_allocation_planner.sql and
+// api.defaultCollegeYears. Three copies is two too many, but a column default
+// cannot be read from a parameterised INSERT; keep them in step.
 func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error) {
 	row := q.db.QueryRow(ctx, createGoal,
 		arg.HouseholdID,
@@ -94,6 +113,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		arg.TargetDate,
 		arg.AccountID,
 		arg.CategoryID,
+		arg.CollegeYears,
 	)
 	var i Goal
 	err := row.Scan(
@@ -111,6 +131,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		&i.AchievedAt,
 		&i.ArchivedAt,
 		&i.PersonID,
+		&i.CollegeYears,
 	)
 	return i, err
 }
@@ -191,7 +212,7 @@ func (q *Queries) DeleteGoalContribution(ctx context.Context, arg DeleteGoalCont
 }
 
 const getGoal = `-- name: GetGoal :one
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
 WHERE id = $1
   AND household_id = $2
   AND (
@@ -234,6 +255,7 @@ func (q *Queries) GetGoal(ctx context.Context, arg GetGoalParams) (Goal, error) 
 		&i.AchievedAt,
 		&i.ArchivedAt,
 		&i.PersonID,
+		&i.CollegeYears,
 	)
 	return i, err
 }
@@ -340,7 +362,7 @@ func (q *Queries) GetGoalDebtTerms(ctx context.Context, arg GetGoalDebtTermsPara
 }
 
 const listActiveHouseholdGoals = `-- name: ListActiveHouseholdGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
 WHERE household_id = $1 AND scope = 'household' AND archived_at IS NULL
 `
 
@@ -373,6 +395,7 @@ func (q *Queries) ListActiveHouseholdGoals(ctx context.Context, householdID uuid
 			&i.AchievedAt,
 			&i.ArchivedAt,
 			&i.PersonID,
+			&i.CollegeYears,
 		); err != nil {
 			return nil, err
 		}
@@ -439,7 +462,7 @@ func (q *Queries) ListGoalContributions(ctx context.Context, arg ListGoalContrib
 }
 
 const listGoals = `-- name: ListGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
 WHERE household_id = $1
   AND archived_at IS NULL
   AND (
@@ -488,6 +511,7 @@ func (q *Queries) ListGoals(ctx context.Context, arg ListGoalsParams) ([]Goal, e
 			&i.AchievedAt,
 			&i.ArchivedAt,
 			&i.PersonID,
+			&i.CollegeYears,
 		); err != nil {
 			return nil, err
 		}
@@ -585,16 +609,21 @@ SET name = $1,
     target_amount = $2,
     target_date = $3,
     account_id = $4,
-    category_id = $5
-WHERE id = $6
-  AND household_id = $7
+    category_id = $5,
+    -- NULL leaves it alone. The update body is otherwise the whole state, but
+    -- a client that has never heard of college_years (every client written
+    -- before doc 32) would otherwise silently reset a five-year programme to
+    -- four every time somebody renamed the goal.
+    college_years = COALESCE($6::smallint, college_years)
+WHERE id = $7
+  AND household_id = $8
   AND (
         scope = 'household'
-     OR (scope = 'user'   AND user_id = $8)
-     OR (scope = 'person' AND ($9::boolean
-                               OR person_id = $10))
+     OR (scope = 'user'   AND user_id = $9)
+     OR (scope = 'person' AND ($10::boolean
+                               OR person_id = $11))
   )
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years
 `
 
 type UpdateGoalParams struct {
@@ -603,6 +632,7 @@ type UpdateGoalParams struct {
 	TargetDate     *stdtime.Time   `json:"target_date"`
 	AccountID      *uuid.UUID      `json:"account_id"`
 	CategoryID     *uuid.UUID      `json:"category_id"`
+	CollegeYears   *int16          `json:"college_years"`
 	ID             uuid.UUID       `json:"id"`
 	HouseholdID    uuid.UUID       `json:"household_id"`
 	UserID         *uuid.UUID      `json:"user_id"`
@@ -617,6 +647,7 @@ func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, e
 		arg.TargetDate,
 		arg.AccountID,
 		arg.CategoryID,
+		arg.CollegeYears,
 		arg.ID,
 		arg.HouseholdID,
 		arg.UserID,
@@ -639,6 +670,7 @@ func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, e
 		&i.AchievedAt,
 		&i.ArchivedAt,
 		&i.PersonID,
+		&i.CollegeYears,
 	)
 	return i, err
 }

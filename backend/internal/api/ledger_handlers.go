@@ -42,6 +42,11 @@ type accountResponse struct {
 	// accounts too; they were simply not needed by this endpoint before.
 	TaxTreatment *string `json:"tax_treatment"`
 	IsShared     bool    `json:"is_shared"`
+	// DepositAPY is the user-entered yield on a deposit account, as a PERCENT
+	// string ("4.50"). Null means nobody has entered one — UNKNOWN, never zero.
+	// Doc 32's cash-drag detector stays silent on a null rather than reporting a
+	// high-yield savings account as the household's worst drag.
+	DepositAPY *string `json:"deposit_apy"`
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +82,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			Source:       a.Source,
 			TaxTreatment: a.TaxTreatment,
 			IsShared:     a.Shared,
+			DepositAPY:   percentString(a.DepositApy),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -447,6 +453,21 @@ func nullDecimal(d decimal.NullDecimal) *decimal.Decimal {
 		return nil
 	}
 	return &d.Decimal
+}
+
+// percentString renders a nullable rate as a fixed-2 STRING, or JSON null.
+//
+// A string rather than a number for the reason every money value in this API is
+// one: a JSON number hands the browser a float to re-round. Null rather than
+// "0.00" for a bigger reason — a rate nobody has entered and a rate of zero are
+// different facts, and doc 32's cash-drag detector depends on telling them
+// apart.
+func percentString(d decimal.NullDecimal) *string {
+	if !d.Valid {
+		return nil
+	}
+	s := d.Decimal.StringFixed(2)
+	return &s
 }
 
 func parseDate(raw string, fallback time.Time) time.Time {

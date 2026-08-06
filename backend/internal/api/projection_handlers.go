@@ -84,14 +84,20 @@ const measuredInflationNote = "What CPI-U actually did over this window, annuali
 // spending is the classic way these projections flatter.
 const realBasis = "Every figure is in today's dollars. The return rate is REAL — already net of inflation — so no number here needs discounting later."
 
-// defaultAssumptions are used until the household saves its own. They match the
-// migration's column defaults; the two must not drift.
+// defaultAssumptions are used until the household saves its own.
+//
+// The figures come from networth.DefaultAssumptions rather than from literals
+// here, because doc 32's allocator needs the same fallback for the same reason
+// and two copies of "what we assume when nobody has said" is two pages quoting
+// different projections from the same inputs.
 func defaultAssumptions(householdID uuid.UUID) dbgen.ProjectionAssumption {
+	d := networth.DefaultAssumptions()
 	return dbgen.ProjectionAssumption{
-		HouseholdID:    householdID,
-		RealReturnRate: decimal.RequireFromString("0.05"),
-		InflationRate:  decimal.RequireFromString("0.03"),
-		WithdrawalRate: decimal.RequireFromString("0.04"),
+		HouseholdID:          householdID,
+		RealReturnRate:       d.RealReturnRate,
+		InflationRate:        d.InflationRate,
+		WithdrawalRate:       d.WithdrawalRate,
+		CollegeInflationRate: d.CollegeInflationRate,
 	}
 }
 

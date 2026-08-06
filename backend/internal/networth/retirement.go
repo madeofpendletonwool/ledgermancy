@@ -38,6 +38,34 @@ type AccountPlan struct {
 
 	MonthlyContribution decimal.Decimal
 
+	// FirstYearContribution is a ONE-OFF deposit made now, on top of the monthly
+	// plan: doc 32's lump sum. Zero for every caller that does not have one, so
+	// the field is invisible to code written before it existed.
+	//
+	// IT EXISTS SO THE CAP CAN SEE IT, and that is the whole reason it is not
+	// simply folded into Balance. capContributions scales only the monthly
+	// slice, and Balance is not a contribution — an $8,000 lump hidden in the
+	// opening balance of a Roth would be projected whole, uncapped, and the
+	// household would be shown a plan the IRS does not allow. Here it is part of
+	// the group's planned annual total and is scaled with everything else when
+	// the limit binds.
+	//
+	// It is deposited in the FIRST projected month, after that month's growth,
+	// for the same reason a monthly contribution is: money is not credited with
+	// return it has not earned yet.
+	FirstYearContribution decimal.Decimal
+
+	// RealReturnRate is this account's own assumed real return. ZERO MEANS "USE
+	// THE HOUSEHOLD RATE" (RetirementAssumptions.RealReturnRate), which is what
+	// keeps every existing caller byte-identical: a struct literal nobody edited
+	// carries a zero here and compounds exactly as it did before.
+	//
+	// Doc 32's allocator offers a per-bucket editable return, and doc 33 adds a
+	// per-bucket volatility under the same convention. One projection loop with
+	// a per-account rate is a lookup; a second loop would be a second model of
+	// the same arithmetic.
+	RealReturnRate decimal.Decimal
+
 	// EmployerMatchPct is a fraction OF SALARY (0.05 = 5% of salary), not of the
 	// employee's contribution. AnnualSalary is what it applies to; a match with
 	// no salary behind it is not counted, because the alternative is guessing.
@@ -190,6 +218,12 @@ type CapNote struct {
 	Group   string          `json:"group"`
 	Planned decimal.Decimal `json:"planned_annual"`
 	Allowed decimal.Decimal `json:"allowed_annual"`
+	// Spill is Planned − Allowed: the money that did NOT go into this group.
+	// Derivable from the pair above, and carried anyway, because the allocator's
+	// whole answer to "put $8,000 in the Roth" is the $500 that has to go
+	// somewhere else — and a UI that has to subtract two fields to find it is a
+	// UI that will eventually show the wrong one.
+	Spill decimal.Decimal `json:"spill_annual"`
 }
 
 // RetirementProjection is the whole result: the series, the derived answers,
@@ -281,11 +315,13 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 	// When the year is unconfigured nothing is capped, and LimitsConfigured
 	// carries that fact to the UI.
 	monthly := make([]decimal.Decimal, len(projectable))
+	lump := make([]decimal.Decimal, len(projectable))
 	for i, p := range projectable {
 		monthly[i] = p.MonthlyContribution
+		lump[i] = p.FirstYearContribution
 	}
 	if configured {
-		monthly, out.CapNotes = capContributions(projectable, monthly, a, limits)
+		monthly, lump, out.CapNotes = capContributions(projectable, monthly, lump, a, limits)
 	}
 
 	// Per-account running state.
@@ -302,9 +338,20 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 	// these horizons and the simpler form is the one a user can check by hand.
 	// The two models must agree on this or their numbers will diverge for
 	// reasons no one can explain.
-	monthlyRate := decimal.Zero
-	if a.RealReturnRate.IsPositive() {
-		monthlyRate = a.RealReturnRate.Div(twelve)
+	//
+	// PER ACCOUNT, computed once before the month loop. An account's own
+	// RealReturnRate wins where it is set; zero falls through to the household
+	// rate, so a caller that never touches the field gets exactly the single
+	// scalar this used to be. Same arithmetic, indexed.
+	monthlyRates := make([]decimal.Decimal, len(projectable))
+	for i, p := range projectable {
+		rate := a.RealReturnRate
+		if p.RealReturnRate.IsPositive() {
+			rate = p.RealReturnRate
+		}
+		if rate.IsPositive() {
+			monthlyRates[i] = rate.Div(twelve)
+		}
 	}
 
 	// Employer match, converted to a monthly figure and held at its annual cap.
@@ -347,10 +394,20 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 			// Growth applies to the balance BEFORE this month's contribution,
 			// so a deposit is not credited with a full month of return it did
 			// not earn. Same rule as Project.
-			g := balances[i].Mul(monthlyRate)
+			g := balances[i].Mul(monthlyRates[i])
 			balances[i] = balances[i].Add(g)
 			growths[i] = growths[i].Add(g)
 			totalGrowth = totalGrowth.Add(g)
+
+			// The lump lands in month 1, after that month's growth. It is
+			// counted as CONTRIBUTED, not as opening balance: it is the
+			// household's own money going in now, and reading it as balance
+			// would overstate how much of the final figure was growth.
+			if m == 1 && lump[i].IsPositive() {
+				balances[i] = balances[i].Add(lump[i])
+				contribs[i] = contribs[i].Add(lump[i])
+				totalContributed = totalContributed.Add(lump[i])
+			}
 
 			if monthly[i].IsPositive() {
 				balances[i] = balances[i].Add(monthly[i])
@@ -474,12 +531,21 @@ func annualMatch(p AccountPlan) decimal.Decimal {
 // Capping is the honest direction. An uncapped projection assumes a
 // contribution the IRS will not allow, and like every other error mode here it
 // errs in the flattering direction.
+//
+// THE GROUP TOTAL INCLUDES THE LUMP. A first-year contribution is a
+// contribution: it counts against the same annual limit the monthly plan does,
+// and the case that catches an implementation getting this wrong is neither the
+// pure-lump nor the pure-monthly one but the combination that only breaches the
+// cap when the two are added together. Capping in the allocator instead was
+// rejected — it would put the cap rule in two places, and the next caller with
+// a lump path would have to remember.
 func capContributions(
 	plans []AccountPlan,
 	monthly []decimal.Decimal,
+	lump []decimal.Decimal,
 	a RetirementAssumptions,
 	limits TaxYearLimits,
-) ([]decimal.Decimal, []CapNote) {
+) ([]decimal.Decimal, []decimal.Decimal, []CapNote) {
 	notes := []CapNote{}
 
 	// Group index lists by shared limit.
@@ -497,7 +563,7 @@ func capContributions(
 
 		planned := decimal.Zero
 		for _, i := range idx {
-			planned = planned.Add(monthly[i].Mul(twelve))
+			planned = planned.Add(monthly[i].Mul(twelve)).Add(lump[i])
 		}
 		if !planned.GreaterThan(limit) {
 			continue
@@ -505,17 +571,24 @@ func capContributions(
 
 		// Scale proportionally rather than filling accounts in some arbitrary
 		// order: the split between a traditional and a Roth is the user's
-		// decision, and this projection has no business re-allocating it.
+		// decision, and this projection has no business re-allocating it. The
+		// lump scales by the same factor for the same reason — preferring the
+		// lump over the monthly plan (or the reverse) would be the projection
+		// choosing when the household's money goes in.
 		scale := limit.Div(planned)
 		for _, i := range idx {
 			monthly[i] = monthly[i].Mul(scale)
+			lump[i] = lump[i].Mul(scale)
 		}
 		notes = append(notes, CapNote{
-			Group: g, Planned: planned.Round(2), Allowed: limit.Round(2),
+			Group:   g,
+			Planned: planned.Round(2),
+			Allowed: limit.Round(2),
+			Spill:   planned.Sub(limit).Round(2),
 		})
 	}
 
-	return monthly, notes
+	return monthly, lump, notes
 }
 
 // supportedSpending is what a nest egg supports at a given age: the withdrawal

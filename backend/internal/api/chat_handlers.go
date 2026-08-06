@@ -453,6 +453,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 	// The advisor's engines dispatch first and report whether they owned the
 	// name, so this switch stays the spending assistant's and doc 31's tools
 	// live beside the engines they wrap.
+	if out, owned, err := s.executeAllocationTool(ctx, identity, name, input); owned {
+		return out, err
+	}
 	if out, owned, err := s.executeAdvisorTool(ctx, identity, name, input); owned {
 		return out, err
 	}

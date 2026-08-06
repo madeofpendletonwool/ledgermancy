@@ -79,6 +79,12 @@ var toolSetMembers = map[string][]string{
 	ToolSetModelling: {
 		"debt_summary", "contribution_room", "retirement_projection",
 		"goal_status", "asset_allocation", "net_worth",
+		// Doc 32's allocator. allocation_buckets is listed FIRST of the five
+		// because it is the one the model has to call before allocation_plan
+		// can name an account, and the order tools arrive in is the order they
+		// are read in.
+		"allocation_buckets", "allocation_plan",
+		"idle_cash", "asset_location", "college_projection",
 	},
 }
 
@@ -117,6 +123,11 @@ var setKeywords = map[string][]string{
 		"allocate", "allocation plan", "split it", "split this",
 		"likelihood", "odds", "probability", "chance of",
 		"scenario", "simulate", "what if",
+		// Doc 32's own questions. "college" and "529" are here rather than in
+		// planning because the answer is the drawdown the allocator computes,
+		// and "idle cash" / "asset location" name their tools directly.
+		"college", "529", "tuition",
+		"idle cash", "cash drag", "asset location", "which account should",
 	},
 	ToolSetPlanning: {
 		"debt", "payoff", "pay off", "paying off", "loan", "mortgage",

@@ -212,6 +212,21 @@ var tableCoverage = map[string]Coverage{
 	// somebody accepted in March and is still working through.
 	"advisor_action_items": InExport,
 
+	// --- Allocation planner -----------------------------------------------
+	// A saved plan is a USER-AUTHORED DECISION about where money should go, and
+	// nothing re-derives it: re-running the allocator produces the split the
+	// user is looking at today, not the one they settled on in March and are
+	// still working through. Results are deliberately not stored (they are
+	// recomputed against the live baseline on open), so what travels here is
+	// exactly the inputs and the assumptions snapshot — which is the part that
+	// cannot be reconstructed.
+	//
+	// Money inside `inputs` and `assumptions` is a decimal STRING rather than a
+	// JSON number, because this is the one place the export's numeric-to-text
+	// rule cannot reach: normalise passes jsonb through as json.RawMessage. See
+	// allocation/store.go, which is where that rule is enforced.
+	"allocation_plans": InExport,
+
 	// --- Digests ----------------------------------------------------------
 	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
 	// looks like something a job produces. But the job cannot produce it again.
