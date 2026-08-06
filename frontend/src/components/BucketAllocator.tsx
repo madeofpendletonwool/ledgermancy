@@ -5,6 +5,7 @@ import {
   ApiError,
   type AllocationBucket,
   type AllocationBucketResult,
+  type AllocationPlanSummary,
   type AllocationResult,
   type AllocationRunInput,
   type AllocationSplitInput,
@@ -12,6 +13,11 @@ import {
   type IdleCashReport,
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
+import {
+  PlanComparisonPanel,
+  PlanLikelihoodPanel,
+  PlanTrackerPanel,
+} from './PlanLikelihood'
 
 /**
  * The bucket allocator: the centerpiece of the Advisor page.
@@ -720,10 +726,17 @@ function SavedPlans({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['allocation-plans'] }),
   })
 
+  // Doc 33's surfaces hang off a SAVED plan, because a distribution and a drift
+  // report are both statements about a decision the household has made. An
+  // unsaved projection is still a question.
+  const [likelihoodFor, setLikelihoodFor] = useState<AllocationPlanSummary | null>(null)
+  const [trackerFor, setTrackerFor] = useState<string | null>(null)
+
   const list = plans.data ?? []
   if (list.length === 0) return null
 
   return (
+    <>
     <section className="glass p-6">
       <h3 className="text-lg font-medium">Saved plans</h3>
       <ul className="mt-3 space-y-2 text-sm">
@@ -752,6 +765,26 @@ function SavedPlans({
               </button>
               <button
                 type="button"
+                className="text-arcane-300 hover:underline"
+                onClick={() => {
+                  setLikelihoodFor(likelihoodFor?.id === p.id ? null : p)
+                  setTrackerFor(null)
+                }}
+              >
+                Likelihood
+              </button>
+              <button
+                type="button"
+                className="text-arcane-300 hover:underline"
+                onClick={() => {
+                  setTrackerFor(trackerFor === p.id ? null : p.id)
+                  setLikelihoodFor(null)
+                }}
+              >
+                Track
+              </button>
+              <button
+                type="button"
                 className="text-mist-500 hover:text-mist-300"
                 onClick={() => remove.mutate(p.id)}
               >
@@ -762,6 +795,11 @@ function SavedPlans({
         ))}
       </ul>
     </section>
+
+    {likelihoodFor && <PlanLikelihoodPanel key={likelihoodFor.id} plan={likelihoodFor} />}
+    {trackerFor && <PlanTrackerPanel key={trackerFor} planId={trackerFor} />}
+    <PlanComparisonPanel plans={list} />
+    </>
   )
 }
 

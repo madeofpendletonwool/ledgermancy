@@ -35,10 +35,20 @@ const (
 	// ToolSetPlanning is the advisor's engines: debts, goals, retirement,
 	// obligations, investments, contribution room.
 	ToolSetPlanning = "planning"
-	// ToolSetModelling is for "what should I do with $X" and likelihood
-	// questions. Docs 32 and 33 add the allocator and the likelihood tools to
-	// it; today it carries the engines those questions need as inputs.
+	// ToolSetModelling is for "what should I do with $X": doc 32's allocator
+	// and the engines its questions need as inputs.
 	ToolSetModelling = "modelling"
+	// ToolSetLikelihood is doc 33's: "will this work", "compare these plans",
+	// "am I still on track".
+	//
+	// THIS IS THE FOURTH SET, AND IT EXISTS BECAUSE THE CAP FORCED IT. Doc 31
+	// predicted exactly this — "the next wave hits a build failure and picks a
+	// fourth set" — and doc 33's four tools are what pushed modelling from 13
+	// definitions to 17. Splitting is the right answer rather than raising the
+	// cap: a likelihood question and an allocation question need genuinely
+	// different inputs, and the split keeps both sets small enough that the
+	// model picks correctly within them.
+	ToolSetLikelihood = "likelihood"
 )
 
 // maxToolsPerSet is the ceiling a single set may reach.
@@ -73,9 +83,11 @@ var toolSetMembers = map[string][]string{
 	},
 	// A "what should I do with $X" question needs the same position inputs a
 	// planning question does — what is owed, what room is left, where the
-	// portfolio sits — and then the allocator on top. The allocator is doc 32's
-	// and the likelihood tools are doc 33's; both join this list, and the
-	// headroom under maxToolsPerSet is sized for exactly that.
+	// portfolio sits — and then the allocator on top.
+	//
+	// Doc 33's likelihood tools were originally planned to join this list. They
+	// did not fit: four more definitions took it to 17, over the cap, so they
+	// became ToolSetLikelihood instead. See that set's note.
 	ToolSetModelling: {
 		"debt_summary", "contribution_room", "retirement_projection",
 		"goal_status", "asset_allocation", "net_worth",
@@ -86,11 +98,26 @@ var toolSetMembers = map[string][]string{
 		"allocation_buckets", "allocation_plan",
 		"idle_cash", "asset_location", "college_projection",
 	},
+	// Doc 33. A likelihood question is asked ABOUT A SAVED PLAN, so
+	// allocation_plans leads the list for the same reason allocation_buckets
+	// leads doc 32's: it is the one the model must call before any of the other
+	// three can name a plan, and the order tools arrive in is the order they are
+	// read in.
+	//
+	// The allocator itself is here too, because "what would make this more
+	// likely" is answered by changing the split and re-running — and goals, net
+	// worth and the retirement projection are the position a likelihood answer
+	// is measured against.
+	ToolSetLikelihood: {
+		"allocation_plans", "plan_likelihood", "compare_plans", "plan_tracker",
+		"allocation_buckets", "allocation_plan",
+		"goal_status", "net_worth", "retirement_projection",
+	},
 }
 
 // ToolSets returns every declared set name, in a stable order.
 func ToolSets() []string {
-	return []string{ToolSetSpending, ToolSetPlanning, ToolSetModelling}
+	return []string{ToolSetSpending, ToolSetPlanning, ToolSetModelling, ToolSetLikelihood}
 }
 
 // toolSetNames returns one set's full membership, common tools included.
@@ -107,10 +134,11 @@ func toolSetNames(set string) []string {
 
 // setKeywords maps a set to the phrases that select it.
 //
-// Checked in the order ToolSets returns them REVERSED — modelling first, then
-// planning — because the modelling phrases are the more specific ones: "what
-// should I do with $30k" contains "invest", which is also a planning keyword,
-// and the allocator is the right answer to it.
+// Checked MOST SPECIFIC FIRST — likelihood, then modelling, then planning —
+// because the narrower phrases subsume the broader ones: "what should I do with
+// $30k" contains "invest", which is also a planning keyword, and the allocator
+// is the right answer to it; "what are the odds this works" is a likelihood
+// question even though it is asked about an allocation.
 //
 // Substring matching over a lowercased message, which is crude and deliberately
 // so. The classifier's job is to be DETERMINISTIC and inspectable, not clever:
@@ -118,11 +146,25 @@ func toolSetNames(set string) []string {
 // list must be able to predict which one. A model-chosen set would reintroduce
 // exactly the wrong-tool failure the sets exist to bound.
 var setKeywords = map[string][]string{
+	// Doc 33's, checked FIRST because they are the most specific of all. "What
+	// are the odds I hit my number" contains no allocator keyword, and the tools
+	// that answer it live only here — routing it to modelling would hand the
+	// model an allocator and no simulation.
+	//
+	// "likelihood", "odds", "probability", "chance of" and "simulate" MOVED HERE
+	// from modelling, where doc 32 parked them because doc 33's tools did not
+	// exist yet. They now select the set that actually contains them.
+	ToolSetLikelihood: {
+		"likelihood", "odds", "probability", "chance of", "how likely",
+		"success rate", "will it work", "will this work", "will that work",
+		"compare plan", "compare my plan", "compare these plan", "which plan",
+		"top pick", "monte carlo", "simulate", "simulation", "simulated",
+		"on track with", "drift", "fan chart", "worst case", "drawdown",
+	},
 	ToolSetModelling: {
 		"what should i do with", "what do i do with", "where should i put",
 		"allocate", "allocation plan", "split it", "split this",
-		"likelihood", "odds", "probability", "chance of",
-		"scenario", "simulate", "what if",
+		"scenario", "what if",
 		// Doc 32's own questions. "college" and "529" are here rather than in
 		// planning because the answer is the drawdown the allocator computes,
 		// and "idle cash" / "asset location" name their tools directly.
@@ -157,7 +199,7 @@ var setKeywords = map[string][]string{
 func classifyToolSet(message string) string {
 	lower := strings.ToLower(message)
 	// Most specific first. See setKeywords.
-	for _, set := range []string{ToolSetModelling, ToolSetPlanning} {
+	for _, set := range []string{ToolSetLikelihood, ToolSetModelling, ToolSetPlanning} {
 		for _, kw := range setKeywords[set] {
 			if strings.Contains(lower, kw) {
 				return set

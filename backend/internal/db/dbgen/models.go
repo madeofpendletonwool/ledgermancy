@@ -661,6 +661,17 @@ type PlaidItem struct {
 	LastRefreshAt        *stdtime.Time `json:"last_refresh_at"`
 }
 
+type PlanTracking struct {
+	ID            uuid.UUID       `json:"id"`
+	PlanID        uuid.UUID       `json:"plan_id"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	ExpectedLump  decimal.Decimal `json:"expected_lump"`
+	ExpectedTotal decimal.Decimal `json:"expected_total"`
+	// Baseline captured at as_of. Every money field is a decimal STRING, never a JSON number.
+	SnapshotInputs []byte       `json:"snapshot_inputs"`
+	CreatedAt      stdtime.Time `json:"created_at"`
+}
+
 type Preference struct {
 	ID          uuid.UUID    `json:"id"`
 	Scope       string       `json:"scope"`

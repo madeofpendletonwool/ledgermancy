@@ -140,6 +140,9 @@ func toolSetDefs(set string) []ai.Tool {
 	for _, t := range chatAllocationToolDefs() {
 		catalogue[t.Name] = t
 	}
+	for _, t := range chatLikelihoodToolDefs() {
+		catalogue[t.Name] = t
+	}
 	for _, t := range chatAdvisorToolDefs() {
 		catalogue[t.Name] = t
 	}

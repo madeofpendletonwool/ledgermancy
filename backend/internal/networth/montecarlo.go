@@ -161,6 +161,12 @@ func monteCarloSeed(in MonteCarloInput) uint64 {
 	return h.Sum64()
 }
 
+// SeedBytes is seedBytes for callers outside this package. Doc 33's
+// accumulation-phase simulation draws from the same ChaCha8 generator seeded the
+// same way, so that "same inputs, same answer, forever" means one thing across
+// both phases rather than two things that happen to rhyme.
+func SeedBytes(seed uint64) [32]byte { return seedBytes(seed) }
+
 // seedBytes expands a 64-bit seed into the 32 bytes ChaCha8 wants, by repeating
 // it. The generator's own mixing does the rest; this only has to be a
 // deterministic function of the seed.

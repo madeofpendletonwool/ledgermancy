@@ -267,17 +267,72 @@ type RetirementProjection struct {
 // monthsPerYear as a decimal, used often enough to be worth naming.
 var twelve = decimal.NewFromInt(12)
 
-// ProjectRetirement rolls each account forward separately and derives the FI
-// answers from the resulting series.
+// AccountSchedule is one projectable account reduced to exactly the numbers a
+// month loop consumes: the IRS caps already pooled and applied, the employer
+// match already resolved to a monthly figure, the account's own return rate
+// already chosen over the household's, and an education horizon already turned
+// into a stop month.
 //
-// Untagged accounts (empty Treatment) are excluded and reported. `now` is
-// injected so tests are not at the mercy of the calendar.
-func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Time) RetirementProjection {
-	out := RetirementProjection{
-		LimitsYear:       now.Year(),
-		ExcludedAccounts: []string{},
+// IT EXISTS SO THERE IS ONE ANSWER TO "WHAT GOES IN, AND WHEN". Doc 33's
+// Monte Carlo runs the accumulation phase a thousand times over the same
+// accounts this file projects once, and its verification requires that at zero
+// volatility the two agree TO THE CENT. That can only be a structural property
+// if both start from the same resolved inputs — a second place that pooled the
+// caps, or clamped the match, or decided when a 529 stops, would make the
+// agreement a coincidence that holds until somebody edits one of them.
+type AccountSchedule struct {
+	ID   string
+	Name string
+	// Balance is the opening balance.
+	Balance decimal.Decimal
+	// Monthly and Lump are POST-CAP. Lump lands in month 1, after that month's
+	// growth, and counts as contributed rather than as opening balance.
+	Monthly decimal.Decimal
+	Lump    decimal.Decimal
+	// Match is the employer match as a monthly figure, already held at its
+	// annual cap and at what the employee actually defers.
+	Match decimal.Decimal
+	// Rate is the real ANNUAL return this account compounds at, after the
+	// account's own override has won over the household assumption.
+	//
+	// It is carried beside MonthlyRate rather than derived from it because
+	// doc 33 perturbs the annual figure (μ + σ·z) and dividing MonthlyRate back
+	// by twelve would round-trip through Div's 16-digit precision for no reason.
+	Rate decimal.Decimal
+	// MonthlyRate is Rate divided by twelve, not a compounded monthly
+	// equivalent. See the note in ProjectRetirement.
+	MonthlyRate decimal.Decimal
+	// StopMonth is the last month this account grows and receives money, and
+	// HasHorizon says whether it means anything. The pair is needed because
+	// "no beneficiary horizon on file" and "the beneficiary is already at their
+	// target age" are opposite answers that a single zero would collapse: the
+	// first never stops, the second stops immediately. Collapsing them would
+	// quietly keep a 529 compounding through a degree it was supposed to pay
+	// for. See Stopped.
+	StopMonth  int
+	HasHorizon bool
+	Education  bool
+}
+
+// Schedule is BuildSchedule's whole answer: the resolved accounts plus the
+// facts about what was excluded and what was capped along the way.
+type Schedule struct {
+	Accounts []AccountSchedule
+	CapNotes []CapNote
+	// ExcludedAccounts are the untagged ones: unknown limit, unknown horizon,
+	// unknown withdrawal treatment, and no defensible default for any of them.
+	ExcludedAccounts []string
+	ExcludedValue    decimal.Decimal
+	LimitsConfigured bool
+}
+
+// BuildSchedule resolves every rule standing between a set of AccountPlans and
+// a month loop. ProjectRetirement calls it, and so does doc 33's simulation.
+func BuildSchedule(plans []AccountPlan, a RetirementAssumptions, now time.Time) Schedule {
+	out := Schedule{
+		Accounts:         []AccountSchedule{},
 		CapNotes:         []CapNote{},
-		Points:           []RetirementPoint{},
+		ExcludedAccounts: []string{},
 	}
 
 	limits, configured := Limits(now.Year())
@@ -295,16 +350,7 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 		}
 		projectable = append(projectable, p)
 	}
-
-	if a.Months <= 0 || len(projectable) == 0 {
-		// Even with nothing to project, the already-FI question is answerable
-		// from Social Security alone, so fall through rather than returning
-		// early — but there is no series to build.
-		out.AlreadyFI = alreadyFI(decimal.Zero, a)
-		if out.AlreadyFI && a.CurrentAge > 0 {
-			age := a.CurrentAge
-			out.FIAge = &age
-		}
+	if len(projectable) == 0 {
 		return out
 	}
 
@@ -324,40 +370,112 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 		monthly, lump, out.CapNotes = capContributions(projectable, monthly, lump, a, limits)
 	}
 
+	out.Accounts = make([]AccountSchedule, len(projectable))
+	for i, p := range projectable {
+		// An account's own RealReturnRate wins where it is set; zero falls
+		// through to the household rate, so a caller that never touches the
+		// field gets exactly the single scalar this used to be.
+		rate := a.RealReturnRate
+		if p.RealReturnRate.IsPositive() {
+			rate = p.RealReturnRate
+		}
+		s := AccountSchedule{
+			ID:        p.ID,
+			Name:      p.Name,
+			Balance:   p.Balance,
+			Monthly:   monthly[i],
+			Lump:      lump[i],
+			Match:     annualMatch(p).Div(twelve),
+			Education: p.isEducation(),
+		}
+		if rate.IsPositive() {
+			s.Rate, s.MonthlyRate = rate, rate.Div(twelve)
+		}
+		if p.BeneficiaryTargetAge > 0 && p.BeneficiaryCurrentAge > 0 {
+			// The account stops for every month AFTER yearsToGo*12. A
+			// beneficiary already at or past their target age gives a stop
+			// month of zero, which stops it from month 1: the money is already
+			// being spent, so nothing more goes in and nothing more compounds.
+			years := p.BeneficiaryTargetAge - p.BeneficiaryCurrentAge
+			if years < 0 {
+				years = 0
+			}
+			s.StopMonth, s.HasHorizon = years*12, true
+		}
+		out.Accounts[i] = s
+	}
+	return out
+}
+
+// Stopped reports whether this account has passed its horizon by month m: no
+// more growth and no more contributions, because its balance is spent on the
+// thing it was for.
+//
+// Only education accounts ever stop, and only when a horizon actually resolved.
+// An education account with no beneficiary age on file runs the full term
+// rather than being stopped at a guessed year — the same refusal to invent a
+// horizon that ResolveAge exists for.
+func (s AccountSchedule) Stopped(m int) bool {
+	return s.Education && s.HasHorizon && m > s.StopMonth
+}
+
+// ProjectRetirement rolls each account forward separately and derives the FI
+// answers from the resulting series.
+//
+// Untagged accounts (empty Treatment) are excluded and reported. `now` is
+// injected so tests are not at the mercy of the calendar.
+func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Time) RetirementProjection {
+	out := RetirementProjection{
+		LimitsYear:       now.Year(),
+		ExcludedAccounts: []string{},
+		CapNotes:         []CapNote{},
+		Points:           []RetirementPoint{},
+	}
+
+	// Caps, employer match, per-account rates and education horizons are all
+	// resolved by BuildSchedule, which doc 33's simulation also calls. See
+	// AccountSchedule for why that sharing is load-bearing rather than tidy.
+	//
+	// The monthly rate is a real annual rate divided by twelve, matching
+	// Project's choice: not a compounded monthly equivalent, because the
+	// difference is immaterial at these horizons and the simpler form is the one
+	// a user can check by hand. The two models must agree on this or their
+	// numbers will diverge for reasons no one can explain.
+	schedule := BuildSchedule(plans, a, now)
+	out.LimitsConfigured = schedule.LimitsConfigured
+	out.ExcludedAccounts = schedule.ExcludedAccounts
+	out.ExcludedValue = schedule.ExcludedValue
+	out.CapNotes = schedule.CapNotes
+	projectable := schedule.Accounts
+
+	if a.Months <= 0 || len(projectable) == 0 {
+		// Even with nothing to project, the already-FI question is answerable
+		// from Social Security alone, so fall through rather than returning
+		// early — but there is no series to build.
+		out.CapNotes = []CapNote{}
+		out.AlreadyFI = alreadyFI(decimal.Zero, a)
+		if out.AlreadyFI && a.CurrentAge > 0 {
+			age := a.CurrentAge
+			out.FIAge = &age
+		}
+		return out
+	}
+
 	// Per-account running state.
 	balances := make([]decimal.Decimal, len(projectable))
 	contribs := make([]decimal.Decimal, len(projectable))
 	employers := make([]decimal.Decimal, len(projectable))
 	growths := make([]decimal.Decimal, len(projectable))
-	for i, p := range projectable {
-		balances[i] = p.Balance
-	}
-
-	// A real annual rate divided by twelve, matching Project's choice: not a
-	// compounded monthly equivalent, because the difference is immaterial at
-	// these horizons and the simpler form is the one a user can check by hand.
-	// The two models must agree on this or their numbers will diverge for
-	// reasons no one can explain.
-	//
-	// PER ACCOUNT, computed once before the month loop. An account's own
-	// RealReturnRate wins where it is set; zero falls through to the household
-	// rate, so a caller that never touches the field gets exactly the single
-	// scalar this used to be. Same arithmetic, indexed.
 	monthlyRates := make([]decimal.Decimal, len(projectable))
-	for i, p := range projectable {
-		rate := a.RealReturnRate
-		if p.RealReturnRate.IsPositive() {
-			rate = p.RealReturnRate
-		}
-		if rate.IsPositive() {
-			monthlyRates[i] = rate.Div(twelve)
-		}
-	}
-
-	// Employer match, converted to a monthly figure and held at its annual cap.
+	monthly := make([]decimal.Decimal, len(projectable))
+	lump := make([]decimal.Decimal, len(projectable))
 	monthlyMatch := make([]decimal.Decimal, len(projectable))
 	for i, p := range projectable {
-		monthlyMatch[i] = annualMatch(p).Div(twelve)
+		balances[i] = p.Balance
+		monthlyRates[i] = p.MonthlyRate
+		monthly[i] = p.Monthly
+		lump[i] = p.Lump
+		monthlyMatch[i] = p.Match
 	}
 
 	var totalContributed, totalGrowth, totalEmployer decimal.Decimal
@@ -382,7 +500,7 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 		for i, p := range projectable {
 			// An education account stops at its horizon: no more growth, no
 			// more contributions. Its balance is spent on the thing it was for.
-			if p.isEducation() && educationHorizonPassed(p, m) {
+			if p.Stopped(m) {
 				point.ByAccount[p.ID] = AccountPoint{
 					Balance: balances[i].Round(2), Contributed: contribs[i].Round(2),
 					Employer: employers[i].Round(2), Growth: growths[i].Round(2),
@@ -424,7 +542,7 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 				Balance: balances[i].Round(2), Contributed: contribs[i].Round(2),
 				Employer: employers[i].Round(2), Growth: growths[i].Round(2),
 			}
-			if p.isEducation() {
+			if p.Education {
 				point.Education = point.Education.Add(balances[i])
 			} else {
 				point.Retirement = point.Retirement.Add(balances[i])
@@ -450,29 +568,14 @@ func ProjectRetirement(plans []AccountPlan, a RetirementAssumptions, now time.Ti
 
 // startingRetirementBalance is today's nest egg: the tagged, non-education
 // accounts as they stand before any projection.
-func startingRetirementBalance(plans []AccountPlan) decimal.Decimal {
+func startingRetirementBalance(accounts []AccountSchedule) decimal.Decimal {
 	total := decimal.Zero
-	for _, p := range plans {
-		if !p.isEducation() {
+	for _, p := range accounts {
+		if !p.Education {
 			total = total.Add(p.Balance)
 		}
 	}
 	return total
-}
-
-// educationHorizonPassed reports whether a 529's beneficiary has reached the
-// age the money is for. A plan with no beneficiary ages set has no horizon and
-// simply keeps compounding — but it is still excluded from the nest egg, which
-// is the part that matters.
-func educationHorizonPassed(p AccountPlan, month int) bool {
-	if p.BeneficiaryTargetAge <= 0 || p.BeneficiaryCurrentAge <= 0 {
-		return false
-	}
-	yearsToGo := p.BeneficiaryTargetAge - p.BeneficiaryCurrentAge
-	if yearsToGo <= 0 {
-		return true
-	}
-	return month > yearsToGo*12
 }
 
 // AnnualMatch is annualMatch for callers outside this package: the match the

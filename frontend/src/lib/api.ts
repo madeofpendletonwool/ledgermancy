@@ -3269,6 +3269,137 @@ export interface AllocationPlanSummary {
   result_error?: string
 }
 
+// --- Likelihood layer (doc 33) ---------------------------------------------
+//
+// TWO FIGURES, TWO DIFFERENT STATISTICS, AND THEY DO NOT MATCH.
+// `projected_at_assumed_return` compounds at the assumed return;
+// `simulated.p50` is the median of the simulation and is normally LOWER,
+// because volatility drags compounding. Never label either of them "P50", and
+// always render `gap_note` where both appear.
+
+export interface AccountOutcome {
+  account_id: string
+  name: string
+  p10: string
+  p50: string
+  p90: string
+}
+
+export interface SimulatedFigures {
+  p10: string
+  /** The MEDIAN SIMULATED OUTCOME. Never rendered as "P50". */
+  p50: string
+  p90: string
+  /**
+   * A fraction over the MODELLED SEQUENCES. Render as "meets your target in
+   * 94% of 1,000 simulated futures" — never as a chance or a probability.
+   */
+  success_rate: string | null
+  target?: string
+  sigma: string
+  /** FIFTH-PERCENTILE peak-to-trough drawdown, as a fraction. Not a maximum. */
+  drawdown_p5: string
+  by_account: AccountOutcome[]
+  seed: number
+}
+
+export interface LikelihoodResult {
+  plan_id?: string
+  name?: string
+  horizon_years: number
+  runs: number
+  volatility: string
+  projected_at_assumed_return: string
+  /** Absent when the simulation gate is off; the deterministic figure is then the whole answer. */
+  simulated?: SimulatedFigures
+  monte_carlo_enabled: boolean
+  gap_note: string
+  basis: string
+  estimate: boolean
+}
+
+export interface RankedPlan {
+  plan_id: string
+  name: string
+  success_rate: string | null
+  p50: string
+  sigma: string
+  drawdown_p5: string
+  meets_all_goals: boolean
+  missed_goals: string[]
+  /** A filter dropped this plan; excluded_by names the clause, reason says it in words. */
+  excluded: boolean
+  excluded_by?: string
+  reason?: string
+  top_pick: boolean
+}
+
+export interface PlanRanking {
+  runs: number
+  plans: RankedPlan[]
+  /** Null means NO PICK, which is a real answer — never promote the least-bad plan. */
+  top_pick: string | null
+  no_pick_reason?: string
+  floor_applied: boolean
+  floor_pct?: string
+  no_plan_meets_every_goal: boolean
+  rule: string
+  explanation: string
+}
+
+export interface PlanComparison {
+  ranking: PlanRanking
+  plans: LikelihoodResult[]
+  monte_carlo_enabled: boolean
+  basis: string
+  estimate: boolean
+}
+
+export interface BucketDrift {
+  account_id: string
+  name: string
+  expected_to_date: string
+  actual_to_date: string
+  /** NEGATIVE means behind. Signed, so "ahead" is expressible. */
+  drift: string
+  monthly_drift: string
+  /** False means no contribution trail — UNTRACKED, never zero. */
+  tracked: boolean
+  note?: string
+}
+
+export interface PlanDrift {
+  as_of: string
+  since: string
+  months: number
+  expected_lump: string
+  expected_to_date: string
+  actual_to_date: string
+  drift: string
+  monthly_drift: string
+  on_track: boolean
+  projected_shortfall: string
+  remaining_months: number
+  buckets: BucketDrift[]
+  untracked: string[]
+  summary: string
+  basis: string
+  estimate: boolean
+}
+
+export interface PlanTrackingSnapshot {
+  as_of: string
+  expected_lump: string
+  expected_total: string
+}
+
+export interface PlanTracking {
+  plan_id: string
+  name: string
+  drift: PlanDrift
+  history: PlanTrackingSnapshot[]
+}
+
 export interface IdleCashItem {
   account_id: string
   name: string
@@ -3937,6 +4068,35 @@ export const api = {
 
   deleteAllocationPlan: (id: string) =>
     request<void>('DELETE', `/api/allocation/plans/${id}`),
+
+  // --- Likelihood layer (doc 33) -------------------------------------------
+  // The distribution behind a plan, the guardrail's pick, and plan tracking.
+  //
+  // Like runAllocation these POSTs WRITE NOTHING — recordPlanTracking is the
+  // one exception, and what it writes is the EXPECTED side of a snapshot.
+  // Actuals are read live every time drift is computed, so correcting an old
+  // contribution corrects the history rather than leaving a wrong figure frozen.
+  planLikelihood: (planId: string, volatility?: string) =>
+    request<LikelihoodResult>(
+      'POST',
+      `/api/likelihood/plan/${planId}` +
+        (volatility ? `?volatility=${encodeURIComponent(volatility)}` : ''),
+    ),
+
+  // Every plan is simulated at ONE pinned run count, decided server-side. Both
+  // figures the rule sorts on move with the run count, so a comparison
+  // assembled from differing counts is refused rather than rendered.
+  comparePlans: (planIds: string[], volatility?: string) =>
+    request<PlanComparison>('POST', '/api/likelihood/compare', {
+      plan_ids: planIds,
+      volatility: volatility ?? '',
+    }),
+
+  planTracking: (planId: string) =>
+    request<PlanTracking>('GET', `/api/likelihood/plans/${planId}/track`),
+
+  recordPlanTracking: (planId: string) =>
+    request<PlanTrackingSnapshot>('POST', `/api/likelihood/plans/${planId}/track`),
 
   idleCash: () => request<IdleCashReport>('GET', '/api/accounts/idle-cash'),
 

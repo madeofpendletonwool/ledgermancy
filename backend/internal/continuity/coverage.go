@@ -227,6 +227,23 @@ var tableCoverage = map[string]Coverage{
 	// allocation/store.go, which is where that rule is enforced.
 	"allocation_plans": InExport,
 
+	// The household's tracked decisions (doc 33): one snapshot per plan per
+	// date, recording what the plan EXPECTED to have gone in by then.
+	//
+	// InExport rather than Derived, and the distinction is the whole reason this
+	// table stores only the expected side. Actuals are read live and are
+	// genuinely recomputable; the expected side is not, because replaying it
+	// means running the plan's inputs against assumptions the household can
+	// edit. A tracking history regenerated after an assumption change would
+	// silently rewrite what the plan used to say — which is the one thing a
+	// plan-vs-actual comparison must never do.
+	//
+	// expected_lump and expected_total are ordinary numeric COLUMNS, so
+	// export.go's numeric-to-text cast covers them. Money inside
+	// snapshot_inputs is a decimal STRING for the same reason as
+	// allocation_plans above.
+	"plan_trackings": InExport,
+
 	// --- Digests ----------------------------------------------------------
 	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
 	// looks like something a job produces. But the job cannot produce it again.

@@ -164,8 +164,13 @@ type GoalMapping struct {
 	// account. A goal with no linked account gets zero and says so — the
 	// allocator allocates to accounts, and a goal it cannot reach is not funded
 	// by guessing which bucket the user meant.
-	PlanMonthly     decimal.Decimal  `json:"plan_monthly"`
-	Linked          bool             `json:"linked"`
+	PlanMonthly decimal.Decimal `json:"plan_monthly"`
+	Linked      bool            `json:"linked"`
+	// AccountID is the goal's linked account, empty when it has none. Doc 33's
+	// guardrail needs it: F2 judges a goal against ITS OWN bucket's median
+	// simulated outcome, and a goal that cannot name its bucket cannot be judged
+	// at P50 at all.
+	AccountID       string           `json:"account_id,omitempty"`
 	Target          decimal.Decimal  `json:"target"`
 	Current         decimal.Decimal  `json:"current"`
 	Remaining       decimal.Decimal  `json:"remaining"`
@@ -263,39 +268,62 @@ const planBasis = "Every figure is in today's dollars and the return rates are R
 //
 // Doing 2 after 3 would let a plan be capped at $7,500 and then zeroed, losing
 // the cap note; doing the caps here would put the pooling rule in two places.
-func Run(b Baseline, req Request) (Result, error) {
+// planInputs is what steps 1 and 2 produce: the money split per bucket with
+// eligibility already applied, and the account set ProjectRetirement is handed.
+//
+// It is a named intermediate rather than an inline block because doc 33's
+// simulation needs the SAME account set. Running the Monte Carlo over a
+// separately-derived set would reintroduce exactly the drift doc 33's σ=0
+// agreement test exists to catch — see PlanAccounts.
+type planInputs struct {
+	plans   []networth.AccountPlan
+	buckets []BucketResult
+	// unallocated is money the split did not place. Not an error, but never
+	// silently absorbed into another bucket.
+	unallocatedLump    decimal.Decimal
+	unallocatedMonthly decimal.Decimal
+	// eligibilityYearOK is false when the Roth income limits for the planning
+	// year are unconfigured, so eligibility could not be checked at all.
+	eligibilityYearOK bool
+	limitsConfigured  bool
+}
+
+// PlanAccounts is the account set this plan hands to the projection engine:
+// every projectable account the household holds, with the plan's own
+// contributions and per-bucket return rates folded in, and eligibility already
+// applied.
+//
+// Doc 33's simulation runs over this rather than over Result.Buckets, and the
+// difference matters. Result.Buckets reports what the ALLOCATOR applied;
+// the IRS caps are applied later, inside ProjectRetirement, by pooling
+// shared-limit groups across accounts the plan may not even touch. A simulation
+// fed the allocator's figures would compound money the cap refuses.
+func PlanAccounts(b Baseline, req Request) ([]networth.AccountPlan, error) {
+	in, err := buildPlanInputs(b, req)
+	if err != nil {
+		return nil, err
+	}
+	return in.plans, nil
+}
+
+// buildPlanInputs runs steps 1 and 2: split the money, then apply eligibility
+// and fold the result into a COPY of the household's projection plans.
+//
+// The order is load-bearing — see Run's doc comment. Eligibility happens here
+// rather than in the projection engine because it is not a cap: it keys on
+// filing status and MAGI, which limits.go knows nothing about and has no
+// business learning. The IRS caps are applied afterwards, by ProjectRetirement,
+// which pools shared-limit groups.
+func buildPlanInputs(b Baseline, req Request) (planInputs, error) {
 	if req.HorizonYears < MinHorizonYears || req.HorizonYears > MaxHorizonYears {
-		return Result{}, fmt.Errorf("horizon_years must be between %d and %d", MinHorizonYears, MaxHorizonYears)
+		return planInputs{}, fmt.Errorf("horizon_years must be between %d and %d", MinHorizonYears, MaxHorizonYears)
 	}
 	if req.Lump.IsNegative() || req.Monthly.IsNegative() {
-		return Result{}, errors.New("lump and monthly cannot be negative")
+		return planInputs{}, errors.New("lump and monthly cannot be negative")
 	}
 
-	months := req.HorizonYears * 12
-	horizonDate := b.Now.AddDate(req.HorizonYears, 0, 0)
 	limits, limitsConfigured := networth.Limits(b.Now.Year())
-
-	out := Result{
-		HorizonYears:     req.HorizonYears,
-		AsOf:             b.Now.Format(time.DateOnly),
-		HorizonDate:      horizonDate.Format(time.DateOnly),
-		Lump:             req.Lump.Round(2),
-		Monthly:          req.Monthly.Round(2),
-		Buckets:          []BucketResult{},
-		CapNotes:         []networth.CapNote{},
-		Goals:            []GoalMapping{},
-		College:          []CollegeResult{},
-		HorizonFlags:     []HorizonFlag{},
-		ExcludedAccounts: b.UntaggedAccounts,
-		Notes:            []string{},
-		LimitsYear:       b.Now.Year(),
-		LimitsConfigured: limitsConfigured,
-		Estimate:         true,
-		Basis:            planBasis,
-	}
-	if out.ExcludedAccounts == nil {
-		out.ExcludedAccounts = []string{}
-	}
+	out := planInputs{eligibilityYearOK: true, limitsConfigured: limitsConfigured}
 
 	// ---- 1. split the money ------------------------------------------------
 	lumpPctTotal, monthlyPctTotal := decimal.Zero, decimal.Zero
@@ -310,10 +338,10 @@ func Run(b Baseline, req Request) (Result, error) {
 
 	for _, s := range req.Splits {
 		if s.LumpPct.IsNegative() || s.MonthlyPct.IsNegative() {
-			return Result{}, errors.New("allocation percentages cannot be negative")
+			return planInputs{}, errors.New("allocation percentages cannot be negative")
 		}
 		if seen[s.AccountID] {
-			return Result{}, errors.New("each account may appear at most once in a split")
+			return planInputs{}, errors.New("each account may appear at most once in a split")
 		}
 		seen[s.AccountID] = true
 
@@ -323,7 +351,7 @@ func Run(b Baseline, req Request) (Result, error) {
 			// untagged investment account. Both are refusals rather than silent
 			// omissions: a line of the split that vanished would leave the
 			// percentages summing to 100 while the money went nowhere.
-			return Result{}, fmt.Errorf("account %s is not an allocatable bucket", s.AccountID)
+			return planInputs{}, fmt.Errorf("account %s is not an allocatable bucket", s.AccountID)
 		}
 		lumpPctTotal = lumpPctTotal.Add(s.LumpPct)
 		monthlyPctTotal = monthlyPctTotal.Add(s.MonthlyPct)
@@ -335,10 +363,10 @@ func Run(b Baseline, req Request) (Result, error) {
 		})
 	}
 	if lumpPctTotal.Sub(hundred).GreaterThan(pctTolerance) {
-		return Result{}, errors.New("lump allocation percentages add up to more than 100%")
+		return planInputs{}, errors.New("lump allocation percentages add up to more than 100%")
 	}
 	if monthlyPctTotal.Sub(hundred).GreaterThan(pctTolerance) {
-		return Result{}, errors.New("monthly allocation percentages add up to more than 100%")
+		return planInputs{}, errors.New("monthly allocation percentages add up to more than 100%")
 	}
 
 	placedLump, placedMonthly := decimal.Zero, decimal.Zero
@@ -346,8 +374,8 @@ func Run(b Baseline, req Request) (Result, error) {
 		placedLump = placedLump.Add(a.lump)
 		placedMonthly = placedMonthly.Add(a.monthly)
 	}
-	out.UnallocatedLump = req.Lump.Sub(placedLump).Round(2)
-	out.UnallocatedMonthly = req.Monthly.Sub(placedMonthly).Round(2)
+	out.unallocatedLump = req.Lump.Sub(placedLump).Round(2)
+	out.unallocatedMonthly = req.Monthly.Sub(placedMonthly).Round(2)
 
 	// ---- 2. eligibility, then build the projection input --------------------
 	//
@@ -361,7 +389,6 @@ func Run(b Baseline, req Request) (Result, error) {
 	}
 
 	results := make([]BucketResult, 0, len(allocs))
-	eligibilityYearOK := true
 
 	for _, a := range allocs {
 		r := BucketResult{
@@ -389,7 +416,7 @@ func Run(b Baseline, req Request) (Result, error) {
 			elig, yearOK := networth.EligibilityFor(
 				a.bucket.Treatment, b.Now.Year(), b.FilingStatus, b.MAGI, fullLimit)
 			if !yearOK {
-				eligibilityYearOK = false
+				out.eligibilityYearOK = false
 			}
 			r.Eligibility, r.EligibilityNote = elig.Status, elig.Note
 
@@ -407,7 +434,7 @@ func Run(b Baseline, req Request) (Result, error) {
 				// Cannot happen: an investment bucket is built from a row that
 				// also produced a plan. Refusing loudly beats projecting a
 				// bucket the engine never saw.
-				return Result{}, fmt.Errorf("internal: no projection plan for account %s", a.bucket.AccountID)
+				return planInputs{}, fmt.Errorf("internal: no projection plan for account %s", a.bucket.AccountID)
 			}
 			plans[idx].FirstYearContribution = plans[idx].FirstYearContribution.Add(r.AppliedLump)
 			plans[idx].MonthlyContribution = plans[idx].MonthlyContribution.Add(r.AppliedMonthly)
@@ -422,6 +449,46 @@ func Run(b Baseline, req Request) (Result, error) {
 
 		results = append(results, r)
 	}
+
+	out.plans, out.buckets = plans, results
+	return out, nil
+}
+
+func Run(b Baseline, req Request) (Result, error) {
+	months := req.HorizonYears * 12
+	horizonDate := b.Now.AddDate(req.HorizonYears, 0, 0)
+
+	in, err := buildPlanInputs(b, req)
+	if err != nil {
+		return Result{}, err
+	}
+	plans, results := in.plans, in.buckets
+	limitsConfigured, eligibilityYearOK := in.limitsConfigured, in.eligibilityYearOK
+
+	out := Result{
+		HorizonYears:     req.HorizonYears,
+		AsOf:             b.Now.Format(time.DateOnly),
+		HorizonDate:      horizonDate.Format(time.DateOnly),
+		Lump:             req.Lump.Round(2),
+		Monthly:          req.Monthly.Round(2),
+		Buckets:          []BucketResult{},
+		CapNotes:         []networth.CapNote{},
+		Goals:            []GoalMapping{},
+		College:          []CollegeResult{},
+		HorizonFlags:     []HorizonFlag{},
+		ExcludedAccounts: b.UntaggedAccounts,
+		Notes:            []string{},
+		LimitsYear:       b.Now.Year(),
+		LimitsConfigured: limitsConfigured,
+		Estimate:         true,
+		Basis:            planBasis,
+	}
+	if out.ExcludedAccounts == nil {
+		out.ExcludedAccounts = []string{}
+	}
+
+	out.UnallocatedLump = in.unallocatedLump
+	out.UnallocatedMonthly = in.unallocatedMonthly
 
 	// ---- 3. project ---------------------------------------------------------
 	assumptions := b.Assumptions
@@ -714,6 +781,7 @@ func mapGoals(b Baseline, results []BucketResult) []GoalMapping {
 		}
 		if g.AccountID != nil {
 			m.Linked = true
+			m.AccountID = g.AccountID.String()
 			m.PlanMonthly = byAccount[*g.AccountID].Round(2)
 		}
 		f := goals.Compute(g.Target, g.Current, m.PlanMonthly, g.TargetDate, b.Now)

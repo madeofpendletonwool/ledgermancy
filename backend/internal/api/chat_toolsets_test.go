@@ -64,6 +64,9 @@ func TestToolSetMembersAllExist(t *testing.T) {
 	for _, d := range chatAllocationToolDefs() {
 		catalogue[d.Name] = true
 	}
+	for _, d := range chatLikelihoodToolDefs() {
+		catalogue[d.Name] = true
+	}
 
 	for _, set := range ToolSets() {
 		for _, name := range toolSetNames(set) {
@@ -104,7 +107,15 @@ func TestClassifyToolSetIsDeterministic(t *testing.T) {
 		"Will I overdraft before payday?":            ToolSetPlanning,
 		"What should I do with $30,000?":             ToolSetModelling,
 		"where should i put my bonus":                ToolSetModelling,
-		"what are the odds I hit my number by 60?":   ToolSetModelling,
+
+		// Doc 33 moved the likelihood phrasings into their own set. "What are
+		// the odds" used to select modelling, which held the allocator but no
+		// simulation — the tools that actually answer it live in the likelihood
+		// set now, so that is where it routes.
+		"what are the odds I hit my number by 60?": ToolSetLikelihood,
+		"how likely is Plan A to work?":            ToolSetLikelihood,
+		"compare my plans and tell me which wins":  ToolSetLikelihood,
+		"am I on track with the plan I saved?":     ToolSetLikelihood,
 	}
 
 	for message, want := range cases {

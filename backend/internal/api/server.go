@@ -663,6 +663,27 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			r.Delete("/plans/{planID}", s.handleDeletePlan)
 		})
 
+		// The likelihood layer (doc 33). Same scope and the same permanently
+		// read-only posture as the allocator it runs over: a distribution is a
+		// projection, and the household acts on it.
+		//
+		// The SIMULATION is gated behind RETIREMENT_MONTE_CARLO_ENABLED; the
+		// ROUTES are not. With the gate off they return the deterministic
+		// figure and name that in the basis — a 404 or a 503 would make the
+		// panel a broken tile on every instance that has not opted in.
+		//
+		// Only POST /plans/{planID}/track writes, and what it writes is the
+		// EXPECTED side of a snapshot. Actuals are read live every time drift
+		// is computed, so correcting an old contribution corrects the history
+		// rather than leaving a wrong figure frozen in a row.
+		r.Route("/likelihood", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Post("/plan/{planID}", s.handleLikelihood)
+			r.Post("/compare", s.handleCompare)
+			r.Get("/plans/{planID}/track", s.handleTracking)
+			r.Post("/plans/{planID}/track", s.handleRecordTracking)
+		})
+
 		r.Route("/manual-assets", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListManualAssets)

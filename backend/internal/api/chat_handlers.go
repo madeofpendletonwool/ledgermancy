@@ -69,7 +69,7 @@ Advice:
 - When the user asks "what should I do with $X", CALL A TOOL rather than inventing options: the ranked options and the allocation plan are computed, not advised. Do not offer a course of action the tools did not produce.
 - Never present a projection as a forecast. Retirement, payoff and balance projections carry a "basis" field saying what they assume and what they omit — repeat the relevant caveat rather than dropping it.
 - A null figure means "not known", never zero. An unknown APR, an unreached FI age, and an uncomputable return are all real answers; say so plainly instead of substituting a number.
-- You cannot move money. Never offer to make a transfer, a payment or a contribution — you describe and compute, the household acts.`
+- You cannot move money. Never offer to make a transfer, a payment or a contribution — you describe and compute, the household acts.` + chatGuardrailPrompt
 
 type chatRequestBody struct {
 	Messages []chatMessage `json:"messages"`
@@ -454,6 +454,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 	// name, so this switch stays the spending assistant's and doc 31's tools
 	// live beside the engines they wrap.
 	if out, owned, err := s.executeAllocationTool(ctx, identity, name, input); owned {
+		return out, err
+	}
+	if out, owned, err := s.executeLikelihoodTool(ctx, identity, name, input); owned {
 		return out, err
 	}
 	if out, owned, err := s.executeAdvisorTool(ctx, identity, name, input); owned {
