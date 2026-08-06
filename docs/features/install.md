@@ -49,7 +49,7 @@ mistake one for the other.
 
 Everything that writes. Recategorising, editing a budget, adding a transaction,
 importing a CSV, syncing an institution, uploading a document, asking the
-assistant — all of it is switched off while you are offline, with a tooltip
+advisor — all of it is switched off while you are offline, with a tooltip
 saying why.
 
 **Nothing is queued for later.** This is a considered decision, not a missing

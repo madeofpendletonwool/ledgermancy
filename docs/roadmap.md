@@ -20,6 +20,14 @@ predictive anomaly detection, paystub income tracking, the in-app digest,
 real-asset revaluation and depreciation, inflation-adjusted views, and manual
 accounts with full Investments-page parity.
 
+**Wave 6 — the Advisor — is complete as well.** The old reactive Assistant became
+an [Advisor](features/advisor.md) surface: a deterministic Briefing, ranked
+surplus-cash options, a multi-bucket [allocation planner](features/advisor.md#the-bucket-allocator)
+(Roth / 529 / brokerage / debt / emergency fund) with contribution caps and
+eligibility, and a Monte Carlo likelihood layer with a documented guardrail and
+plan-vs-actual tracking. Every figure the page shows is computed, not
+model-generated.
+
 ## Known gaps
 
 Deliberate gaps — not bugs:
@@ -33,6 +41,30 @@ Deliberate gaps — not bugs:
   to backfill further where an institution caps what it shares.
 
 ## Recently shipped
+
+- **The Advisor surface** — the old reactive Assistant became an
+  [Advisor](features/advisor.md): a deterministic **Briefing** (net worth, slack,
+  FI age, debt-free date, emergency-fund runway, top attention items), saved
+  **Threads** with sealed transcripts, and an action-items tray. ~12 existing
+  engines are now reachable from the chat as tools, sent one tool-set per request
+  (spending / planning / modelling) so the model never drowns in 30+ definitions.
+  Migration `00054_advisor_surface.sql`.
+- **Proactive cash-flow advisor** — ranked, deterministic options for surplus
+  cash under a published **waterfall** (starter emergency fund → unclaimed
+  employer match → debt above a hurdle → full emergency fund → expiring
+  tax-advantaged headroom → goals → below-hurdle as a stated tradeoff). Slack is
+  the Budgets page's own median-based safe-to-spend; the model narrates, never
+  computes. No migration — options are derived from existing state.
+- **Multi-bucket allocation planner** — split a lump and/or monthly surplus
+  across Roth / 529 / brokerage / debt / emergency fund with per-bucket
+  projection, contribution-cap enforcement, Roth/HSA eligibility (a cap is not
+  permission), a four-year college drawdown, cash-drag detection, and
+  asset-location as disclosure. Migration `00055_allocation_planner.sql`.
+- **Likelihood layer** — Monte Carlo over allocation plans (P10/P50/P90, success
+  rate, P5 drawdown), a documented guardrail rule that names a top plan from
+  computed likelihoods, and plan-vs-actual tracking that reconciles an accepted
+  plan against reality. Buckets are modelled as moving together so success rates
+  don't read high. Migration `00056_likelihood_layer.sql`.
 
 - **Predictive anomaly detection** — per-merchant outlier charges (judged
   against a leave-one-out baseline) and duplicate-charge detection, surfacing on
@@ -93,9 +125,6 @@ alert body routes through.
 What remains is the next tier of major initiatives, each with an execution-ready
 plan in [`docs/plans/`](https://github.com/madeofpendletonwool/ledgermancy/blob/main/docs/plans/):
 
-- **Proactive cash-flow advisor** — ranked, deterministic options for surplus
-  cash; an Advisor surface around the chat; a multi-bucket allocation planner;
-  and a Monte Carlo likelihood layer. (Wave 6.)
 - **Decision-modeling** what-if engine — rent-vs-buy, retirement stress tests,
   solve-for-X. (Wave 7.)
 - **Multi-currency** — FX on transactions and conversion at aggregation time.

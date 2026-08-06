@@ -37,7 +37,7 @@ math. Ledgermancy is neither.
 - **AI is optional and stays out of the way.** Leave the key blank and
   everything works on deterministic rules. Add a provider and you get an LLM
   categorisation fallback, a proactive insight feed, natural-language budget &
-  alert parsing, a monthly recap, and a chat assistant that queries your real
+  alert parsing, a monthly recap, and an Advisor that queries your real
   data.
 
 ## What it does
@@ -89,9 +89,10 @@ math. Ledgermancy is neither.
 :   Rules that watch for you — big purchases, budget thresholds, new merchants,
     low leftover — with optional push.
 
-[:material-robot: Assistant](features/assistant.md)
-:   Ask about your money in plain English; every figure comes from your own
-    data via tool calls.
+[:material-robot: Advisor](features/advisor.md)
+:   A deterministic advisor surface around the chat: a briefing, ranked options
+    for surplus cash, a multi-bucket allocation planner, and a likelihood layer.
+    Every figure comes from your own data via tool calls.
 
 ## A tour
 

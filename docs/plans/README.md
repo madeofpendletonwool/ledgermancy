@@ -10,9 +10,10 @@ notification contracts work.
 Waves 3–7 (docs 13–33) cover **everything remaining in
 [TODO.md](https://github.com/madeofpendletonwool/ledgermancy/blob/main/TODO.md)**: all sixteen "Next major initiatives" plus the two
 small known gaps, the advisor initiative (wave 6), and the capstone scenario
-engine. **Waves 3 and 4 are complete; wave 5 is the current cycle.** Wave 6
-(the Advisor) begins after wave 5's honesty foundations land — it consumes
-their inputs.
+engine. **Waves 3, 4, 5, and 6 are complete; wave 7 (docs 28–29) is all that
+remains.** Wave 6 (the Advisor) consumed wave 5's honesty foundations — its
+ranker, allocator, and likelihood layer all land on real contribution headroom,
+non-drifting asset values, and honest long-horizon dollars.
 
 Within waves 0–2, implement in order; later docs depend on earlier ones. Waves
 3+ are mostly parallel — most docs have no prerequisites at all. Read the
@@ -450,15 +451,18 @@ asset values (26), and honest long-horizon dollars (27).
 
 ### Wave 6 — the Advisor
 
-The advisor initiative: turn the `Assistant` route into an `Advisor` route,
-expose the existing deterministic engines to the chat, ship the proactive
-ranker, and build the multi-bucket allocation planner with a Monte Carlo
-likelihood layer. Built on wave 5's honest inputs. The whole initiative has a
-visual companion — **[advisor-overview.html](advisor-overview.html)** — with
+**This wave is complete.** The advisor initiative turned the `Assistant` route
+into an `Advisor` route, exposed the existing deterministic engines to the chat,
+shipped the proactive ranker, and built the multi-bucket allocation planner with
+a Monte Carlo likelihood layer — built on wave 5's honest inputs. The whole
+initiative has a visual companion — **[advisor-overview.html](advisor-overview.html)** — with
 live demos of the options ranker and the bucket allocator.
 
-The four docs sequence W1→W4 within the wave: surface first (cheap, biggest
+The four docs sequenced W1→W4 within the wave: surface first (cheap, biggest
 coverage gain), then the ranker, then the allocator, then the likelihood layer.
+All four landed in commit `4f38852 "wave 6 complete"` (the likelihood layer's
+files are staged in the working tree alongside it), and all four carry
+**[Shipped notes](#)** in their own docs — read them before touching the area.
 
 **All four docs were reviewed against the code before wave 5 started, and all
 four were corrected.** The review found two classes of problem worth naming
@@ -491,8 +495,8 @@ phase-out was going to be shown a $7,500/yr plan it is not allowed to execute.
 Doc 32 now owns an eligibility table beside `limits.go`, and doc 31's
 `households.filing_status` exists to key it.
 
-- **[24-proactive-advisor.md](24-proactive-advisor.md)** — ranked, deterministic
-  options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
+- **[24-proactive-advisor.md](24-proactive-advisor.md)** — **shipped.** Ranked,
+  deterministic options for surplus cash; the model only narrates. *TODO #3.* **Needs 13 and
   15** (both shipped) and the wave-5 honesty docs for its allocation-flavoured
   options. The single-pick ranker ("you have $X — here are the options") and
   the multi-debt avalanche/snowball strategy ship here. Its ranking rule is now
@@ -501,25 +505,72 @@ Doc 32 now owns an eligibility table beside `limits.go`, and doc 31's
   tax-advantaged headroom → goals → everything below the hurdle as a stated
   tradeoff). The first draft's "guaranteed return first" would have paid down a
   3.5% mortgage ahead of a Roth and drained an emergency fund into a card.
-- **[31-advisor-surface.md](31-advisor-surface.md)** — rename Assistant →
-  Advisor, expose ~12 existing engines as chat tools (no new math), build the
-  Briefing/Horizon/Assumptions/Threads shell around the chat, add household
-  profile fields and conversation/action-item persistence, and render
+
+  The engine is `backend/internal/advisor/` (`rank.go`, `briefing.go`, `slack.go`,
+  `suppress.go`), exposed via the Advisor page and `api/chat_tools_advisor.go`.
+  **No migration** — options are computed on demand. Two corrections to the
+  description above: **slack is `reporting.BuildSafeToSpend`'s median-based
+  figure** (`AmountAfterBills` when obligations are in view), not the "income so
+  far + projected income" TODO #3 still prints — TODO #3 predates this doc and is
+  wrong on that point; and the employer-match option is tier 2 off
+  `networth.annualMatch`, which stays silent without a stated salary.
+- **[31-advisor-surface.md](31-advisor-surface.md)** — **shipped.** Rename
+  Assistant → Advisor, expose ~12 existing engines as chat tools (no new math),
+  build the Briefing/Horizon/Assumptions/Threads shell around the chat, add
+  household profile fields and conversation/action-item persistence, and render
   deterministic charts inline in a chat turn from the tool results it already
   computed (see its *Dynamic charts in chat* section). The cheapest,
-  highest-leverage doc in the wave.
-- **[32-allocation-planner.md](32-allocation-planner.md)** — the multi-bucket
-  allocator: split a lump and/or monthly surplus across Roth/529/brokerage/
-  debt/EF with per-bucket projection, contribution-cap enforcement
+  highest-leverage doc in the wave. Migration `00054_advisor_surface.sql` is
+  taken.
+
+  The route is `frontend/src/routes/Advisor.tsx`; handlers in
+  `api/advisor_surface_handlers.go` + `api/advisor_handlers.go`, chat tools in
+  `api/chat_tools_advisor.go`, the Briefing in `internal/advisor/briefing.go`,
+  and the tool-set split (spending/planning/modelling, one set per request) in
+  `api/chat_toolsets.go`. Three notes for anyone touching this area.
+  `advisor_messages.content` and `tool_trace` are `BYTEA` under `ENCRYPTION_KEY`,
+  so the portable export withholds them by type while `pg_dump` recovers them
+  whole — the one place the two restores disagree, on purpose. `households.state`
+  is deliberately absent (no wave-6 engine consumed it; see the doc). And
+  `contribution_room` returns **real** YTD deferrals from confirmed paystubs
+  (doc 23 landed first), with `used_ytd_verified=false` when no stub is on file.
+- **[32-allocation-planner.md](32-allocation-planner.md)** — **shipped.** The
+  multi-bucket allocator: split a lump and/or monthly surplus across Roth/529/
+  brokerage/debt/EF with per-bucket projection, contribution-cap enforcement
   (`limits.go`), goal-mapping, cash-drag detection, asset-location, and
   college-cost projection. The thing a real advisor does that the app can't.
-- **[33-likelihood-layer.md](33-likelihood-layer.md)** — Monte Carlo over
-  return distributions (sharing doc 15's seeding/RNG machinery, though the
-  accumulation loop is genuinely new rather than a generalization),
+  Migration `00055_allocation_planner.sql` is taken.
+
+  The engine is `backend/internal/allocation/`, the surface is
+  `frontend/src/components/BucketAllocator.tsx`, handlers in
+  `api/allocation_handlers.go`. Two schema additions the doc's SQL block does
+  not print, each load-bearing: `goals.college_years` (per-goal years, default
+  4 — community-college transfers and five-year programmes exist, and a
+  hard-coded 4 would be the engine assuming), and `households.magi` /
+  `magi_tax_year` (the Roth phase-out is keyed by filing status AND income; the
+  YEAR travels with the figure so a stale MAGI reads as `unknown` rather than
+  being silently reused). The `goals_kind_check` is NEW, not an edit — `goals.kind`
+  has been a free `TEXT NOT NULL` since `00012`. MAGI eligibility stays `unknown`
+  without a user-entered figure rather than flattering the household.
+- **[33-likelihood-layer.md](33-likelihood-layer.md)** — **shipped.** Monte
+  Carlo over return distributions (sharing doc 15's seeding/RNG machinery,
+  though the accumulation loop is genuinely new rather than a generalization),
   P10/P50/P90 + success rates, a documented guardrail rule that lets the AI
   name a top pick from computed likelihoods, and plan-vs-actual tracking that
   closes the loop. **Also hard-depends on doc 30** — `Reconcile` reads
-  `account_balance_history` — which the first draft did not list.
+  `account_balance_history` — which the first draft did not list. Migration
+  `00056_likelihood_layer.sql` is taken.
+
+  The engine is `backend/internal/likelihood/`, the surface is
+  `frontend/src/components/PlanLikelihood.tsx`, handlers in
+  `api/likelihood_handlers.go`. The migration is one table (`plan_trackings`),
+  deliberately — **simulation results are never persisted**, recomputed from the
+  plan + a deterministic seed every time, and actuals are read live so editing a
+  past contribution corrects drift without a migration. The three review
+  corrections all shipped as written: one correlated market draw per year shared
+  across risky buckets (independent draws would inflate every success rate); the
+  P5 drawdown (a stable percentile, not a maximum that diverges with run count);
+  and the two P50s labelled distinctly, agreeing only at σ=0.
 
 ### Wave 7 — capstone / far future
 
@@ -592,9 +643,9 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00055_allocation_planner.sql` (doc 32) is the latest.** Applied before it:
-  `00054_advisor_surface.sql` (doc 31), `00053_manual_accounts.sql` (doc 30) and,
-  before that:
+  **`00056_likelihood_layer.sql` (doc 33) is the latest.** Applied before it:
+  `00055_allocation_planner.sql` (doc 32), `00054_advisor_surface.sql`
+  (doc 31), `00053_manual_accounts.sql` (doc 30) and, before that:
   `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, `00043`–`00046`, and
   `00048`–`00052` (`00043_account_terms`, `00044_loan_account_outflow`,
   `00045_one_time_transactions` are out-of-wave bugfixes; `00050_merchant_logos`
@@ -673,7 +724,7 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00052_cpi_series.sql`~~ | 27 | `cpi_series` table (+ seed, Jan 2010 onward) — **taken**. Renumbered DOWN from the reserved `00057`, and the reason matters more than the row: `00057` was allocated on the assumption that wave 6/7's `00052`–`00056` would land first, but **wave 5 ships first**. Under strict ordering, a wave-5 doc taking `00057` would have voided all five of those reservations at once. Taking the next free number above everything applied shifts them by exactly one instead. (Doc 30's later renumber to `00053` shifted them by one more; see its row.) |
   | ~~`00054_advisor_surface.sql`~~ | 31 | **taken.** `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) Was `00053` (itself `00052`, +1 for `00052_cpi_series.sql`); +1 again because doc 30 took `00053` above its reserved `00047`. |
   | ~~`00055_allocation_planner.sql`~~ | 32 | **taken.** `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans`. Was `00054`. Three additions to the schema doc 32 prints, each with a named consumer: `goals.college_years` (the drawdown is per-goal — community-college transfers and five-year programmes exist, and a hard-coded 4 would be the engine assuming), and `households.magi` / `magi_tax_year` (the Roth phase-out is keyed by filing status AND income; doc 31 shipped the status, and the income had nowhere to live. The YEAR travels with the figure so a stale MAGI reads as `unknown` rather than being silently reused). The `goals_kind_check` CHECK is NEW rather than an edit — `goals.kind` has been a free `TEXT NOT NULL` since `00012`. |
-  | `00056_likelihood_layer.sql` | 33 | `plan_trackings`. Was `00055`. |
+  | ~~`00056_likelihood_layer.sql`~~ | 33 | **taken.** `plan_trackings` (the only table — simulation results are never persisted). Was `00055`. |
   | `00057_scenarios.sql` | 28 | `scenarios` table. Was `00056`. |
   | `00058_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates`. Was `00057`. Note `fx_rates` is the third table in the (`asset_prices`, `cpi_series`, `fx_rates`) family — keep the shape consistent. |
 

@@ -55,8 +55,10 @@ you do all the math. Ledgermancy is neither.
   everything works on deterministic rules. Add an
   Anthropic-compatible provider (GLM, Claude, …) and you get an LLM
   categorisation fallback, a proactive insight feed, a natural-language budget
-  & alert parser, a monthly recap, and a chat assistant that answers questions
-  by querying your real data — not by guessing.
+  & alert parser, a monthly recap, and an **Advisor** — a deterministic advisor
+  surface (briefing, ranked surplus-cash options, a multi-bucket allocation
+  planner, and a Monte Carlo likelihood layer) around a chat that answers
+  questions by querying your real data — not by guessing.
 - **Your paperwork lives here too.** An encrypted **document vault** for
   receipts, tax returns, warranties, policies and contracts — sealed with your
   own key, attached to the transactions, assets and goals they explain, and
@@ -89,7 +91,7 @@ you do all the math. Ledgermancy is neither.
   </tr>
   <tr>
     <td width="50%" align="center"><img src="docs/screenshots/insights.png" alt="Insights"><br><b>Insights</b><br>The app noticing things: spending spikes, budget pace, new recurring charges, price creep, subscriptions — surfaced in-app and in an optional digest.</td>
-    <td width="50%" align="center"><img src="docs/screenshots/assistant.png" alt="Assistant"><br><b>Assistant</b><br>Ask about your money in plain English. Every figure comes from your own data via tool calls — auditable, not hallucinated.</td>
+    <td width="50%" align="center"><img src="docs/screenshots/assistant.png" alt="Advisor"><br><b>Advisor</b><br>A deterministic advisor surface around the chat: a briefing, ranked options for surplus cash, a multi-bucket allocation planner, and a likelihood layer. Every figure comes from your own data via tool calls — auditable, not hallucinated.</td>
   </tr>
   <tr>
     <td width="50%" align="center"><img src="docs/screenshots/budget-goals.png" alt="Budgets and Goals"><br><b>Budgets & Goals</b><br>Weekly / monthly / yearly budgets with rollover, a "safe to spend" figure, suggested budgets from your history, savings goals that track to a target date, and debt-payoff goals that amortize a balance to zero.</td>

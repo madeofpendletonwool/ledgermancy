@@ -6,6 +6,21 @@ The thing a real advisor does that the app cannot yet: split a lump and/or a
 monthly surplus across Roth / 529 / brokerage / debt / emergency fund with
 per-bucket projections, contribution-cap enforcement, and goal-mapping.)*
 
+> **Shipped.** What follows is the plan as written. The allocator is
+> `backend/internal/allocation/` (baseline, per-bucket projection, cash-drag,
+> college drawdown, asset-location, store), the surface is
+> `frontend/src/components/BucketAllocator.tsx`, and migration
+> `00055_allocation_planner.sql` is taken. See **[Shipped notes](#shipped-notes)**
+> at the end before touching this area.
+>
+> The short version: shipped as `00055`, not the reserved `00053` (goose strict
+> ordering — docs 30/31 took the numbers below it); the schema gained two
+> columns the plan's SQL block does not print — `goals.college_years` (per-goal
+> years, default 4) and `households.magi` / `magi_tax_year` (user-entered MAGI
+> with its year, so a stale figure reads as `unknown`); the `goals_kind_check`
+> is a NEW constraint, not an edit; and MAGI eligibility stays `unknown` without
+> a user-entered figure rather than flattering the household.
+
 ## Context
 
 Doc 24 ranks **single-pick** options ("you have $X — the highest-value thing
@@ -543,3 +558,61 @@ Decimal-exact, table-driven.
   generate one unprompted.)
 - Real-time price feeds for forward modelling. Assumed real returns only;
   `asset_prices` stays historical.
+
+## Shipped notes
+
+The engine is `backend/internal/allocation/` — `baseline.go` (AssembleBaseline),
+`plan.go` (the projection + cap enforcement), `cash.go` (cash-drag), `college.go`
+(the four-year drawdown), `location.go` (asset-location as disclosure), `store.go`
+(saved plans) — with handlers in `api/allocation_handlers.go`, chat tools in
+`api/chat_tools_allocation.go`, and the frontend `frontend/src/components/BucketAllocator.tsx`.
+Migration `00055_allocation_planner.sql` is taken. Four things reach outside the
+plan text.
+
+### 1. `00055`, not the reserved `00053`
+
+The Data model's reservation note is right in principle and wrong on the number:
+this doc reserved `00053`, but `00053_manual_accounts.sql` (doc 30, renumbered
+up from its reserved `00047`) and `00054_advisor_surface.sql` (doc 31) landed
+first, and goose refuses a migration below the current version. It took `00055`,
+which is what the README's reservation table already assigned. Same lesson the
+wave keeps relearning: read the migrations directory, not the inline number.
+
+### 2. Two columns the plan's SQL block does not print
+
+The shipped migration carries two additions the schema block above omits, each
+with a named consumer documented in the migration:
+
+- **`goals.college_years SMALLINT NOT NULL DEFAULT 4`** (CHECK 1–10). College is
+  four years of spending, not a bill on the first day, and the count is per goal
+  because community-college transfers and five-year programmes exist. The
+  drawdown is per-goal; a hard-coded 4 would be the engine assuming.
+- **`households.magi NUMERIC(20,4)` + `households.magi_tax_year INT`.** The Roth
+  phase-out is keyed by filing status AND income; doc 31 shipped the status, and
+  the income had nowhere to live. The YEAR travels with the figure so a stale
+  MAGI reads as `unknown` rather than being silently reused — the same staleness
+  rule `limits.go` enforces for IRS limits.
+
+`allocation_plans.created_by` is `ON DELETE SET NULL` (matching `advisor_threads`):
+a departing member's saved plan belongs to the household it was built for.
+
+### 3. `goals_kind_check` is a NEW constraint, not an edit
+
+The DROP in the migration is kept only for idempotency. `goals.kind` had **no**
+check constraint since `00012_goals.sql` — it was a plain `TEXT NOT NULL` with
+the vocabulary living in `goal_handlers.go`. The ADD tightens a previously free
+column: it fails if any live row holds a kind outside `('savings','debt_payoff','college')`,
+and `savings`/`debt_payoff` stop being a Go convention and become a database
+invariant. That is an improvement; it is just not the no-op edit the first draft
+implied.
+
+### 4. Eligibility stays `unknown` without a user-entered MAGI
+
+`AnnualLimitFor` returns a cap, and a cap is not permission. The eligibility
+check (keyed on `households.filing_status` + `magi`) returns `eligible` /
+`phased_out` / `ineligible` / `unknown`, and **absent or stale MAGI is `unknown`**:
+the plan is projected with a labelled "assumes you're eligible to contribute"
+caveat rather than silently assuming the flattering answer. The backdoor Roth is
+not modelled; the plan says "ineligible for a direct contribution", which is the
+true statement. All five new tables/columns are classified `InExport` in
+`continuity/coverage.go`.

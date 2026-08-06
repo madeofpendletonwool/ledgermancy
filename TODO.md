@@ -40,6 +40,50 @@ not bugs:
 
 ### Recently shipped
 
+- **The Advisor (wave 6)** — the old reactive Assistant became an Advisor
+  surface, and the whole proactive-advisor initiative landed with it. Four
+  pieces, four plan docs:
+
+  - **Advisor surface** (doc 31) — a deterministic **Briefing** (net worth,
+    slack, FI age, debt-free date, emergency-fund runway, top attention items),
+    saved **Threads** with sealed transcripts, and an action-items tray. ~12
+    existing engines are now reachable from the chat as tools, sent one
+    tool-set per request (spending / planning / modelling) so ~34 definitions
+    never drown a single turn. Migration `00054_advisor_surface.sql`
+    (`advisor_threads`, `advisor_messages`, `advisor_action_items`, plus
+    `households.filing_status` / `risk_drawdown_floor`). `advisor_messages`
+    bodies are `BYTEA` under `ENCRYPTION_KEY`, so the portable export withholds
+    them by type while `pg_dump` recovers them whole.
+  - **Proactive cash-flow advisor** (doc 24, *TODO #3*) — ranked, deterministic
+    options for surplus cash under a published **waterfall** (starter EF →
+    unclaimed employer match → debt above a hurdle derived from the household's
+    own assumed return → full EF → expiring tax-advantaged headroom → goals →
+    below-hurdle as a stated tradeoff). Slack is `reporting.BuildSafeToSpend`'s
+    median-based figure, not the "income so far + projected income" #3's
+    description still prints — that predates the engine. No migration; the
+    model narrates, never computes.
+  - **Multi-bucket allocation planner** (doc 32) — split a lump and/or monthly
+    surplus across Roth / 529 / brokerage / debt / emergency fund with
+    per-bucket projection, contribution-cap enforcement, **Roth/HSA eligibility
+    (a cap is not permission)**, a four-year college drawdown, cash-drag against
+    your own best rate, and asset-location as disclosure. Migration
+    `00055_allocation_planner.sql` — gained `goals.college_years` and
+    `households.magi` / `magi_tax_year` beyond the plan's SQL block, the latter
+    so a stale MAGI reads as `unknown` rather than being silently reused.
+  - **Likelihood layer** (doc 33) — Monte Carlo over allocation plans
+    (P10/P50/P90, success rate, P5 drawdown), a documented guardrail rule that
+    names a top plan from computed likelihoods, and plan-vs-actual tracking.
+    **Buckets are modelled as moving together** (independent draws would
+    under-count correlated equity risk and inflate every success rate), the P5
+    drawdown is a stable percentile not a maximum, and the two "P50" figures
+    (compound-at-μ vs median simulated) are labelled distinctly. Migration
+    `00056_likelihood_layer.sql` — one table, `plan_trackings`; simulation
+    results are never persisted.
+
+  Commit `4f38852 "wave 6 complete"`. Every table is classified `InExport` in
+  `continuity/coverage.go`. The whole initiative honors the one rule the
+  surface establishes: **AI never computes; tools compute, the model narrates.**
+
 - **Predictive anomaly detection** — two producers on the existing insight spine,
   `merchant_outlier` and `duplicate_charge` (`insights/anomaly.go`), over
   `db/queries/anomaly.sql`. Migration `00046_anomaly_overrides.sql`.
@@ -472,7 +516,19 @@ a user wants the app to notice for them.
 `merchant_category_map` table, the Insights UI. Foundational for #6 (proactive
 advisor) which will surface the same signals in plain English.
 
-#### 3. Proactive cash-flow advisor
+#### 3. Proactive cash-flow advisor — **shipped**
+
+Delivered as described below; see "Recently shipped" for what landed. Two
+corrections to the description here: slack is the median-based
+`reporting.BuildSafeToSpend` figure (bill-aware when obligations are in view),
+**not** the "income so far + projected income" the Scope section below
+describes — that formula predates the engine and is wrong; and the ranking is an
+explicit **waterfall** (starter EF → unclaimed employer match → debt above a
+hurdle → full EF → expiring tax-advantaged headroom → goals → below-hurdle as a
+stated tradeoff), not "guaranteed return first," which would have paid down a
+3.5% mortgage ahead of a Roth and drained an emergency fund into a card. The
+broader initiative — the Advisor surface, the allocation planner, and the
+likelihood layer — landed alongside it in plan docs 31, 32, and 33.
 
 **Problem.** The assistant answers questions when asked, but the most useful
 money advice is unsolicited and contextual: "you have $400 of slack this month,

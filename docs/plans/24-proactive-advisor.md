@@ -2,6 +2,21 @@
 
 *(TODO.md "Next major initiatives" #3.)*
 
+> **Shipped.** What follows is the plan as written. It landed as
+> `backend/internal/advisor/` (the ranker, the briefing, slack assembly, the
+> match window, suppression, and the weekly job), with no migration — options are
+> computed on demand from existing state, exactly as the Data model said. See
+> **[Shipped notes](#shipped-notes)** at the end before touching this area.
+>
+> The short version: the ranker's ordering is the explicit **waterfall** the
+> corrected plan specifies (starter EF → unclaimed employer match → debt above the
+> hurdle → full EF → expiring tax-advantaged headroom → goals → below-hurdle as a
+> stated tradeoff), not the first draft's "guaranteed return first"; the employer
+> match is tier 2 off `networth.annualMatch`; and **slack is
+> `reporting.BuildSafeToSpend`'s median-based figure** (`AmountAfterBills` when
+> obligation coverage is positive), not the "income so far + projected income"
+> TODO #3 still describes — TODO #3 predates this doc and is wrong on that point.
+
 ## Context
 
 The assistant answers questions when asked. The most useful money advice is
@@ -306,3 +321,49 @@ app.
   "want me to model this?" — but does not build the engine.
 - Investment selection or security-level recommendations. Out of scope
   permanently; that is regulated advice.
+
+## Shipped notes
+
+The package is `backend/internal/advisor/` — `rank.go` (the waterfall), `briefing.go`
+(the deterministic briefing), `inputs.go` (slack + baseline assembly), `slack.go`,
+`matchwindow.go`, `suppress.go` (per-option suppression through the preferences
+store), and `advisor.go` tying the weekly pass together. Exposed through the
+Advisor page and `api/chat_tools_advisor.go`. **No migration**, as advertised —
+every option is recomputed from existing state. TODO #3 is now marked shipped.
+
+Three things worth knowing before touching this area.
+
+### 1. Slack is `BuildSafeToSpend`, and TODO #3's formula is wrong
+
+TODO #3 describes slack as "income so far + projected income − …". That is not
+the function the app ships and never was: `reporting.BuildSafeToSpend` is a
+**median of up to six prior full months** (zero-income months skipped, not
+counted as zero), minus the median trailing fixed costs, discretionary budgets,
+and scheduled goal contributions. The advisor calls it rather than restating it,
+and uses `AmountAfterBills` (the bill-aware variant) when obligation coverage is
+positive, naming which it used. **Two surfaces disagreeing about slack is worse
+than neither existing** — the agreement test asserts the advisor's figure equals
+the Budgets page to the cent. Where TODO #3 contradicts this doc, this doc is
+right (the README's standing rule).
+
+### 2. The waterfall is the rule, written verbatim
+
+The ranking rule is the corrected waterfall, with the hurdle derived from the
+household's own assumed real return (floored at 6%) rather than a constant. A
+household with no starter emergency fund is offered *only* the EF option even
+holding a 24% card; unclaimed employer match outranks debt; a 3.5% mortgage
+never outranks tax-advantaged headroom and lands in tier 7 beside taxable
+investing as a tradeoff rather than ranked against it. The rule is total (ties
+break on computed dollar value then account name) so the order is stable and
+quotable — "the model decided" is never the answer to why one option beat
+another.
+
+### 3. Employer match is tier 2, and the ranker stays silent without a salary
+
+The unclaimed-match option — the single highest-value thing the ranker can say —
+is computed from `networth.annualMatch`, which refuses to guess without match
+terms *and* a salary. A household with a match percentage but no stated salary
+produces **no match option at all** rather than a zero or a guess, and the
+option disappears once the year's pay periods are exhausted (the match is
+calendar-bounded). An accepted option writes an `advisor_action_item`
+(`source='option'`) from doc 31's surface.
