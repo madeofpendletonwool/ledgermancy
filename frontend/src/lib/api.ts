@@ -2866,10 +2866,137 @@ export interface TaxSummary {
   disclaimer: string
 }
 
+/**
+ * One tool call's result, exactly as the server computed it and exactly as the
+ * model received it.
+ *
+ * This is what an inline chart is drawn from. The chart component is chosen by
+ * a DETERMINISTIC map from `tool` to component — the model never picks a chart
+ * type, never shapes the data, and never labels an axis. A wrong tool pick
+ * renders the wrong chart, which is the same visible, debuggable failure as
+ * today's wrong-tool-pick rendering wrong prose.
+ */
+export interface ChatToolResult {
+  tool: string
+  result: unknown
+}
+
 /** One turn in a chatbot conversation. */
 export interface ChatTurn {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * Tool results behind an assistant turn, in the order they landed. Present on
+   * a live turn as its frames arrive, and on a reloaded one from the persisted
+   * tool_trace — which is what lets a saved conversation re-render its charts.
+   */
+  tools?: ChatToolResult[]
+  /**
+   * True for a turn read back out of a saved thread. FIGURES IN HISTORY ARE
+   * CONTEXT, NEVER CURRENT: a six-week-old "safe to spend" is not this month's,
+   * and the UI says so rather than reprinting it as though it were.
+   */
+  stale?: boolean
+}
+
+/**
+ * The advisor briefing: the household's opening position, composed by
+ * deterministic code. No AI anywhere in this payload — it renders identically
+ * with no API key configured.
+ */
+export interface Briefing {
+  as_of: string
+  net_worth: string
+  assets: string
+  debts: string
+  monthly_slack: string
+  slack_basis: 'after_bills' | 'typical_month'
+  income_months: number
+  /** Null when financial independence is not reached inside the horizon — an
+   *  answer, not a gap. */
+  fi_age: number | null
+  already_fi: boolean
+  /** False when there is nothing to project, so the tile is omitted rather than
+   *  printing a confident "never". */
+  retirement_projected: boolean
+  debt_free: {
+    /** THE DATE THE LAST DEBT CLEARS, not the first. Null when never, or when
+     *  there is nothing to pay off. */
+    date: string | null
+    never: boolean
+    never_account?: string
+    projected: number
+    excluded: number
+    excluded_names: string[]
+    total_balance: string
+  }
+  runway: {
+    liquid: string
+    monthly_fixed: string
+    /** Null when there are no fixed costs to divide by. */
+    months: string | null
+    target_months: number
+  }
+  attention: {
+    id: string
+    kind: string
+    priority: number
+    title: string
+    body: string
+  }[]
+}
+
+/** A saved advisor conversation. */
+export interface AdvisorThread {
+  id: string
+  user_id: string | null
+  title: string
+  /** False makes the thread invisible to the rest of the household. */
+  is_shared: boolean
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AdvisorThreadDetail extends AdvisorThread {
+  messages: {
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    created_at: string
+    tool_trace?: ChatToolResult[]
+    stale: boolean
+  }[]
+}
+
+export type ActionItemStatus = 'open' | 'done' | 'dismissed'
+export type ActionItemSource = 'option' | 'allocation' | 'thread' | 'manual'
+
+/**
+ * Something the household decided to do. TRACKED, NEVER EXECUTED — the advisor
+ * moves no money, and nothing here is a step towards it.
+ */
+export interface ActionItem {
+  id: string
+  title: string
+  detail: string | null
+  source: ActionItemSource
+  status: ActionItemStatus
+  due_date: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export type FilingStatus = 'single' | 'married_joint' | 'married_separate' | 'hoh'
+
+/**
+ * The household profile fields doc 31 added. Both nullable, and null is a real
+ * answer: "I have not told you my filing status" is not "single".
+ */
+export interface HouseholdProfile {
+  filing_status: FilingStatus | null
+  /** A PERCENT, e.g. "20.00" for a 20% drawdown floor. */
+  risk_drawdown_floor: string | null
 }
 
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
@@ -3413,6 +3540,58 @@ export const api = {
   // ranked list of what it would do if it were not spent. Read-only — the
   // advisor executes nothing.
   advisor: () => request<Advice>('GET', '/api/advisor'),
+
+  // --- Advisor surface -----------------------------------------------------
+  // The briefing, saved conversations, and the action items a household
+  // accepted out of them. Still read-heavy and still executes nothing: an
+  // action item is a note about a decision, not an instruction to move money.
+  //
+  // The briefing is deterministic end to end and renders with no AI key — the
+  // page's headline figures never depend on a model being reachable.
+  advisorBriefing: () => request<Briefing>('GET', '/api/advisor/briefing'),
+
+  advisorThreads: () => request<AdvisorThread[]>('GET', '/api/advisor/threads'),
+
+  createAdvisorThread: (title: string, isShared = true) =>
+    request<AdvisorThread>('POST', '/api/advisor/threads', {
+      title,
+      is_shared: isShared,
+    }),
+
+  advisorThread: (id: string) =>
+    request<AdvisorThreadDetail>('GET', `/api/advisor/threads/${id}`),
+
+  renameAdvisorThread: (id: string, title: string) =>
+    request<AdvisorThread>('PATCH', `/api/advisor/threads/${id}`, { title }),
+
+  deleteAdvisorThread: (id: string) =>
+    request<void>('DELETE', `/api/advisor/threads/${id}`),
+
+  actionItems: (status?: ActionItemStatus) =>
+    request<ActionItem[]>(
+      'GET',
+      withQuery('/api/advisor/action-items', { status: status ?? '' }),
+    ),
+
+  createActionItem: (input: {
+    title: string
+    detail?: string | null
+    source?: ActionItemSource
+    due_date?: string | null
+  }) => request<ActionItem>('POST', '/api/advisor/action-items', input),
+
+  // Status only. The title was computed by whatever proposed the item; a tray
+  // toggle must not become an edit surface for it.
+  updateActionItem: (id: string, status: ActionItemStatus) =>
+    request<ActionItem>('PATCH', `/api/advisor/action-items/${id}`, { status }),
+
+  householdProfile: () =>
+    request<HouseholdProfile>('GET', '/api/household/profile/'),
+
+  updateHouseholdProfile: (input: {
+    filing_status: FilingStatus | null
+    risk_drawdown_floor: string | null
+  }) => request<HouseholdProfile>('PUT', '/api/household/profile/', input),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when
@@ -3996,11 +4175,29 @@ export const api = {
       document_id: documentID,
     }),
 
-  // The chat endpoint streams its answer as Server-Sent Events: one
-  // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
-  // onDelta is called as text arrives so the UI can render it live.
-  chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
-    streamChat(messages, onDelta),
+  // The chat endpoint streams its answer as Server-Sent Events: a
+  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, one
+  // {"delta":"…"} frame per chunk of prose, a {"tool":…,"result":…} frame per
+  // tool result, then a terminal {"done":true} or {"error":"…"}.
+  //
+  // The tool frames arrive BEFORE the final prose, because tool calls complete
+  // earlier in the server's loop — so a chart mounts while the answer composes,
+  // which reads as native rather than as an afterthought.
+  chat: (
+    messages: ChatTurn[],
+    onDelta: (text: string) => void,
+    opts?: ChatStreamOptions,
+  ) => streamChat(messages, onDelta, opts),
+}
+
+/** Callbacks and options for one streamed chat turn. */
+export interface ChatStreamOptions {
+  /** Persists the turn to a saved conversation when set. */
+  threadID?: string
+  /** Fires per tool result, so a chart can be drawn from the turn's own data. */
+  onTool?: (result: ChatToolResult) => void
+  /** Fires once with the tool set the server chose, so a wrong pick is visible. */
+  onToolSet?: (set: string) => void
 }
 
 /**
@@ -4104,6 +4301,7 @@ function targetQuery(target: DocumentTarget): Record<string, string> {
 async function streamChat(
   messages: ChatTurn[],
   onDelta: (text: string) => void,
+  opts?: ChatStreamOptions,
 ): Promise<void> {
   assertOnline()
 
@@ -4115,7 +4313,13 @@ async function streamChat(
       Accept: 'text/event-stream',
     },
     credentials: 'include',
-    body: JSON.stringify({ messages }),
+    // Only role and content travel: the server holds the transcript's tool
+    // results itself, and echoing them back would be both large and a second
+    // source of truth for figures the server already has.
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      thread_id: opts?.threadID,
+    }),
   })
 
   if (!res.ok || !res.body) {
@@ -4147,9 +4351,14 @@ async function streamChat(
       delta?: string
       done?: boolean
       error?: string
+      tool?: string
+      result?: unknown
+      tool_set?: string
     }
     if (evt.error) throw new ApiError(500, evt.error)
     if (evt.delta) onDelta(evt.delta)
+    if (evt.tool_set) opts?.onToolSet?.(evt.tool_set)
+    if (evt.tool) opts?.onTool?.({ tool: evt.tool, result: evt.result })
   }
 
   for (;;) {

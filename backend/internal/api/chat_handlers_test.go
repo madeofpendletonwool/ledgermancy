@@ -9,7 +9,7 @@ import (
 // Every tool's input schema must be valid JSON, and the set must match what the
 // executor dispatches on — a name drift would surface only as a live failure.
 func TestChatToolDefs(t *testing.T) {
-	defs := chatToolDefs()
+	defs := chatBaseToolDefs()
 	want := map[string]bool{
 		"spending_summary":   true,
 		"spend_by_category":  true,

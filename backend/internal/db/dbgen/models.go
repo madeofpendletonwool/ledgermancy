@@ -78,6 +78,37 @@ type AccountTerm struct {
 	UpdatedAt           stdtime.Time        `json:"updated_at"`
 }
 
+type AdvisorActionItem struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	Title       string        `json:"title"`
+	Detail      *string       `json:"detail"`
+	Source      string        `json:"source"`
+	Status      string        `json:"status"`
+	DueDate     *stdtime.Time `json:"due_date"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+	CompletedAt *stdtime.Time `json:"completed_at"`
+}
+
+type AdvisorMessage struct {
+	ID        uuid.UUID    `json:"id"`
+	ThreadID  uuid.UUID    `json:"thread_id"`
+	Role      string       `json:"role"`
+	Content   []byte       `json:"content"`
+	ToolTrace []byte       `json:"tool_trace"`
+	CreatedAt stdtime.Time `json:"created_at"`
+}
+
+type AdvisorThread struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      *uuid.UUID   `json:"user_id"`
+	Title       string       `json:"title"`
+	IsShared    bool         `json:"is_shared"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
 type Alert struct {
 	ID          uuid.UUID    `json:"id"`
 	HouseholdID uuid.UUID    `json:"household_id"`
@@ -359,10 +390,12 @@ type Holding struct {
 }
 
 type Household struct {
-	ID        uuid.UUID    `json:"id"`
-	Name      string       `json:"name"`
-	CreatedAt stdtime.Time `json:"created_at"`
-	UpdatedAt stdtime.Time `json:"updated_at"`
+	ID                uuid.UUID           `json:"id"`
+	Name              string              `json:"name"`
+	CreatedAt         stdtime.Time        `json:"created_at"`
+	UpdatedAt         stdtime.Time        `json:"updated_at"`
+	FilingStatus      *string             `json:"filing_status"`
+	RiskDrawdownFloor decimal.NullDecimal `json:"risk_drawdown_floor"`
 }
 
 type HouseholdInvite struct {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -161,7 +162,7 @@ func (s *Server) handlePayrollSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	year, stubCount, err := s.buildPayrollYear(r, taxYear)
+	year, stubCount, err := s.buildPayrollYear(r.Context(), identity, taxYear)
 	if err != nil {
 		s.internalError(w, "assemble payroll year", err)
 		return
@@ -175,7 +176,7 @@ func (s *Server) handlePayrollSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	age, ageKnown := s.resolveCallerAge(r, now)
+	age, ageKnown := s.resolveCallerAge(r.Context(), identity, now)
 	familyHSA := r.URL.Query().Get("family_hsa") == "true"
 
 	out := payrollSummaryResponse{
@@ -378,7 +379,7 @@ func (s *Server) handlePayrollTaxSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	year, _, err := s.buildPayrollYear(r, taxYear)
+	year, _, err := s.buildPayrollYear(r.Context(), identity, taxYear)
 	if err != nil {
 		s.internalError(w, "assemble payroll year", err)
 		return
@@ -428,10 +429,10 @@ func (s *Server) handlePayrollTaxSummary(w http.ResponseWriter, r *http.Request)
 // buildPayrollYear assembles the confirmed stubs for one tax year into the
 // domain shape the roll-ups work on. The second result is the stub count, so a
 // caller can distinguish "no data" from "zero".
-func (s *Server) buildPayrollYear(r *http.Request, taxYear int) (payroll.Year, int, error) {
-	identity := auth.MustFromContext(r.Context())
-
-	rows, err := s.Queries.ListConfirmedPaystubsForYear(r.Context(), dbgen.ListConfirmedPaystubsForYearParams{
+func (s *Server) buildPayrollYear(
+	ctx context.Context, identity auth.Identity, taxYear int,
+) (payroll.Year, int, error) {
+	rows, err := s.Queries.ListConfirmedPaystubsForYear(ctx, dbgen.ListConfirmedPaystubsForYearParams{
 		HouseholdID: identity.HouseholdID,
 		UserID:      identity.UserID,
 		TaxYear:     int32(taxYear),
@@ -444,7 +445,7 @@ func (s *Server) buildPayrollYear(r *http.Request, taxYear int) (payroll.Year, i
 	for _, p := range rows {
 		ids = append(ids, p.ID)
 	}
-	linesByStub, err := s.paystubLines(r, ids)
+	linesByStub, err := s.paystubLines(ctx, ids)
 	if err != nil {
 		return payroll.Year{}, 0, err
 	}
@@ -485,11 +486,11 @@ func (s *Server) buildPayrollYear(r *http.Request, taxYear int) (payroll.Year, i
 // 23's headroom figure is the kind of number somebody acts on, and quietly
 // applying no catch-up to a 55-year-old understates their room by $8,000
 // without saying so.
-func (s *Server) resolveCallerAge(r *http.Request, now time.Time) (int, bool) {
-	identity := auth.MustFromContext(r.Context())
-
+func (s *Server) resolveCallerAge(
+	ctx context.Context, identity auth.Identity, now time.Time,
+) (int, bool) {
 	var birthdate *time.Time
-	if person, err := s.Queries.GetPersonByUserID(r.Context(), &identity.UserID); err == nil {
+	if person, err := s.Queries.GetPersonByUserID(ctx, &identity.UserID); err == nil {
 		birthdate = person.Birthdate
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		// Not fatal: the stored integer below may still answer, and a headroom
@@ -498,7 +499,7 @@ func (s *Server) resolveCallerAge(r *http.Request, now time.Time) (int, bool) {
 	}
 
 	stored := 0
-	if assumptions, err := s.Queries.GetProjectionAssumptions(r.Context(), identity.HouseholdID); err == nil {
+	if assumptions, err := s.Queries.GetProjectionAssumptions(ctx, identity.HouseholdID); err == nil {
 		if assumptions.CurrentAge != nil {
 			stored = int(*assumptions.CurrentAge)
 		}

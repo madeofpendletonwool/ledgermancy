@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
@@ -17,10 +20,17 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 )
 
-// maxToolIterations bounds the model↔tool loop. A finance question rarely needs
-// more than a couple of lookups; the cap stops a misbehaving model from
-// spinning up unbounded queries and cost.
-const maxToolIterations = 6
+// maxToolIterations bounds the model↔tool loop. The cap stops a misbehaving
+// model from spinning up unbounded queries and cost.
+//
+// Raised from 6 to 8 by doc 31, and the reason is specific rather than a hunch:
+// THE ADVISOR GENUINELY CHAINS MORE LOOKUPS THAN THE SPENDING ASSISTANT DID.
+// "What should I do with $30k" plausibly needs advisor_briefing →
+// safe_to_spend → debt_summary → contribution_room → the allocator → the
+// likelihood check. At six that is the whole budget with no room for a
+// correction; at eight there is slack for one wrong turn and a recovery, which
+// is what the cap should leave and what six no longer did.
+const maxToolIterations = 8
 
 // maxChatMessages caps the transcript a client may send, so a runaway history
 // cannot blow up the prompt.
@@ -51,10 +61,21 @@ Conventions:
 Style:
 - Be concise and concrete. If a tool returns nothing, say so plainly.
 - Format lists and comparisons as GitHub-flavored Markdown tables, and bold the key figure in a sentence. Your replies are rendered as Markdown.
-- When you call a tool, do not narrate that you are doing so — only produce prose in your final answer.`
+- When you call a tool, do not narrate that you are doing so — only produce prose in your final answer.
+
+Advice:
+- The planning tools (safe_to_spend, project_balance, upcoming_obligations, debt_summary, debt_payoff, goal_status, goal_solve, retirement_projection, retirement_solve, investment_performance, asset_allocation, fees_summary, contribution_room) each wrap the app's own engines. Their figures are already final — quote them, never recompute them.
+- advisor_briefing is the fastest way to answer any broad "how are we doing" question; call it first when the question is about the household's overall position.
+- When the user asks "what should I do with $X", CALL A TOOL rather than inventing options: the ranked options and the allocation plan are computed, not advised. Do not offer a course of action the tools did not produce.
+- Never present a projection as a forecast. Retirement, payoff and balance projections carry a "basis" field saying what they assume and what they omit — repeat the relevant caveat rather than dropping it.
+- A null figure means "not known", never zero. An unknown APR, an unreached FI age, and an uncomputable return are all real answers; say so plainly instead of substituting a number.
+- You cannot move money. Never offer to make a transfer, a payment or a contribution — you describe and compute, the household acts.`
 
 type chatRequestBody struct {
 	Messages []chatMessage `json:"messages"`
+	// ThreadID persists this turn to a saved conversation. Absent means today's
+	// stateless behaviour, unchanged.
+	ThreadID *uuid.UUID `json:"thread_id"`
 }
 
 type chatMessage struct {
@@ -84,7 +105,44 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := make([]ai.Message, 0, len(req.Messages))
+	// A thread id is validated BEFORE the stream opens, so a bad one is an
+	// ordinary 404 rather than an error frame the client has to unpick. It is
+	// also the scope check: a thread from another household, or a spouse's
+	// private thread, does not resolve here and the turn is never persisted to
+	// it.
+	var thread *dbgen.AdvisorThread
+	if req.ThreadID != nil {
+		row, err := s.Queries.GetAdvisorThread(r.Context(), dbgen.GetAdvisorThreadParams{
+			ID: *req.ThreadID, HouseholdID: identity.HouseholdID, UserID: &identity.UserID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "conversation not found")
+			return
+		} else if err != nil {
+			s.internalError(w, "load advisor thread", err)
+			return
+		}
+		thread = &row
+	}
+
+	messages := make([]ai.Message, 0, len(req.Messages)+1)
+	// FIGURES IN HISTORY ARE CONTEXT, NEVER CURRENT.
+	//
+	// A reloaded thread is full of money the model itself stated weeks ago. Left
+	// unqualified it will re-read its own six-week-old "$4,120 safe to spend" as
+	// though it were sourced and current. One system line naming the thread's
+	// last activity is far cheaper and far more robust than trying to redact the
+	// transcript.
+	if thread != nil && len(req.Messages) > 1 {
+		messages = append(messages, ai.Message{
+			Role: ai.RoleUser,
+			Content: []ai.Block{ai.TextBlock(
+				"Context: this is a saved conversation last active on " +
+					thread.UpdatedAt.UTC().Format("2 January 2006") +
+					". Any figure appearing earlier in it is AS OF THAT DATE and may be stale. " +
+					"Re-fetch with a tool before restating any of them.")},
+		})
+	}
 	for _, m := range req.Messages {
 		role := ai.RoleUser
 		if m.Role == "assistant" {
@@ -93,10 +151,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, ai.Message{Role: role, Content: []ai.Block{ai.TextBlock(m.Content)}})
 	}
 
+	// The tool set is chosen HERE, deterministically, from the user's last
+	// message — never by the model. See chat_toolsets.go.
+	question := lastUserMessage(req.Messages)
+	set := classifyToolSet(question)
+
 	// Everything below streams over Server-Sent Events: one `{"delta":...}`
-	// frame per chunk of answer, a terminal `{"done":true}`, or `{"error":...}`
-	// if the turn fails. Validation above still returns a normal JSON error,
-	// because nothing has been written yet.
+	// frame per chunk of answer, a `{"tool":…,"result":…}` frame per tool
+	// result, a terminal `{"done":true}`, or `{"error":...}` if the turn fails.
+	// Validation above still returns a normal JSON error, because nothing has
+	// been written yet.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -119,12 +183,99 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	onDelta := func(delta string) { sendSSE(map[string]string{"delta": delta}) }
 
-	if _, err := s.runChat(r.Context(), identity, messages, onDelta); err != nil {
+	// The chosen set is announced so a wrong pick is VISIBLE rather than
+	// mysterious. A user who asks a debt question and gets a spending answer can
+	// see which set was sent; without this the only symptom is a worse answer.
+	sendSSE(map[string]string{"tool_set": set})
+
+	// Tool results are forwarded to the client as they land, so a chart can be
+	// rendered from the SAME value the model was handed. This is the whole
+	// mechanism behind inline charts: the client maps tool name → chart
+	// component deterministically, and the model never picks a chart, shapes
+	// data, or labels an axis.
+	trace := []chatToolTrace{}
+	onTool := func(name string, result string) {
+		trace = append(trace, chatToolTrace{Tool: name, Result: json.RawMessage(result)})
+		sendSSE(map[string]any{"tool": name, "result": json.RawMessage(result)})
+	}
+
+	answer, err := s.runChat(r.Context(), identity, set, messages, onDelta, onTool)
+	if err != nil {
 		slog.Error("chat", "error", err)
 		sendSSE(map[string]string{"error": "Something went wrong answering that."})
 		return
 	}
+
+	// Persistence happens AFTER the stream completes, never mid-stream: a turn
+	// half-written to the database because the client hung up is worse than one
+	// not written at all.
+	if thread != nil {
+		s.persistTurn(r.Context(), thread.ID, identity.HouseholdID, question, answer, trace)
+	}
+
 	sendSSE(map[string]bool{"done": true})
+}
+
+// chatToolTrace is one tool call's result, kept so an assistant turn can be
+// persisted WITH the provenance of every figure in it.
+//
+// Storing only role and prose honours the "every number comes from a tool"
+// rule for a fresh turn and quietly breaks it on reload. See the migration's
+// note on advisor_messages.tool_trace.
+type chatToolTrace struct {
+	Tool   string          `json:"tool"`
+	Result json.RawMessage `json:"result"`
+}
+
+// decodeToolTrace reads a persisted trace back out of its opened plaintext.
+func decodeToolTrace(raw []byte, out *[]chatToolTrace) error {
+	return json.Unmarshal(raw, out)
+}
+
+// persistTurn writes the user and assistant halves of one completed turn.
+//
+// Best-effort and never fatal: the answer has already been streamed, so failing
+// the request now would tell the user their working answer was an error. A
+// failed write is logged and the conversation simply does not gain the turn.
+func (s *Server) persistTurn(
+	ctx context.Context, threadID, householdID uuid.UUID,
+	question, answer string, trace []chatToolTrace,
+) {
+	save := func(role, content string, tr []chatToolTrace) {
+		if content == "" {
+			return
+		}
+		sealed, err := s.Cipher.SealString(content)
+		if err != nil {
+			slog.Error("seal advisor message", "error", err, "thread_id", threadID)
+			return
+		}
+		var sealedTrace []byte
+		if len(tr) > 0 {
+			raw, err := json.Marshal(tr)
+			if err == nil {
+				sealedTrace, err = s.Cipher.Seal(raw)
+			}
+			if err != nil {
+				slog.Error("seal advisor tool trace", "error", err, "thread_id", threadID)
+				return
+			}
+		}
+		if _, err := s.Queries.InsertAdvisorMessage(ctx, dbgen.InsertAdvisorMessageParams{
+			ThreadID: threadID, Role: role, Content: sealed, ToolTrace: sealedTrace,
+		}); err != nil {
+			slog.Error("persist advisor message", "error", err, "thread_id", threadID)
+		}
+	}
+
+	save("user", question, nil)
+	save("assistant", answer, trace)
+
+	if err := s.Queries.TouchAdvisorThread(ctx, dbgen.TouchAdvisorThreadParams{
+		ID: threadID, HouseholdID: householdID,
+	}); err != nil {
+		slog.Error("touch advisor thread", "error", err, "thread_id", threadID)
+	}
 }
 
 // runChat drives the tool-calling loop: the model may ask to run scoped queries,
@@ -132,8 +283,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // answer's text is streamed to onText as it is generated; the full text is also
 // returned. Tool-calling turns produce no user-visible text (the system prompt
 // forbids it), so nothing leaks between lookups.
-func (s *Server) runChat(ctx context.Context, identity auth.Identity, messages []ai.Message, onText func(string)) (string, error) {
-	tools := chatToolDefs()
+// onTool, when non-nil, receives every tool result as it is produced — the SAME
+// JSON string that becomes the model's ToolResultBlock. Forwarding it is what
+// lets the client render a deterministic chart from a turn's own data; it is
+// never a second computation.
+func (s *Server) runChat(
+	ctx context.Context, identity auth.Identity, set string,
+	messages []ai.Message, onText func(string), onTool func(name, result string),
+) (string, error) {
+	tools := toolSetDefs(set)
 
 	// The model has no clock of its own, so it cannot resolve "July" or "last
 	// month" without being told today's date. Inject it into the system prompt.
@@ -175,6 +333,9 @@ func (s *Server) runChat(ctx context.Context, identity auth.Identity, messages [
 				continue
 			}
 			results = append(results, ai.ToolResultBlock(use.ID, out, false))
+			if onTool != nil {
+				onTool(use.Name, out)
+			}
 		}
 		messages = append(messages, ai.Message{Role: ai.RoleUser, Content: results})
 	}
@@ -214,9 +375,12 @@ func (s *Server) chatComplete(ctx context.Context, req ai.Request, onText func(s
 	return resp, false, err
 }
 
-// chatToolDefs are the read-only tools the assistant may call. Each maps to an
-// existing reporting query; execution scopes every one to the caller.
-func chatToolDefs() []ai.Tool {
+// chatBaseToolDefs are the original spending tools. Each maps to an existing
+// reporting query; execution scopes every one to the caller.
+//
+// Nothing sends this whole list plus the advisor's — see chat_toolsets.go for
+// why, and toolSetDefs for how a request's set is assembled.
+func chatBaseToolDefs() []ai.Tool {
 	monthSchema := json.RawMessage(`{"type":"object","properties":{"month":{"type":"string","description":"Month as YYYY-MM; omit for the current month"}}}`)
 	return []ai.Tool{
 		{
@@ -251,7 +415,7 @@ func chatToolDefs() []ai.Tool {
 		},
 		{
 			Name:        "monthly_trend",
-			Description: "Income and spending per calendar month over the last N months (default 12), oldest first. Use for month-over-month comparisons and trends.",
+			Description: "Income and spending per calendar month over the last N months (default 12), oldest first, in \"months\". Also returns \"avg_leftover\", the exact mean monthly leftover across the window — quote that figure for \"average leftover\" questions rather than averaging the months yourself.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12)"}}}`),
 		},
 		{
@@ -286,6 +450,13 @@ func chatToolDefs() []ai.Tool {
 // query is scoped to the caller's household and visibility — a tool that
 // forgot the scope would leak a spouse's private accounts.
 func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, name string, input json.RawMessage) (string, error) {
+	// The advisor's engines dispatch first and report whether they owned the
+	// name, so this switch stays the spending assistant's and doc 31's tools
+	// live beside the engines they wrap.
+	if out, owned, err := s.executeAdvisorTool(ctx, identity, name, input); owned {
+		return out, err
+	}
+
 	switch name {
 	case "spending_summary":
 		from, to, err := toolMonth(input)
@@ -638,16 +809,30 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		if err != nil {
 			return "", err
 		}
-		out := make([]map[string]string, 0, len(rows))
+		months := make([]map[string]string, 0, len(rows))
+		totalLeftover := decimal.Zero
 		for _, m := range rows {
-			out = append(out, map[string]string{
+			leftover := m.Income.Sub(m.Spending)
+			totalLeftover = totalLeftover.Add(leftover)
+			months = append(months, map[string]string{
 				"month":    m.Month.Format("2006-01"),
 				"income":   m.Income.StringFixed(2),
 				"spending": m.Spending.StringFixed(2),
-				"leftover": m.Income.Sub(m.Spending).StringFixed(2),
+				"leftover": leftover.StringFixed(2),
 			})
 		}
-		return marshalTool(out)
+		// avg_leftover is computed HERE, in exact decimal, because it is a
+		// finished figure like every other money figure this app returns. It is
+		// the reference line the chat's trend chart draws, and the model quotes
+		// it verbatim when asked "what's our average leftover" — neither the
+		// client nor the model may average the series itself. A client-derived
+		// average is a second answer to a question the server already answered.
+		result := map[string]any{"months": months}
+		if len(months) > 0 {
+			result["avg_leftover"] = totalLeftover.
+				Div(decimal.NewFromInt(int64(len(months)))).StringFixed(2)
+		}
+		return marshalTool(result)
 
 	case "category_averages":
 		from, to := trailingMonthsRange(toolMonths(input))

@@ -5,7 +5,7 @@ import { Sigil } from './components/Brand'
 import { ServiceWorkerHost } from './components/PwaPrompts'
 import { Accounts } from './routes/Accounts'
 import { Alerts } from './routes/Alerts'
-import { Assistant } from './routes/Assistant'
+import { Advisor } from './routes/Advisor'
 import { Budgets } from './routes/Budgets'
 import { Categories } from './routes/Categories'
 import { CategoryDetail } from './routes/CategoryDetail'
@@ -97,7 +97,10 @@ export default function App() {
           <Route path="/documents" element={<Documents />} />
           <Route path="/paystubs" element={<Paystubs />} />
           <Route path="/alerts" element={<Alerts />} />
-          <Route path="/assistant" element={<Assistant />} />
+          <Route path="/advisor" element={<Advisor />} />
+          {/* The Assistant became the Advisor (doc 31). The old path is kept so
+              existing bookmarks and any saved link keep working. */}
+          <Route path="/assistant" element={<Navigate to="/advisor" replace />} />
           <Route path="/settings" element={<Settings />} />
           {/* Old paths preserved so existing bookmarks keep working; Household and
               Security now live as tabs inside Settings. */}

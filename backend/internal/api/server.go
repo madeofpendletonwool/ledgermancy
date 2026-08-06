@@ -605,6 +605,36 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/advisor", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleAdvisor)
+
+			// The advisor SURFACE (doc 31). Still executes nothing: the
+			// briefing is a read, a thread is a transcript, and an action
+			// item is a note about a decision the household made.
+			//
+			// Threads and action items enforce household scope inside the
+			// query on every read AND every write, not here — a route group
+			// can only say who may call, and the question these have to answer
+			// is whose row this is.
+			r.Get("/briefing", s.handleBriefing)
+
+			r.Get("/threads", s.handleListThreads)
+			r.Post("/threads", s.handleCreateThread)
+			r.Get("/threads/{threadID}", s.handleGetThread)
+			r.Patch("/threads/{threadID}", s.handleRenameThread)
+			r.Delete("/threads/{threadID}", s.handleDeleteThread)
+
+			r.Get("/action-items", s.handleListActionItems)
+			r.Post("/action-items", s.handleCreateActionItem)
+			r.Patch("/action-items/{itemID}", s.handleUpdateActionItem)
+		})
+
+		// The household profile: the two columns doc 31 added, which the
+		// allocator (32) and the guardrail rule (33) key on. Adult-only for
+		// the same reason the advisor is — filing status is household tax
+		// information.
+		r.Route("/household/profile", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleGetProfile)
+			r.Put("/", s.handleUpdateProfile)
 		})
 
 		r.Route("/manual-assets", func(r chi.Router) {

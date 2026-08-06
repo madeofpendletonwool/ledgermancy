@@ -35,6 +35,12 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Plan',
     items: [
+      // First under Plan, and unconditional. The Advisor is where a planning
+      // session starts, and — unlike the Assistant it replaced — it does not
+      // need an AI key: the briefing, horizon and options are all deterministic
+      // server-side computations. Only the conversation tab needs a model, and
+      // that tab hides itself.
+      { to: '/advisor', label: 'Advisor' },
       { to: '/budgets', label: 'Budgets' },
       { to: '/schedule', label: 'Schedule' },
       { to: '/goals', label: 'Goals' },
@@ -60,23 +66,15 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
-// The assistant only exists when an AI provider is configured; it lives with the
-// other insight-y views under Analyze.
+// Every group is unconditional now. The Assistant used to be appended here only
+// when an AI provider was configured; the Advisor that replaced it works
+// without one, so gating the whole nav entry on a key would hide a page that
+// renders perfectly well.
 function useNavGroups(): NavGroup[] {
   const { data: user } = useSession()
-  const capabilities = useQuery({
-    queryKey: ['capabilities'],
-    queryFn: api.capabilities,
-    staleTime: Infinity,
-  })
   // A child has no groups at all: their whole app is one page.
   if (!isAdult(user)) return []
-  if (!capabilities.data?.ai_enabled) return NAV_GROUPS
-  return NAV_GROUPS.map((group) =>
-    group.label === 'Analyze'
-      ? { ...group, items: [...group.items, { to: '/assistant', label: 'Assistant' }] }
-      : group,
-  )
+  return NAV_GROUPS
 }
 
 /** The home link, which is the child's entire navigation. */

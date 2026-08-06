@@ -45,11 +45,15 @@ configured, like everything else.
 
 ## Data model
 
-**Reserved migration: `00052_advisor_surface.sql`.** (Wave 5 ships first and
-holds `00047`–`00051`; latest applied is `00046`. This doc originally reserved
-`00048`, which collided with wave 5's un-numbered reissues — see the README's
-reservation table, which now assigns all of them. Confirm the number is both
-free **and** above the highest applied version before writing.)
+**Shipped as `00054_advisor_surface.sql`**, not the `00052` this section
+originally named. By the time doc 31 was built, `00052_cpi_series.sql` (doc 27)
+and `00053_manual_accounts.sql` (doc 30) had both landed, and goose runs in
+strict-ordering mode — a `00052` arriving after `00053` is applied would refuse
+to start every instance that had run them. `00054` is what the README's
+reservation table already assigns to this doc; that table, not this line, was
+correct. The rule the wave keeps relearning: confirm the number is both free
+**and** above the highest applied version before writing, by looking at the
+migrations directory rather than at any reservation.
 
 ### Household profile columns
 
@@ -223,6 +227,12 @@ per account group, not one:
   (taxable, 529, trust: no federal annual cap, and inventing one is worse).
 - `used_ytd` — real deferrals once doc 23 lands; until then `null`, and the
   response says the headroom is **unverified**, never zero-by-default.
+  *(Shipped better than written: doc 23 landed before this one, so the tool
+  wraps `payroll.Year.ContributionHeadroom` and returns REAL year-to-date
+  deferrals from confirmed paystubs. The honesty requirement survives intact as
+  `used_ytd_verified`, which is false when no confirmed stub is on file — a
+  household with no stubs has unmeasured deferrals, not zero ones, and the
+  difference is the whole point of the field.)*
 - `eligibility` — `eligible` / `phased_out` / `ineligible` / `unknown`.
 
 Doc 32 owns the phase-out table that makes `eligibility` more than `unknown`;

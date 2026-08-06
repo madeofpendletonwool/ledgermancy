@@ -189,6 +189,29 @@ var tableCoverage = map[string]Coverage{
 	// The rules are the user's; the events are the engine's output.
 	"alerts": InExport,
 
+	// --- Advisor surface --------------------------------------------------
+	// A saved conversation is user-authored and re-derivable from nothing: the
+	// household's own questions, in their own words, and the reasoning they were
+	// answered with.
+	//
+	// advisor_messages is the sharpest case in this block and the asymmetry is
+	// deliberate. content and tool_trace are BYTEA, so IsSensitive withholds them
+	// from the PORTABLE export by type — the rows travel, the sealed text does
+	// not. That is the right default: the export is a plain JSON file a user may
+	// email themselves, and a full advisor transcript, which is a household
+	// narrating its salary and its debts in natural language, is the last thing
+	// that should ride in one. The encrypted bytes are still in the pg_dump, so a
+	// restore under the same ENCRYPTION_KEY recovers them intact.
+	//
+	// Keep that asymmetry in the restore runbook: a portable export restores a
+	// household's threads with empty bodies, a dump brings them back whole.
+	"advisor_threads":  InExport,
+	"advisor_messages": InExport,
+	// The record of what the household decided to DO. Nothing re-derives a
+	// decision; re-running the ranker produces today's options, not the one
+	// somebody accepted in March and is still working through.
+	"advisor_action_items": InExport,
+
 	// --- Digests ----------------------------------------------------------
 	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
 	// looks like something a job produces. But the job cannot produce it again.

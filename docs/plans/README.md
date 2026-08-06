@@ -592,7 +592,8 @@ Making it a build failure moves the discovery to the pull request.
   has run the higher one refuses to start with
   `found N missing migrations before current version`.
 
-  **`00053_manual_accounts.sql` (doc 30) is the latest.** Applied before it:
+  **`00054_advisor_surface.sql` (doc 31) is the latest.** Applied before it:
+  `00053_manual_accounts.sql` (doc 30) and, before that:
   `00001`–`00021`, `00023`, `00024`, `00033`–`00035`, `00043`–`00046`, and
   `00048`–`00052` (`00043_account_terms`, `00044_loan_account_outflow`,
   `00045_one_time_transactions` are out-of-wave bugfixes; `00050_merchant_logos`
@@ -669,7 +670,7 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00050_merchant_logos.sql`~~ | (out of wave) | `merchant_logos` — **taken**. Not a plan doc; the logo fetcher landed between wave-5 docs and needed a number above everything applied. It consumed doc 26's reservation, which is why the next two rows moved. |
   | ~~`00051_asset_revaluation.sql`~~ | 26 | `asset_details` (incl. bond columns), `asset_valuations` (+ backfill), `savings_bond_rates` (+ seed), `manual_assets.loan_account_id` — **taken**. Renumbered from the reserved `00050`, which `00050_merchant_logos.sql` had already taken. |
   | ~~`00052_cpi_series.sql`~~ | 27 | `cpi_series` table (+ seed, Jan 2010 onward) — **taken**. Renumbered DOWN from the reserved `00057`, and the reason matters more than the row: `00057` was allocated on the assumption that wave 6/7's `00052`–`00056` would land first, but **wave 5 ships first**. Under strict ordering, a wave-5 doc taking `00057` would have voided all five of those reservations at once. Taking the next free number above everything applied shifts them by exactly one instead. (Doc 30's later renumber to `00053` shifted them by one more; see its row.) |
-  | `00054_advisor_surface.sql` | 31 | `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) Was `00053` (itself `00052`, +1 for `00052_cpi_series.sql`); +1 again because doc 30 took `00053` above its reserved `00047`. |
+  | ~~`00054_advisor_surface.sql`~~ | 31 | **taken.** `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) Was `00053` (itself `00052`, +1 for `00052_cpi_series.sql`); +1 again because doc 30 took `00053` above its reserved `00047`. |
   | `00055_allocation_planner.sql` | 32 | `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans`. Was `00054`. |
   | `00056_likelihood_layer.sql` | 33 | `plan_trackings`. Was `00055`. |
   | `00057_scenarios.sql` | 28 | `scenarios` table. Was `00056`. |

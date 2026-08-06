@@ -176,6 +176,26 @@ var childRoutes = []struct{ method, path string }{
 	// The assistant reads household data by design.
 	{"POST", "/api/chat"},
 
+	// The advisor. Every route here reads the household's whole financial
+	// position — debts, salary, retirement balances — into one response, and a
+	// saved transcript is the household narrating its money in prose. The
+	// ranker (doc 24) and the surface (doc 31) are listed together because they
+	// share one route group and one reason to be adult-only.
+	{"GET", "/api/advisor/"},
+	{"GET", "/api/advisor/briefing"},
+	{"GET", "/api/advisor/threads"},
+	{"POST", "/api/advisor/threads"},
+	{"GET", "/api/advisor/threads/" + uuid.Nil.String()},
+	{"PATCH", "/api/advisor/threads/" + uuid.Nil.String()},
+	{"DELETE", "/api/advisor/threads/" + uuid.Nil.String()},
+	{"GET", "/api/advisor/action-items"},
+	{"POST", "/api/advisor/action-items"},
+	{"PATCH", "/api/advisor/action-items/" + uuid.Nil.String()},
+
+	// Filing status is household tax information.
+	{"GET", "/api/household/profile/"},
+	{"PUT", "/api/household/profile/"},
+
 	// The household insight feed and alerts.
 	{"GET", "/api/insights/"},
 	{"GET", "/api/insights/anomaly/suppressed"},

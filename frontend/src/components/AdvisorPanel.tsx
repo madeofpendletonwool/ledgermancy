@@ -24,7 +24,7 @@ import { formatMoney } from '../lib/money'
  * "nothing to advise" box. A household with no debts, no goals and no retirement
  * accounts degrades to silence.
  */
-export function AdvisorPanel() {
+export function AdvisorPanel({ onAccept }: { onAccept?: (option: AdviceOption) => void } = {}) {
   const advice = useQuery({ queryKey: ['advisor'], queryFn: api.advisor })
 
   // Presence-gated, like the insight card. Pending renders nothing rather than a
@@ -62,7 +62,7 @@ export function AdvisorPanel() {
 
       <ol className="space-y-3">
         {ranked.map((o, i) => (
-          <OptionRow key={o.key} option={o} rank={i + 1} hurdle={data.hurdle} />
+          <OptionRow key={o.key} option={o} rank={i + 1} hurdle={data.hurdle} onAccept={onAccept} />
         ))}
       </ol>
 
@@ -83,7 +83,7 @@ export function AdvisorPanel() {
           </p>
           <ol className="space-y-3">
             {tradeoffs.map((o) => (
-              <OptionRow key={o.key} option={o} hurdle={data.hurdle} />
+              <OptionRow key={o.key} option={o} hurdle={data.hurdle} onAccept={onAccept} />
             ))}
           </ol>
         </div>
@@ -99,7 +99,7 @@ export function AdvisorPanel() {
           <h3 className="mb-3 text-sm font-medium">Can&rsquo;t be compared yet</h3>
           <ol className="space-y-3">
             {unranked.map((o) => (
-              <OptionRow key={o.key} option={o} hurdle={data.hurdle} />
+              <OptionRow key={o.key} option={o} hurdle={data.hurdle} onAccept={onAccept} />
             ))}
           </ol>
         </div>
@@ -126,10 +126,20 @@ function OptionRow({
   option,
   rank,
   hurdle,
+  onAccept,
 }: {
   option: AdviceOption
   rank?: number
   hurdle: string
+  /**
+   * Records the option as an action item. Present only on the Advisor page —
+   * the Dashboard panel is a glance, and a tracked decision belongs where the
+   * tray that holds it lives.
+   *
+   * "Accept" TRACKS, it does not execute. Nothing here moves money, and the
+   * copy on the button has to keep saying so.
+   */
+  onAccept?: (option: AdviceOption) => void
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -153,14 +163,25 @@ function OptionRow({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="mt-3 text-xs text-rune-300 hover:underline"
-        aria-expanded={open}
-      >
-        {open ? 'Hide the arithmetic' : 'How this was calculated'}
-      </button>
+      <div className="mt-3 flex items-center gap-4">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-xs text-rune-300 hover:underline"
+          aria-expanded={open}
+        >
+          {open ? 'Hide the arithmetic' : 'How this was calculated'}
+        </button>
+        {onAccept && (
+          <button
+            type="button"
+            onClick={() => onAccept(option)}
+            className="text-xs text-mist-400 hover:text-mist-200 hover:underline"
+          >
+            Track this
+          </button>
+        )}
+      </div>
       {open && (
         <dl className="mt-2 space-y-1 border-t border-white/5 pt-2">
           {option.basis.map((b) => (
