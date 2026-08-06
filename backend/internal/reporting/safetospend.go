@@ -429,7 +429,12 @@ func goalContributions(ctx context.Context, q *dbgen.Queries, householdID uuid.U
 	}
 	total := decimal.Zero
 	for _, g := range rows {
-		if g.Kind != "savings" {
+		// Accumulating kinds only. A debt-payoff goal's payment is already in
+		// fixed costs, so counting it here would subtract it twice — but a
+		// COLLEGE goal's contribution is real money leaving every month that
+		// nothing else in this calculation sees, and omitting it would overstate
+		// safe-to-spend. Which is the error direction that actually hurts.
+		if g.Kind != "savings" && g.Kind != "college" {
 			continue
 		}
 
@@ -443,10 +448,21 @@ func goalContributions(ctx context.Context, q *dbgen.Queries, householdID uuid.U
 	return total, nil
 }
 
-// goalCurrentProgress mirrors the insight engine's goalProgress: an
-// account-backed goal reads the account balance; a category/surplus goal counts
-// the household surplus accumulated since the goal was created. Household-shared
-// visibility throughout.
+// GoalProgress is how far along one goal is: an account-backed goal reads the
+// account balance; a category/surplus goal counts the household surplus
+// accumulated since the goal was created. Household-shared visibility
+// throughout.
+//
+// Exported because it had already been copied once (the insight engine's
+// goalProgress) and doc 24's advisor needed it a third time. Progress is DERIVED
+// and never stored (the 00012 header rule), so every surface that shows a goal
+// re-derives it — and three implementations of "how far along is this goal" is
+// three chances for the Goals page, the feed and the advisor to disagree about
+// the same goal.
+func GoalProgress(ctx context.Context, q *dbgen.Queries, g dbgen.Goal, now time.Time) (decimal.Decimal, error) {
+	return goalCurrentProgress(ctx, q, g, now)
+}
+
 func goalCurrentProgress(ctx context.Context, q *dbgen.Queries, g dbgen.Goal, now time.Time) (decimal.Decimal, error) {
 	if g.AccountID != nil {
 		return q.GetGoalAccountBalance(ctx, dbgen.GetGoalAccountBalanceParams{

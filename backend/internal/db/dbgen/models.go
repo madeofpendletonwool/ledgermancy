@@ -34,6 +34,8 @@ type Account struct {
 	UserID      *uuid.UUID `json:"user_id"`
 	IsShared    *bool      `json:"is_shared"`
 	HouseholdID *uuid.UUID `json:"household_id"`
+	// User-entered deposit yield as a PERCENT (4.50 = 4.50%). NULL = unknown, never zero.
+	DepositApy decimal.NullDecimal `json:"deposit_apy"`
 }
 
 // Visibility resolution for accounts of either source. Join this rather than reaching through plaid_items; a manual account has no item.
@@ -78,6 +80,37 @@ type AccountTerm struct {
 	UpdatedAt           stdtime.Time        `json:"updated_at"`
 }
 
+type AdvisorActionItem struct {
+	ID          uuid.UUID     `json:"id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	Title       string        `json:"title"`
+	Detail      *string       `json:"detail"`
+	Source      string        `json:"source"`
+	Status      string        `json:"status"`
+	DueDate     *stdtime.Time `json:"due_date"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+	CompletedAt *stdtime.Time `json:"completed_at"`
+}
+
+type AdvisorMessage struct {
+	ID        uuid.UUID    `json:"id"`
+	ThreadID  uuid.UUID    `json:"thread_id"`
+	Role      string       `json:"role"`
+	Content   []byte       `json:"content"`
+	ToolTrace []byte       `json:"tool_trace"`
+	CreatedAt stdtime.Time `json:"created_at"`
+}
+
+type AdvisorThread struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      *uuid.UUID   `json:"user_id"`
+	Title       string       `json:"title"`
+	IsShared    bool         `json:"is_shared"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
 type Alert struct {
 	ID          uuid.UUID    `json:"id"`
 	HouseholdID uuid.UUID    `json:"household_id"`
@@ -97,6 +130,18 @@ type AlertEvent struct {
 	Payload       []byte        `json:"payload"`
 	ReadAt        *stdtime.Time `json:"read_at"`
 	NotifiedAt    *stdtime.Time `json:"notified_at"`
+}
+
+type AllocationPlan struct {
+	ID           uuid.UUID    `json:"id"`
+	HouseholdID  uuid.UUID    `json:"household_id"`
+	CreatedBy    *uuid.UUID   `json:"created_by"`
+	Name         string       `json:"name"`
+	Inputs       []byte       `json:"inputs"`
+	InputVersion int32        `json:"input_version"`
+	Assumptions  []byte       `json:"assumptions"`
+	CreatedAt    stdtime.Time `json:"created_at"`
+	UpdatedAt    stdtime.Time `json:"updated_at"`
 }
 
 type Allowance struct {
@@ -332,6 +377,8 @@ type Goal struct {
 	AchievedAt   *stdtime.Time   `json:"achieved_at"`
 	ArchivedAt   *stdtime.Time   `json:"archived_at"`
 	PersonID     *uuid.UUID      `json:"person_id"`
+	// Years of study a college goal funds. target_amount is ONE year in today's dollars.
+	CollegeYears int16 `json:"college_years"`
 }
 
 type GoalContribution struct {
@@ -359,10 +406,15 @@ type Holding struct {
 }
 
 type Household struct {
-	ID        uuid.UUID    `json:"id"`
-	Name      string       `json:"name"`
-	CreatedAt stdtime.Time `json:"created_at"`
-	UpdatedAt stdtime.Time `json:"updated_at"`
+	ID                uuid.UUID           `json:"id"`
+	Name              string              `json:"name"`
+	CreatedAt         stdtime.Time        `json:"created_at"`
+	UpdatedAt         stdtime.Time        `json:"updated_at"`
+	FilingStatus      *string             `json:"filing_status"`
+	RiskDrawdownFloor decimal.NullDecimal `json:"risk_drawdown_floor"`
+	// User-entered modified AGI for magi_tax_year. NULL, or a stale year, = unknown (never "eligible").
+	Magi        decimal.NullDecimal `json:"magi"`
+	MagiTaxYear *int32              `json:"magi_tax_year"`
 }
 
 type HouseholdInvite struct {
@@ -609,6 +661,17 @@ type PlaidItem struct {
 	LastRefreshAt        *stdtime.Time `json:"last_refresh_at"`
 }
 
+type PlanTracking struct {
+	ID            uuid.UUID       `json:"id"`
+	PlanID        uuid.UUID       `json:"plan_id"`
+	AsOf          stdtime.Time    `json:"as_of"`
+	ExpectedLump  decimal.Decimal `json:"expected_lump"`
+	ExpectedTotal decimal.Decimal `json:"expected_total"`
+	// Baseline captured at as_of. Every money field is a decimal STRING, never a JSON number.
+	SnapshotInputs []byte       `json:"snapshot_inputs"`
+	CreatedAt      stdtime.Time `json:"created_at"`
+}
+
 type Preference struct {
 	ID          uuid.UUID    `json:"id"`
 	Scope       string       `json:"scope"`
@@ -632,6 +695,7 @@ type ProjectionAssumption struct {
 	SsStartAge           *int32              `json:"ss_start_age"`
 	TargetAnnualSpending decimal.NullDecimal `json:"target_annual_spending"`
 	UpdatedAt            stdtime.Time        `json:"updated_at"`
+	CollegeInflationRate decimal.Decimal     `json:"college_inflation_rate"`
 }
 
 type RecurringObligation struct {

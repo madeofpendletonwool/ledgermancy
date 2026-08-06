@@ -365,6 +365,13 @@ export interface Account {
   source: 'plaid' | 'manual'
   tax_treatment: string | null
   is_shared: boolean
+  /**
+   * User-entered deposit yield as a PERCENT string ("4.50"), on a depository
+   * account. Null means nobody has entered one — UNKNOWN, never zero. The
+   * cash-drag detector stays silent on a null rather than reporting a
+   * high-yield savings account as the household's worst drag.
+   */
+  deposit_apy: string | null
 }
 
 /** Fields the manual-account editor sends. Balance is a string like every other
@@ -956,6 +963,100 @@ export interface SafeToSpend {
    * it did.
    */
   obligation_coverage: number
+}
+
+/**
+ * One row of an option's "how this was calculated" panel: an input's label and
+ * the finished figure that went into the ranking.
+ */
+export interface AdviceBasis {
+  label: string
+  value: string
+}
+
+/**
+ * One computed use of one marginal dollar.
+ *
+ * Every figure is finished server-side in exact decimal. NOTHING HERE IS
+ * RECOMPUTED IN JS — not the value, not the order. `tier` is the waterfall step
+ * that placed it and the list arrives already sorted; re-sorting it in the
+ * client would silently replace a published rule with a different one.
+ */
+export interface AdviceOption {
+  /** Stable (kind, subject) identity — what a household suppresses. */
+  key: string
+  kind: string
+  subject_id?: string
+  /** 1–7; 0 with `unranked` true means it could not be placed. */
+  tier: number
+  label: string
+  detail: string
+  amount: string
+  /**
+   * What `amount` buys. `value_kind` says in what unit — for
+   * 'months_earlier' this is a COUNT OF MONTHS, not money, and rendering it
+   * with a currency symbol is the mistake that makes the panel untrustworthy.
+   */
+  value: string
+  value_kind:
+    | 'interest_avoided'
+    | 'match_captured'
+    | 'months_earlier'
+    | 'gap_closed'
+    | 'headroom'
+    | 'projected_growth'
+  /**
+   * An input the option needed is missing — in practice a debt with no APR
+   * anywhere. Listed and labelled rather than dropped or defaulted to zero: a
+   * debt with an unknown rate is the one most likely to be expensive.
+   */
+  unranked: boolean
+  /**
+   * Tier 7. These are shown SIDE BY SIDE rather than ranked against each other
+   * — the app has no opinion on a guaranteed 3.5% versus an assumed 7%.
+   */
+  tradeoff: boolean
+  /** A debt that never clears at its current payment; `value` is then zero. */
+  unbounded: boolean
+  note?: string
+  basis: AdviceBasis[]
+}
+
+/**
+ * One advisor run.
+ *
+ * `slack` is the SAME figure the Budgets page prints as safe-to-spend, and the
+ * copy around it must stay CONDITIONAL — "if you don't spend this" — never "you
+ * have this available". Two surfaces giving opposite instructions about one
+ * number is how a household stops trusting both.
+ */
+export interface Advice {
+  slack: string
+  /** 'after_bills' when known bills were used; 'typical_month' otherwise. */
+  slack_basis: 'after_bills' | 'typical_month'
+  obligation_coverage: number
+  income_months: number
+  threshold: string
+  /** False when there is nothing worth saying; `options` is then empty. */
+  significant: boolean
+  /** The APR, as a percentage, above which guaranteed beats assumed. */
+  hurdle: string
+  hurdle_basis: string
+  slack_parts: {
+    expected_income: string
+    fixed_costs: string
+    fixed_costs_after_bills: string
+    budgeted_discretionary: string
+    goal_contributions: string
+    upcoming_obligations: string
+  }
+  options: AdviceOption[]
+  suppressed: string[]
+  /**
+   * The model's phrasing of the list. EMPTY IS NORMAL — with no API key the
+   * options render as a plain list and nothing is missing but the prose.
+   */
+  narrative: string
 }
 
 /**
@@ -1850,7 +1951,13 @@ export interface AlertEvent {
 }
 
 /** The two kinds of goal: put money aside, or clear a debt. */
-export type GoalKind = 'savings' | 'debt_payoff'
+/**
+ * 'college' joins the two original kinds in doc 32. Its target_amount is ONE
+ * YEAR'S cost in today's dollars, not the multi-year total — the engine inflates
+ * each year separately and draws them down, which is what makes "funded through
+ * sophomore year, short in junior year" computable.
+ */
+export type GoalKind = 'savings' | 'debt_payoff' | 'college'
 
 /**
  * The amortization detail behind a debt_payoff goal. Every figure is computed
@@ -1953,6 +2060,11 @@ export interface Goal {
   created_at: string
   /** Present only on a debt_payoff goal. */
   payoff?: GoalPayoff
+  /** Years of study a college goal funds. Defaults to 4; ignored on other kinds. */
+  college_years: number
+  /** Present only on a college goal: the sentence that stops target_amount
+   *  being read as the whole cost of a degree. */
+  college_basis?: string
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
@@ -1965,6 +2077,9 @@ export interface GoalInput {
   target_date?: string
   /** Defaults to 'savings'. A 'debt_payoff' goal must set `account_id`. */
   kind?: GoalKind
+  /** Years of study, for a 'college' goal. Defaults to 4 on create; omitting it
+   *  on an UPDATE leaves the stored value alone rather than resetting it. */
+  college_years?: number
   scope?: 'household' | 'user' | 'person'
   /** Required when scope is 'person'. */
   person_id?: string | null
@@ -2772,10 +2887,558 @@ export interface TaxSummary {
   disclaimer: string
 }
 
+/**
+ * One tool call's result, exactly as the server computed it and exactly as the
+ * model received it.
+ *
+ * This is what an inline chart is drawn from. The chart component is chosen by
+ * a DETERMINISTIC map from `tool` to component — the model never picks a chart
+ * type, never shapes the data, and never labels an axis. A wrong tool pick
+ * renders the wrong chart, which is the same visible, debuggable failure as
+ * today's wrong-tool-pick rendering wrong prose.
+ */
+export interface ChatToolResult {
+  tool: string
+  result: unknown
+}
+
 /** One turn in a chatbot conversation. */
 export interface ChatTurn {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * Tool results behind an assistant turn, in the order they landed. Present on
+   * a live turn as its frames arrive, and on a reloaded one from the persisted
+   * tool_trace — which is what lets a saved conversation re-render its charts.
+   */
+  tools?: ChatToolResult[]
+  /**
+   * True for a turn read back out of a saved thread. FIGURES IN HISTORY ARE
+   * CONTEXT, NEVER CURRENT: a six-week-old "safe to spend" is not this month's,
+   * and the UI says so rather than reprinting it as though it were.
+   */
+  stale?: boolean
+}
+
+/**
+ * The advisor briefing: the household's opening position, composed by
+ * deterministic code. No AI anywhere in this payload — it renders identically
+ * with no API key configured.
+ */
+export interface Briefing {
+  as_of: string
+  net_worth: string
+  assets: string
+  debts: string
+  monthly_slack: string
+  slack_basis: 'after_bills' | 'typical_month'
+  income_months: number
+  /** Null when financial independence is not reached inside the horizon — an
+   *  answer, not a gap. */
+  fi_age: number | null
+  already_fi: boolean
+  /** False when there is nothing to project, so the tile is omitted rather than
+   *  printing a confident "never". */
+  retirement_projected: boolean
+  debt_free: {
+    /** THE DATE THE LAST DEBT CLEARS, not the first. Null when never, or when
+     *  there is nothing to pay off. */
+    date: string | null
+    never: boolean
+    never_account?: string
+    projected: number
+    excluded: number
+    excluded_names: string[]
+    total_balance: string
+  }
+  runway: {
+    liquid: string
+    monthly_fixed: string
+    /** Null when there are no fixed costs to divide by. */
+    months: string | null
+    target_months: number
+  }
+  attention: {
+    id: string
+    kind: string
+    priority: number
+    title: string
+    body: string
+  }[]
+}
+
+/** A saved advisor conversation. */
+export interface AdvisorThread {
+  id: string
+  user_id: string | null
+  title: string
+  /** False makes the thread invisible to the rest of the household. */
+  is_shared: boolean
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AdvisorThreadDetail extends AdvisorThread {
+  messages: {
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    created_at: string
+    tool_trace?: ChatToolResult[]
+    stale: boolean
+  }[]
+}
+
+export type ActionItemStatus = 'open' | 'done' | 'dismissed'
+export type ActionItemSource = 'option' | 'allocation' | 'thread' | 'manual'
+
+/**
+ * Something the household decided to do. TRACKED, NEVER EXECUTED — the advisor
+ * moves no money, and nothing here is a step towards it.
+ */
+export interface ActionItem {
+  id: string
+  title: string
+  detail: string | null
+  source: ActionItemSource
+  status: ActionItemStatus
+  due_date: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export type FilingStatus = 'single' | 'married_joint' | 'married_separate' | 'hoh'
+
+/**
+ * The household profile fields doc 31 added. Both nullable, and null is a real
+ * answer: "I have not told you my filing status" is not "single".
+ */
+export interface HouseholdProfile {
+  filing_status: FilingStatus | null
+  /** A PERCENT, e.g. "20.00" for a 20% drawdown floor. */
+  risk_drawdown_floor: string | null
+  /**
+   * Modified AGI for magi_tax_year, doc 32's Roth-eligibility input. Null is a
+   * real answer and the important one: without it the eligibility check reports
+   * `unknown`, never `eligible`. Ledgermancy cannot compute a MAGI — it is not
+   * an AGI and it is not gross income — so it is typed in or it is absent.
+   */
+  magi: string | null
+  /**
+   * The tax year the MAGI is for. A figure from a different year is treated as
+   * absent rather than silently reused.
+   */
+  magi_tax_year: number | null
+}
+
+// --- Allocation planner (doc 32) -------------------------------------------
+
+/**
+ * Which arithmetic a bucket needs. Only an investment bucket compounds; a debt
+ * amortizes and cash accrues, and the UI renders a different formula for each.
+ * Showing a credit card a compound-growth formula would be worse than showing
+ * nothing.
+ */
+export type BucketKind = 'investment' | 'debt' | 'cash'
+
+/** One account money can be allocated to. */
+export interface AllocationBucket {
+  account_id: string
+  name: string
+  institution?: string
+  kind: BucketKind
+  treatment?: string
+  subtype?: string
+  balance: string
+  /** What is already being paid in, before this plan adds anything. */
+  existing_monthly: string
+  /** A PERCENT. Absent means nobody has entered one — unknown, never zero. */
+  deposit_apy?: string
+  /** Null where unknown. A genuine 0% card and an unknown rate are different. */
+  apr?: string
+  minimum_payment?: string
+}
+
+export interface AllocationBuckets {
+  buckets: AllocationBucket[]
+  real_return_rate: string
+  inflation_rate: string
+  excluded_accounts: string[]
+  filing_status?: string
+  magi_known: boolean
+  age_known: boolean
+}
+
+/** One line of a proposed split. Percentages 0–100, as decimal strings. */
+export interface AllocationSplitInput {
+  account_id: string
+  lump_pct: string
+  monthly_pct: string
+  /** A FRACTION ("0.06"); omit to use the household's assumed rate. */
+  real_return_rate?: string | null
+}
+
+export interface AllocationRunInput {
+  lump: string
+  monthly: string
+  horizon_years: number
+  target_nest_egg?: string | null
+  family_hsa?: boolean
+  splits: AllocationSplitInput[]
+}
+
+export interface PayoffSummary {
+  monthly_payment: string
+  never_pays_off: boolean
+  months: number
+  total_interest: string
+  payoff_date?: string
+  monthly_interest: string
+}
+
+export interface AllocationBucketResult {
+  account_id: string
+  name: string
+  institution?: string
+  kind: BucketKind
+  treatment?: string
+
+  /** What the split asked for vs what actually went in after eligibility. */
+  allocated_lump: string
+  allocated_monthly: string
+  applied_lump: string
+  applied_monthly: string
+
+  engine: 'compound' | 'amortization' | 'accrual'
+  /** The arithmetic spelled out with this bucket's own numbers. */
+  formula: string
+
+  start_balance: string
+  /**
+   * The value at the horizon. NOT a P50 — this is the projected value at the
+   * assumed return, and compounding at the mean is a different statistic from
+   * the median of a simulation. Doc 33's fan chart renders beside it.
+   */
+  projected_value: string
+  contributed: string
+  growth: string
+  return_rate: string
+  rate_is_household: boolean
+  deposit_apy?: string
+
+  cap_group?: string
+  annual_limit?: string
+  eligibility?: string
+  eligibility_note?: string
+  /** Money the eligibility check refused, as distinct from money the cap did. */
+  eligibility_spill: string
+
+  payoff_base?: PayoffSummary
+  payoff_plan?: PayoffSummary
+  interest_avoided: string
+  months_saved: number
+
+  notes: string[]
+}
+
+export interface AllocationCapNote {
+  group: string
+  planned_annual: string
+  allowed_annual: string
+  spill_annual: string
+}
+
+export interface AllocationGoalMapping {
+  goal_id: string
+  name: string
+  kind: string
+  plan_monthly: string
+  linked: boolean
+  target: string
+  current: string
+  remaining: string
+  required_monthly: string
+  shortfall: string
+  on_track: boolean
+  open_ended: boolean
+  achieved: boolean
+  months_left: number
+}
+
+export interface CollegeYearDetail {
+  year: number
+  cost: string
+  covered: string
+  shortfall: string
+  balance_after: string
+}
+
+export interface CollegeResult {
+  goal_id: string
+  name: string
+  projectable: boolean
+  note?: string
+  account_id?: string
+  account_name?: string
+  years_to_enrollment: number
+  years: number
+  annual_cost_today: string
+  inflation_rate: string
+  real_excess_rate: string
+  balance_at_enrollment: string
+  total_cost: string
+  total_covered: string
+  total_shortfall: string
+  funded_pct: string
+  first_shortfall_year: number
+  monthly_needed?: string
+  years_detail: CollegeYearDetail[]
+  basis: string
+}
+
+export interface AllocationHorizonFlag {
+  goal_id: string
+  goal_name: string
+  bucket_name: string
+  months_left: number
+  message: string
+}
+
+export interface AllocationResult {
+  horizon_years: number
+  as_of: string
+  horizon_date: string
+  lump: string
+  monthly: string
+  unallocated_lump: string
+  unallocated_monthly: string
+  buckets: AllocationBucketResult[]
+  /** Investment + cash. Debt is NOT added in — a retired balance is not a portfolio. */
+  projected_assets: string
+  baseline_assets: string
+  delta: string
+  total_interest_avoided: string
+  target_nest_egg?: string
+  target_met?: boolean
+  cap_notes: AllocationCapNote[]
+  limits_year: number
+  limits_configured: boolean
+  cap_basis: string
+  goals: AllocationGoalMapping[]
+  college: CollegeResult[]
+  horizon_flags: AllocationHorizonFlag[]
+  excluded_accounts: string[]
+  notes: string[]
+  estimate: boolean
+  basis: string
+}
+
+export interface AllocationPlanSummary {
+  id: string
+  name: string
+  input_version: number
+  inputs: {
+    lump: string
+    monthly: string
+    horizon_years: number
+    target?: string
+    family_hsa: boolean
+    buckets: {
+      account_id: string
+      lump_pct: string
+      monthly_pct: string
+      real_return_rate?: string
+    }[]
+  }
+  assumptions: {
+    real_return_rate: string
+    inflation_rate: string
+    withdrawal_rate: string
+    college_inflation_rate: string
+    current_age: number
+    age_known: boolean
+    filing_status?: string
+    magi_known: boolean
+    tax_year: number
+  }
+  created_at: string
+  updated_at: string
+  /** Present on a single-plan read: the plan RECOMPUTED against live data. */
+  result?: AllocationResult
+  result_error?: string
+}
+
+// --- Likelihood layer (doc 33) ---------------------------------------------
+//
+// TWO FIGURES, TWO DIFFERENT STATISTICS, AND THEY DO NOT MATCH.
+// `projected_at_assumed_return` compounds at the assumed return;
+// `simulated.p50` is the median of the simulation and is normally LOWER,
+// because volatility drags compounding. Never label either of them "P50", and
+// always render `gap_note` where both appear.
+
+export interface AccountOutcome {
+  account_id: string
+  name: string
+  p10: string
+  p50: string
+  p90: string
+}
+
+export interface SimulatedFigures {
+  p10: string
+  /** The MEDIAN SIMULATED OUTCOME. Never rendered as "P50". */
+  p50: string
+  p90: string
+  /**
+   * A fraction over the MODELLED SEQUENCES. Render as "meets your target in
+   * 94% of 1,000 simulated futures" — never as a chance or a probability.
+   */
+  success_rate: string | null
+  target?: string
+  sigma: string
+  /** FIFTH-PERCENTILE peak-to-trough drawdown, as a fraction. Not a maximum. */
+  drawdown_p5: string
+  by_account: AccountOutcome[]
+  seed: number
+}
+
+export interface LikelihoodResult {
+  plan_id?: string
+  name?: string
+  horizon_years: number
+  runs: number
+  volatility: string
+  projected_at_assumed_return: string
+  /** Absent when the simulation gate is off; the deterministic figure is then the whole answer. */
+  simulated?: SimulatedFigures
+  monte_carlo_enabled: boolean
+  gap_note: string
+  basis: string
+  estimate: boolean
+}
+
+export interface RankedPlan {
+  plan_id: string
+  name: string
+  success_rate: string | null
+  p50: string
+  sigma: string
+  drawdown_p5: string
+  meets_all_goals: boolean
+  missed_goals: string[]
+  /** A filter dropped this plan; excluded_by names the clause, reason says it in words. */
+  excluded: boolean
+  excluded_by?: string
+  reason?: string
+  top_pick: boolean
+}
+
+export interface PlanRanking {
+  runs: number
+  plans: RankedPlan[]
+  /** Null means NO PICK, which is a real answer — never promote the least-bad plan. */
+  top_pick: string | null
+  no_pick_reason?: string
+  floor_applied: boolean
+  floor_pct?: string
+  no_plan_meets_every_goal: boolean
+  rule: string
+  explanation: string
+}
+
+export interface PlanComparison {
+  ranking: PlanRanking
+  plans: LikelihoodResult[]
+  monte_carlo_enabled: boolean
+  basis: string
+  estimate: boolean
+}
+
+export interface BucketDrift {
+  account_id: string
+  name: string
+  expected_to_date: string
+  actual_to_date: string
+  /** NEGATIVE means behind. Signed, so "ahead" is expressible. */
+  drift: string
+  monthly_drift: string
+  /** False means no contribution trail — UNTRACKED, never zero. */
+  tracked: boolean
+  note?: string
+}
+
+export interface PlanDrift {
+  as_of: string
+  since: string
+  months: number
+  expected_lump: string
+  expected_to_date: string
+  actual_to_date: string
+  drift: string
+  monthly_drift: string
+  on_track: boolean
+  projected_shortfall: string
+  remaining_months: number
+  buckets: BucketDrift[]
+  untracked: string[]
+  summary: string
+  basis: string
+  estimate: boolean
+}
+
+export interface PlanTrackingSnapshot {
+  as_of: string
+  expected_lump: string
+  expected_total: string
+}
+
+export interface PlanTracking {
+  plan_id: string
+  name: string
+  drift: PlanDrift
+  history: PlanTrackingSnapshot[]
+}
+
+export interface IdleCashItem {
+  account_id: string
+  name: string
+  institution?: string
+  subtype?: string
+  balance: string
+  apy: string
+  operating_float: string
+  idle_balance: string
+  annual_drag: string
+  detail: string
+}
+
+export interface IdleCashReport {
+  /** False when no deposit yield is on file anywhere: the detector stays silent. */
+  has_benchmark: boolean
+  benchmark: string
+  benchmark_account?: string
+  items: IdleCashItem[]
+  total_annual_drag: string
+  total_idle: string
+  unknown_yield_accounts: string[]
+  note: string
+  basis: string
+}
+
+export interface AssetLocationRule {
+  asset_class: string
+  preferred_account: string
+  reason: string
+  assumption: string
+}
+
+export interface AssetLocationDisclosure {
+  rules: AssetLocationRule[]
+  /** Always false. In the payload so this cannot be rendered as advice by accident. */
+  is_recommendation: boolean
+  bracket_known: boolean
+  note: string
 }
 
 /** An API error carrying the HTTP status, so callers can branch on 401 etc. */
@@ -3314,6 +3977,141 @@ export const api = {
   // budgets, and goal contributions — computed server-side from typical income.
   safeToSpend: () =>
     request<SafeToSpend>('GET', '/api/budgets/safe-to-spend'),
+
+  // The proactive advisor: the same slack figure safeToSpend returns, plus a
+  // ranked list of what it would do if it were not spent. Read-only — the
+  // advisor executes nothing.
+  advisor: () => request<Advice>('GET', '/api/advisor'),
+
+  // --- Advisor surface -----------------------------------------------------
+  // The briefing, saved conversations, and the action items a household
+  // accepted out of them. Still read-heavy and still executes nothing: an
+  // action item is a note about a decision, not an instruction to move money.
+  //
+  // The briefing is deterministic end to end and renders with no AI key — the
+  // page's headline figures never depend on a model being reachable.
+  advisorBriefing: () => request<Briefing>('GET', '/api/advisor/briefing'),
+
+  advisorThreads: () => request<AdvisorThread[]>('GET', '/api/advisor/threads'),
+
+  createAdvisorThread: (title: string, isShared = true) =>
+    request<AdvisorThread>('POST', '/api/advisor/threads', {
+      title,
+      is_shared: isShared,
+    }),
+
+  advisorThread: (id: string) =>
+    request<AdvisorThreadDetail>('GET', `/api/advisor/threads/${id}`),
+
+  renameAdvisorThread: (id: string, title: string) =>
+    request<AdvisorThread>('PATCH', `/api/advisor/threads/${id}`, { title }),
+
+  deleteAdvisorThread: (id: string) =>
+    request<void>('DELETE', `/api/advisor/threads/${id}`),
+
+  actionItems: (status?: ActionItemStatus) =>
+    request<ActionItem[]>(
+      'GET',
+      withQuery('/api/advisor/action-items', { status: status ?? '' }),
+    ),
+
+  createActionItem: (input: {
+    title: string
+    detail?: string | null
+    source?: ActionItemSource
+    due_date?: string | null
+  }) => request<ActionItem>('POST', '/api/advisor/action-items', input),
+
+  // Status only. The title was computed by whatever proposed the item; a tray
+  // toggle must not become an edit surface for it.
+  updateActionItem: (id: string, status: ActionItemStatus) =>
+    request<ActionItem>('PATCH', `/api/advisor/action-items/${id}`, { status }),
+
+  householdProfile: () =>
+    request<HouseholdProfile>('GET', '/api/household/profile/'),
+
+  updateHouseholdProfile: (input: {
+    filing_status: FilingStatus | null
+    risk_drawdown_floor: string | null
+    magi?: string | null
+    magi_tax_year?: number | null
+  }) => request<HouseholdProfile>('PUT', '/api/household/profile/', input),
+
+  // --- Allocation planner (doc 32) -----------------------------------------
+  // Splitting a lump and a monthly surplus across buckets, with caps,
+  // eligibility, per-bucket projections and goal mapping.
+  //
+  // runAllocation is a POST that WRITES NOTHING. It is a POST because the
+  // request carries a body the engine needs, not because it mutates anything —
+  // the plan is computed and returned, and the household's accounts, goals and
+  // contributions come out of it byte-identical.
+  allocationBuckets: () =>
+    request<AllocationBuckets>('GET', '/api/allocation/buckets'),
+
+  runAllocation: (input: AllocationRunInput) =>
+    request<AllocationResult>('POST', '/api/allocation/plan', input),
+
+  allocationPlans: () =>
+    request<AllocationPlanSummary[]>('GET', '/api/allocation/plans'),
+
+  // Opening a saved plan RECOMPUTES it against today's baseline. Results are
+  // deliberately never stored: a saved projection is a figure that quietly
+  // stops being true and keeps being displayed.
+  allocationPlan: (id: string) =>
+    request<AllocationPlanSummary>('GET', `/api/allocation/plans/${id}`),
+
+  saveAllocationPlan: (name: string, input: AllocationRunInput) =>
+    request<AllocationPlanSummary>('POST', '/api/allocation/plans', {
+      name,
+      ...input,
+    }),
+
+  deleteAllocationPlan: (id: string) =>
+    request<void>('DELETE', `/api/allocation/plans/${id}`),
+
+  // --- Likelihood layer (doc 33) -------------------------------------------
+  // The distribution behind a plan, the guardrail's pick, and plan tracking.
+  //
+  // Like runAllocation these POSTs WRITE NOTHING — recordPlanTracking is the
+  // one exception, and what it writes is the EXPECTED side of a snapshot.
+  // Actuals are read live every time drift is computed, so correcting an old
+  // contribution corrects the history rather than leaving a wrong figure frozen.
+  planLikelihood: (planId: string, volatility?: string) =>
+    request<LikelihoodResult>(
+      'POST',
+      `/api/likelihood/plan/${planId}` +
+        (volatility ? `?volatility=${encodeURIComponent(volatility)}` : ''),
+    ),
+
+  // Every plan is simulated at ONE pinned run count, decided server-side. Both
+  // figures the rule sorts on move with the run count, so a comparison
+  // assembled from differing counts is refused rather than rendered.
+  comparePlans: (planIds: string[], volatility?: string) =>
+    request<PlanComparison>('POST', '/api/likelihood/compare', {
+      plan_ids: planIds,
+      volatility: volatility ?? '',
+    }),
+
+  planTracking: (planId: string) =>
+    request<PlanTracking>('GET', `/api/likelihood/plans/${planId}/track`),
+
+  recordPlanTracking: (planId: string) =>
+    request<PlanTrackingSnapshot>('POST', `/api/likelihood/plans/${planId}/track`),
+
+  idleCash: () => request<IdleCashReport>('GET', '/api/accounts/idle-cash'),
+
+  assetLocation: () =>
+    request<AssetLocationDisclosure>('GET', '/api/allocation/asset-location'),
+
+  // A PERCENT ("4.50" = 4.5%). Null CLEARS it, which is a real operation: an
+  // empty field means "nobody has said", and the cash-drag detector stays
+  // silent on it rather than reading it as zero.
+  setDepositApy: (accountId: string, depositApy: string | null) =>
+    request<{ id: string; name: string; deposit_apy: string | null }>(
+      'PUT',
+      `/api/accounts/${accountId}/deposit-apy`,
+      { deposit_apy: depositApy },
+    ),
 
   // Proposes a round budget target per spending category, anchored on each
   // category's true average. Works with or without AI (rule-based rounding when
@@ -3897,11 +4695,29 @@ export const api = {
       document_id: documentID,
     }),
 
-  // The chat endpoint streams its answer as Server-Sent Events: one
-  // {"delta":"…"} frame per chunk, a terminal {"done":true}, or {"error":"…"}.
-  // onDelta is called as text arrives so the UI can render it live.
-  chat: (messages: ChatTurn[], onDelta: (text: string) => void) =>
-    streamChat(messages, onDelta),
+  // The chat endpoint streams its answer as Server-Sent Events: a
+  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, one
+  // {"delta":"…"} frame per chunk of prose, a {"tool":…,"result":…} frame per
+  // tool result, then a terminal {"done":true} or {"error":"…"}.
+  //
+  // The tool frames arrive BEFORE the final prose, because tool calls complete
+  // earlier in the server's loop — so a chart mounts while the answer composes,
+  // which reads as native rather than as an afterthought.
+  chat: (
+    messages: ChatTurn[],
+    onDelta: (text: string) => void,
+    opts?: ChatStreamOptions,
+  ) => streamChat(messages, onDelta, opts),
+}
+
+/** Callbacks and options for one streamed chat turn. */
+export interface ChatStreamOptions {
+  /** Persists the turn to a saved conversation when set. */
+  threadID?: string
+  /** Fires per tool result, so a chart can be drawn from the turn's own data. */
+  onTool?: (result: ChatToolResult) => void
+  /** Fires once with the tool set the server chose, so a wrong pick is visible. */
+  onToolSet?: (set: string) => void
 }
 
 /**
@@ -4005,6 +4821,7 @@ function targetQuery(target: DocumentTarget): Record<string, string> {
 async function streamChat(
   messages: ChatTurn[],
   onDelta: (text: string) => void,
+  opts?: ChatStreamOptions,
 ): Promise<void> {
   assertOnline()
 
@@ -4016,7 +4833,13 @@ async function streamChat(
       Accept: 'text/event-stream',
     },
     credentials: 'include',
-    body: JSON.stringify({ messages }),
+    // Only role and content travel: the server holds the transcript's tool
+    // results itself, and echoing them back would be both large and a second
+    // source of truth for figures the server already has.
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      thread_id: opts?.threadID,
+    }),
   })
 
   if (!res.ok || !res.body) {
@@ -4048,9 +4871,14 @@ async function streamChat(
       delta?: string
       done?: boolean
       error?: string
+      tool?: string
+      result?: unknown
+      tool_set?: string
     }
     if (evt.error) throw new ApiError(500, evt.error)
     if (evt.delta) onDelta(evt.delta)
+    if (evt.tool_set) opts?.onToolSet?.(evt.tool_set)
+    if (evt.tool) opts?.onTool?.({ tool: evt.tool, result: evt.result })
   }
 
   for (;;) {

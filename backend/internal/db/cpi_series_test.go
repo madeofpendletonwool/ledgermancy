@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
@@ -16,7 +17,7 @@ import (
 //
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./internal/db/
 
-func cpiQueries(t *testing.T) (context.Context, *dbgen.Queries) {
+func cpiQueries(t *testing.T) (context.Context, *pgxpool.Pool, *dbgen.Queries) {
 	t.Helper()
 
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -34,13 +35,13 @@ func cpiQueries(t *testing.T) (context.Context, *dbgen.Queries) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return ctx, dbgen.New(pool)
+	return ctx, pool, dbgen.New(pool)
 }
 
 // The seed is what makes CPI_FETCH_ENABLED safe to default off, so its coverage
 // is a shipped promise rather than an implementation detail.
 func TestCPISeedCoversTheDocumentedSpan(t *testing.T) {
-	ctx, q := cpiQueries(t)
+	ctx, _, q := cpiQueries(t)
 
 	series, err := reporting.LoadCPISeries(ctx, q)
 	if err != nil {
@@ -83,7 +84,7 @@ func TestCPISeedCoversTheDocumentedSpan(t *testing.T) {
 // If somebody "fixes" the seed by interpolating it, this fails — which is the
 // point. Nothing else in the span may be missing.
 func TestCPISeedHasExactlyTheOctober2025Hole(t *testing.T) {
-	ctx, q := cpiQueries(t)
+	ctx, _, q := cpiQueries(t)
 
 	series, err := reporting.LoadCPISeries(ctx, q)
 	if err != nil {
@@ -117,14 +118,16 @@ func TestCPISeedHasExactlyTheOctober2025Hole(t *testing.T) {
 // forever, so the query upserts — and re-running it with the same value is a
 // no-op rather than a duplicate.
 func TestUpsertCPIPointAppliesARevision(t *testing.T) {
-	ctx, q := cpiQueries(t)
+	ctx, pool, q := cpiQueries(t)
 
 	// A period well outside the seeded span, so the test owns it outright.
 	period := time.Date(2099, time.March, 1, 0, 0, 0, 0, time.UTC)
+	// DELETE, not upsert-back-to-1. Rewriting the row leaves it in the shared
+	// test database forever, and TestCPISeedHasExactlyTheOctober2025Hole then
+	// scans for gaps all the way out to 2099 and reports 873 of them. The
+	// cleanup has to remove what the test added, not overwrite it.
 	t.Cleanup(func() {
-		_, _ = q.UpsertCPIPoint(ctx, dbgen.UpsertCPIPointParams{
-			Period: period, IndexValue: decimal.NewFromInt(1),
-		})
+		_, _ = pool.Exec(context.Background(), `DELETE FROM cpi_series WHERE period = $1`, period)
 	})
 
 	first, err := q.UpsertCPIPoint(ctx, dbgen.UpsertCPIPointParams{
@@ -153,7 +156,7 @@ func TestUpsertCPIPointAppliesARevision(t *testing.T) {
 // caller can report, not a wrong number. This is the "history predating the
 // seed" case from doc 27's verification list.
 func TestDeflatingBeforeTheSeriesBeginsRefuses(t *testing.T) {
-	ctx, q := cpiQueries(t)
+	ctx, _, q := cpiQueries(t)
 
 	series, err := reporting.LoadCPISeries(ctx, q)
 	if err != nil {

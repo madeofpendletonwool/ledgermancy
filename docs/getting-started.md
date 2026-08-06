@@ -46,8 +46,10 @@ You can leave everything else at its default for a local run. The full set of
 options is documented in [Configuration](configuration.md).
 
 !!! note "Leave the AI key blank to start"
-    Every feature except the [Assistant](features/assistant.md), the monthly
+    Every feature except the [Advisor](features/advisor.md) chat, the monthly
     recap, and natural-language parsing works with `AI_API_KEY` empty.
+    (The Advisor's deterministic surfaces — Briefing, Options, allocator,
+    likelihood — render without a key; only the chat needs one.)
     Categorisation falls back to Plaid's own categories. Add a provider later
     when you want the AI layer.
 

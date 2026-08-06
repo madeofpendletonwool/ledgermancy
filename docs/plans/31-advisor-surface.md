@@ -3,6 +3,20 @@
 *(Wave 6 — the first of the four advisor docs. Visual companion:
 [advisor-overview.html](advisor-overview.html). Extends doc 24.)*
 
+> **Shipped.** What follows is the plan as written. The route is renamed
+> (`frontend/src/routes/Advisor.tsx`), the engines are exposed as chat tools, the
+> Briefing/Horizon/Assumptions/Threads shell is built, and conversation + action
+> items persist. Migration `00054_advisor_surface.sql` is taken. See
+> **[Shipped notes](#shipped-notes)** at the end before touching this area.
+>
+> The short version: shipped as `00054`, not the `00052` the Data model names
+> (goose strict ordering — see the notes); `advisor_messages.content` and
+> `tool_trace` are `BYTEA` sealed under `ENCRYPTION_KEY`, so the portable export
+> withholds them by type while `pg_dump` recovers them whole; the tool budget is
+> real and shipped as `chat_toolsets.go` (the spending/planning/modelling split);
+> and doc 23 landed first, so `contribution_room` returns **real** YTD deferrals
+> from confirmed paystubs rather than the unverified `null` the plan hedged on.
+
 ## Context
 
 The Assistant route (`frontend/src/routes/Assistant.tsx`) is a reactive chatbot
@@ -45,11 +59,15 @@ configured, like everything else.
 
 ## Data model
 
-**Reserved migration: `00052_advisor_surface.sql`.** (Wave 5 ships first and
-holds `00047`–`00051`; latest applied is `00046`. This doc originally reserved
-`00048`, which collided with wave 5's un-numbered reissues — see the README's
-reservation table, which now assigns all of them. Confirm the number is both
-free **and** above the highest applied version before writing.)
+**Shipped as `00054_advisor_surface.sql`**, not the `00052` this section
+originally named. By the time doc 31 was built, `00052_cpi_series.sql` (doc 27)
+and `00053_manual_accounts.sql` (doc 30) had both landed, and goose runs in
+strict-ordering mode — a `00052` arriving after `00053` is applied would refuse
+to start every instance that had run them. `00054` is what the README's
+reservation table already assigns to this doc; that table, not this line, was
+correct. The rule the wave keeps relearning: confirm the number is both free
+**and** above the highest applied version before writing, by looking at the
+migrations directory rather than at any reservation.
 
 ### Household profile columns
 
@@ -223,6 +241,12 @@ per account group, not one:
   (taxable, 529, trust: no federal annual cap, and inventing one is worse).
 - `used_ytd` — real deferrals once doc 23 lands; until then `null`, and the
   response says the headroom is **unverified**, never zero-by-default.
+  *(Shipped better than written: doc 23 landed before this one, so the tool
+  wraps `payroll.Year.ContributionHeadroom` and returns REAL year-to-date
+  deferrals from confirmed paystubs. The honesty requirement survives intact as
+  `used_ytd_verified`, which is false when no confirmed stub is on file — a
+  household with no stubs has unmeasured deferrals, not zero ones, and the
+  difference is the whole point of the field.)*
 - `eligibility` — `eligible` / `phased_out` / `ineligible` / `unknown`.
 
 Doc 32 owns the phase-out table that makes `eligibility` more than `unknown`;
@@ -505,3 +529,49 @@ Decimal-exact, table-driven, mirroring `chat_handlers_test.go`.
   tool→component map (see *Dynamic charts in chat*); a constrained spec that
   only references a tool result by id collapses back into that map, so it is
   not added as a separate path.
+
+## Shipped notes
+
+The route is `frontend/src/routes/Advisor.tsx`; the backend surface is
+`api/advisor_surface_handlers.go` + `api/advisor_handlers.go`, the chat tools are
+`api/chat_tools_advisor.go`, the Briefing is `internal/advisor/briefing.go`, and
+the tool-set split is `api/chat_toolsets.go`. Migration `00054_advisor_surface.sql`
+is taken. Four things reach outside the plan text.
+
+### 1. `00054`, not `00052` — and the inline correction already in this doc holds
+
+The Data model's reservation note (above) is correct and stays: this doc shipped
+as `00054` because `00052_cpi_series.sql` (doc 27) and `00053_manual_accounts.sql`
+(doc 30) had both landed first, and goose refuses a migration below the current
+version. The README's reservation table already assigned `00054` to this doc;
+the table, not the inline number, was right. The general lesson — confirm a
+number is both free *and* above the highest applied version by reading the
+migrations directory — is recorded there.
+
+### 2. Transcripts are sealed, and the export asymmetry shipped as designed
+
+`advisor_messages.content` and `tool_trace` are `BYTEA` under the same AES-GCM
+cipher as Plaid tokens and document bytes. That makes the portable continuity
+export withhold them **by type** (the rows travel, the sealed bodies do not),
+while `pg_dump` recovers them whole under the same `ENCRYPTION_KEY`. All three
+new tables are classified `InExport` in `continuity/coverage.go`. This is the
+one place a portable-export restore and a dump restore disagree on purpose, and
+the restore runbook should call it out.
+
+### 3. The tool budget shipped as `chat_toolsets.go`
+
+The spending / planning / modelling tool-set split — and the decision to send
+one set per request rather than all ~34 definitions on every turn — landed as
+`api/chat_toolsets.go` (+ `chat_toolsets_test.go`), with `safe_to_spend` and
+`advisor_briefing` in every set and the chosen set echoed in the response. The
+classifier is deterministic (keyword → set, defaulting to spending), never the
+model. `maxToolIterations` is raised for the advisor chains.
+
+### 4. `contribution_room` is verified, not hedged
+
+The plan hedged `used_ytd` as `null` "until doc 23 ships." Doc 23 shipped first,
+so the tool wraps `payroll.Year.ContributionHeadroom` and returns **real**
+year-to-date deferrals from confirmed paystubs — with `used_ytd_verified` false
+when no confirmed stub is on file, because a household with no stubs has
+unmeasured deferrals, not zero ones. `eligibility` ships the field and returns
+`unknown` here; doc 32's phase-out table makes it more than that.

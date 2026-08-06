@@ -114,6 +114,12 @@ SELECT
     a.type,
     a.subtype,
     a.current_balance,
+    -- Only meaningful on a card, and NULL more often than not: Plaid reports it
+    -- for some issuers and not others, and a manual account has one only if
+    -- somebody typed it. Consumers must read NULL as "unknown", never as zero —
+    -- a utilisation over a zero limit is a division by zero, and one over an
+    -- assumed limit is a figure nobody can check against a statement.
+    a.credit_limit,
     v.institution_name,
     l.apr,
     l.interest_rate_percentage,

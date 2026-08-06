@@ -331,6 +331,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 			// account mutation: a child must not set the figures the household's
 			// payoff plans are computed from.
 			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
+			// The deposit yield the cash-drag detector measures against
+			// (doc 32). User-entered because Plaid does not serve it
+			// reliably; a null CLEARS it, and an empty field means
+			// unknown rather than zero.
+			r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
+			r.Get("/idle-cash", s.handleIdleCash)
 
 			// Manual accounts (doc 30). Every one of these refuses a
 			// source='plaid' id — a linked account's identity and balance
@@ -595,6 +601,87 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 		r.Route("/liabilities", func(r chi.Router) {
 			r.Use(authenticate, auth.RequireAdult)
 			r.Get("/", s.handleListLiabilities)
+		})
+
+		// The proactive advisor. Read-only by design and permanently so: it
+		// presents computed tradeoffs and EXECUTES NOTHING. RequireAdult
+		// because it reads the household's whole financial position — debts,
+		// salary, retirement balances — into one response, and its settings are
+		// household preferences written through /preferences.
+		r.Route("/advisor", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleAdvisor)
+
+			// The advisor SURFACE (doc 31). Still executes nothing: the
+			// briefing is a read, a thread is a transcript, and an action
+			// item is a note about a decision the household made.
+			//
+			// Threads and action items enforce household scope inside the
+			// query on every read AND every write, not here — a route group
+			// can only say who may call, and the question these have to answer
+			// is whose row this is.
+			r.Get("/briefing", s.handleBriefing)
+
+			r.Get("/threads", s.handleListThreads)
+			r.Post("/threads", s.handleCreateThread)
+			r.Get("/threads/{threadID}", s.handleGetThread)
+			r.Patch("/threads/{threadID}", s.handleRenameThread)
+			r.Delete("/threads/{threadID}", s.handleDeleteThread)
+
+			r.Get("/action-items", s.handleListActionItems)
+			r.Post("/action-items", s.handleCreateActionItem)
+			r.Patch("/action-items/{itemID}", s.handleUpdateActionItem)
+		})
+
+		// The household profile: the two columns doc 31 added, which the
+		// allocator (32) and the guardrail rule (33) key on. Adult-only for
+		// the same reason the advisor is — filing status is household tax
+		// information.
+		r.Route("/household/profile", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/", s.handleGetProfile)
+			r.Put("/", s.handleUpdateProfile)
+		})
+
+		// The allocation planner (doc 32). Adult-only and household-scoped
+		// for the same reason the advisor is: it reads the household's whole
+		// position — balances, debts, salary-derived headroom, filing status
+		// — into one response.
+		//
+		// EXECUTES NOTHING, permanently. A plan is a projection; the user
+		// acts on it. POST /plan runs and returns without writing, and the
+		// only write in the group is a saved plan's own row.
+		r.Route("/allocation", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Get("/buckets", s.handleAllocationBuckets)
+			r.Post("/plan", s.handleRunAllocation)
+			r.Get("/asset-location", s.handleAssetLocation)
+
+			r.Get("/plans", s.handleListPlans)
+			r.Post("/plans", s.handleSavePlan)
+			r.Get("/plans/{planID}", s.handleGetPlan)
+			r.Delete("/plans/{planID}", s.handleDeletePlan)
+		})
+
+		// The likelihood layer (doc 33). Same scope and the same permanently
+		// read-only posture as the allocator it runs over: a distribution is a
+		// projection, and the household acts on it.
+		//
+		// The SIMULATION is gated behind RETIREMENT_MONTE_CARLO_ENABLED; the
+		// ROUTES are not. With the gate off they return the deterministic
+		// figure and name that in the basis — a 404 or a 503 would make the
+		// panel a broken tile on every instance that has not opted in.
+		//
+		// Only POST /plans/{planID}/track writes, and what it writes is the
+		// EXPECTED side of a snapshot. Actuals are read live every time drift
+		// is computed, so correcting an old contribution corrects the history
+		// rather than leaving a wrong figure frozen in a row.
+		r.Route("/likelihood", func(r chi.Router) {
+			r.Use(authenticate, auth.RequireAdult)
+			r.Post("/plan/{planID}", s.handleLikelihood)
+			r.Post("/compare", s.handleCompare)
+			r.Get("/plans/{planID}/track", s.handleTracking)
+			r.Post("/plans/{planID}/track", s.handleRecordTracking)
 		})
 
 		r.Route("/manual-assets", func(r chi.Router) {

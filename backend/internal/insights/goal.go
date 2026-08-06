@@ -11,6 +11,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
 )
 
 // goal — coaching for a household savings goal that is behind schedule or newly
@@ -128,22 +129,7 @@ func (goalProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uu
 // goalProgress derives a goal's current progress the same way the API does: the
 // linked account's balance, or accumulated household surplus since created_at.
 func goalProgress(ctx context.Context, q *dbgen.Queries, g dbgen.Goal, now time.Time) (decimal.Decimal, error) {
-	if g.AccountID != nil {
-		return q.GetGoalAccountBalance(ctx, dbgen.GetGoalAccountBalanceParams{
-			ID: *g.AccountID, HouseholdID: g.HouseholdID,
-		})
-	}
-	sum, err := q.GetSpendingSummary(ctx, dbgen.GetSpendingSummaryParams{
-		HouseholdID: g.HouseholdID, UserID: sharedUser, Date: g.CreatedAt, Date_2: now,
-	})
-	if err != nil {
-		return decimal.Zero, err
-	}
-	surplus := sum.Income.Sub(sum.Spending)
-	if surplus.IsNegative() {
-		surplus = decimal.Zero
-	}
-	return surplus, nil
+	return reporting.GoalProgress(ctx, q, g, now)
 }
 
 // goalPriority scales with how far behind a goal is: a shortfall that is a large

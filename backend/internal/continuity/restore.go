@@ -52,6 +52,10 @@ type RestoreReport struct {
 	Drift []string
 	// DocumentChecked names the document opened end-to-end, when there was one.
 	DocumentChecked string
+	// AdvisorMessageChecked names the advisor transcript turn opened out of the
+	// dump, when there was one. Its counterpart to DocumentChecked: the same
+	// dump + cipher + key agreement, one table over.
+	AdvisorMessageChecked string
 }
 
 func (r RestoreReport) String() string {
@@ -60,6 +64,9 @@ func (r RestoreReport) String() string {
 		r.Dump, r.ScratchDB, r.TablesChecked, r.RowsRestored)
 	if r.DocumentChecked != "" {
 		fmt.Fprintf(&b, "; opened document %s end-to-end (dump + archive + key all agree)", r.DocumentChecked)
+	}
+	if r.AdvisorMessageChecked != "" {
+		fmt.Fprintf(&b, "; opened advisor message %s from the dump (dump + key agree)", r.AdvisorMessageChecked)
 	}
 	if len(r.Drift) > 0 {
 		fmt.Fprintf(&b, "\nrows added since the dump was taken: %s", strings.Join(r.Drift, ", "))
@@ -122,6 +129,7 @@ func (rt *RestoreTester) Run(ctx context.Context, root, archiveRoot string) (Res
 	if archiveRoot != "" {
 		rt.checkDocument(ctx, scratchPool, archiveRoot, &report)
 	}
+	rt.checkAdvisorMessage(ctx, scratchPool, &report)
 
 	if len(report.Problems) > 0 {
 		return report, fmt.Errorf("restore verification found %d problem(s)", len(report.Problems))
@@ -251,6 +259,53 @@ func (rt *RestoreTester) checkDocument(ctx context.Context, scratch *pgxpool.Poo
 		return
 	}
 	report.DocumentChecked = id
+}
+
+// checkAdvisorMessage opens one restored advisor transcript turn.
+//
+// The same argument as checkDocument, applied to the other sealed thing this
+// app stores — and it is worth its own check for a reason particular to this
+// table. advisor_messages.content is BYTEA, which means the PORTABLE export
+// withholds it by type: a household restoring from that file gets threads with
+// empty bodies. The dump is therefore the ONLY path that brings a transcript
+// back, and "the only path" is exactly the kind of claim that has to be proven
+// rather than assumed.
+//
+// Two of three is the failure being hunted here as well: a dump that restores
+// the rows and an ENCRYPTION_KEY that has since been rotated looks entirely
+// healthy until somebody opens a conversation and finds it will not decrypt.
+//
+// No archive is involved — these bytes live in Postgres — so this runs whether
+// or not a document archive was taken. Never fatal on its own: a household that
+// has not saved a conversation is not a broken backup.
+func (rt *RestoreTester) checkAdvisorMessage(ctx context.Context, scratch *pgxpool.Pool, report *RestoreReport) {
+	if rt.Cipher == nil {
+		return
+	}
+
+	var id string
+	var sealed []byte
+	err := scratch.QueryRow(ctx,
+		`SELECT id::text, content FROM advisor_messages ORDER BY created_at LIMIT 1`,
+	).Scan(&id, &sealed)
+	if err != nil {
+		return // no advisor messages restored; nothing to prove
+	}
+
+	plaintext, err := rt.Cipher.Open(sealed)
+	if err != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf(
+			"advisor message %s could not be decrypted with the current ENCRYPTION_KEY (%v). "+
+				"The dump and the key disagree, so no saved conversation can be read back — "+
+				"and the portable export does not carry these bodies at all", id, err))
+		return
+	}
+	if len(plaintext) == 0 {
+		report.Problems = append(report.Problems, fmt.Sprintf(
+			"advisor message %s decrypted to an empty body — the dump holds the wrong bytes for this turn", id))
+		return
+	}
+	report.AdvisorMessageChecked = id
 }
 
 // --------------------------------------------------------------------------

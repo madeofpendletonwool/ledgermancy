@@ -59,7 +59,7 @@ the **CSRF token** echoed in an `X-CSRF-Token` header.
 
 Plus reporting endpoints consumed by the frontend (summary, by-category,
 by-day, trend, averages, merchants, recurring, net-worth + history + projection,
-holdings, liabilities, budgets, goals, insights, alerts, assistant chat, and
+holdings, liabilities, budgets, goals, insights, alerts, advisor chat, and
 preferences/capabilities).
 
 ### Inflation-adjusted figures
@@ -274,7 +274,7 @@ webhook can cause a wasted sync, never a data change.** See
 
 ## Visibility scoping
 
-Every authenticated query — including [Assistant](features/assistant.md) tools —
+Every authenticated query — including [Advisor](features/advisor.md) tools —
 inherits the same shape: `WHERE u.household_id = $1 AND (i.user_id = $2 OR
 i.is_shared)`. Your own items ∪ household items where shared. A query that
 forgot this would leak a spouse's private account, so the scoping is enforced in

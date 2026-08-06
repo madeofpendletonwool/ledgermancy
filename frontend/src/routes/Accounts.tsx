@@ -253,6 +253,7 @@ function InstitutionCard({
             {isLiability(a.type) && (
               <DebtTerms account={a} terms={termsByAccount.get(a.id)} />
             )}
+            {a.type === 'depository' && <DepositYield account={a} />}
           </li>
         ))}
         {accounts.length === 0 && (
@@ -506,6 +507,109 @@ function DebtTerms({
                   : null,
             })
           }
+        >
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          className="text-xs text-mist-400 underline"
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The yield on one deposit account.
+ *
+ * Plaid does not serve deposit APYs reliably, so this is the only route a rate
+ * ever takes into the cash-drag detector — and the detector is deliberately
+ * SILENT without one. An empty field means "nobody has said", never "this earns
+ * nothing", which is why clearing it has to be possible: it is how a household
+ * says it no longer knows.
+ *
+ * The detector compares each account against the household's own best rate, so
+ * entering a rate on ONE savings account is what turns the whole feature on.
+ * That is stated in the copy rather than left to be discovered.
+ *
+ * Collapsed by default, like DebtTerms above and for the same reason.
+ */
+function DepositYield({ account }: { account: Account }) {
+  const qc = useQueryClient()
+  const online = useOnline()
+  const [open, setOpen] = useState(false)
+  const [apy, setApy] = useState('')
+
+  const save = useMutation({
+    mutationFn: (value: string | null) => api.setDepositApy(account.id, value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['accounts'] })
+      qc.invalidateQueries({ queryKey: ['idle-cash'] })
+      qc.invalidateQueries({ queryKey: ['allocation-buckets'] })
+      setOpen(false)
+    },
+  })
+
+  if (!open) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-mist-500">
+        {account.deposit_apy ? (
+          <span className="text-mist-300">{account.deposit_apy}% APY</span>
+        ) : (
+          <span>No yield recorded — unknown, not zero.</span>
+        )}
+        <button
+          type="button"
+          className="text-arcane-300 underline"
+          onClick={() => {
+            setApy(account.deposit_apy ?? '')
+            setOpen(true)
+          }}
+        >
+          {account.deposit_apy ? 'Edit yield' : 'Add yield'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <label className="label" htmlFor={`apy-${account.id}`}>
+        Annual yield (APY)
+      </label>
+      <input
+        id={`apy-${account.id}`}
+        className="field w-full"
+        type="number"
+        min="0"
+        max="25"
+        step="0.01"
+        // 4.50 for 4.5%, never 0.045 — the wrong form passes every validation
+        // rule and reports the account as earning almost nothing, which is
+        // exactly the drag the detector would then shout about.
+        placeholder="4.50"
+        value={apy}
+        onChange={(e) => setApy(e.target.value)}
+      />
+      <p className="mt-2 text-xs text-mist-500">
+        Used to spot cash earning less than it could. Idle-cash figures compare
+        every account against the best rate you already earn somewhere, so
+        entering one here is what switches the check on. Clear it to go back to
+        unknown.
+      </p>
+      {save.isError && (
+        <p className="mt-2 text-xs text-ember-400">{(save.error as Error).message}</p>
+      )}
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={!online || save.isPending}
+          title={online ? undefined : OFFLINE_WRITE_HINT}
+          onClick={() => save.mutate(apy === '' ? null : apy)}
         >
           {save.isPending ? 'Saving…' : 'Save'}
         </button>

@@ -29,9 +29,22 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
 export function TrendChart({
   data: input,
   real = false,
+  avgLeftover,
 }: {
   data: TrendPoint[]
   real?: boolean
+  /**
+   * A reference line for the mean leftover across the window, as a decimal
+   * string.
+   *
+   * SERVER-COMPUTED, ALWAYS. It is passed in rather than derived from `data`
+   * here on purpose: a chart's average, budget or target line is a finished
+   * figure like every other money figure in this app, and one the client
+   * averaged would be a second, subtly different answer to a question the
+   * server has already answered exactly. Omitted when the caller has no such
+   * figure — the chart then draws exactly as it always has.
+   */
+  avgLeftover?: string
 }) {
   const [active, setActive] = useState<number | null>(null)
   const reduce = useReducedMotion() ?? false
@@ -91,6 +104,13 @@ export function TrendChart({
 
   const point = active !== null ? data[active] : null
 
+  // Only drawn when it is on the axis. A negative average leftover is a real
+  // and important fact, but this axis starts at zero and always has, so the
+  // line would sit off the plot and read as absent rather than as negative —
+  // the caption below states it in words instead.
+  const avg = avgLeftover === undefined ? null : Number(avgLeftover)
+  const avgOnAxis = avg !== null && Number.isFinite(avg) && avg >= 0 && avg <= niceMax
+
   return (
     <div className="space-y-3">
       {/* Two series, so a legend is always present — identity is never
@@ -98,6 +118,12 @@ export function TrendChart({
       <div className="flex items-center gap-5 text-xs">
         <LegendKey color={SERIES.income} label="Income" />
         <LegendKey color={SERIES.spending} label="Spending" />
+        {avg !== null && Number.isFinite(avg) && (
+          <span className="text-mist-500">
+            Average leftover{' '}
+            <span className="tabular text-mist-300">{formatMoney(avgLeftover!)}</span>
+          </span>
+        )}
       </div>
 
       <div className="chart-scroll relative overflow-x-auto">
@@ -131,6 +157,32 @@ export function TrendChart({
               </text>
             </g>
           ))}
+
+          {/* The average-leftover reference line. Dashed and recessive: it is a
+              benchmark, not a third series, and must not read as one. */}
+          {avgOnAxis && (
+            <g>
+              <line
+                x1={PAD.left}
+                x2={WIDTH - PAD.right}
+                y1={y(avg!)}
+                y2={y(avg!)}
+                stroke={SERIES.leftover}
+                strokeWidth={1.5}
+                strokeDasharray="5 4"
+                opacity={0.7}
+              />
+              <text
+                x={WIDTH - PAD.right}
+                y={y(avg!) - 6}
+                textAnchor="end"
+                fontSize="10"
+                fill={SERIES.leftover}
+              >
+                avg leftover
+              </text>
+            </g>
+          )}
 
           {/* Month labels, thinned so they never collide. */}
           {data.map((d, i) =>

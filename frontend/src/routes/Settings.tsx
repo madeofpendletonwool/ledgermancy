@@ -15,6 +15,7 @@ type Tab =
   | 'notifications'
   | 'digest'
   | 'anomalies'
+  | 'advisor'
   | 'appearance'
   | 'household'
   | 'continuity'
@@ -25,6 +26,10 @@ const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }
   { id: 'notifications', label: 'Notifications', adultOnly: true },
   { id: 'digest', label: 'Digest', adultOnly: true },
   { id: 'anomalies', label: 'Anomalies', adultOnly: true },
+  // The advisor reads the household's whole financial position, and its knobs
+  // change what every member is shown. Adult-only, like the other household
+  // settings, and enforced server-side.
+  { id: 'advisor', label: 'Advisor', adultOnly: true },
   // Household-wide imagery, so adult-only like the other household settings.
   { id: 'appearance', label: 'Appearance', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
@@ -81,6 +86,7 @@ export function Settings() {
       {activeTab === 'notifications' && <NotificationsSection />}
       {activeTab === 'digest' && <DigestSection />}
       {activeTab === 'anomalies' && <AnomaliesSection />}
+      {activeTab === 'advisor' && <AdvisorSection />}
       {activeTab === 'appearance' && <AppearanceSection />}
       {activeTab === 'household' && <Household />}
       {activeTab === 'continuity' && <Continuity />}
@@ -722,6 +728,153 @@ function useSavePreferences() {
   })
 }
 
+/**
+ * Advisor settings: when it speaks, what it counts as a full emergency fund,
+ * and which options it has been told to stop suggesting.
+ *
+ * Household-scoped throughout. These change what everyone sees, and the server
+ * refuses a household preference from a child login.
+ *
+ * The suppression list is the interesting one. Dismissing an advisor insight
+ * clears that week's whole list — the feed's grain — whereas muting an option
+ * here is durable and per option. The two are deliberately different things, so
+ * this is the only place a mute can be undone.
+ */
+function AdvisorSection() {
+  const prefs = useQuery({ queryKey: ['preferences'], queryFn: api.preferences })
+  const advice = useQuery({ queryKey: ['advisor'], queryFn: api.advisor })
+  const qc = useQueryClient()
+  const save = useSavePreferences()
+
+  const [threshold, setThreshold] = useState('100')
+  const [efMonths, setEfMonths] = useState('3')
+
+  useEffect(() => {
+    const h = prefs.data?.household
+    if (!h) return
+    setThreshold(asNumberText(h['advisor.slack_threshold'], '100'))
+    setEfMonths(asNumberText(h['advisor.emergency_fund_months'], '3'))
+  }, [prefs.data])
+
+  const suppressed = advice.data?.suppressed ?? []
+
+  const onSave = () =>
+    save.mutate([
+      {
+        scope: 'household',
+        key: 'advisor.slack_threshold',
+        value: Number(threshold) || 0,
+      },
+      {
+        scope: 'household',
+        key: 'advisor.emergency_fund_months',
+        value: Number(efMonths) || 3,
+      },
+    ])
+
+  // Un-muting rewrites the whole list rather than patching it: the preference IS
+  // the list, and a partial write would be a second source of truth for it.
+  const unmute = useMutation({
+    mutationFn: (key: string) =>
+      api.setPreferences([
+        {
+          scope: 'household',
+          key: 'advisor.suppressed_options',
+          value: suppressed.filter((k) => k !== key),
+        },
+      ]),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['preferences'] })
+      qc.invalidateQueries({ queryKey: ['advisor'] })
+    },
+  })
+
+  return (
+    <Section
+      title="Advisor"
+      description="When there is money left over in a typical month, the advisor ranks what it would do with it. Every figure and the order itself are computed from your own data — AI only reads the finished list aloud, and nothing here moves any money."
+    >
+      {prefs.isPending ? (
+        <SkeletonRows count={3} />
+      ) : (
+        <div className="space-y-5">
+          <div>
+            <label className="label" htmlFor="advisor-threshold">
+              Only speak up above
+            </label>
+            <input
+              id="advisor-threshold"
+              className="field"
+              type="number"
+              min="0"
+              step="10"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+            />
+            <p className="mt-2 text-sm text-mist-500">
+              Dollars of monthly slack before the advisor says anything. An
+              advisor that fires on $12 is one you learn to ignore.
+            </p>
+          </div>
+
+          <div>
+            <label className="label" htmlFor="advisor-ef-months">
+              Emergency fund target
+            </label>
+            <input
+              id="advisor-ef-months"
+              className="field"
+              type="number"
+              min="1"
+              max="24"
+              step="1"
+              value={efMonths}
+              onChange={(e) => setEfMonths(e.target.value)}
+            />
+            <p className="mt-2 text-sm text-mist-500">
+              Months of your typical fixed costs. Until you hold one month, that
+              is the only option the advisor offers — no return beats not
+              borrowing at card rates for the next emergency.
+            </p>
+          </div>
+
+          <SaveRow save={save} onSave={onSave} />
+
+          <div className="border-t border-white/10 pt-4">
+            <h3 className="text-sm font-medium text-mist-100">Muted options</h3>
+            <p className="mt-1 text-sm text-mist-500">
+              Options you have told the advisor to stop suggesting. This is
+              separate from dismissing an insight, which only clears that week&rsquo;s
+              list.
+            </p>
+            {suppressed.length === 0 ? (
+              <p className="mt-3 text-sm text-mist-500">Nothing muted.</p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {suppressed.map((k) => (
+                  <li
+                    key={k}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2"
+                  >
+                    <span className="min-w-0 truncate text-sm text-mist-100">{k}</span>
+                    <button
+                      className="shrink-0 text-xs text-mist-500 transition hover:text-mist-100 disabled:opacity-50"
+                      disabled={unmute.isPending}
+                      onClick={() => unmute.mutate(k)}
+                    >
+                      Restore
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 function SaveRow({
   save,
   onSave,
@@ -777,4 +930,13 @@ function asString(v: unknown, fallback: string): string {
 
 function asBool(v: unknown): boolean {
   return v === true
+}
+
+// A numeric preference for a text input. Accepts the number the API writes and
+// the string an older client may have left, so a value typed before this control
+// existed is still editable rather than silently reset to the default.
+function asNumberText(v: unknown, fallback: string): string {
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return v
+  return fallback
 }

@@ -12,7 +12,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
     - [:material-chart-bar: Spending](spending.md) — where the money went
     - [:material-lightbulb-outline: Insights](insights.md) — things the app noticed
     - [:material-file-document-outline: Financial Summary](report.md) — the exportable report
-    - [:material-robot: Assistant](assistant.md) — ask questions about your money *(AI)*
+    - [:material-robot: Advisor](advisor.md) — a deterministic advisor surface around the chat *(AI)*
 
 - **Plan**
 

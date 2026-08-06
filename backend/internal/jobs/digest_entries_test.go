@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -364,6 +366,150 @@ func TestDigestEntries(t *testing.T) {
 			t.Error("the entry was not written")
 		}
 	})
+}
+
+// TestDigestInProgressNarrativeNotServedStale is the regression test for the
+// "$0.00 in and out" bug. A weekly digest reports the current month-to-date, a
+// window that ends at "now" and advances every day. The shared monthly cache is
+// frozen at write time and only refreshed weekly, so a recap written when the
+// month was empty must NOT be served beside the freshly-computed figures — the
+// narrative and the payload have to agree by construction.
+//
+// The scenario mirrors the report: a stale monthly_summaries row for the current
+// month says everything is zero, while real activity has since landed in-window.
+// The digest must regenerate the narrative for its own window rather than reuse
+// the cache, and it must leave that shared cache untouched (a partial month
+// cannot overwrite the canonical full-month recap).
+func TestDigestInProgressNarrativeNotServedStale(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	client := riverClientForTest(t, ctx, pool)
+	q := dbgen.New(pool)
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %v\n%s", err, sql)
+		}
+	}
+
+	// The worker reads its own clock, so seed inside the month-to-date window it
+	// will choose: "earlier today" is always in range for a weekly digest.
+	today := time.Now().UTC()
+	inWindow := today.Format(time.DateOnly)
+
+	householdID := uuid.New()
+	alice := uuid.New()
+	item, acct, groceries := uuid.New(), uuid.New(), uuid.New()
+	exec(`INSERT INTO households (id, name) VALUES ($1, 'Stale Narrative Test')`, householdID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM households WHERE id = $1`, householdID)
+	})
+	exec(`INSERT INTO users (id, household_id, email, password_hash, display_name, role)
+	      VALUES ($1, $2, $3, 'x', 'Alice', 'owner')`, alice, householdID, alice.String()+"@example.test")
+	exec(`INSERT INTO plaid_items (id, user_id, plaid_item_id, access_token_encrypted, products, status, is_shared)
+	      VALUES ($1, $2, $3, '\x00', '{transactions}', 'active', TRUE)`, item, alice, item.String())
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type)
+	      VALUES ($1, $2, $3, 'Checking', 'depository')`, acct, item, acct.String())
+	exec(`INSERT INTO categories (id, household_id, name, slug)
+	      VALUES ($1, $2, 'Groceries', 'stale-narrative-groceries')`, groceries, householdID)
+	exec(`INSERT INTO transactions
+	        (account_id, amount, currency, date, name, merchant_name, merchant_key, category_id, source)
+	      VALUES ($1, '900.85', 'USD', $2, 'MARKET', 'Market', 'market', $3, 'plaid')`,
+		acct, inWindow, groceries)
+
+	// The stale cache: a recap for the current month written when nothing had
+	// posted yet — the exact text the bug report quotes.
+	staleText := "STALE: money in and money out are both $0.00."
+	curMonth := firstOfMonth(today)
+	exec(`INSERT INTO monthly_summaries (household_id, month, summary, model)
+	      VALUES ($1, $2, $3, 'stale-model')`, householdID, curMonth, staleText)
+
+	// A stub Messages-API endpoint that returns one unmistakable fresh sentence,
+	// so the stored narrative proves the model was called for this window rather
+	// than the cache being read.
+	freshText := "FRESH: regenerated for the current month-to-date window."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":           "msg_test",
+			"type":         "message",
+			"role":         "assistant",
+			"content":      []map[string]string{{"type": "text", "text": freshText}},
+			"stop_reason":  "end_turn",
+			"usage":        map[string]int{"input_tokens": 1, "output_tokens": 1},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := &DigestWorker{
+		Queries: q,
+		AI:      ai.New(config.AIConfig{APIKey: "test-key", BaseURL: srv.URL, Model: "test-model"}),
+		Client:  client,
+		AppURL:  "https://ledger.example.test",
+	}
+	if err := worker.Work(ctx, &river.Job[DigestArgs]{
+		Args: DigestArgs{UserID: alice, HouseholdID: householdID, Force: true},
+	}); err != nil {
+		t.Fatalf("digest worker: %v", err)
+	}
+
+	rows, err := q.ListDigestEntries(ctx, dbgen.ListDigestEntriesParams{
+		UserID: alice, Limit: 50, Offset: 0,
+	})
+	if err != nil {
+		t.Fatalf("list digest entries: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d entries, want 1", len(rows))
+	}
+	entry := rows[0]
+
+	// The headline assertion: the stored narrative is the freshly generated one,
+	// not the stale "$0.00" cache. If this fails, the weekly digest is reusing a
+	// frozen recap beside figures that have since moved.
+	if entry.Narrative == nil {
+		t.Fatal("stored narrative is nil; the digest should have regenerated it for the in-progress window")
+	}
+	if got := *entry.Narrative; got != freshText {
+		t.Errorf("stored narrative = %q, want the freshly generated %q (the stale cache must not be reused "+
+			"for a month-to-date window)", got, freshText)
+	}
+
+	// The figures must describe the real in-window activity, confirming the
+	// narrative and the payload now cover the same window.
+	p := decodePayload(t, entry.Payload)
+	if p.Spending != "$900.85" {
+		t.Errorf("payload spending = %q, want $900.85", p.Spending)
+	}
+
+	// The shared monthly cache must be left exactly as the digest found it: a
+	// partial month neither reads from nor warms the canonical full-month recap.
+	cached, err := q.GetMonthlySummary(ctx, dbgen.GetMonthlySummaryParams{
+		HouseholdID: householdID, Month: curMonth,
+	})
+	if err != nil {
+		t.Fatalf("re-read cached summary: %v", err)
+	}
+	if cached.Summary != staleText {
+		t.Errorf("shared cache summary was overwritten to %q; an in-progress digest must not warm the cache",
+			cached.Summary)
+	}
+	if cached.Model != "stale-model" {
+		t.Errorf("shared cache model was overwritten to %q", cached.Model)
+	}
 }
 
 // failingMailer stands in for a mail server that is reachable enough to try and

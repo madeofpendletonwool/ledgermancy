@@ -150,7 +150,13 @@ func TestStartingRetirementBalanceExcludesCustodial(t *testing.T) {
 		{ID: "e", Name: "Brokerage", Treatment: "taxable", Balance: dec("25000")},
 	}
 
-	got := startingRetirementBalance(plans)
+	// Through BuildSchedule, which is where the custodial flag is resolved since
+	// doc 33 made the schedule the single place caps, matches and education
+	// horizons are worked out. That is what this test's "through the engine
+	// rather than only through the predicate" is now asserting.
+	schedule := BuildSchedule(plans, RetirementAssumptions{}, date(2026, time.August, 1))
+
+	got := startingRetirementBalance(schedule.Accounts)
 	if want := dec("125000"); !got.Equal(want) {
 		t.Errorf("nest egg = %s, want %s (401k + taxable only)",
 			got.StringFixed(2), want.StringFixed(2))

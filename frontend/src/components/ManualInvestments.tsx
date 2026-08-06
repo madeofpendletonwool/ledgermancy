@@ -5,6 +5,7 @@ import {
   type InvestmentAccount,
   type InvestmentTransaction,
   type Security,
+  type SecurityInput,
 } from '../lib/api'
 import { formatMoney } from '../lib/money'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
@@ -173,7 +174,16 @@ function HoldingForm({ account }: { account: InvestmentAccount }) {
 /** Search-and-create over the securities table. Creating is inline because a
  *  household holding something Plaid never reported will not find it in the
  *  list, and sending them elsewhere to add it would break the entry they came
- *  here to make. */
+ *  here to make.
+ *
+ *  The create form collects the fields the API has always accepted (name, type,
+ *  close price, price date) but the previous picker threw away — a security
+ *  created with only a ticker is correct enough for an ETF found in Plaid's
+ *  reference data, but useless for the documented Voya case where the security
+ *  is a plan-specific collective trust with no public ticker and no Plaid
+ *  record. Recording the price here lets it propagate to holdings created from
+ *  it, and recording the name is the difference between the Investments page
+ *  showing "H397" and showing "GG Capital Group 2060 Target Date MS". */
 function SecurityPicker({
   value,
   onChange,
@@ -185,22 +195,54 @@ function SecurityPicker({
   const [search, setSearch] = useState('')
   const [creating, setCreating] = useState(false)
 
+  // Optional fields for the create path. The ticker comes from `search`
+  // (upper-cased server-side), so it is not editable here — the relationship
+  // between what the user searched for and what gets created stays literal.
+  const [name, setName] = useState('')
+  const [type, setType] = useState('')
+  const [closePrice, setClosePrice] = useState('')
+  const [priceAsOf, setPriceAsOf] = useState(
+    new Date().toISOString().slice(0, 10),
+  )
+
   const securities = useQuery({
     queryKey: ['securities', search],
     queryFn: () => api.listSecurities(search || undefined),
   })
 
   const create = useMutation({
-    mutationFn: (ticker: string) => api.createManualSecurity({ ticker }),
+    mutationFn: (input: SecurityInput) => api.createManualSecurity(input),
     onSuccess: (sec: Security) => {
       onChange(sec.id)
       setCreating(false)
+      setName('')
+      setType('')
+      setClosePrice('')
       qc.invalidateQueries({ queryKey: ['securities'] })
     },
   })
 
+  const ticker = search.trim().toUpperCase()
+  const noResults =
+    ticker !== '' && (securities.data ?? []).length === 0 && !creating
+
+  const submitCreate = () => {
+    // Price without a date is a number nobody can judge the staleness of; the
+    // API dates it to today if blank. We mirror that here by only sending the
+    // date when a price was supplied, so an empty price does not anchor a
+    // meaningless date.
+    const price = closePrice.trim() || null
+    create.mutate({
+      ticker,
+      name: name.trim() || null,
+      type: type.trim() || null,
+      close_price: price,
+      close_price_as_of: price ? priceAsOf : null,
+    })
+  }
+
   return (
-    <label className="block text-xs">
+    <div className="block text-xs">
       <span className="text-mist-400">Security</span>
       <input
         className="input mt-1 w-full"
@@ -220,21 +262,82 @@ function SecurityPicker({
           </option>
         ))}
       </select>
-      {search.trim() && (securities.data ?? []).length === 0 && !creating && (
+      {noResults && (
         <button
           className="mt-1 text-xs text-arcane-300 underline"
-          onClick={() => {
-            setCreating(true)
-            create.mutate(search.trim())
-          }}
+          onClick={() => setCreating(true)}
         >
-          Add "{search.trim().toUpperCase()}" as a new security
+          Add "{ticker}" as a new security
         </button>
+      )}
+      {creating && (
+        // Nested labels are invalid HTML and confuse screen readers, so the
+        // outer wrapper is a div and each field is its own label.
+        <div className="mt-2 space-y-2 rounded-lg border border-white/5 bg-black/20 p-3">
+          <p className="text-mist-300">
+            Adding <span className="font-medium">{ticker}</span>
+          </p>
+          <label className="block">
+            <span className="text-mist-400">Name</span>
+            <input
+              className="input mt-1 w-full"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="GG Capital Group 2060 Target Date MS"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-mist-400">Type</span>
+              <input
+                className="input mt-1 w-full"
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+                placeholder="fund, stock, etf…"
+              />
+            </label>
+            <label className="block">
+              <span className="text-mist-400">Close price</span>
+              <input
+                className="input mt-1 w-full"
+                value={closePrice}
+                onChange={(e) => setClosePrice(e.target.value)}
+                placeholder="optional"
+                inputMode="decimal"
+              />
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-mist-400">Price as of</span>
+            <input
+              type="date"
+              className="input mt-1 w-full"
+              value={priceAsOf}
+              onChange={(e) => setPriceAsOf(e.target.value)}
+              disabled={!closePrice.trim()}
+            />
+          </label>
+          <div className="flex items-center gap-3">
+            <button
+              className="btn-primary px-3 py-1.5 text-xs"
+              disabled={create.isPending}
+              onClick={submitCreate}
+            >
+              {create.isPending ? 'Creating…' : 'Create security'}
+            </button>
+            <button
+              className="text-xs text-mist-400 underline"
+              onClick={() => setCreating(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
       {create.isError && (
         <p className="mt-1 text-xs text-ember-400">{create.error.message}</p>
       )}
-    </label>
+    </div>
   )
 }
 

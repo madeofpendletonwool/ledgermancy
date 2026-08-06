@@ -38,7 +38,7 @@ func (q *Queries) DeleteAccountContribution(ctx context.Context, arg DeleteAccou
 
 const getProjectionAssumptions = `-- name: GetProjectionAssumptions :one
 
-SELECT id, household_id, real_return_rate, inflation_rate, withdrawal_rate, target_retirement_age, current_age, annual_ss_income, ss_start_age, target_annual_spending, updated_at FROM projection_assumptions WHERE household_id = $1
+SELECT id, household_id, real_return_rate, inflation_rate, withdrawal_rate, target_retirement_age, current_age, annual_ss_income, ss_start_age, target_annual_spending, updated_at, college_inflation_rate FROM projection_assumptions WHERE household_id = $1
 `
 
 // Retirement projection inputs: household assumptions and the per-account
@@ -63,6 +63,7 @@ func (q *Queries) GetProjectionAssumptions(ctx context.Context, householdID uuid
 		&i.SsStartAge,
 		&i.TargetAnnualSpending,
 		&i.UpdatedAt,
+		&i.CollegeInflationRate,
 	)
 	return i, err
 }
@@ -255,7 +256,7 @@ ON CONFLICT (household_id) DO UPDATE SET
     ss_start_age           = EXCLUDED.ss_start_age,
     target_annual_spending = EXCLUDED.target_annual_spending,
     updated_at             = now()
-RETURNING id, household_id, real_return_rate, inflation_rate, withdrawal_rate, target_retirement_age, current_age, annual_ss_income, ss_start_age, target_annual_spending, updated_at
+RETURNING id, household_id, real_return_rate, inflation_rate, withdrawal_rate, target_retirement_age, current_age, annual_ss_income, ss_start_age, target_annual_spending, updated_at, college_inflation_rate
 `
 
 type UpsertProjectionAssumptionsParams struct {
@@ -299,6 +300,7 @@ func (q *Queries) UpsertProjectionAssumptions(ctx context.Context, arg UpsertPro
 		&i.SsStartAge,
 		&i.TargetAnnualSpending,
 		&i.UpdatedAt,
+		&i.CollegeInflationRate,
 	)
 	return i, err
 }

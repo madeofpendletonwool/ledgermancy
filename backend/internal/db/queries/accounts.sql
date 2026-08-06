@@ -54,6 +54,10 @@ SELECT
     a.credit_limit,
     a.currency,
     a.tax_treatment,
+    -- User-entered deposit yield as a PERCENT; NULL means nobody has said, and
+    -- doc 32's cash-drag detector stays silent on it rather than reading it as
+    -- zero. Carried here so the Accounts page can show and edit it.
+    a.deposit_apy,
     a.is_managed,
     a.beneficiary_person_id,
     a.source,

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -442,7 +443,7 @@ func (s *Server) handleListPaystubs(w http.ResponseWriter, r *http.Request) {
 	for _, p := range rows {
 		ids = append(ids, p.ID)
 	}
-	linesByStub, err := s.paystubLines(r, ids)
+	linesByStub, err := s.paystubLines(r.Context(), ids)
 	if err != nil {
 		s.internalError(w, "list paystub lines", err)
 		return
@@ -483,7 +484,7 @@ func (s *Server) handleGetPaystub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	linesByStub, err := s.paystubLines(r, []uuid.UUID{p.ID})
+	linesByStub, err := s.paystubLines(r.Context(), []uuid.UUID{p.ID})
 	if err != nil {
 		s.internalError(w, "list paystub lines", err)
 		return
@@ -1139,12 +1140,12 @@ func (s *Server) ownedPaystub(w http.ResponseWriter, r *http.Request, id uuid.UU
 }
 
 // paystubLines fetches the lines for a set of stubs in one round trip.
-func (s *Server) paystubLines(r *http.Request, ids []uuid.UUID) (map[uuid.UUID][]dbgen.PaystubLine, error) {
+func (s *Server) paystubLines(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID][]dbgen.PaystubLine, error) {
 	out := map[uuid.UUID][]dbgen.PaystubLine{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.Queries.ListPaystubLinesForStubs(r.Context(), ids)
+	rows, err := s.Queries.ListPaystubLinesForStubs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1167,7 +1168,7 @@ func (s *Server) respondWithPaystub(w http.ResponseWriter, r *http.Request, id u
 		s.internalError(w, "reload paystub", err)
 		return
 	}
-	linesByStub, err := s.paystubLines(r, []uuid.UUID{id})
+	linesByStub, err := s.paystubLines(r.Context(), []uuid.UUID{id})
 	if err != nil {
 		s.internalError(w, "list paystub lines", err)
 		return

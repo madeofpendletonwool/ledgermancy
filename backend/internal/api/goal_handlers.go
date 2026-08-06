@@ -18,12 +18,26 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
 )
 
-// The two goal kinds the column has always allowed. 00012_goals.sql declared
-// both and shipped only the first; the payoff arithmetic lives in
-// goals.ComputePayoff.
+// The goal kinds. The first two are what 00012_goals.sql declared as a comment
+// on a free TEXT column and goal_handlers.go enforced as a convention; the
+// payoff arithmetic lives in goals.ComputePayoff.
+//
+// 'college' joins them in doc 32, and 00055_allocation_planner.sql turns the
+// whole set into a database CHECK — so these three are now a schema invariant
+// rather than a convention this file happens to keep.
 const (
 	goalKindSavings = "savings"
 	goalKindPayoff  = "debt_payoff"
+	goalKindCollege = "college"
+)
+
+// College goal defaults and bounds, matching the CHECK on goals.college_years.
+// Four years is the convention, not the law: community-college transfers and
+// five-year programmes exist, and the engine has no business assuming.
+const (
+	defaultCollegeYears = 4
+	minCollegeYears     = 1
+	maxCollegeYears     = 10
 )
 
 // goalResponse is one goal plus its DERIVED standing. current_amount and the
@@ -56,7 +70,22 @@ type goalResponse struct {
 	// Payoff is the amortization detail behind a debt_payoff goal, and nil for a
 	// savings goal.
 	Payoff *payoffResponse `json:"payoff,omitempty"`
+
+	// CollegeYears is how many years of study a college goal funds. Present on
+	// every kind because the column is NOT NULL; only a college goal reads it.
+	CollegeYears int `json:"college_years"`
+	// CollegeBasis is the sentence that stops target_amount being misread. For a
+	// college goal the target is ONE YEAR in today's dollars, so the standing
+	// above is progress toward one year — the multi-year inflated projection,
+	// with the per-year shortfall, lives on the Advisor's allocator. Empty for
+	// every other kind.
+	CollegeBasis string `json:"college_basis,omitempty"`
 }
+
+// collegeBasis is rendered verbatim beside a college goal's standing.
+const collegeBasis = "For a college goal the target is ONE YEAR'S cost in today's dollars, so the progress " +
+	"above is against one year. The full multi-year projection — each year inflated separately, drawn down, with " +
+	"the first year the money runs short — is on the Advisor page's allocator."
 
 // payoffResponse is the debt-payoff schedule: what the debt costs to carry and
 // when it ends. Every figure is deterministic — the model never sees this
@@ -186,6 +215,10 @@ func (s *Server) buildGoalResponse(ctx context.Context, g dbgen.Goal, now time.T
 	if g.TargetDate != nil {
 		d := g.TargetDate.Format(time.DateOnly)
 		resp.TargetDate = &d
+	}
+	resp.CollegeYears = int(g.CollegeYears)
+	if g.Kind == goalKindCollege {
+		resp.CollegeBasis = collegeBasis
 	}
 
 	if g.Kind == goalKindPayoff {
@@ -387,15 +420,33 @@ func (s *Server) goalProgress(ctx context.Context, g dbgen.Goal, now time.Time) 
 type upsertGoalRequest struct {
 	Scope    string     `json:"scope"`     // "household" (default) | "user" | "person"
 	PersonID *uuid.UUID `json:"person_id"` // required iff scope == "person"
-	// "savings" (default) | "debt_payoff". A payoff goal must link an account
-	// that has a liabilities row; its target_amount may be omitted on create and
-	// is then captured from that account's current balance.
+	// "savings" (default) | "debt_payoff" | "college". A payoff goal must link an
+	// account that has a liabilities row; its target_amount may be omitted on
+	// create and is then captured from that account's current balance.
+	//
+	// For a COLLEGE goal, target_amount is ONE YEAR'S cost in today's dollars,
+	// not the four-year total. Storing the total instead would make the per-year
+	// shortfall ("funded through sophomore year") impossible to compute.
 	Kind         string     `json:"kind"`
 	Name         string     `json:"name"`
 	TargetAmount string     `json:"target_amount"`
 	TargetDate   string     `json:"target_date"` // YYYY-MM-DD, optional
 	AccountID    *uuid.UUID `json:"account_id"`
 	CategoryID   *uuid.UUID `json:"category_id"`
+	// CollegeYears defaults to 4 when absent. Ignored for other kinds.
+	CollegeYears *int `json:"college_years"`
+}
+
+// validateCollegeYears bounds the study length, matching the column's CHECK so
+// a bad value is a readable 400 rather than a 500 from a constraint violation.
+func validateCollegeYears(raw *int) (int, error) {
+	if raw == nil {
+		return defaultCollegeYears, nil
+	}
+	if *raw < minCollegeYears || *raw > maxCollegeYears {
+		return 0, errors.New("college_years must be between 1 and 10")
+	}
+	return *raw, nil
 }
 
 // validateGoalBody parses and checks a create/update body, returning the pieces
@@ -441,8 +492,8 @@ func validateGoalBody(req upsertGoalRequest) (amount decimal.Decimal, date *time
 	if kind == "" {
 		kind = goalKindSavings
 	}
-	if kind != goalKindSavings && kind != goalKindPayoff {
-		return decimal.Zero, nil, "", "", errors.New("kind must be \"savings\" or \"debt_payoff\"")
+	if kind != goalKindSavings && kind != goalKindPayoff && kind != goalKindCollege {
+		return decimal.Zero, nil, "", "", errors.New("kind must be \"savings\", \"debt_payoff\" or \"college\"")
 	}
 	return amount, date, scope, kind, nil
 }
@@ -517,6 +568,12 @@ func (s *Server) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	collegeYears, err := validateCollegeYears(req.CollegeYears)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	years := int16(collegeYears)
 
 	// Exactly one of user_id / person_id is set, per scope, satisfying the
 	// table's goals_scope_target CHECK.
@@ -551,6 +608,7 @@ func (s *Server) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 		TargetDate:   date,
 		AccountID:    req.AccountID,
 		CategoryID:   req.CategoryID,
+		CollegeYears: &years,
 	})
 	if err != nil {
 		s.internalError(w, "create goal", err)
@@ -584,6 +642,19 @@ func (s *Server) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Absent leaves the stored value alone (the query COALESCEs it), so a client
+	// that does not know about college goals cannot reset one to four years by
+	// renaming it.
+	var collegeYears *int16
+	if req.CollegeYears != nil {
+		years, err := validateCollegeYears(req.CollegeYears)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		y := int16(years)
+		collegeYears = &y
+	}
 
 	userID, personID, all := goalVisibility(identity)
 	g, err := s.Queries.UpdateGoal(r.Context(), dbgen.UpdateGoalParams{
@@ -597,6 +668,7 @@ func (s *Server) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		TargetDate:     date,
 		AccountID:      req.AccountID,
 		CategoryID:     req.CategoryID,
+		CollegeYears:   collegeYears,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "goal not found")

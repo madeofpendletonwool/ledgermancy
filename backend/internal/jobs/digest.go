@@ -244,17 +244,32 @@ func (w *DigestWorker) Work(ctx context.Context, job *river.Job[DigestArgs]) err
 
 	monthDate, from, to, label, cacheable := digestWindow(cadence, now)
 
-	// Cache-first narrative. A user who already generated this month in-app gets
-	// that exact text; on a miss (and only with AI) we generate, and warm the
-	// cache only when the window is a completed month.
+	// Resolve the narrative. The monthly cache is keyed by month, so it is only
+	// safe to reuse for a window that no longer moves: a completed prior month is
+	// stable, and reusing it keeps the digest and the on-demand recap page showing
+	// identical text.
+	//
+	// The in-progress (month-to-date) window ends at "now" and advances every day,
+	// while the cached narrative is frozen at the moment it was written (and only
+	// refreshed weekly). Reusing it would describe figures that no longer match
+	// the freshly-computed payload below — a "$0.00 in and out" recap beside a
+	// real income and spend. The whole point of building the payload on top of
+	// BuildMonthlySummaryInput is that prose and figures agree by construction;
+	// serving a stale narrative for a moving window breaks that. So an in-progress
+	// window always generates the narrative for the exact digest window, and never
+	// reads from (or warms) the shared monthly cache.
 	narrative := ""
-	if cached, err := w.Queries.GetMonthlySummary(ctx, dbgen.GetMonthlySummaryParams{
-		HouseholdID: householdID, Month: monthDate,
-	}); err == nil {
-		narrative = cached.Summary
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("get cached summary: %w", err)
-	} else if w.AI.Enabled() {
+	if cacheable {
+		if cached, err := w.Queries.GetMonthlySummary(ctx, dbgen.GetMonthlySummaryParams{
+			HouseholdID: householdID, Month: monthDate,
+		}); err == nil {
+			narrative = cached.Summary
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("get cached summary: %w", err)
+		}
+	}
+
+	if narrative == "" && w.AI.Enabled() {
 		// Generate with the recipient's own visibility, matching what they'd get
 		// from the on-demand button.
 		input, err := reporting.BuildMonthlySummaryInput(ctx, w.Queries, householdID, userID, from, to, label, now)

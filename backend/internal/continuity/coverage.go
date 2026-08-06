@@ -189,6 +189,61 @@ var tableCoverage = map[string]Coverage{
 	// The rules are the user's; the events are the engine's output.
 	"alerts": InExport,
 
+	// --- Advisor surface --------------------------------------------------
+	// A saved conversation is user-authored and re-derivable from nothing: the
+	// household's own questions, in their own words, and the reasoning they were
+	// answered with.
+	//
+	// advisor_messages is the sharpest case in this block and the asymmetry is
+	// deliberate. content and tool_trace are BYTEA, so IsSensitive withholds them
+	// from the PORTABLE export by type — the rows travel, the sealed text does
+	// not. That is the right default: the export is a plain JSON file a user may
+	// email themselves, and a full advisor transcript, which is a household
+	// narrating its salary and its debts in natural language, is the last thing
+	// that should ride in one. The encrypted bytes are still in the pg_dump, so a
+	// restore under the same ENCRYPTION_KEY recovers them intact.
+	//
+	// Keep that asymmetry in the restore runbook: a portable export restores a
+	// household's threads with empty bodies, a dump brings them back whole.
+	"advisor_threads":  InExport,
+	"advisor_messages": InExport,
+	// The record of what the household decided to DO. Nothing re-derives a
+	// decision; re-running the ranker produces today's options, not the one
+	// somebody accepted in March and is still working through.
+	"advisor_action_items": InExport,
+
+	// --- Allocation planner -----------------------------------------------
+	// A saved plan is a USER-AUTHORED DECISION about where money should go, and
+	// nothing re-derives it: re-running the allocator produces the split the
+	// user is looking at today, not the one they settled on in March and are
+	// still working through. Results are deliberately not stored (they are
+	// recomputed against the live baseline on open), so what travels here is
+	// exactly the inputs and the assumptions snapshot — which is the part that
+	// cannot be reconstructed.
+	//
+	// Money inside `inputs` and `assumptions` is a decimal STRING rather than a
+	// JSON number, because this is the one place the export's numeric-to-text
+	// rule cannot reach: normalise passes jsonb through as json.RawMessage. See
+	// allocation/store.go, which is where that rule is enforced.
+	"allocation_plans": InExport,
+
+	// The household's tracked decisions (doc 33): one snapshot per plan per
+	// date, recording what the plan EXPECTED to have gone in by then.
+	//
+	// InExport rather than Derived, and the distinction is the whole reason this
+	// table stores only the expected side. Actuals are read live and are
+	// genuinely recomputable; the expected side is not, because replaying it
+	// means running the plan's inputs against assumptions the household can
+	// edit. A tracking history regenerated after an assumption change would
+	// silently rewrite what the plan used to say — which is the one thing a
+	// plan-vs-actual comparison must never do.
+	//
+	// expected_lump and expected_total are ordinary numeric COLUMNS, so
+	// export.go's numeric-to-text cast covers them. Money inside
+	// snapshot_inputs is a decimal STRING for the same reason as
+	// allocation_plans above.
+	"plan_trackings": InExport,
+
 	// --- Digests ----------------------------------------------------------
 	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
 	// looks like something a job produces. But the job cannot produce it again.

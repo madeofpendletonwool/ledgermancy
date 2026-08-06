@@ -58,7 +58,7 @@ INSERT INTO accounts (
     $4, $5, $6, $7,
     $8, $9, $10
 )
-RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id
+RETURNING id, plaid_item_id, plaid_account_id, name, official_name, mask, type, subtype, current_balance, available_balance, credit_limit, currency, is_active, created_at, updated_at, tax_treatment, is_managed, beneficiary_person_id, source, user_id, is_shared, household_id, deposit_apy
 `
 
 type CreateManualAccountParams struct {
@@ -132,6 +132,7 @@ func (q *Queries) CreateManualAccount(ctx context.Context, arg CreateManualAccou
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }
@@ -457,7 +458,7 @@ func (q *Queries) DeleteManualInvestmentTransaction(ctx context.Context, arg Del
 }
 
 const getVisibleAccount = `-- name: GetVisibleAccount :one
-SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, v.institution_name, v.user_id AS owner_id, v.is_shared AS shared
+SELECT a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, a.deposit_apy, v.institution_name, v.user_id AS owner_id, v.is_shared AS shared
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
 WHERE a.id = $1
@@ -494,6 +495,7 @@ type GetVisibleAccountRow struct {
 	UserID              *uuid.UUID          `json:"user_id"`
 	IsShared            *bool               `json:"is_shared"`
 	HouseholdID         *uuid.UUID          `json:"household_id"`
+	DepositApy          decimal.NullDecimal `json:"deposit_apy"`
 	InstitutionName     *string             `json:"institution_name"`
 	OwnerID             uuid.UUID           `json:"owner_id"`
 	Shared              bool                `json:"shared"`
@@ -527,6 +529,7 @@ func (q *Queries) GetVisibleAccount(ctx context.Context, arg GetVisibleAccountPa
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 		&i.InstitutionName,
 		&i.OwnerID,
 		&i.Shared,
@@ -779,7 +782,7 @@ WHERE a.id = $2
   AND a.source = 'manual'
   AND v.household_id = $3
   AND (v.user_id = $4 OR v.is_shared)
-RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id
+RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, a.deposit_apy
 `
 
 type SetManualAccountBalanceParams struct {
@@ -824,6 +827,7 @@ func (q *Queries) SetManualAccountBalance(ctx context.Context, arg SetManualAcco
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }
@@ -844,7 +848,7 @@ WHERE a.id = $8
   AND a.source = 'manual'
   AND v.household_id = $9
   AND (v.user_id = $10 OR v.is_shared)
-RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id
+RETURNING a.id, a.plaid_item_id, a.plaid_account_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.credit_limit, a.currency, a.is_active, a.created_at, a.updated_at, a.tax_treatment, a.is_managed, a.beneficiary_person_id, a.source, a.user_id, a.is_shared, a.household_id, a.deposit_apy
 `
 
 type UpdateManualAccountParams struct {
@@ -899,6 +903,7 @@ func (q *Queries) UpdateManualAccount(ctx context.Context, arg UpdateManualAccou
 		&i.UserID,
 		&i.IsShared,
 		&i.HouseholdID,
+		&i.DepositApy,
 	)
 	return i, err
 }

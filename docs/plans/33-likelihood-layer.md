@@ -4,6 +4,22 @@
 [advisor-overview.html](advisor-overview.html) §6 (success rate + fan chart)
 and §8 (plan tracking). Builds on docs 32 and 24.)*
 
+> **Shipped.** What follows is the plan as written. Monte Carlo over allocation
+> plans, the documented guardrail, and plan tracking are
+> `backend/internal/likelihood/` (simulate, rank/reconcile), the surface is
+> `frontend/src/components/PlanLikelihood.tsx`, and migration
+> `00056_likelihood_layer.sql` is taken. See **[Shipped notes](#shipped-notes)**
+> at the end before touching this area.
+>
+> The short version: shipped as `00056`, not the reserved `00054` (goose strict
+> ordering — docs 30/31/32 took the numbers below it); the migration is one table
+> (`plan_trackings`) and **simulation results are never persisted** — a
+> distribution is recomputed from the plan + a deterministic seed every time;
+> actuals are never stored either, read live so editing a past contribution
+> corrects drift without a migration; and the single-market-correlated draw, the
+> P5 drawdown (not a maximum), and the two-P50s labelling all shipped as the
+> corrected plan specifies.
+
 ## Context
 
 Doc 32's allocator projects a **deterministic P50** per bucket — one number
@@ -406,3 +422,49 @@ Decimal-exact inputs, reproducible simulation.
   named.
 - Tax-drag modelling inside the simulation. Withdrawal-phase tax drag is a
   doc 15 omission inherited here; called out in the UI.
+
+## Shipped notes
+
+The engine is `backend/internal/likelihood/` — `simulate.go` (the
+accumulation-phase MC), `rank.go` (percentiles, drawdown, the guardrail rule),
+`reconcile.go` (plan-vs-actual drift) — with handlers in
+`api/likelihood_handlers.go`, chat tools in `api/chat_tools_likelihood.go`, and
+the frontend `frontend/src/components/PlanLikelihood.tsx`. Migration
+`00056_likelihood_layer.sql` is taken. Three things reach outside the plan text.
+
+### 1. `00056`, not the reserved `00054` — and it is one table
+
+The Data model's reservation note names `00054`; that number was taken by
+`00054_advisor_surface.sql` (doc 31) when doc 30 renumbered up from its reserved
+`00047` and pushed every wave-6 row up by one, and doc 32 landed at `00055` for
+the same reason. This doc took `00056`, which is what the README's reservation
+table already assigns. The migration is deliberately small — **one table**,
+`plan_trackings` — because the simulation is pure and its results are never
+persisted. A stored success rate is a figure that quietly stops being true and
+keeps being displayed; a distribution is recomputed from the plan plus a
+deterministic seed every time it is asked for.
+
+### 2. `plan_trackings` matches the schema; actuals are never stored
+
+The table matches the plan's SQL: `expected_lump` / `expected_total` are stored
+(recomputing them needs the plan's inputs at `as_of`), `snapshot_inputs` is JSONB
+with every money field a `StringFixed(2)` string (the JSONB hole in the
+continuity rule, inherited from doc 32), and `UNIQUE (plan_id, as_of)` so a
+re-track of the same day overwrites. **Actuals are not stored** — they are read
+live from `investment_transactions`, `account_balance_history` and `transactions`
+at read time, so editing a past contribution corrects the drift without a
+migration or a backfill. `plan_trackings` is `InExport` in `continuity/coverage.go`.
+
+### 3. The three honesty corrections all shipped as written
+
+The review's three flattering-the-headline assumptions are fixed in the shipped
+engine, each with the test the plan said should fail if the flattering version
+came back: **one correlated market draw per year shared across risky buckets**
+(not independent per-bucket draws, which would under-count correlated equity
+risk and inflate every success rate); the **5th-percentile peak-to-trough
+drawdown** (a stable statistic that converges as `n` grows, not a maximum that
+diverges and could flip the guardrail's pick); and the **two P50s labelled
+distinctly** — doc 32's "projected at the assumed return" versus this doc's
+"median simulated outcome" — with the σ=0 agreement test the two engines share.
+The guardrail's filter-then-sort rule is total (S3 breaks ties on plan name) and
+deterministic, and refuses a comparison across differing run counts.
