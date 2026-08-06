@@ -151,6 +151,22 @@ func (s *Server) handleAdvisor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// narrationBudget bounds a model call that DECORATES an already-finished
+// deterministic response — the advisor's prose, the forecast's paragraph.
+//
+// These endpoints run on defaultRouteTimeout like every other read, NOT on
+// aiRouteTimeout: each makes one model call rather than a tool loop, so none
+// needs the chat route's ceiling. But one call is bounded by ai.RequestTimeout
+// (60s), which is longer than the whole 30s route budget, so without a budget of
+// its own a slow endpoint burns the route's remaining time and takes THE
+// COMPUTED ANSWER DOWN WITH IT. That is exactly backwards — the figures are the
+// product and the prose is decoration on top, and every caller here already
+// treats a narration failure as non-fatal.
+//
+// 12s leaves comfortable room for the deterministic work that ran before this
+// point, and blowing it costs the user a paragraph rather than their answer.
+const narrationBudget = 12 * time.Second
+
 // narrateAdvice asks the model to read the finished list aloud, returning ""
 // on ErrDisabled or any failure.
 //
@@ -158,6 +174,10 @@ func (s *Server) handleAdvisor(w http.ResponseWriter, r *http.Request) {
 // ranker put them in, so the prose cannot describe a different list from the one
 // rendered beside it.
 func (s *Server) narrateAdvice(ctx context.Context, adv advisor.Advice, opts []advisorOptionResponse) string {
+	// Bounded separately from the request — see narrationBudget.
+	ctx, cancel := context.WithTimeout(ctx, narrationBudget)
+	defer cancel()
+
 	in := ai.AdvisorInput{
 		Slack:       advisorMoney(adv.Slack),
 		SlackBasis:  slackBasisWords(adv.SlackBasis),

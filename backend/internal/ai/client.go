@@ -34,6 +34,23 @@ const anthropicVersion = "2023-06-01"
 // short; the chatbot sets its own higher limit per request when it needs one.
 const defaultMaxTokens = 1024
 
+// RequestTimeout bounds ONE model round-trip, not a whole chat turn.
+//
+// The distinction matters and used to be blurred here. http.Client.Timeout is
+// per HTTP request, and the chat loop makes up to maxToolIterations of them in
+// sequence (api.maxToolIterations, chat_handlers.go), so the worst case a route
+// has to survive is maxToolIterations × this value — not this value alone. At
+// the old 120s that product was 16 minutes sitting under a 30s global route
+// timeout, so neither budget could ever have been reached.
+//
+// 60s is a generous ceiling for a single completion of defaultMaxTokens: even a
+// self-hosted endpoint managing only ~20 tokens/second finishes inside it. It is
+// halved from 120s specifically so the product stays inside a route budget a
+// browser will hold open — see api.aiRouteTimeout, which must cover
+// maxToolIterations × this plus slack, and api.TestAIRouteTimeoutFitsToolLoop,
+// which fails if the three drift apart again.
+const RequestTimeout = 60 * time.Second
+
 // ErrDisabled is returned by Complete when no API key is configured. It lets a
 // caller that forgot to check Enabled() fail loudly rather than silently.
 var ErrDisabled = errors.New("ai: no API key configured")
@@ -51,9 +68,8 @@ type Client struct {
 // client unconditionally and gate features on Enabled().
 func New(cfg config.AIConfig) *Client {
 	return &Client{
-		// A generous timeout: a chatbot turn that fans out to several tools can
-		// take a while, and cutting it off mid-answer is worse than waiting.
-		http:    &http.Client{Timeout: 120 * time.Second},
+		// Per round-trip, not per turn — see RequestTimeout.
+		http:    &http.Client{Timeout: RequestTimeout},
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:  cfg.APIKey,
 		model:   cfg.Model,
