@@ -72,22 +72,35 @@ func TestToolMonthFromInput(t *testing.T) {
 	}
 }
 
-// toolMonths clamps to 1-24 and defaults to 12, so a missing or silly value
-// never produces an empty or absurd trailing window.
+// toolMonths clamps an out-of-range window to 1-24 and defaults a missing one
+// to 12, so neither produces an empty or absurd trailing window. A window it
+// cannot READ is a different case and must surface as an error: defaulting it
+// to 12 would answer a question about three months with a year of figures and
+// leave no trace that it had done so.
 func TestToolMonths(t *testing.T) {
 	cases := map[string]int{
-		`{}`:             12,
-		`{"months":0}`:   12,
-		`{"months":25}`:  12,
-		`{"months":-3}`:  12,
-		`{"months":1}`:   1,
-		`{"months":6}`:   6,
-		`{"months":24}`:  24,
-		`{"months":"x"}`: 12, // malformed value ignored
+		`{}`:            12,
+		`{"months":0}`:  12,
+		`{"months":25}`: 12,
+		`{"months":-3}`: 12,
+		`{"months":1}`:  1,
+		`{"months":6}`:  6,
+		`{"months":24}`: 24,
 	}
 	for in, want := range cases {
-		if got := toolMonths(json.RawMessage(in)); got != want {
+		got, err := toolMonths(json.RawMessage(in))
+		if err != nil {
+			t.Errorf("toolMonths(%s) unexpected error: %v", in, err)
+			continue
+		}
+		if got != want {
 			t.Errorf("toolMonths(%s) = %d, want %d", in, got, want)
+		}
+	}
+
+	for _, in := range []string{`{"months":"x"}`, `not json`, `{"months":[3]}`} {
+		if _, err := toolMonths(json.RawMessage(in)); err == nil {
+			t.Errorf("toolMonths(%s) = nil error, want a retryable decode error", in)
 		}
 	}
 }

@@ -198,7 +198,10 @@ func (s *Server) executeAdvisorTool(
 		})
 
 	case "project_balance":
-		days := toolInt(input, "days", 30, 1, 365)
+		days, err := toolInt(input, "days", 30, 1, 365)
+		if err != nil {
+			return "", true, err
+		}
 		est, err := reporting.BuildEstimatedProjection(ctx, s.Queries,
 			identity.HouseholdID, identity.UserID, now, days)
 		if err != nil {
@@ -232,7 +235,10 @@ func (s *Server) executeAdvisorTool(
 		})
 
 	case "upcoming_obligations":
-		days := toolInt(input, "days", 14, 1, 90)
+		days, err := toolInt(input, "days", 14, 1, 90)
+		if err != nil {
+			return "", true, err
+		}
 		userID := identity.UserID
 		rows, err := s.Queries.ListUpcomingObligations(ctx, dbgen.ListUpcomingObligationsParams{
 			HouseholdID: identity.HouseholdID, UserID: &userID,
@@ -265,7 +271,9 @@ func (s *Server) executeAdvisorTool(
 			Account      string      `json:"account"`
 			ExtraMonthly json.Number `json:"extra_monthly"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", true, err
+		}
 		extra, err := toolDecimal(in.ExtraMonthly)
 		if err != nil {
 			return "", true, err
@@ -280,21 +288,28 @@ func (s *Server) executeAdvisorTool(
 			Goal       string `json:"goal"`
 			TargetDate string `json:"target_date"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", true, err
+		}
 		return marshalToolOK2(s.goalSolve(ctx, identity, in.Goal, in.TargetDate, now))
 
 	case "retirement_projection":
 		return marshalToolOK2(s.retirementTool(ctx, identity, 0, now))
 
 	case "retirement_solve":
-		targetAge := toolInt(input, "target_age", 0, 0, 120)
+		targetAge, err := toolInt(input, "target_age", 0, 0, 120)
+		if err != nil {
+			return "", true, err
+		}
 		return marshalToolOK2(s.retirementTool(ctx, identity, targetAge, now))
 
 	case "investment_performance":
 		var in struct {
 			Period string `json:"period"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", true, err
+		}
 		period := reporting.PeriodYTD
 		if raw := strings.TrimSpace(in.Period); raw != "" {
 			if !reporting.ValidPeriod(raw) {
@@ -369,11 +384,16 @@ func (s *Server) executeAdvisorTool(
 		})
 
 	case "contribution_room":
-		year := toolInt(input, "year", now.Year(), 1900, 2200)
+		year, err := toolInt(input, "year", now.Year(), 1900, 2200)
+		if err != nil {
+			return "", true, err
+		}
 		var in struct {
 			FamilyHSA bool `json:"family_hsa"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", true, err
+		}
 		return marshalToolOK2(s.contributionRoom(ctx, identity, year, in.FamilyHSA, now))
 	}
 
@@ -992,23 +1012,30 @@ func pctOrNil(fraction *decimal.Decimal) any {
 }
 
 // toolInt reads one optional integer field, clamped, with a default.
-func toolInt(input json.RawMessage, field string, def, min, max int) int {
+//
+// An absent field and an out-of-range value both fall back to def, which is the
+// documented behaviour of every caller's InputSchema. A field that is PRESENT
+// but not readable as an integer is reported instead of defaulted: "days":"30"
+// silently becoming a 30-day window happens to be harmless, but "days":"ninety"
+// silently becoming 30 answers a three-month question with one month of data
+// and says nothing about it.
+func toolInt(input json.RawMessage, field string, def, min, max int) (int, error) {
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(input, &raw); err != nil {
-		return def
+	if err := decodeToolInput(input, &raw); err != nil {
+		return 0, err
 	}
 	v, ok := raw[field]
 	if !ok {
-		return def
+		return def, nil
 	}
 	var n int
 	if err := json.Unmarshal(v, &n); err != nil {
-		return def
+		return 0, fmt.Errorf("invalid tool input: field %q: %w; re-send this tool call with %q as a number", field, err, field)
 	}
 	if n < min || n > max {
-		return def
+		return def, nil
 	}
-	return n
+	return n, nil
 }
 
 // marshalToolOK adapts a value to executeAdvisorTool's (out, owned, err) shape.

@@ -509,7 +509,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 			Month string `json:"month"`
 			Limit int    `json:"limit"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", err
+		}
 		from, to, err := monthRange(in.Month)
 		if err != nil {
 			return "", err
@@ -605,7 +607,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 			Merchant string `json:"merchant"`
 			Limit    int    `json:"limit"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", err
+		}
 		from, to, err := monthRange(in.Month)
 		if err != nil {
 			return "", err
@@ -679,7 +683,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 			MaxAmount json.Number `json:"max_amount"`
 			Limit     int         `json:"limit"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", err
+		}
 		flow, err := normalizeFlow(in.Flow)
 		if err != nil {
 			return "", err
@@ -766,7 +772,9 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 			MinAmount json.Number `json:"min_amount"`
 			MaxAmount json.Number `json:"max_amount"`
 		}
-		_ = json.Unmarshal(input, &in)
+		if err := decodeToolInput(input, &in); err != nil {
+			return "", err
+		}
 		groupBy, err := normalizeGroupBy(in.GroupBy)
 		if err != nil {
 			return "", err
@@ -808,7 +816,11 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		return marshalTool(out)
 
 	case "monthly_trend":
-		from, to := trailingMonthsRange(toolMonths(input))
+		window, err := toolMonths(input)
+		if err != nil {
+			return "", err
+		}
+		from, to := trailingMonthsRange(window)
 		rows, err := s.Queries.GetMonthlyTrend(ctx, dbgen.GetMonthlyTrendParams{
 			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
 		})
@@ -841,7 +853,11 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		return marshalTool(result)
 
 	case "category_averages":
-		from, to := trailingMonthsRange(toolMonths(input))
+		months, err := toolMonths(input)
+		if err != nil {
+			return "", err
+		}
+		from, to := trailingMonthsRange(months)
 		rows, err := s.Queries.GetCategoryAverages(ctx, dbgen.GetCategoryAveragesParams{
 			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
 		})
@@ -889,7 +905,9 @@ func toolMonth(input json.RawMessage) (from, to time.Time, err error) {
 	var in struct {
 		Month string `json:"month"`
 	}
-	_ = json.Unmarshal(input, &in)
+	if err := decodeToolInput(input, &in); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
 	return monthRange(in.Month)
 }
 
@@ -901,15 +919,23 @@ func monthRange(month string) (from, to time.Time, err error) {
 
 // toolMonths reads an optional {"months":N} input, clamped to 1-24 and
 // defaulting to 12 — the window the trend and averages tools look back over.
-func toolMonths(input json.RawMessage) int {
+//
+// The clamp still absorbs an out-of-range N silently, because that is a bounds
+// decision the tool is entitled to make. A DECODE failure is a different thing
+// and is reported: it means the model asked about a window we could not read,
+// and answering over the default twelve months would put a year's figures
+// behind a question about, say, three.
+func toolMonths(input json.RawMessage) (int, error) {
 	var in struct {
 		Months int `json:"months"`
 	}
-	_ = json.Unmarshal(input, &in)
-	if in.Months >= 1 && in.Months <= 24 {
-		return in.Months
+	if err := decodeToolInput(input, &in); err != nil {
+		return 0, err
 	}
-	return 12
+	if in.Months >= 1 && in.Months <= 24 {
+		return in.Months, nil
+	}
+	return 12, nil
 }
 
 // trailingMonthsRange returns the first day of the month n-1 months ago through
