@@ -508,10 +508,10 @@ func Run(b Baseline, req Request) (Result, error) {
 		r := &results[i]
 		switch r.Kind {
 		case BucketInvestment:
-			fillInvestment(r, planFinal, b, req.HorizonYears)
+			fillInvestment(r, planFinal, req.HorizonYears)
 		case BucketDebt:
 			bucket, _ := b.BucketByID(r.AccountID)
-			fillDebt(r, bucket, months, b.Now)
+			fillDebt(r, bucket, b.Now)
 			out.TotalInterestAvoided = out.TotalInterestAvoided.Add(r.InterestAvoided)
 		case BucketCash:
 			bucket, _ := b.BucketByID(r.AccountID)
@@ -651,7 +651,7 @@ func lastByAccount(p networth.RetirementProjection) map[string]networth.AccountP
 // compute a balance — ProjectRetirement already did, and a second computation
 // here is how the bucket total and the household total would drift apart.
 func fillInvestment(
-	r *BucketResult, final map[string]networth.AccountPoint, b Baseline, horizonYears int,
+	r *BucketResult, final map[string]networth.AccountPoint, horizonYears int,
 ) {
 	r.Engine = "compound"
 	pt, ok := final[r.AccountID.String()]
@@ -685,13 +685,12 @@ func fillInvestment(
 		r.Notes = append(r.Notes, fmt.Sprintf(
 			"$%s could not go here: %s", r.EligibilitySpill.StringFixed(2), r.EligibilityNote))
 	}
-	_ = b
 }
 
 // fillDebt amortizes the debt twice — at today's payment and with the plan's
 // money on top — so the difference between them is computed rather than
 // asserted. goals.ComputePayoff is the same function the Goals page calls.
-func fillDebt(r *BucketResult, bucket Bucket, months int, now time.Time) {
+func fillDebt(r *BucketResult, bucket Bucket, now time.Time) {
 	r.Engine = "amortization"
 	r.ReturnRate = decimal.Zero
 
@@ -744,7 +743,6 @@ func fillDebt(r *BucketResult, bucket Bucket, months int, now time.Time) {
 			"Even with the plan's money this debt never pays off — the interest alone is $%s a month.",
 			plan.MonthlyInterest.StringFixed(2)))
 	}
-	_ = months
 }
 
 func summarise(f goals.PayoffFeasibility) *PayoffSummary {
