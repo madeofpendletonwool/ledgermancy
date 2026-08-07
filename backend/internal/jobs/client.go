@@ -22,13 +22,17 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
 )
 
-// syncInterval is how often each item is refreshed when no webhook arrives.
+// SyncInterval is how often each item is refreshed when no webhook arrives.
 // Plaid updates most institutions a few times a day, so hourly is generous
 // without being wasteful.
-const syncInterval = time.Hour
+//
+// Exported because the operational status panel classifies an item as stale in
+// multiples of this (see api/status_handlers.go). A panel that hardcoded "six
+// hours" would go on asserting a cadence the app had stopped keeping.
+const SyncInterval = time.Hour
 
 // staleAfter is how old an item's last sync must be to be picked up by the
-// periodic sweep. Slightly under syncInterval so an item is not skipped
+// periodic sweep. Slightly under SyncInterval so an item is not skipped
 // because the sweep ran a moment early.
 const staleAfter = 55 * time.Minute
 
@@ -442,7 +446,7 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 
 	if syncer != nil {
 		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
-			river.PeriodicInterval(syncInterval),
+			river.PeriodicInterval(SyncInterval),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SyncAllArgs{}, nil
 			},

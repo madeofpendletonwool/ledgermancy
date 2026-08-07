@@ -51,6 +51,7 @@ var childRoutes = []struct{ method, path string }{
 	{"POST", "/api/admin/continuity/key-ack"},
 	{"POST", "/api/admin/continuity/run"},
 	{"GET", "/api/admin/continuity/export"},
+	{"GET", "/api/admin/status"},
 
 	// Delivery, and the stored digests it produces.
 	{"POST", "/api/notifications/test"},
@@ -233,6 +234,7 @@ var ownerOnlyRoutes = []struct{ method, path string }{
 	{"POST", "/api/admin/continuity/key-ack"},
 	{"POST", "/api/admin/continuity/run"},
 	{"GET", "/api/admin/continuity/export"},
+	{"GET", "/api/admin/status"},
 }
 
 func isOwnerOnly(method, path string) bool {

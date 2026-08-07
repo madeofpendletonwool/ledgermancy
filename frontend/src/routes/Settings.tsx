@@ -7,6 +7,7 @@ import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
 import { Continuity } from './Continuity'
+import { SystemStatus } from './SystemStatus'
 import { SkeletonRows } from '../components/Skeleton'
 
 type Tab =
@@ -19,6 +20,7 @@ type Tab =
   | 'appearance'
   | 'household'
   | 'continuity'
+  | 'system'
 
 const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile' },
@@ -36,6 +38,9 @@ const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }
   // Operator surface: the instance's recovery posture, not the household's
   // data. Owner-only, and enforced server-side by auth.RequireOwner.
   { id: 'continuity', label: 'Continuity', adultOnly: true, ownerOnly: true },
+  // The other half of the operator surface: continuity is "could I recover",
+  // system is "is it working right now". Owner-only for the same reason.
+  { id: 'system', label: 'System', adultOnly: true, ownerOnly: true },
 ]
 
 const isTab = (v: string | null): v is Tab =>
@@ -90,6 +95,7 @@ export function Settings() {
       {activeTab === 'appearance' && <AppearanceSection />}
       {activeTab === 'household' && <Household />}
       {activeTab === 'continuity' && <Continuity />}
+      {activeTab === 'system' && <SystemStatus />}
     </div>
   )
 }
