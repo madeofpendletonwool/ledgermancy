@@ -159,8 +159,11 @@ func TestLastUserMessageFollowsTheConversation(t *testing.T) {
 	}
 }
 
-// toolInt clamps and defaults rather than erroring, so a model that sends a
-// silly window gets a sensible one instead of a failed turn.
+// toolInt clamps an out-of-range window and defaults an absent one, so a model
+// that sends a silly number gets a sensible one instead of a failed turn. An
+// UNREADABLE value is not silly, it is unknown: it gets an error the model can
+// correct on the next iteration, because quietly substituting the default there
+// answers a question nobody asked and reads exactly like a real answer.
 func TestToolInt(t *testing.T) {
 	cases := []struct {
 		input string
@@ -170,12 +173,22 @@ func TestToolInt(t *testing.T) {
 		{`{"days":7}`, 7},
 		{`{"days":0}`, 30},
 		{`{"days":9999}`, 30},
-		{`{"days":"soon"}`, 30},
-		{`not json`, 30},
+		{`{"other":5}`, 30}, // absent field is optional, not an error
 	}
 	for _, c := range cases {
-		if got := toolInt(json.RawMessage(c.input), "days", 30, 1, 365); got != c.want {
+		got, err := toolInt(json.RawMessage(c.input), "days", 30, 1, 365)
+		if err != nil {
+			t.Errorf("toolInt(%s) unexpected error: %v", c.input, err)
+			continue
+		}
+		if got != c.want {
 			t.Errorf("toolInt(%s) = %d, want %d", c.input, got, c.want)
+		}
+	}
+
+	for _, in := range []string{`{"days":"soon"}`, `not json`, `{"days":1.5}`} {
+		if _, err := toolInt(json.RawMessage(in), "days", 30, 1, 365); err == nil {
+			t.Errorf("toolInt(%s) = nil error, want a retryable decode error", in)
 		}
 	}
 }

@@ -104,19 +104,36 @@ func (l *Limiter) janitor() {
 // if forwarded headers are honoured without a proxy in front that overwrites
 // them, an attacker sets their own key and this middleware does nothing.
 func (l *Limiter) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, retryAfter := l.Allow(ClientIP(r))
-		if !ok {
-			w.Header().Set("Retry-After",
-				strconv.Itoa(int(retryAfter.Seconds())+1))
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"too many requests; please wait and try again"}`))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return l.KeyedMiddleware(ClientIP)(next)
+}
+
+// KeyedMiddleware throttles by whatever the caller says identifies a client.
+//
+// It exists because not every budget is an address. IP is the only key
+// available before a session is resolved, but a limit that protects a METERED
+// resource — a paid API key, a mailbox — is a per-ACCOUNT budget: two people on
+// one household connection should each get their own, and one account should
+// not get a fresh allowance per address it dials in from. Mount such a limiter
+// after authentication and key it on the user id.
+//
+// The keys different limiters produce share one map per Limiter, never across
+// them, so a "user:…" key and an IP key can never collide.
+func (l *Limiter) KeyedMiddleware(key func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ok, retryAfter := l.Allow(key(r))
+			if !ok {
+				w.Header().Set("Retry-After",
+					strconv.Itoa(int(retryAfter.Seconds())+1))
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"too many requests; please wait and try again"}`))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // ClientIP returns the address to key limits and audit records on.

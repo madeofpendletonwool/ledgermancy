@@ -54,6 +54,11 @@ type Server struct {
 	registerLimiter *ratelimit.Limiter
 	accountLimiter  *ratelimit.Limiter
 	generalLimiter  *ratelimit.Limiter
+
+	// aiLimiter is the only limiter here keyed on the USER rather than the
+	// address, because it is the only one guarding a budget that is billed per
+	// account. See aiRequestsPerWindow and aiRateKey.
+	aiLimiter *ratelimit.Limiter
 }
 
 // Rate limits. Login and registration are the endpoints worth guessing at, so
@@ -79,6 +84,61 @@ const (
 
 	generalRequestsPerWindow = 300
 	generalWindow            = time.Minute
+
+	// The AI budget. Every other limit here defends a secret; this one defends
+	// a BILL. One POST /api/chat is up to maxToolIterations calls against a
+	// metered key, so leaving it on generalLimiter meant a single logged-in
+	// member could spend 300 turns a minute — roughly 2,400 upstream calls —
+	// through the same bucket as GET /api/preferences.
+	//
+	// 60 turns an hour is far above what a household conversation reaches (a
+	// long session is a handful of questions) and far below what a runaway
+	// client or a bored teenager costs. The worst case it admits is 60 ×
+	// maxToolIterations = 480 upstream calls per user per hour, which is a bill
+	// an operator can reason about.
+	aiRequestsPerWindow = 60
+	aiWindow            = time.Hour
+)
+
+// Request budgets.
+//
+// Two of them, and the reason there are two is that they cannot be nested: a
+// context deadline can only ever SHORTEN its parent's, never extend it. So the
+// AI routes are mounted as a sibling of the ordinary ones rather than inside
+// them — putting a longer Timeout under a shorter one is a silent no-op, which
+// is exactly how these numbers got out of step in the first place.
+const (
+	// defaultRouteTimeout is the budget for every route that does not call the
+	// model. Generous for a database read and nowhere near a model round-trip,
+	// which is the point.
+	defaultRouteTimeout = 30 * time.Second
+
+	// aiRouteTimeout is the budget for POST /api/chat, the one route that drives
+	// the model↔tool loop.
+	//
+	// THIS NUMBER IS NOT FREE TO CHOOSE. It has to cover the worst case the loop
+	// can actually produce:
+	//
+	//	maxToolIterations (8, chat_handlers.go)
+	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 480s of model time
+	//	+ aiToolBudget                                       =  60s of our own
+	//	                                                     = 540s
+	//
+	// 600s leaves a minute of headroom on top. It is a CEILING, not a target —
+	// a real turn answers in seconds, and the defences against a turn that does
+	// not are maxToolIterations and aiLimiter, not this. Cutting it lower would
+	// only reintroduce the original bug: a budget the loop below it can exceed.
+	//
+	// TestAIRouteTimeoutFitsToolLoop fails if any of the three numbers moves
+	// without the others.
+	aiRouteTimeout = 600 * time.Second
+
+	// aiToolBudget is how much of aiRouteTimeout is reserved for OUR work rather
+	// than the model's: the scoped queries executeChatTool runs between
+	// iterations, plus serialising their results back into the prompt. Every one
+	// is a local database read, so a minute across all eight is slack, not an
+	// estimate.
+	aiToolBudget = 60 * time.Second
 )
 
 // NewServer builds a Server from an open connection pool. The AI client is
@@ -97,7 +157,23 @@ func NewServer(cfg config.Config, pool *pgxpool.Pool, cipher *crypto.Cipher) *Se
 		registerLimiter: ratelimit.New(registerAttemptsPerWindow, registerWindow),
 		accountLimiter:  ratelimit.New(accountAttemptsPerWindow, accountWindow),
 		generalLimiter:  ratelimit.New(generalRequestsPerWindow, generalWindow),
+		aiLimiter:       ratelimit.New(aiRequestsPerWindow, aiWindow),
 	}
+}
+
+// aiRateKey keys the AI budget on the authenticated user.
+//
+// The cost being limited is charged per ACCOUNT, not per address: a household
+// behind one public IP should get one allowance each, and one account should not
+// get a fresh allowance for every address it dials in from. The routes this is
+// mounted on all sit behind Authenticate, so the identity is always there; the
+// address fallback exists so a wiring mistake degrades to the old, weaker
+// behaviour rather than to no limit at all.
+func aiRateKey(r *http.Request) string {
+	if identity, ok := auth.FromContext(r.Context()); ok {
+		return "user:" + identity.UserID.String()
+	}
+	return "ip:" + ratelimit.ClientIP(r)
 }
 
 // enqueueSync schedules a background sync for an item.
@@ -139,656 +215,683 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger)
-	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(s.securityHeaders)
 	r.Use(s.cors)
 
+	// NO request timeout here, deliberately. There is no single budget that
+	// suits both a database read and a chat turn, and a global one cannot be
+	// widened further in: a nested context deadline only shortens its parent's.
+	// Each subtree below declares its own — see defaultRouteTimeout and
+	// aiRouteTimeout. Nothing is left unbudgeted.
+
 	// Liveness/readiness. Deliberately outside /api and unauthenticated so
 	// Docker's healthcheck can reach it.
-	r.Get("/healthz", s.handleHealth)
+	r.With(middleware.Timeout(defaultRouteTimeout)).Get("/healthz", s.handleHealth)
 
 	// Plaid's webhook is mounted outside the /api group on purpose: Plaid is
 	// not a browser, so it has neither a session nor a CSRF token. See the
 	// handler for why that is safe.
-	r.Post("/webhooks/plaid", s.handlePlaidWebhook)
+	r.With(middleware.Timeout(defaultRouteTimeout)).
+		Post("/webhooks/plaid", s.handlePlaidWebhook)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.generalLimiter.Middleware)
 		r.Use(auth.RequireCSRF)
 
-		r.Route("/auth", func(r chi.Router) {
-			// Bootstraps the CSRF cookie for clients that do not have one yet.
-			r.Get("/csrf", s.handleCSRFToken)
-			r.Post("/logout", s.handleLogout)
+		// ── The AI subtree ────────────────────────────────────────────────
+		//
+		// A SIBLING of the rest of /api rather than a member of it, because it
+		// needs a budget LONGER than the default and a nested Timeout cannot
+		// grant one. Two things are different in here and only two: the request
+		// budget, and a per-user allowance on a metered API key.
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Timeout(aiRouteTimeout))
 
-			// Unauthenticated and guessable: the two places where knowing a
-			// secret gets you in. Both are throttled per IP, and login is
-			// additionally backed by durable per-account lockout.
+			// Adult-only: it reads household data by design. aiLimiter goes
+			// AFTER authenticate so there is an identity to key on — see
+			// aiRateKey.
 			r.Group(func(r chi.Router) {
-				r.Use(s.loginLimiter.Middleware)
-				r.Post("/login", s.handleLogin)
-				r.Post("/mfa/verify", s.handleMFAVerify)
+				r.Use(authenticate, auth.RequireAdult)
+				r.Use(s.aiLimiter.KeyedMiddleware(aiRateKey))
+				r.Post("/chat", s.handleChat)
 			})
+		})
 
-			r.Group(func(r chi.Router) {
-				r.Use(s.registerLimiter.Middleware)
-				r.Post("/register", s.handleRegister)
-			})
+		// ── Everything else, on the ordinary budget ───────────────────────
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Timeout(defaultRouteTimeout))
 
-			r.Group(func(r chi.Router) {
-				r.Use(authenticate)
-				r.Get("/me", s.handleMe)
+			r.Route("/auth", func(r chi.Router) {
+				// Bootstraps the CSRF cookie for clients that do not have one yet.
+				r.Get("/csrf", s.handleCSRFToken)
+				r.Post("/logout", s.handleLogout)
 
-				r.Get("/sessions", s.handleListSessions)
-				r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
-				r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
-				r.Get("/events", s.handleListAuthEvents)
-
-				r.Get("/mfa", s.handleMFAStatus)
-
-				// Changing a password or a second factor is account takeover
-				// if guessed, so these carry their own budget on top of the
-				// password/code each one already demands.
+				// Unauthenticated and guessable: the two places where knowing a
+				// secret gets you in. Both are throttled per IP, and login is
+				// additionally backed by durable per-account lockout.
 				r.Group(func(r chi.Router) {
-					r.Use(s.accountLimiter.Middleware)
-					r.Post("/password", s.handleChangePassword)
-					r.Post("/mfa/setup", s.handleMFASetup)
-					r.Post("/mfa/activate", s.handleMFAActivate)
-					r.Post("/mfa/disable", s.handleMFADisable)
-					r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+					r.Use(s.loginLimiter.Middleware)
+					r.Post("/login", s.handleLogin)
+					r.Post("/mfa/verify", s.handleMFAVerify)
+				})
+
+				r.Group(func(r chi.Router) {
+					r.Use(s.registerLimiter.Middleware)
+					r.Post("/register", s.handleRegister)
+				})
+
+				r.Group(func(r chi.Router) {
+					r.Use(authenticate)
+					r.Get("/me", s.handleMe)
+
+					r.Get("/sessions", s.handleListSessions)
+					r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
+					r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
+					r.Get("/events", s.handleListAuthEvents)
+
+					r.Get("/mfa", s.handleMFAStatus)
+
+					// Changing a password or a second factor is account takeover
+					// if guessed, so these carry their own budget on top of the
+					// password/code each one already demands.
+					r.Group(func(r chi.Router) {
+						r.Use(s.accountLimiter.Middleware)
+						r.Post("/password", s.handleChangePassword)
+						r.Post("/mfa/setup", s.handleMFASetup)
+						r.Post("/mfa/activate", s.handleMFAActivate)
+						r.Post("/mfa/disable", s.handleMFADisable)
+						r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+					})
 				})
 			})
-		})
 
-		// ------------------------------------------------------------------
-		// Child-accessible routes.
-		//
-		// Everything below the /me group is scoped to the CALLER's own person
-		// and is the only surface a `child` login can reach beyond its own
-		// account settings. Every route group after this one is adult-only,
-		// enforced by auth.RequireAdult on the group rather than per handler —
-		// a role checked on some routes and not others implies protection that
-		// is not there.
-		//
-		// When adding a route, the question is not "should a child see this"
-		// but "which group does it belong in". There is no third option.
-		// ------------------------------------------------------------------
-		r.Route("/me", func(r chi.Router) {
-			r.Use(authenticate)
-			r.Get("/person", s.handleGetMyPerson)
-			r.Put("/person", s.handleUpdateMyPerson)
-			r.Get("/allowance", s.handleGetMyAllowance)
-			r.Get("/allowance/entries", s.handleListMyAllowanceEntries)
-			// A child records their own spending. This is the one write a
-			// child has, and it is deliberate: a ledger a kid cannot write to
-			// teaches nothing. Credits are parent-only, enforced in the
-			// handler by rejecting any kind other than 'spend'.
-			r.Post("/allowance/entries", s.handleCreateMyAllowanceEntry)
-			r.Get("/accounts", s.handleListMyAccounts)
-			r.Get("/goals", s.handleListMyGoals)
-		})
-
-		r.Route("/household", func(r chi.Router) {
-			r.Use(authenticate)
-
-			// Household name is readable by anyone signed in — the child view
-			// puts it in the header, and it is not a financial figure.
-			r.Get("/", s.handleGetHousehold)
-
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireAdult)
-				r.Get("/members", s.handleListMembers)
-				r.Get("/invites", s.handleListInvites)
-				r.Post("/invites", s.handleCreateInvite)
-				r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
-
-				// People: everyone the household's money can be about,
-				// whether or not they can sign in.
-				r.Get("/people", s.handleListPeople)
-				r.Post("/people", s.handleCreatePerson)
-				r.Put("/people/{personID}", s.handleUpdatePerson)
-				r.Delete("/people/{personID}", s.handleDeletePerson)
-
-				// Allowance schedules are a parent's to set, including for a
-				// child who can sign in — hence adult-only rather than /me.
-				r.Get("/people/{personID}/allowance", s.handleGetAllowance)
-				r.Put("/people/{personID}/allowance", s.handleUpsertAllowance)
-				r.Get("/people/{personID}/allowance/entries", s.handleListAllowanceEntries)
-				r.Post("/people/{personID}/allowance/entries", s.handleCreateAllowanceEntry)
-				r.Delete("/allowance/entries/{entryID}", s.handleDeleteAllowanceEntry)
-			})
-
-			// Changing who can do what is the owner's alone.
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireAdult)
-				r.Use(auth.RequireOwner)
-				r.Put("/members/{userID}/role", s.handleSetMemberRole)
-			})
-		})
-
-		// Preferences are mixed by design: a user-scoped preference is the
-		// caller's own, a household-scoped one is a household setting. The
-		// group is open and handleUpsertPreferences refuses a household-scoped
-		// write from a child — the one place a per-handler check is right,
-		// because the resource itself is split rather than the routes.
-		r.Route("/preferences", func(r chi.Router) {
-			r.Use(authenticate)
-			r.Get("/", s.handleGetPreferences)
-			r.Put("/", s.handleUpsertPreferences)
-		})
-
-		r.Route("/notifications", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/test", s.handleTestNotification)
-		})
-
-		r.Route("/digest", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/test", s.handleSendDigestNow)
-		})
-
-		// The in-app digest history. Separate from /digest above, which is the
-		// "send one now" action rather than a resource: these are the stored
-		// entries, and each one is scoped to the requesting USER inside the
-		// queries — the adult-only group here is necessary but not sufficient,
-		// exactly as it is for /payroll.
-		r.Route("/digests", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListDigests)
-			r.Get("/{digestID}", s.handleGetDigest)
-			r.Post("/{digestID}/read", s.handleMarkDigestRead)
-		})
-
-		// Operator surface. This is the instance's recovery posture, not a
-		// household's data: it names paths on the host, reports on the backup
-		// subsystem, and can trigger a full database dump. Owner-only,
-		// enforced on the group rather than per handler, for the same reason
-		// the adult-only groups are.
-		r.Route("/admin", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult, auth.RequireOwner)
-			r.Get("/continuity", s.handleContinuityStatus)
-			r.Post("/continuity/key-ack", s.handleContinuityKeyAck)
-			r.Post("/continuity/run", s.handleContinuityRun)
-			r.Get("/continuity/export", s.handleContinuityExport)
-		})
-
-		r.Route("/plaid", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/link-token", s.handleCreateLinkToken)
-			r.Post("/exchange", s.handleExchangePublicToken)
-			r.Get("/items", s.handleListItems)
-			r.Post("/items/{itemID}/sync", s.handleSyncItem)
-			r.Post("/items/{itemID}/reconnected", s.handleItemReconnected)
-			r.Patch("/items/{itemID}/sharing", s.handleSetItemSharing)
-			r.Delete("/items/{itemID}", s.handleDeleteItem)
-		})
-
-		r.Route("/accounts", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListAccounts)
-			// The rate and monthly payment for a debt the institution reports
-			// none for — which is most of them. Adult-only, matching every other
-			// account mutation: a child must not set the figures the household's
-			// payoff plans are computed from.
-			r.Put("/{accountID}/terms", s.handleSetAccountTerms)
-			// The deposit yield the cash-drag detector measures against
-			// (doc 32). User-entered because Plaid does not serve it
-			// reliably; a null CLEARS it, and an empty field means
-			// unknown rather than zero.
-			r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
-			r.Get("/idle-cash", s.handleIdleCash)
-
-			// Manual accounts (doc 30). Every one of these refuses a
-			// source='plaid' id — a linked account's identity and balance
-			// belong to the institution, and an edit here would survive only
-			// until the next sync silently reverted it.
-			r.Post("/", s.handleCreateManualAccount)
-			r.Put("/{accountID}", s.handleUpdateManualAccount)
-			r.Delete("/{accountID}", s.handleDeleteManualAccount)
-			r.Put("/{accountID}/balance", s.handleSetManualBalance)
-			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
-			r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
-			r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
-		})
-
-		// Securities are reference data, not household data: a row states what
-		// a ticker is, which is true for everyone and says nothing about who
-		// holds it. Ownership lives in holdings, and those are scoped.
-		r.Route("/securities", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListSecurities)
-			r.Post("/", s.handleCreateManualSecurity)
-		})
-
-		r.Route("/investment-transactions", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/", s.handleCreateManualInvestmentTx)
-			r.Delete("/{txID}", s.handleDeleteManualInvestmentTx)
-		})
-
-		r.Route("/transactions", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListTransactions)
-			r.Post("/", s.handleCreateManualTransaction)
-			r.Post("/import", s.handleImportTransactions)
-			r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
-			// How a row COUNTS, as opposed to what it says — so this accepts
-			// Plaid-synced rows, unlike the manual-only editors below.
-			r.Patch("/{transactionID}/flags", s.handleSetTransactionFlags)
-			r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
-			r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
-		})
-
-		// Canonical merchants: the review queue for proposed merges, plus manual
-		// merge/split/rename. Everything the suggestion job writes is inert until
-		// something here confirms it.
-		r.Route("/merchants", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListMerchants)
-			r.Get("/keys", s.handleListMerchantKeys)
-			// Ahead of the /{merchantID} routes below, so chi does not read
-			// "detail" as a merchant id.
-			r.Get("/detail", s.handleMerchantDetail)
-			// The cached avatar image (MAD-38). Keyed by resolved merchant key
-			// in the query string rather than in the path: a merchant key is
-			// free-form text, and a path segment would have to survive escaping
-			// on both sides for no benefit. 404 whenever there is nothing to
-			// show, which the frontend treats as "use the monogram".
-			r.Get("/logo", s.handleMerchantLogo)
-			r.Post("/merge", s.handleMergeMerchants)
-			r.Post("/split", s.handleSplitMerchant)
-			r.Post("/scan", s.handleScanMerchants)
-			r.Post("/{merchantID}/reject", s.handleRejectMerchantSuggestion)
-			r.Patch("/{merchantID}", s.handleRenameMerchant)
-		})
-
-		// The encrypted document vault. Every route here is household-scoped,
-		// including the download — a document id is never on its own sufficient
-		// to fetch a blob. See document_handlers.go.
-		r.Route("/documents", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListDocuments)
-			r.Post("/", s.handleUploadDocument)
-			r.Get("/storage", s.handleDocumentStorage)
-			r.Get("/attached", s.handleAttachedDocuments)
-			r.Get("/counts", s.handleDocumentCounts)
-			r.Get("/{documentID}", s.handleGetDocument)
-			r.Put("/{documentID}", s.handleUpdateDocument)
-			r.Delete("/{documentID}", s.handleDeleteDocument)
-			r.Get("/{documentID}/download", s.handleDownloadDocument)
-			r.Post("/{documentID}/extract", s.handleExtractDocument)
-			// Re-runs the match against an already-read receipt. Deterministic
-			// SQL only: no decryption, no upload, no model call — which is what
-			// lets a receipt scanned before its charge posted find it later.
-			r.Get("/{documentID}/matches", s.handleDocumentMatches)
-			r.Post("/{documentID}/links", s.handleLinkDocument)
-			r.Delete("/{documentID}/links/{linkID}", s.handleUnlinkDocument)
-		})
-
-		// Payroll: the pre-tax side of the ledger. Adult-only like every other
-		// financial surface, but note that adult-only is NOT the whole access
-		// story here — a paystub is private to the person whose pay it is, and
-		// the group guard does nothing about one adult reading another's
-		// salary. That is enforced per row, in SQL. See queries/payroll.sql.
-		//
-		// /parse and /parse-document read a PDF's text layer locally and return
-		// a proposal. Neither sends anything to an AI provider; see
-		// payroll_import_handlers.go before changing that.
-		r.Route("/payroll", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-
-			r.Get("/taxonomy", s.handlePayrollTaxonomy)
-			r.Get("/years", s.handleListPaystubYears)
-			r.Get("/summary", s.handlePayrollSummary)
-			r.Get("/savings-rate", s.handlePayrollSavingsRate)
-			r.Get("/tax-summary", s.handlePayrollTaxSummary)
-
-			r.Post("/parse", s.handleParsePaystubUpload)
-			r.Post("/parse-document", s.handleParsePaystubDocument)
-
-			r.Get("/employers", s.handleListEmployers)
-			r.Post("/employers", s.handleCreateEmployer)
-			r.Put("/employers/{employerID}", s.handleUpdateEmployer)
-			r.Delete("/employers/{employerID}", s.handleDeleteEmployer)
-
-			r.Get("/paystubs", s.handleListPaystubs)
-			r.Post("/paystubs", s.handleCreatePaystub)
-			r.Get("/paystubs/{paystubID}", s.handleGetPaystub)
-			r.Put("/paystubs/{paystubID}", s.handleUpdatePaystub)
-			r.Delete("/paystubs/{paystubID}", s.handleDeletePaystub)
-			r.Post("/paystubs/{paystubID}/confirm", s.handleConfirmPaystub)
-			r.Patch("/paystubs/{paystubID}/sharing", s.handleSetPaystubSharing)
-			// The match only ever proposes; the PUT is where a human's choice
-			// is recorded.
-			r.Get("/paystubs/{paystubID}/deposit-matches", s.handleMatchPaystubDeposit)
-			r.Put("/paystubs/{paystubID}/deposit", s.handleLinkPaystubDeposit)
-		})
-
-		r.Route("/categories", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListCategories)
-			r.Post("/", s.handleCreateCategory)
-			r.Put("/{categoryID}", s.handleUpdateCategory)
-			r.Delete("/{categoryID}", s.handleDeleteCategory)
-			// The per-category breakdown, the counterpart of /merchants/detail.
-			// A category id is a UUID, so it can travel as a path segment — a raw
-			// merchant descriptor cannot, which is why that one takes a query
-			// parameter instead.
-			r.Get("/{categoryID}/detail", s.handleCategoryDetail)
-		})
-
-		r.Route("/budgets", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleBudgetProgress)
-			r.Get("/safe-to-spend", s.handleSafeToSpend)
-			r.Post("/", s.handleCreateBudget)
-			r.Post("/suggest", s.handleSuggestBudgets)
-			r.Delete("/{budgetID}", s.handleDeleteBudget)
-		})
-
-		// The bill calendar. /upcoming expands cadences into occurrences and
-		// /projection carries balances forward through them; both are derived,
-		// so neither is a second source of truth for what is due.
-		r.Route("/obligations", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListObligations)
-			r.Post("/", s.handleCreateObligation)
-			r.Get("/upcoming", s.handleUpcomingObligations)
-			r.Get("/projection", s.handleObligationProjection)
-			r.Put("/{obligationID}", s.handleUpdateObligation)
-			r.Delete("/{obligationID}", s.handleDeleteObligation)
-			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
-		})
-
-		// Goals are the one mixed group. Reads are visibility-scoped in SQL
-		// (ListGoals takes all_person_goals, set from the caller's role), so a
-		// child listing goals gets their own and nothing else. Writes are
-		// adult-only: setting a child's target is a parent's action.
-		r.Route("/goals", func(r chi.Router) {
-			r.Use(authenticate)
-			r.Get("/", s.handleListGoals)
-			r.Get("/{goalID}/contributions", s.handleListGoalContributions)
-
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireAdult)
-				r.Post("/", s.handleCreateGoal)
-				r.Post("/parse", s.handleParseGoal)
-				r.Put("/{goalID}", s.handleUpdateGoal)
-				r.Delete("/{goalID}", s.handleArchiveGoal)
-				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
-				r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
-			})
-		})
-
-		// Bill split and the reimbursement ledger. Adult-only throughout: a
-		// split is a claim on another member's money.
-		r.Route("/splits", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListSplitTransactions)
-			r.Get("/ledger", s.handleHouseholdLedger)
-			r.Get("/transactions/{transactionID}", s.handleGetTransactionSplits)
-			r.Put("/transactions/{transactionID}", s.handleSetTransactionSplits)
-			r.Delete("/transactions/{transactionID}", s.handleClearTransactionSplits)
-			r.Post("/{splitID}/settle", s.handleSettleSplit)
-			r.Delete("/{splitID}/settle", s.handleUnsettleSplit)
-		})
-
-		// The CPI-U deflator behind every real ("inflation-adjusted") figure:
-		// what it covers, how fresh it is, and the household's own year set
-		// against it. Read-only, unlike the savings-bond rate table beside it —
-		// that one is editable because a household might legitimately correct a
-		// row, and nothing about a published price index invites that.
-		//
-		// Every client that renders a real figure reads this first, because the
-		// base period is not decoration: a real number without the month it is
-		// denominated in is not a number anybody can use.
-		r.Route("/inflation", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleInflation)
-		})
-
-		r.Route("/networth", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleNetWorth)
-			// `real=1` adds inflation-adjusted figures beside the nominal ones.
-			// Nominal stays the default; see inflation_handlers.go.
-			r.Get("/history", s.handleNetWorthHistory)
-			r.Post("/snapshot", s.handleSnapshotNow)
-			r.Get("/projection", s.handleProjection)
-			r.Get("/by-person", s.handleNetWorthByPerson)
-		})
-
-		// Retirement. Sits beside /networth rather than inside it: the
-		// straight-line model there is a net-worth illustration, and this is an
-		// account-aware retirement engine. Neither replaces the other.
-		//
-		// /retirement always returns the assumptions alongside the curve, so a
-		// client cannot render a projection without the inputs that produced it.
-		r.Route("/projections", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/assumptions", s.handleGetAssumptions)
-			r.Put("/assumptions", s.handleSaveAssumptions)
-			r.Get("/contributions", s.handleListContributions)
-			r.Put("/contributions/{accountID}", s.handleSaveContribution)
-			r.Delete("/contributions/{accountID}", s.handleDeleteContribution)
-			r.Get("/retirement", s.handleRetirementProjection)
-		})
-
-		r.Route("/holdings", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListHoldings)
-			// Manual positions only; a Plaid holding deleted here would come
-			// straight back on the next sync.
-			r.Delete("/{holdingID}", s.handleDeleteManualHolding)
-		})
-
-		// The Investments surface. Every read is scoped the same way as the
-		// other reporting endpoints; the one write is the tax-treatment
-		// confirmation, which is a user decision and never inferred.
-		r.Route("/investments", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleInvestmentOverview)
-			r.Get("/performance", s.handleInvestmentPerformance)
-			r.Get("/benchmarks", s.handleInvestmentBenchmarks)
-			r.Get("/allocation", s.handleInvestmentAllocation)
-			r.Get("/holdings", s.handleInvestmentHoldings)
-			r.Get("/fees", s.handleInvestmentFees)
-			r.Get("/dividends", s.handleInvestmentDividends)
-			r.Patch("/accounts/{accountID}/tax-treatment", s.handleSetAccountTaxTreatment)
-			r.Patch("/accounts/{accountID}/beneficiary", s.handleSetAccountBeneficiary)
-		})
-
-		r.Route("/liabilities", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListLiabilities)
-		})
-
-		// The proactive advisor. Read-only by design and permanently so: it
-		// presents computed tradeoffs and EXECUTES NOTHING. RequireAdult
-		// because it reads the household's whole financial position — debts,
-		// salary, retirement balances — into one response, and its settings are
-		// household preferences written through /preferences.
-		r.Route("/advisor", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleAdvisor)
-
-			// The advisor SURFACE (doc 31). Still executes nothing: the
-			// briefing is a read, a thread is a transcript, and an action
-			// item is a note about a decision the household made.
+			// ------------------------------------------------------------------
+			// Child-accessible routes.
 			//
-			// Threads and action items enforce household scope inside the
-			// query on every read AND every write, not here — a route group
-			// can only say who may call, and the question these have to answer
-			// is whose row this is.
-			r.Get("/briefing", s.handleBriefing)
+			// Everything below the /me group is scoped to the CALLER's own person
+			// and is the only surface a `child` login can reach beyond its own
+			// account settings. Every route group after this one is adult-only,
+			// enforced by auth.RequireAdult on the group rather than per handler —
+			// a role checked on some routes and not others implies protection that
+			// is not there.
+			//
+			// When adding a route, the question is not "should a child see this"
+			// but "which group does it belong in". There is no third option.
+			// ------------------------------------------------------------------
+			r.Route("/me", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/person", s.handleGetMyPerson)
+				r.Put("/person", s.handleUpdateMyPerson)
+				r.Get("/allowance", s.handleGetMyAllowance)
+				r.Get("/allowance/entries", s.handleListMyAllowanceEntries)
+				// A child records their own spending. This is the one write a
+				// child has, and it is deliberate: a ledger a kid cannot write to
+				// teaches nothing. Credits are parent-only, enforced in the
+				// handler by rejecting any kind other than 'spend'.
+				r.Post("/allowance/entries", s.handleCreateMyAllowanceEntry)
+				r.Get("/accounts", s.handleListMyAccounts)
+				r.Get("/goals", s.handleListMyGoals)
+			})
 
-			r.Get("/threads", s.handleListThreads)
-			r.Post("/threads", s.handleCreateThread)
-			r.Get("/threads/{threadID}", s.handleGetThread)
-			r.Patch("/threads/{threadID}", s.handleRenameThread)
-			r.Delete("/threads/{threadID}", s.handleDeleteThread)
+			r.Route("/household", func(r chi.Router) {
+				r.Use(authenticate)
 
-			r.Get("/action-items", s.handleListActionItems)
-			r.Post("/action-items", s.handleCreateActionItem)
-			r.Patch("/action-items/{itemID}", s.handleUpdateActionItem)
-		})
+				// Household name is readable by anyone signed in — the child view
+				// puts it in the header, and it is not a financial figure.
+				r.Get("/", s.handleGetHousehold)
 
-		// The household profile: the two columns doc 31 added, which the
-		// allocator (32) and the guardrail rule (33) key on. Adult-only for
-		// the same reason the advisor is — filing status is household tax
-		// information.
-		r.Route("/household/profile", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleGetProfile)
-			r.Put("/", s.handleUpdateProfile)
-		})
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireAdult)
+					r.Get("/members", s.handleListMembers)
+					r.Get("/invites", s.handleListInvites)
+					r.Post("/invites", s.handleCreateInvite)
+					r.Delete("/invites/{inviteID}", s.handleDeleteInvite)
 
-		// The allocation planner (doc 32). Adult-only and household-scoped
-		// for the same reason the advisor is: it reads the household's whole
-		// position — balances, debts, salary-derived headroom, filing status
-		// — into one response.
-		//
-		// EXECUTES NOTHING, permanently. A plan is a projection; the user
-		// acts on it. POST /plan runs and returns without writing, and the
-		// only write in the group is a saved plan's own row.
-		r.Route("/allocation", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/buckets", s.handleAllocationBuckets)
-			r.Post("/plan", s.handleRunAllocation)
-			r.Get("/asset-location", s.handleAssetLocation)
+					// People: everyone the household's money can be about,
+					// whether or not they can sign in.
+					r.Get("/people", s.handleListPeople)
+					r.Post("/people", s.handleCreatePerson)
+					r.Put("/people/{personID}", s.handleUpdatePerson)
+					r.Delete("/people/{personID}", s.handleDeletePerson)
 
-			r.Get("/plans", s.handleListPlans)
-			r.Post("/plans", s.handleSavePlan)
-			r.Get("/plans/{planID}", s.handleGetPlan)
-			r.Delete("/plans/{planID}", s.handleDeletePlan)
-		})
+					// Allowance schedules are a parent's to set, including for a
+					// child who can sign in — hence adult-only rather than /me.
+					r.Get("/people/{personID}/allowance", s.handleGetAllowance)
+					r.Put("/people/{personID}/allowance", s.handleUpsertAllowance)
+					r.Get("/people/{personID}/allowance/entries", s.handleListAllowanceEntries)
+					r.Post("/people/{personID}/allowance/entries", s.handleCreateAllowanceEntry)
+					r.Delete("/allowance/entries/{entryID}", s.handleDeleteAllowanceEntry)
+				})
 
-		// The likelihood layer (doc 33). Same scope and the same permanently
-		// read-only posture as the allocator it runs over: a distribution is a
-		// projection, and the household acts on it.
-		//
-		// The SIMULATION is gated behind RETIREMENT_MONTE_CARLO_ENABLED; the
-		// ROUTES are not. With the gate off they return the deterministic
-		// figure and name that in the basis — a 404 or a 503 would make the
-		// panel a broken tile on every instance that has not opted in.
-		//
-		// Only POST /plans/{planID}/track writes, and what it writes is the
-		// EXPECTED side of a snapshot. Actuals are read live every time drift
-		// is computed, so correcting an old contribution corrects the history
-		// rather than leaving a wrong figure frozen in a row.
-		r.Route("/likelihood", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/plan/{planID}", s.handleLikelihood)
-			r.Post("/compare", s.handleCompare)
-			r.Get("/plans/{planID}/track", s.handleTracking)
-			r.Post("/plans/{planID}/track", s.handleRecordTracking)
-		})
+				// Changing who can do what is the owner's alone.
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireAdult)
+					r.Use(auth.RequireOwner)
+					r.Put("/members/{userID}/role", s.handleSetMemberRole)
+				})
+			})
 
-		r.Route("/manual-assets", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListManualAssets)
-			r.Post("/", s.handleCreateManualAsset)
-			r.Delete("/{assetID}", s.handleDeleteManualAsset)
+			// Preferences are mixed by design: a user-scoped preference is the
+			// caller's own, a household-scoped one is a household setting. The
+			// group is open and handleUpsertPreferences refuses a household-scoped
+			// write from a child — the one place a per-handler check is right,
+			// because the resource itself is split rather than the routes.
+			r.Route("/preferences", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleGetPreferences)
+				r.Put("/", s.handleUpsertPreferences)
+			})
 
-			// Revaluation, depreciation and bonds (doc 26). Note which of these
-			// write: only POST /valuations does. The suggestion endpoint
-			// computes a proposal and returns it — net worth never moves on an
-			// estimate the user has not accepted.
-			r.Get("/{assetID}/detail", s.handleGetAssetDetail)
-			r.Put("/{assetID}/detail", s.handleUpsertAssetDetail)
-			r.Get("/{assetID}/valuations", s.handleListValuations)
-			r.Post("/{assetID}/valuations", s.handleCreateValuation)
-			r.Get("/{assetID}/suggestion", s.handleAssetSuggestion)
-			r.Get("/{assetID}/bond", s.handleBondValue)
-			r.Put("/{assetID}/loan", s.handleLinkAssetLoan)
-		})
+			r.Route("/notifications", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Post("/test", s.handleTestNotification)
+			})
 
-		// The published savings-bond rate table. Readable and editable on
-		// purpose: a bundled table of numbers is only defensible if the user
-		// can check it against treasurydirect.gov and correct a row.
-		r.Route("/savings-bond-rates", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListBondRates)
-			r.Put("/", s.handleUpsertBondRate)
-		})
+			r.Route("/digest", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Post("/test", s.handleSendDigestNow)
+			})
 
-		r.Route("/export", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/transactions.csv", s.handleExportTransactions)
-			r.Get("/categories.csv", s.handleExportCategorySummary)
-			r.Get("/net-worth.csv", s.handleExportNetWorth)
-			r.Get("/holdings.csv", s.handleExportHoldings)
-		})
+			// The in-app digest history. Separate from /digest above, which is the
+			// "send one now" action rather than a resource: these are the stored
+			// entries, and each one is scoped to the requesting USER inside the
+			// queries — the adult-only group here is necessary but not sufficient,
+			// exactly as it is for /payroll.
+			r.Route("/digests", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListDigests)
+				r.Get("/{digestID}", s.handleGetDigest)
+				r.Post("/{digestID}/read", s.handleMarkDigestRead)
+			})
 
-		r.Route("/reports", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/summary", s.handleSummary)
-			r.Get("/by-category", s.handleSpendingByCategory)
-			r.Get("/by-day", s.handleSpendingByDay)
-			r.Get("/trend", s.handleTrend)
-			r.Get("/averages", s.handleCategoryAverages)
-			// The category × month matrix behind the spending heatmap (item #8)
-			// and the category-mix small multiples (item #12). One endpoint,
-			// two renderings; the clients pivot differently.
-			r.Get("/heatmap", s.handleSpendingHeatmap)
-			// The cash-flow Sankey (item #13, MAD-33): income sources →
-			// spending categories → leftover to savings, in one round trip.
-			// Bundles the period summary with the income/spending-by-category
-			// breakdowns so the chart's bands reconcile with the Spending page
-			// tiles to the cent.
-			r.Get("/cash-flow", s.handleCashFlow)
-			r.Get("/merchants", s.handleTopMerchants)
-			// The whole merchant list for the explorer, where /merchants is the
-			// top-N card. Separate rather than a mode of the same endpoint: this
-			// one carries a per-row prior period and an envelope, and the
-			// Dashboard's card wants neither.
-			r.Get("/merchant-explorer", s.handleMerchantExplorer)
-			r.Get("/recurring", s.handleRecurring)
-			r.Post("/recurring/suppress", s.handleSuppressRecurring)
-			r.Delete("/recurring/suppress", s.handleUnsuppressRecurring)
-			r.Get("/recurring/suppressed", s.handleListSuppressedRecurring)
-			r.Get("/monthly-summary", s.handleGetMonthlySummary)
-			r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
-		})
+			// Operator surface. This is the instance's recovery posture, not a
+			// household's data: it names paths on the host, reports on the backup
+			// subsystem, and can trigger a full database dump. Owner-only,
+			// enforced on the group rather than per handler, for the same reason
+			// the adult-only groups are.
+			r.Route("/admin", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult, auth.RequireOwner)
+				r.Get("/continuity", s.handleContinuityStatus)
+				r.Post("/continuity/key-ack", s.handleContinuityKeyAck)
+				r.Post("/continuity/run", s.handleContinuityRun)
+				r.Get("/continuity/export", s.handleContinuityExport)
+			})
 
-		// /capabilities stays open to every login: the frontend cannot decide
-		// what to render without it, and it exposes no figures. /chat is
-		// adult-only — it reads household data by design.
-		r.Group(func(r chi.Router) {
-			r.Use(authenticate)
-			r.Get("/capabilities", s.handleCapabilities)
-		})
-		r.Group(func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Post("/chat", s.handleChat)
-		})
+			r.Route("/plaid", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Post("/link-token", s.handleCreateLinkToken)
+				r.Post("/exchange", s.handleExchangePublicToken)
+				r.Get("/items", s.handleListItems)
+				r.Post("/items/{itemID}/sync", s.handleSyncItem)
+				r.Post("/items/{itemID}/reconnected", s.handleItemReconnected)
+				r.Patch("/items/{itemID}/sharing", s.handleSetItemSharing)
+				r.Delete("/items/{itemID}", s.handleDeleteItem)
+			})
 
-		r.Route("/insights", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListInsights)
-			// Anomaly suppression (anomaly_handlers.go). Declared above the
-			// {insightID} routes so this file stays diffable against
-			// role_enforcement_test.go by eye; chi resolves static segments
-			// before params regardless of order.
-			r.Get("/anomaly/suppressed", s.handleListSuppressedAnomalies)
-			r.Post("/anomaly/suppress", s.handleSuppressAnomaly)
-			r.Delete("/anomaly/suppress", s.handleUnsuppressAnomaly)
-			r.Post("/{insightID}/read", s.handleMarkInsightRead)
-			r.Post("/{insightID}/dismiss", s.handleDismissInsight)
-			r.Post("/{insightID}/normal", s.handleMarkInsightNormal)
-		})
+			r.Route("/accounts", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListAccounts)
+				// The rate and monthly payment for a debt the institution reports
+				// none for — which is most of them. Adult-only, matching every other
+				// account mutation: a child must not set the figures the household's
+				// payoff plans are computed from.
+				r.Put("/{accountID}/terms", s.handleSetAccountTerms)
+				// The deposit yield the cash-drag detector measures against
+				// (doc 32). User-entered because Plaid does not serve it
+				// reliably; a null CLEARS it, and an empty field means
+				// unknown rather than zero.
+				r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
+				r.Get("/idle-cash", s.handleIdleCash)
 
-		r.Route("/alerts", func(r chi.Router) {
-			r.Use(authenticate, auth.RequireAdult)
-			r.Get("/", s.handleListAlerts)
-			r.Post("/", s.handleCreateAlert)
-			r.Post("/parse", s.handleParseAlert)
-			r.Put("/{alertID}", s.handleUpdateAlert)
-			r.Delete("/{alertID}", s.handleDeleteAlert)
-			r.Get("/events", s.handleListAlertEvents)
-			r.Get("/events/unread-count", s.handleUnreadAlertCount)
-			r.Post("/events/read-all", s.handleMarkAllAlertEventsRead)
-			r.Post("/events/{eventID}/read", s.handleMarkAlertEventRead)
+				// Manual accounts (doc 30). Every one of these refuses a
+				// source='plaid' id — a linked account's identity and balance
+				// belong to the institution, and an edit here would survive only
+				// until the next sync silently reverted it.
+				r.Post("/", s.handleCreateManualAccount)
+				r.Put("/{accountID}", s.handleUpdateManualAccount)
+				r.Delete("/{accountID}", s.handleDeleteManualAccount)
+				r.Put("/{accountID}/balance", s.handleSetManualBalance)
+				r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+				r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
+				r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
+			})
+
+			// Securities are reference data, not household data: a row states what
+			// a ticker is, which is true for everyone and says nothing about who
+			// holds it. Ownership lives in holdings, and those are scoped.
+			r.Route("/securities", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListSecurities)
+				r.Post("/", s.handleCreateManualSecurity)
+			})
+
+			r.Route("/investment-transactions", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Post("/", s.handleCreateManualInvestmentTx)
+				r.Delete("/{txID}", s.handleDeleteManualInvestmentTx)
+			})
+
+			r.Route("/transactions", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListTransactions)
+				r.Post("/", s.handleCreateManualTransaction)
+				r.Post("/import", s.handleImportTransactions)
+				r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
+				// How a row COUNTS, as opposed to what it says — so this accepts
+				// Plaid-synced rows, unlike the manual-only editors below.
+				r.Patch("/{transactionID}/flags", s.handleSetTransactionFlags)
+				r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
+				r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
+			})
+
+			// Canonical merchants: the review queue for proposed merges, plus manual
+			// merge/split/rename. Everything the suggestion job writes is inert until
+			// something here confirms it.
+			r.Route("/merchants", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListMerchants)
+				r.Get("/keys", s.handleListMerchantKeys)
+				// Ahead of the /{merchantID} routes below, so chi does not read
+				// "detail" as a merchant id.
+				r.Get("/detail", s.handleMerchantDetail)
+				// The cached avatar image (MAD-38). Keyed by resolved merchant key
+				// in the query string rather than in the path: a merchant key is
+				// free-form text, and a path segment would have to survive escaping
+				// on both sides for no benefit. 404 whenever there is nothing to
+				// show, which the frontend treats as "use the monogram".
+				r.Get("/logo", s.handleMerchantLogo)
+				r.Post("/merge", s.handleMergeMerchants)
+				r.Post("/split", s.handleSplitMerchant)
+				r.Post("/scan", s.handleScanMerchants)
+				r.Post("/{merchantID}/reject", s.handleRejectMerchantSuggestion)
+				r.Patch("/{merchantID}", s.handleRenameMerchant)
+			})
+
+			// The encrypted document vault. Every route here is household-scoped,
+			// including the download — a document id is never on its own sufficient
+			// to fetch a blob. See document_handlers.go.
+			r.Route("/documents", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListDocuments)
+				r.Post("/", s.handleUploadDocument)
+				r.Get("/storage", s.handleDocumentStorage)
+				r.Get("/attached", s.handleAttachedDocuments)
+				r.Get("/counts", s.handleDocumentCounts)
+				r.Get("/{documentID}", s.handleGetDocument)
+				r.Put("/{documentID}", s.handleUpdateDocument)
+				r.Delete("/{documentID}", s.handleDeleteDocument)
+				r.Get("/{documentID}/download", s.handleDownloadDocument)
+				r.Post("/{documentID}/extract", s.handleExtractDocument)
+				// Re-runs the match against an already-read receipt. Deterministic
+				// SQL only: no decryption, no upload, no model call — which is what
+				// lets a receipt scanned before its charge posted find it later.
+				r.Get("/{documentID}/matches", s.handleDocumentMatches)
+				r.Post("/{documentID}/links", s.handleLinkDocument)
+				r.Delete("/{documentID}/links/{linkID}", s.handleUnlinkDocument)
+			})
+
+			// Payroll: the pre-tax side of the ledger. Adult-only like every other
+			// financial surface, but note that adult-only is NOT the whole access
+			// story here — a paystub is private to the person whose pay it is, and
+			// the group guard does nothing about one adult reading another's
+			// salary. That is enforced per row, in SQL. See queries/payroll.sql.
+			//
+			// /parse and /parse-document read a PDF's text layer locally and return
+			// a proposal. Neither sends anything to an AI provider; see
+			// payroll_import_handlers.go before changing that.
+			r.Route("/payroll", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+
+				r.Get("/taxonomy", s.handlePayrollTaxonomy)
+				r.Get("/years", s.handleListPaystubYears)
+				r.Get("/summary", s.handlePayrollSummary)
+				r.Get("/savings-rate", s.handlePayrollSavingsRate)
+				r.Get("/tax-summary", s.handlePayrollTaxSummary)
+
+				r.Post("/parse", s.handleParsePaystubUpload)
+				r.Post("/parse-document", s.handleParsePaystubDocument)
+
+				r.Get("/employers", s.handleListEmployers)
+				r.Post("/employers", s.handleCreateEmployer)
+				r.Put("/employers/{employerID}", s.handleUpdateEmployer)
+				r.Delete("/employers/{employerID}", s.handleDeleteEmployer)
+
+				r.Get("/paystubs", s.handleListPaystubs)
+				r.Post("/paystubs", s.handleCreatePaystub)
+				r.Get("/paystubs/{paystubID}", s.handleGetPaystub)
+				r.Put("/paystubs/{paystubID}", s.handleUpdatePaystub)
+				r.Delete("/paystubs/{paystubID}", s.handleDeletePaystub)
+				r.Post("/paystubs/{paystubID}/confirm", s.handleConfirmPaystub)
+				r.Patch("/paystubs/{paystubID}/sharing", s.handleSetPaystubSharing)
+				// The match only ever proposes; the PUT is where a human's choice
+				// is recorded.
+				r.Get("/paystubs/{paystubID}/deposit-matches", s.handleMatchPaystubDeposit)
+				r.Put("/paystubs/{paystubID}/deposit", s.handleLinkPaystubDeposit)
+			})
+
+			r.Route("/categories", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListCategories)
+				r.Post("/", s.handleCreateCategory)
+				r.Put("/{categoryID}", s.handleUpdateCategory)
+				r.Delete("/{categoryID}", s.handleDeleteCategory)
+				// The per-category breakdown, the counterpart of /merchants/detail.
+				// A category id is a UUID, so it can travel as a path segment — a raw
+				// merchant descriptor cannot, which is why that one takes a query
+				// parameter instead.
+				r.Get("/{categoryID}/detail", s.handleCategoryDetail)
+			})
+
+			r.Route("/budgets", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleBudgetProgress)
+				r.Get("/safe-to-spend", s.handleSafeToSpend)
+				r.Post("/", s.handleCreateBudget)
+				r.Post("/suggest", s.handleSuggestBudgets)
+				r.Delete("/{budgetID}", s.handleDeleteBudget)
+			})
+
+			// The bill calendar. /upcoming expands cadences into occurrences and
+			// /projection carries balances forward through them; both are derived,
+			// so neither is a second source of truth for what is due.
+			r.Route("/obligations", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListObligations)
+				r.Post("/", s.handleCreateObligation)
+				r.Get("/upcoming", s.handleUpcomingObligations)
+				r.Get("/projection", s.handleObligationProjection)
+				r.Put("/{obligationID}", s.handleUpdateObligation)
+				r.Delete("/{obligationID}", s.handleDeleteObligation)
+				r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
+			})
+
+			// Goals are the one mixed group. Reads are visibility-scoped in SQL
+			// (ListGoals takes all_person_goals, set from the caller's role), so a
+			// child listing goals gets their own and nothing else. Writes are
+			// adult-only: setting a child's target is a parent's action.
+			r.Route("/goals", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleListGoals)
+				r.Get("/{goalID}/contributions", s.handleListGoalContributions)
+
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireAdult)
+					r.Post("/", s.handleCreateGoal)
+					r.Post("/parse", s.handleParseGoal)
+					r.Put("/{goalID}", s.handleUpdateGoal)
+					r.Delete("/{goalID}", s.handleArchiveGoal)
+					r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+					r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
+				})
+			})
+
+			// Bill split and the reimbursement ledger. Adult-only throughout: a
+			// split is a claim on another member's money.
+			r.Route("/splits", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListSplitTransactions)
+				r.Get("/ledger", s.handleHouseholdLedger)
+				r.Get("/transactions/{transactionID}", s.handleGetTransactionSplits)
+				r.Put("/transactions/{transactionID}", s.handleSetTransactionSplits)
+				r.Delete("/transactions/{transactionID}", s.handleClearTransactionSplits)
+				r.Post("/{splitID}/settle", s.handleSettleSplit)
+				r.Delete("/{splitID}/settle", s.handleUnsettleSplit)
+			})
+
+			// The CPI-U deflator behind every real ("inflation-adjusted") figure:
+			// what it covers, how fresh it is, and the household's own year set
+			// against it. Read-only, unlike the savings-bond rate table beside it —
+			// that one is editable because a household might legitimately correct a
+			// row, and nothing about a published price index invites that.
+			//
+			// Every client that renders a real figure reads this first, because the
+			// base period is not decoration: a real number without the month it is
+			// denominated in is not a number anybody can use.
+			r.Route("/inflation", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleInflation)
+			})
+
+			r.Route("/networth", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleNetWorth)
+				// `real=1` adds inflation-adjusted figures beside the nominal ones.
+				// Nominal stays the default; see inflation_handlers.go.
+				r.Get("/history", s.handleNetWorthHistory)
+				r.Post("/snapshot", s.handleSnapshotNow)
+				r.Get("/projection", s.handleProjection)
+				r.Get("/by-person", s.handleNetWorthByPerson)
+			})
+
+			// Retirement. Sits beside /networth rather than inside it: the
+			// straight-line model there is a net-worth illustration, and this is an
+			// account-aware retirement engine. Neither replaces the other.
+			//
+			// /retirement always returns the assumptions alongside the curve, so a
+			// client cannot render a projection without the inputs that produced it.
+			r.Route("/projections", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/assumptions", s.handleGetAssumptions)
+				r.Put("/assumptions", s.handleSaveAssumptions)
+				r.Get("/contributions", s.handleListContributions)
+				r.Put("/contributions/{accountID}", s.handleSaveContribution)
+				r.Delete("/contributions/{accountID}", s.handleDeleteContribution)
+				r.Get("/retirement", s.handleRetirementProjection)
+			})
+
+			r.Route("/holdings", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListHoldings)
+				// Manual positions only; a Plaid holding deleted here would come
+				// straight back on the next sync.
+				r.Delete("/{holdingID}", s.handleDeleteManualHolding)
+			})
+
+			// The Investments surface. Every read is scoped the same way as the
+			// other reporting endpoints; the one write is the tax-treatment
+			// confirmation, which is a user decision and never inferred.
+			r.Route("/investments", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleInvestmentOverview)
+				r.Get("/performance", s.handleInvestmentPerformance)
+				r.Get("/benchmarks", s.handleInvestmentBenchmarks)
+				r.Get("/allocation", s.handleInvestmentAllocation)
+				r.Get("/holdings", s.handleInvestmentHoldings)
+				r.Get("/fees", s.handleInvestmentFees)
+				r.Get("/dividends", s.handleInvestmentDividends)
+				r.Patch("/accounts/{accountID}/tax-treatment", s.handleSetAccountTaxTreatment)
+				r.Patch("/accounts/{accountID}/beneficiary", s.handleSetAccountBeneficiary)
+			})
+
+			r.Route("/liabilities", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListLiabilities)
+			})
+
+			// The proactive advisor. Read-only by design and permanently so: it
+			// presents computed tradeoffs and EXECUTES NOTHING. RequireAdult
+			// because it reads the household's whole financial position — debts,
+			// salary, retirement balances — into one response, and its settings are
+			// household preferences written through /preferences.
+			r.Route("/advisor", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleAdvisor)
+
+				// The advisor SURFACE (doc 31). Still executes nothing: the
+				// briefing is a read, a thread is a transcript, and an action
+				// item is a note about a decision the household made.
+				//
+				// Threads and action items enforce household scope inside the
+				// query on every read AND every write, not here — a route group
+				// can only say who may call, and the question these have to answer
+				// is whose row this is.
+				r.Get("/briefing", s.handleBriefing)
+
+				r.Get("/threads", s.handleListThreads)
+				r.Post("/threads", s.handleCreateThread)
+				r.Get("/threads/{threadID}", s.handleGetThread)
+				r.Patch("/threads/{threadID}", s.handleRenameThread)
+				r.Delete("/threads/{threadID}", s.handleDeleteThread)
+
+				r.Get("/action-items", s.handleListActionItems)
+				r.Post("/action-items", s.handleCreateActionItem)
+				r.Patch("/action-items/{itemID}", s.handleUpdateActionItem)
+			})
+
+			// The household profile: the two columns doc 31 added, which the
+			// allocator (32) and the guardrail rule (33) key on. Adult-only for
+			// the same reason the advisor is — filing status is household tax
+			// information.
+			r.Route("/household/profile", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleGetProfile)
+				r.Put("/", s.handleUpdateProfile)
+			})
+
+			// The allocation planner (doc 32). Adult-only and household-scoped
+			// for the same reason the advisor is: it reads the household's whole
+			// position — balances, debts, salary-derived headroom, filing status
+			// — into one response.
+			//
+			// EXECUTES NOTHING, permanently. A plan is a projection; the user
+			// acts on it. POST /plan runs and returns without writing, and the
+			// only write in the group is a saved plan's own row.
+			r.Route("/allocation", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/buckets", s.handleAllocationBuckets)
+				r.Post("/plan", s.handleRunAllocation)
+				r.Get("/asset-location", s.handleAssetLocation)
+
+				r.Get("/plans", s.handleListPlans)
+				r.Post("/plans", s.handleSavePlan)
+				r.Get("/plans/{planID}", s.handleGetPlan)
+				r.Delete("/plans/{planID}", s.handleDeletePlan)
+			})
+
+			// The likelihood layer (doc 33). Same scope and the same permanently
+			// read-only posture as the allocator it runs over: a distribution is a
+			// projection, and the household acts on it.
+			//
+			// The SIMULATION is gated behind RETIREMENT_MONTE_CARLO_ENABLED; the
+			// ROUTES are not. With the gate off they return the deterministic
+			// figure and name that in the basis — a 404 or a 503 would make the
+			// panel a broken tile on every instance that has not opted in.
+			//
+			// Only POST /plans/{planID}/track writes, and what it writes is the
+			// EXPECTED side of a snapshot. Actuals are read live every time drift
+			// is computed, so correcting an old contribution corrects the history
+			// rather than leaving a wrong figure frozen in a row.
+			r.Route("/likelihood", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Post("/plan/{planID}", s.handleLikelihood)
+				r.Post("/compare", s.handleCompare)
+				r.Get("/plans/{planID}/track", s.handleTracking)
+				r.Post("/plans/{planID}/track", s.handleRecordTracking)
+			})
+
+			r.Route("/manual-assets", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListManualAssets)
+				r.Post("/", s.handleCreateManualAsset)
+				r.Delete("/{assetID}", s.handleDeleteManualAsset)
+
+				// Revaluation, depreciation and bonds (doc 26). Note which of these
+				// write: only POST /valuations does. The suggestion endpoint
+				// computes a proposal and returns it — net worth never moves on an
+				// estimate the user has not accepted.
+				r.Get("/{assetID}/detail", s.handleGetAssetDetail)
+				r.Put("/{assetID}/detail", s.handleUpsertAssetDetail)
+				r.Get("/{assetID}/valuations", s.handleListValuations)
+				r.Post("/{assetID}/valuations", s.handleCreateValuation)
+				r.Get("/{assetID}/suggestion", s.handleAssetSuggestion)
+				r.Get("/{assetID}/bond", s.handleBondValue)
+				r.Put("/{assetID}/loan", s.handleLinkAssetLoan)
+			})
+
+			// The published savings-bond rate table. Readable and editable on
+			// purpose: a bundled table of numbers is only defensible if the user
+			// can check it against treasurydirect.gov and correct a row.
+			r.Route("/savings-bond-rates", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListBondRates)
+				r.Put("/", s.handleUpsertBondRate)
+			})
+
+			r.Route("/export", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/transactions.csv", s.handleExportTransactions)
+				r.Get("/categories.csv", s.handleExportCategorySummary)
+				r.Get("/net-worth.csv", s.handleExportNetWorth)
+				r.Get("/holdings.csv", s.handleExportHoldings)
+			})
+
+			r.Route("/reports", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/summary", s.handleSummary)
+				r.Get("/by-category", s.handleSpendingByCategory)
+				r.Get("/by-day", s.handleSpendingByDay)
+				r.Get("/trend", s.handleTrend)
+				r.Get("/averages", s.handleCategoryAverages)
+				// The category × month matrix behind the spending heatmap (item #8)
+				// and the category-mix small multiples (item #12). One endpoint,
+				// two renderings; the clients pivot differently.
+				r.Get("/heatmap", s.handleSpendingHeatmap)
+				// The cash-flow Sankey (item #13, MAD-33): income sources →
+				// spending categories → leftover to savings, in one round trip.
+				// Bundles the period summary with the income/spending-by-category
+				// breakdowns so the chart's bands reconcile with the Spending page
+				// tiles to the cent.
+				r.Get("/cash-flow", s.handleCashFlow)
+				r.Get("/merchants", s.handleTopMerchants)
+				// The whole merchant list for the explorer, where /merchants is the
+				// top-N card. Separate rather than a mode of the same endpoint: this
+				// one carries a per-row prior period and an envelope, and the
+				// Dashboard's card wants neither.
+				r.Get("/merchant-explorer", s.handleMerchantExplorer)
+				r.Get("/recurring", s.handleRecurring)
+				r.Post("/recurring/suppress", s.handleSuppressRecurring)
+				r.Delete("/recurring/suppress", s.handleUnsuppressRecurring)
+				r.Get("/recurring/suppressed", s.handleListSuppressedRecurring)
+				r.Get("/monthly-summary", s.handleGetMonthlySummary)
+				r.Post("/monthly-summary", s.handleGenerateMonthlySummary)
+			})
+
+			// /capabilities stays open to every login: the frontend cannot decide
+			// what to render without it, and it exposes no figures. POST /chat used
+			// to sit beside it; it now lives in the AI subtree at the top of this
+			// function, where it gets a budget its tool loop can actually finish in.
+			r.Group(func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/capabilities", s.handleCapabilities)
+			})
+
+			r.Route("/insights", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListInsights)
+				// Anomaly suppression (anomaly_handlers.go). Declared above the
+				// {insightID} routes so this file stays diffable against
+				// role_enforcement_test.go by eye; chi resolves static segments
+				// before params regardless of order.
+				r.Get("/anomaly/suppressed", s.handleListSuppressedAnomalies)
+				r.Post("/anomaly/suppress", s.handleSuppressAnomaly)
+				r.Delete("/anomaly/suppress", s.handleUnsuppressAnomaly)
+				r.Post("/{insightID}/read", s.handleMarkInsightRead)
+				r.Post("/{insightID}/dismiss", s.handleDismissInsight)
+				r.Post("/{insightID}/normal", s.handleMarkInsightNormal)
+			})
+
+			r.Route("/alerts", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListAlerts)
+				r.Post("/", s.handleCreateAlert)
+				r.Post("/parse", s.handleParseAlert)
+				r.Put("/{alertID}", s.handleUpdateAlert)
+				r.Delete("/{alertID}", s.handleDeleteAlert)
+				r.Get("/events", s.handleListAlertEvents)
+				r.Get("/events/unread-count", s.handleUnreadAlertCount)
+				r.Post("/events/read-all", s.handleMarkAllAlertEventsRead)
+				r.Post("/events/{eventID}/read", s.handleMarkAlertEventRead)
+			})
 		})
 	})
 

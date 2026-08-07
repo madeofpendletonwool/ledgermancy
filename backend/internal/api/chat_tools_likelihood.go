@@ -141,7 +141,22 @@ func (s *Server) executeLikelihoodTool(
 		items := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			var inputs allocation.StoredInputs
-			_ = json.Unmarshal(row.Inputs, &inputs)
+			// A blob that will not unmarshal is reported per-plan rather than
+			// silently zeroed. Swallowing the error here would list a plan with
+			// empty lump, empty monthly, and a zero horizon — a fabricated record
+			// indistinguishable from a real one, which the model would narrate as
+			// the user's saved decision. The row is still the user's plan, so it
+			// stays listed with its id and name plus an error marker rather than
+			// dropped, matching toPlanResponse's convention in allocation_handlers.
+			if err := json.Unmarshal(row.Inputs, &inputs); err != nil {
+				items = append(items, map[string]any{
+					"plan_id":    row.ID.String(),
+					"name":       row.Name,
+					"error":      "this plan's saved inputs could not be read",
+					"created_at": row.CreatedAt.UTC().Format(time.DateOnly),
+				})
+				continue
+			}
 			items = append(items, map[string]any{
 				"plan_id":       row.ID.String(),
 				"name":          row.Name,

@@ -1,36 +1,71 @@
-import type { ReactNode } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
 import { Sigil } from './components/Brand'
 import { ServiceWorkerHost } from './components/PwaPrompts'
-import { Accounts } from './routes/Accounts'
-import { Alerts } from './routes/Alerts'
-import { Advisor } from './routes/Advisor'
-import { Budgets } from './routes/Budgets'
-import { Categories } from './routes/Categories'
-import { CategoryDetail } from './routes/CategoryDetail'
-import { MerchantDetail } from './routes/MerchantDetail'
-import { Merchants } from './routes/Merchants'
-import { Dashboard } from './routes/Dashboard'
-import { Digest } from './routes/Digest'
-import { Documents } from './routes/Documents'
-import { Goals } from './routes/Goals'
-import { Insights } from './routes/Insights'
-import { Investments } from './routes/Investments'
-import { Transactions } from './routes/Transactions'
-import { Login } from './routes/Login'
-import { NetWorth } from './routes/NetWorth'
-import { Paystubs } from './routes/Paystubs'
-import { Spending } from './routes/Spending'
-import { Register } from './routes/Register'
-import { Report } from './routes/Report'
-import { Retirement } from './routes/Retirement'
-import { Schedule } from './routes/Schedule'
-import { Settings } from './routes/Settings'
-import { MyMoney } from './routes/MyMoney'
-import { Shared } from './routes/Shared'
 import { isAdult } from './lib/api'
 import { useSession } from './lib/session'
+
+/**
+ * Every route is a separate chunk (MAD-65).
+ *
+ * These were static imports, which meant one bundle carrying all 22 screens —
+ * `d3-sankey`, the whole chart set, `react-markdown` — before first paint, for
+ * a session that opens two of them. `lazy()` moves each screen behind a dynamic
+ * `import()`, so the entry chunk is the shell and the router pulls a screen when
+ * it is actually navigated to.
+ *
+ * The routes export named components rather than defaults, hence the `.then()`
+ * on each: `lazy` wants a module whose `default` is the component. Written out
+ * per route rather than hidden behind a helper so that each line stays a plain,
+ * greppable "this path, that file".
+ *
+ * Two things to keep true when editing:
+ *   - Nothing outside this file may import from `./routes/*`. A single static
+ *     import anywhere else pulls that screen straight back into the entry chunk
+ *     and the dynamic import here becomes dead weight.
+ *   - Every screen still needs to be reachable offline. The service worker
+ *     precaches `**\/*.js`, so new chunks are covered automatically — see
+ *     `injectManifest.globPatterns` in vite.config.ts before narrowing that.
+ */
+const Accounts = lazy(() => import('./routes/Accounts').then((m) => ({ default: m.Accounts })))
+const Advisor = lazy(() => import('./routes/Advisor').then((m) => ({ default: m.Advisor })))
+const Alerts = lazy(() => import('./routes/Alerts').then((m) => ({ default: m.Alerts })))
+const Budgets = lazy(() => import('./routes/Budgets').then((m) => ({ default: m.Budgets })))
+const Categories = lazy(() =>
+  import('./routes/Categories').then((m) => ({ default: m.Categories })),
+)
+const CategoryDetail = lazy(() =>
+  import('./routes/CategoryDetail').then((m) => ({ default: m.CategoryDetail })),
+)
+const Dashboard = lazy(() => import('./routes/Dashboard').then((m) => ({ default: m.Dashboard })))
+const Digest = lazy(() => import('./routes/Digest').then((m) => ({ default: m.Digest })))
+const Documents = lazy(() => import('./routes/Documents').then((m) => ({ default: m.Documents })))
+const Goals = lazy(() => import('./routes/Goals').then((m) => ({ default: m.Goals })))
+const Insights = lazy(() => import('./routes/Insights').then((m) => ({ default: m.Insights })))
+const Investments = lazy(() =>
+  import('./routes/Investments').then((m) => ({ default: m.Investments })),
+)
+const Login = lazy(() => import('./routes/Login').then((m) => ({ default: m.Login })))
+const MerchantDetail = lazy(() =>
+  import('./routes/MerchantDetail').then((m) => ({ default: m.MerchantDetail })),
+)
+const Merchants = lazy(() => import('./routes/Merchants').then((m) => ({ default: m.Merchants })))
+const MyMoney = lazy(() => import('./routes/MyMoney').then((m) => ({ default: m.MyMoney })))
+const NetWorth = lazy(() => import('./routes/NetWorth').then((m) => ({ default: m.NetWorth })))
+const Paystubs = lazy(() => import('./routes/Paystubs').then((m) => ({ default: m.Paystubs })))
+const Register = lazy(() => import('./routes/Register').then((m) => ({ default: m.Register })))
+const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Report })))
+const Retirement = lazy(() =>
+  import('./routes/Retirement').then((m) => ({ default: m.Retirement })),
+)
+const Schedule = lazy(() => import('./routes/Schedule').then((m) => ({ default: m.Schedule })))
+const Settings = lazy(() => import('./routes/Settings').then((m) => ({ default: m.Settings })))
+const Shared = lazy(() => import('./routes/Shared').then((m) => ({ default: m.Shared })))
+const Spending = lazy(() => import('./routes/Spending').then((m) => ({ default: m.Spending })))
+const Transactions = lazy(() =>
+  import('./routes/Transactions').then((m) => ({ default: m.Transactions })),
+)
 
 export default function App() {
   return (
@@ -134,12 +169,20 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** Keeps a signed-in user away from the login and register screens. */
+/**
+ * Keeps a signed-in user away from the login and register screens.
+ *
+ * Also the Suspense boundary for the two public screens, which live outside
+ * `AppLayout` and so are not covered by the one around the outlet. The fallback
+ * is the same `<Loading/>` already shown while the session resolves, so a cold
+ * load of /login is one continuous sigil rather than a spinner that blinks out
+ * and back as the chunk lands.
+ */
 function PublicOnly({ children }: { children: ReactNode }) {
   const { data: user, isPending } = useSession()
   if (isPending) return <Loading />
   if (user) return <Navigate to="/" replace />
-  return <>{children}</>
+  return <Suspense fallback={<Loading />}>{children}</Suspense>
 }
 
 function Loading() {
