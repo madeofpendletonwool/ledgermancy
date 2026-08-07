@@ -1,0 +1,66 @@
+version: 2
+
+# Grouping is the whole point of this file. Ungrouped, five ecosystems produce a
+# steady drip of single-package PRs that nobody merges, which is worse than no
+# automation — the queue becomes noise and the security bumps hide in it.
+# So: one routine PR per ecosystem per week for minor/patch, and majors on their
+# own, because a major bump needs a human reading a changelog.
+
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+      prefix-development: 'chore(dev-deps)'
+    groups:
+      frontend:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      backend:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(docker)'
+
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: 'chore(docs)'
+    groups:
+      mkdocs:
+        patterns: ['*']

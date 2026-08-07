@@ -182,6 +182,24 @@ midnight-UTC date to the browser's formatter renders the previous day in any
 timezone west of UTC, which silently moves month-boundary transactions into the
 wrong month.
 
+## Dependencies
+
+Dependabot opens one grouped PR per ecosystem per week for minor and patch
+bumps, and separate PRs for majors. Advisories are scanned by a separate
+workflow that also runs weekly:
+
+```bash
+cd frontend && npm run audit   # fails on unreviewed high/critical advisories
+cd backend && govulncheck ./...
+```
+
+`npm run audit` is not a bare `npm audit --audit-level=high` — it checks findings
+against `frontend/audit-allowlist.json`, where a high severity advisory can be
+excused only with a written assessment and a review date. If it fails on an
+advisory you cannot fix, read
+[Security → Dependency scanning](security.md#dependency-scanning) before adding a
+line to that file.
+
 ## Working with real Plaid data
 
 If you're pointed at production/Trial with real accounts, **be careful with
