@@ -143,8 +143,16 @@ var lineRules = []rule{
 	{needles: []string{"vision"}, category: CatVision},
 	{needles: []string{"medical", "health", "hlth", "ppo", "hmo", "hdhp"}, category: CatHealthPremium},
 
-	// Insurance and everything else.
-	{needles: []string{"group term life", "basic life", "supp life", "supplemental life", "life ins", "gtl"}, category: CatLifeInsurance},
+	// Insurance and everything else. Employer-paid basic life is tested before
+	// employee-paid supplemental life, because "Group Term Life" and "Basic
+	// Life" are coverage the employer provides and lists under a Taxable
+	// Benefits section rather than a deductions one. Filing them as employee
+	// deductions makes the stub fail to balance by exactly the premium — the
+	// same failure a missed line produces, which is a loud but misleading
+	// warning. Supplemental/voluntary life is what the employee elected and
+	// pays for out of pay.
+	{needles: []string{"group term life", "basic life", "gtl", "basic life ins", "basic life insurance"}, category: CatLifeInsurance, employer: true},
+	{needles: []string{"supp life", "supplemental life", "voluntary life", "life ins", "life insurance"}, category: CatLifeInsurance},
 	{needles: []string{"disability", "std ins", "ltd ins", "short term dis", "long term dis"}, category: CatDisability},
 	{needles: []string{"garnish", "child support", "tax levy", "wage levy"}, category: CatGarnishment},
 	{needles: []string{"commuter", "transit", "parking"}, category: CatCommuter},
@@ -287,6 +295,13 @@ func looksLikeDeductionRow(lower string) bool {
 // "Total Deductions 1,071.85" row offered as an unclassified line invites the
 // user to add it — which double-counts every deduction on the stub and produces
 // a paystub that fails to balance by the whole deduction total.
+//
+// "deduction" and "taxes" extend the same guard to section SUBTOTAL rows a
+// provider prints without the word "total": "Pre-Tax Deductions 934.71" and
+// "Taxes 894.84" are the sums of the lines beneath them, and offering either as
+// an unclassified line double-counts every line in that section. They are safe
+// because a real deduction line ("FSA Deduction", "Local Taxes") is claimed by
+// lineRules before it ever reaches this filter.
 var nonDeductionNeedles = []string{
 	// The earnings side. These make gross up; they are not taken out of it.
 	"hours", "hrs", "rate", "regular", "overtime", "salary", "earnings",
@@ -297,6 +312,9 @@ var nonDeductionNeedles = []string{
 	"total", "gross", "net pay", "ytd", "year to date", "balance", "accrued",
 	"employee", "check no", "check #", "advice", "period", "deposit",
 	"taxable", "memo", "statement",
+	// Section subtotal headers. See the note above for why these must not reach
+	// the unmatched list.
+	"deduction", "taxes",
 }
 
 // findAmounts returns the money figures on one line, in printed order.

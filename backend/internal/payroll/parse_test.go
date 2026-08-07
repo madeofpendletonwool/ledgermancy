@@ -210,6 +210,58 @@ func TestParseProposalRejectsImplausibleDates(t *testing.T) {
 	}
 }
 
+// TestParseProposalSplitsEmployerAndEmployeeLife pins the split between
+// employer-paid basic life and employee-paid supplemental life. "Group Term
+// Life" is the classic taxable benefit — the employer pays the premium and the
+// stub lists its imputed value under a Taxable Benefits section, not a
+// deductions one. Filing it as an employee deduction makes the stub fail to
+// balance by exactly the premium. "Supplemental Life" is elected and paid by
+// the employee.
+func TestParseProposalSplitsEmployerAndEmployeeLife(t *testing.T) {
+	p := ParseProposal([]string{
+		"Pay Date: 06/12/2026",
+		"Gross Pay 3,000.00",
+		// Employee deductions.
+		"Supplemental Life 20.00",
+		"Federal Income Tax 300.00",
+		// Employer-paid taxable benefit, NOT a deduction.
+		"Group Term Life 6.60",
+		// 3000 − 20 − 300 = 2680.
+		"Net Pay 2,680.00",
+	})
+
+	var groupTerm, supp *Line
+	for i := range p.Lines {
+		if p.Lines[i].Category != CatLifeInsurance {
+			continue
+		}
+		if p.Lines[i].IsEmployer {
+			groupTerm = &p.Lines[i]
+		} else {
+			supp = &p.Lines[i]
+		}
+	}
+	if groupTerm == nil {
+		t.Fatalf("Group Term Life was not matched as an employer line: %+v", p.Lines)
+	}
+	if groupTerm.Amount.String() != "6.6" {
+		t.Errorf("Group Term Life amount = %s, want 6.6", groupTerm.Amount)
+	}
+	if supp == nil {
+		t.Fatalf("Supplemental Life was not matched as an employee line: %+v", p.Lines)
+	}
+	if supp.Amount.String() != "20" {
+		t.Errorf("Supplemental Life amount = %s, want 20", supp.Amount)
+	}
+
+	// Group Term Life must not be counted against net, or the stub appears
+	// $6.60 short — exactly the hand-entry bug this split prevents.
+	if !p.Balanced() {
+		t.Errorf("group term life as employer should balance, residual %s",
+			p.Stub().Residual().StringFixed(2))
+	}
+}
+
 func hasWarningContaining(warnings []string, needle string) bool {
 	for _, w := range warnings {
 		if strings.Contains(strings.ToLower(w), strings.ToLower(needle)) {

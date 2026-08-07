@@ -419,8 +419,8 @@ WHERE v.household_id = $1
   AND NOT c.is_income
   AND NOT c.is_transfer
   AND is_spend(t.amount, a.type)
-GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed, 5
-ORDER BY c.id, 5
+GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed, 6
+ORDER BY c.id, 6
 `
 
 type GetCategoryMonthMatrixParams struct {
