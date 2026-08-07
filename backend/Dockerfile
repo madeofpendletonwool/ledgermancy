@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
 RUN CGO_ENABLED=0 go build -trimpath -o /out/normalise-merchant-keys ./cmd/normalise-merchant-keys
 
 # ---- api -------------------------------------------------------------------
-FROM alpine:3.21 AS api
+FROM alpine:3.24 AS api
 RUN apk add --no-cache ca-certificates tzdata wget \
  && adduser -D -u 10001 ledgermancy
 
@@ -47,7 +47,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
 ENTRYPOINT ["/usr/local/bin/api"]
 
 # ---- worker ----------------------------------------------------------------
-FROM alpine:3.21 AS worker
+FROM alpine:3.24 AS worker
 
 # postgresql17-client supplies pg_dump, pg_restore and psql for the scheduled
 # backup and the restore test.
