@@ -3,7 +3,7 @@
 # the compose network, so the api needs no host port of its own.
 
 # --- build ------------------------------------------------------------------
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source
