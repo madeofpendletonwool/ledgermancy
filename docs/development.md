@@ -56,12 +56,30 @@ cd frontend && npm install && npm run dev  # http://localhost:5173
 go build ./... && go vet ./... && go test ./...
 
 # Frontend — project-references build, NOT just tsc --noEmit
-cd frontend && npm run build
+cd frontend && npm run lint && npm run build && npm test
 ```
 
 !!! warning "`tsc --noEmit` is not sufficient"
     The project-references build catches things `tsc --noEmit` misses. Always
     run `npm run build`.
+
+### Frontend tests
+
+Vitest, configured in `frontend/vitest.config.ts`. `npm test` runs once;
+`npm run test:watch` re-runs on save. Tests live beside the code they cover as
+`*.test.ts`, and `tsc -b` type-checks them along with everything else in `src`.
+
+The suite defaults to `TZ=America/Los_Angeles` rather than the runner's UTC.
+Every existing date test stubs `TZ` itself and so catches the midnight-UTC
+`DATE` trap on any runner — the default is there for the date test written
+*next*, by someone not thinking about timezones. Under a UTC default that test
+would pass against broken code and the first report would come from a user west
+of Greenwich. Keep new date tests explicit about the zone anyway.
+
+Coverage is deliberately partial: the money and date layer, and the request /
+error / CSRF machinery in `api.ts`. Component tests would need jsdom and
+`@testing-library/react`; neither is installed, because the lib-level tests are
+worth more per hour and this repo does not add dependencies casually.
 
 ### Testing the service worker
 
@@ -130,7 +148,8 @@ These are load-bearing. Each one is a bug that was already found and fixed:
 - **Postgres `DATE` serialises as midnight UTC.** Formatting it with
   `new Date(iso)` renders the previous day west of UTC and moves month-boundary
   transactions into the wrong month. Use the parser in
-  `frontend/src/lib/money.ts`.
+  `frontend/src/lib/money.ts`. Both it and `iso` in `period.ts` have regression
+  tests that run under a non-UTC clock — see **Frontend tests** above.
 - **Before writing any chart code, validate the palette.** The brand colours in
   `BRAND.md` **fail** a colourblind-safety check — two are indistinguishable to
   normal vision. Chart tokens live in `frontend/src/components/charts/tokens.ts`
