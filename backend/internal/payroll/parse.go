@@ -106,11 +106,29 @@ var dateLayouts = []string{
 type rule struct {
 	// needles are lowercase fragments; any one of them matching the label is a
 	// hit for this rule.
-	needles  []string
+	needles []string
 	category Category
 	// employer marks a rule that always produces an employer-paid line.
 	employer bool
+	// re is an optional label-matching regexp, tried when no needle hit. Used
+	// for the state-withholding labels no substring list can cover safely (see
+	// stateWithholdingRe).
+	re *regexp.Regexp
 }
+
+// stateWithholdingRe matches a state-code withholding label the way Paycor and
+// similar providers print it: a two-letter state abbreviation followed by
+// "W/H", "Tax", "Income Tax" or "Withholding" — "WI W/H", "NY Tax",
+// "IL Income Tax".
+//
+// Substrings cannot do this. "in", "or", "me", "oh" are state codes AND common
+// letter pairs, so a needle of "in" would file "MIN Insurance" as Indiana. The
+// regex is anchored at the start of the label and requires the code to be a
+// standalone two-letter token followed by a withholding keyword, so it cannot
+// fire inside a longer word. "Fed W/H" starts with "fed" (three letters), so it
+// fails the two-letter anchor and is left for the federal rule that runs before
+// this one anyway.
+var stateWithholdingRe = regexp.MustCompile(`^[a-z]{2}\b\s*(?:w/?h|withholding|income\s+tax|state\s+tax|tax\b)`)
 
 var lineRules = []rule{
 	// Employer contributions first: "401(k) Employer Match" contains "401(k)"
@@ -122,11 +140,23 @@ var lineRules = []rule{
 
 	// Taxes.
 	{needles: []string{"additional medicare", "addl medicare", "medicare surtax", "medicare surcharge"}, category: CatMedicareSurtax},
-	{needles: []string{"medicare", "fica-med", "fica med"}, category: CatMedicare},
-	{needles: []string{"social security", "soc sec", "socsec", "oasdi", "fica-ss", "fica ss"}, category: CatSocialSecurity},
+	// "mwt" is Medicare Wage Tax — the label Paycor and similar providers print
+	// for the employee Medicare line. Added here, ahead of Social Security, so
+	// "Fed MWT EE" is claimed as Medicare before any FICA rule is reached.
+	{needles: []string{"medicare", "fica-med", "fica med", "medicare ee", "mwt"}, category: CatMedicare},
+	// "fica ee" is the Social Security line on a stub that splits FICA into its
+	// two components and labels the SS half "FICA EE" (Paycor). A bare "fica" is
+	// deliberately NOT a needle — it is ambiguous on a stub that prints the
+	// combined tax on one line — but "fica ee" with the employee marker only
+	// appears on split stubs where it is the SS half. The balance check is the
+	// safety net for any stub that proves otherwise.
+	{needles: []string{"social security", "soc sec", "socsec", "oasdi", "fica-ss", "fica ss", "fica ee", "fica-ee"}, category: CatSocialSecurity},
 	{needles: []string{"federal income tax", "fed income tax", "federal withholding", "fed withholding", "federal tax", "fed tax", "fed w/h", "fed w4", "fitw"}, category: CatFederalIncomeTax},
 	{needles: []string{"local income tax", "local tax", "city tax", "county tax", "school district"}, category: CatLocalIncomeTax},
-	{needles: []string{"state income tax", "state tax", "state withholding", "state w/h", "sdi", "state disability"}, category: CatStateIncomeTax},
+	// The regex catches state-code withholding labels ("WI W/H", "NY Tax") that
+	// the substring needles above cannot. Safe because "Fed W/H" and anything
+	// starting with a longer word fails the two-letter anchor.
+	{needles: []string{"state income tax", "state tax", "state withholding", "state w/h", "sdi", "state disability"}, category: CatStateIncomeTax, re: stateWithholdingRe},
 
 	// Retirement. Roth before pre-tax; the plan-type synonyms (403(b), 457)
 	// share the 401(k) elective limit and so share its category.
@@ -156,6 +186,10 @@ var lineRules = []rule{
 	{needles: []string{"disability", "std ins", "ltd ins", "short term dis", "long term dis"}, category: CatDisability},
 	{needles: []string{"garnish", "child support", "tax levy", "wage levy"}, category: CatGarnishment},
 	{needles: []string{"commuter", "transit", "parking"}, category: CatCommuter},
+	// Voluntary accident insurance (AFLAC-style) is elected and paid by the
+	// employee post-tax. No dedicated category exists, and "other" is the honest
+	// bucket — the same one the manual-entry form offers for it.
+	{needles: []string{"accident"}, category: CatOther},
 }
 
 // headerRules pick the stub's own totals out of the page. Separate from
@@ -247,13 +281,19 @@ func matchHeader(lower string) (string, bool) {
 	return "", false
 }
 
-// matchLine tests the deduction rules against a label, first hit wins.
+// matchLine tests the deduction rules against a label, first hit wins. Needles
+// are tried before the optional regexp so a specific substring still wins, and
+// the regexp only fires on labels no needle matched — which is exactly the
+// state-code-withholding case it exists for.
 func matchLine(lower string) (Category, bool, bool) {
 	for _, r := range lineRules {
 		for _, n := range r.needles {
 			if strings.Contains(lower, n) {
 				return r.category, r.employer, true
 			}
+		}
+		if r.re != nil && r.re.MatchString(lower) {
+			return r.category, r.employer, true
 		}
 	}
 	return "", false, false
@@ -312,6 +352,11 @@ var nonDeductionNeedles = []string{
 	"total", "gross", "net pay", "ytd", "year to date", "balance", "accrued",
 	"employee", "check no", "check #", "advice", "period", "deposit",
 	"taxable", "memo", "statement",
+	// Header fields a stub prints beside its money columns and that two-column
+	// layouts merge onto one row ("Employer Address: 1 Antares Drive ...
+	// Federal 2c/Extra No/$0.00"). Carrying $0.00, they look like deductions to
+	// the amount filter but are pure identity/contact furniture.
+	"address", "phone",
 	// Section subtotal headers. See the note above for why these must not reach
 	// the unmatched list.
 	"deduction", "taxes",
