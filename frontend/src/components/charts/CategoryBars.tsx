@@ -6,6 +6,7 @@ import { motion, useReducedMotion } from 'motion/react'
 import { CategoryIcon } from '../CategoryIcon'
 import { barWidth } from './motion'
 import { CHART, SINGLE_SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const MAX_BARS = 8
 
@@ -17,7 +18,7 @@ const MAX_BARS = 8
  * from the axis label, not hue. Anything past the top few folds into "Other"
  * rather than growing the chart indefinitely.
  */
-export function CategoryBars({
+function CategoryBarsUnguarded({
   data,
   onSelect,
 }: {
@@ -140,5 +141,15 @@ function Empty({ children }: { children: React.ReactNode }) {
     <p className="py-8 text-center text-sm" style={{ color: CHART.textMuted }}>
       {children}
     </p>
+  )
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function CategoryBars(props: Parameters<typeof CategoryBarsUnguarded>[0]) {
+  return (
+    <ChartBoundary label="spending by category">
+      <CategoryBarsUnguarded {...props} />
+    </ChartBoundary>
   )
 }

@@ -3,6 +3,7 @@ import type { SpendingHeatmapCategory } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CategoryIcon } from '../CategoryIcon'
 import { CHART, SINGLE_SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 /**
  * The cap on real-category rows before the remainder folds into a synthetic
@@ -33,7 +34,7 @@ const PAD = { top: 8, right: 8, bottom: 8, left: 8 }
  * cap the tail folds into "Other" exactly as CategoryBars does, so the heatmap
  * and the period bar chart agree on what the top categories are.
  */
-export function SpendingHeatmap({
+function SpendingHeatmapUnguarded({
   months,
   categories,
 }: {
@@ -303,4 +304,14 @@ function shortMonth(key: string, long = false): string {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…'
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function SpendingHeatmap(props: Parameters<typeof SpendingHeatmapUnguarded>[0]) {
+  return (
+    <ChartBoundary label="spending heatmap">
+      <SpendingHeatmapUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

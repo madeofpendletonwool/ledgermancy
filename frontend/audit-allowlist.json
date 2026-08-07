@@ -1,0 +1,11 @@
+{
+  "note": "High and critical npm advisories that have been assessed as not applicable to this app. Read by scripts/audit.mjs. Every entry needs a reason somebody can check and a review_by date; CI fails once that date passes, and fails again if the advisory stops being reported so the entry gets deleted rather than forgotten. Nothing belongs here that is merely inconvenient to fix.",
+  "allow": [
+    {
+      "id": "GHSA-qwww-vcr4-c8h2",
+      "package": "react-router",
+      "reason": "RSC Mode CSRF Bypass. The advisory applies only to the unstable React Server Components APIs. Ledgermancy's frontend is a client-rendered Vite SPA: no RSC, no unstable_ RSC imports, no server-side router, and no route loaders or actions — routing is declarative <BrowserRouter>/<Routes> only, so the vulnerable code path is not shipped to the browser or executed anywhere. Patched in react-router 8.3.0, but react-router-dom has no 8.x line at all, so taking the fix means migrating ~40 import sites to react-router v8. The only in-range downgrade npm offers (7.11.0) is itself a breaking major. Assessed 2026-08-07; see docs/security.md.",
+      "review_by": "2026-11-07"
+    }
+  ]
+}

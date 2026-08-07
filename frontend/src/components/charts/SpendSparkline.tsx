@@ -1,5 +1,6 @@
 import type { TrendPoint } from '../../lib/api'
 import { SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 /**
  * A thumb-sized, no-axes spend line — orients this month against its arc.
@@ -8,7 +9,7 @@ import { SERIES } from './tokens'
  * else: no grid, no ticks, no tooltip. The detail lives on the Spending page;
  * this is just the silhouette, sized to sit under a headline figure.
  */
-export function SpendSparkline({ data }: { data: TrendPoint[] }) {
+function SpendSparklineUnguarded({ data }: { data: TrendPoint[] }) {
   if (data.length < 2) return null
 
   const W = 120
@@ -40,5 +41,15 @@ export function SpendSparkline({ data }: { data: TrendPoint[] }) {
       <path d={path} fill="none" stroke={SERIES.spending} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
       <circle cx={x(last)} cy={y(values[last])} r={1.8} fill={SERIES.spending} vectorEffect="non-scaling-stroke" />
     </svg>
+  )
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function SpendSparkline(props: Parameters<typeof SpendSparklineUnguarded>[0]) {
+  return (
+    <ChartBoundary label="spend sparkline">
+      <SpendSparklineUnguarded {...props} />
+    </ChartBoundary>
   )
 }

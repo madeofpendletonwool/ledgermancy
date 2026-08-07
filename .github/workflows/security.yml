@@ -1,0 +1,80 @@
+name: Security
+
+# Dependency scanning, kept out of ci.yml for one reason: an advisory lands
+# against dependencies that did not change, so this has to run on a schedule as
+# well as on pushes, and CI's Postgres service has no business waking up weekly.
+# A red "Security" check also reads differently from a red "CI" check — the code
+# is fine, the supply chain moved.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays, 07:00 UTC.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (npm audit)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No `npm ci`: `npm audit` resolves from package-lock.json and the gate
+      # script has no dependencies, so installing 598 packages would buy nothing.
+      - name: Audit
+        # Fails on any high or critical advisory that is not in
+        # frontend/audit-allowlist.json with a written assessment and a review
+        # date. See the header of frontend/scripts/audit.mjs for why the gate is
+        # not a bare `npm audit --audit-level=high`.
+        run: npm run audit
+
+  backend:
+    name: Backend (govulncheck)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+
+      # Unpinned on purpose: the value of a vulnerability scanner is that it
+      # knows about things published after the last commit here.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        # This one fails the build with no allowlist, and needs none:
+        # govulncheck is reachability-based, so it reports a vulnerability only
+        # when the binary actually calls into it. There is no noise floor to
+        # excuse — a finding here means the code is exposed. Vulnerabilities
+        # that merely exist in required modules are already silent.
+        run: govulncheck ./...

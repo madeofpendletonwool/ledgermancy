@@ -3,6 +3,7 @@ import type { SpendingHeatmapCategory } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CategoryIcon } from '../CategoryIcon'
 import { CHART, SINGLE_SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 /**
  * Small multiples cap. The issue calls for "~8 tiny lines": each line gets its
@@ -24,7 +25,7 @@ const MAX_PANELS = 8
  * Rides the same payload as the heatmap (item #8); the two are different
  * renderings of one round trip.
  */
-export function CategoryMultiples({
+function CategoryMultiplesUnguarded({
   months,
   categories,
 }: {
@@ -235,4 +236,14 @@ function MultiplesPanel({
 function shortMonth(key: string): string {
   const [, m] = key.split('-').map(Number)
   return new Date(2026, m - 1, 1).toLocaleDateString('en-US', { month: 'short' })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function CategoryMultiples(props: Parameters<typeof CategoryMultiplesUnguarded>[0]) {
+  return (
+    <ChartBoundary label="category trends">
+      <CategoryMultiplesUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

@@ -62,7 +62,7 @@ jobs:
         run: go test -p 1 ./...
 
   frontend:
-    name: Frontend (lint / build)
+    name: Frontend (lint / build / test)
     runs-on: ubuntu-latest
 
     defaults:
@@ -89,3 +89,10 @@ jobs:
         # `npm run build` runs `tsc -b && vite build`. The project-references
         # build catches things `tsc --noEmit` misses — see docs/development.md.
         run: npm run build
+
+      - name: Test
+        # Vitest. The date tests stub their own timezones, so they hold on this
+        # runner's UTC clock; vitest.config.ts additionally defaults the suite
+        # to a zone west of UTC so a future test that forgets to stub still
+        # runs somewhere the midnight-UTC DATE trap can bite.
+        run: npm test

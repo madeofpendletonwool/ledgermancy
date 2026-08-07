@@ -3,6 +3,7 @@ import type { TrendPoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { labelStride } from './scale'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 220
@@ -23,7 +24,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * connected across the gap: drawing a slope through a month with no income
  * would imply a rate that was never measured.
  */
-export function SavingsRateChart({ data }: { data: TrendPoint[] }) {
+function SavingsRateChartUnguarded({ data }: { data: TrendPoint[] }) {
   const [active, setActive] = useState<number | null>(null)
 
   // Map each month to a rate, keeping the original index so the x positions
@@ -222,4 +223,14 @@ function monthLabel(month: string, long = false): string {
     month: 'short',
     year: long ? 'numeric' : '2-digit',
   })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function SavingsRateChart(props: Parameters<typeof SavingsRateChartUnguarded>[0]) {
+  return (
+    <ChartBoundary label="savings rate">
+      <SavingsRateChartUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

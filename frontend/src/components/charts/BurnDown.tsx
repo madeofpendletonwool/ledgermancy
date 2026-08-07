@@ -3,6 +3,7 @@ import type { DaySpend } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { axisTicks, compactMoney } from './scale'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 240
@@ -28,7 +29,7 @@ const PACE_COLOR = CHART.textMuted
  * current month it stops at today, so the gap between it and the pace line at
  * the right edge is the verdict (under the line = ahead, over it = behind).
  */
-export function BurnDown({
+function BurnDownUnguarded({
   year,
   month,
   days,
@@ -263,5 +264,15 @@ function PaceVerdict({ actual, pace }: { actual: number; pace: number }) {
     >
       {formatMoney(String(Math.abs(diff)))} {ahead ? 'under' : 'over'} pace so far
     </span>
+  )
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function BurnDown(props: Parameters<typeof BurnDownUnguarded>[0]) {
+  return (
+    <ChartBoundary label="burn-down">
+      <BurnDownUnguarded {...props} />
+    </ChartBoundary>
   )
 }

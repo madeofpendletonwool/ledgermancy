@@ -9,6 +9,7 @@ import type {
 import type { CashFlow, CashFlowSource } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CHART, SERIES, STATUS } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 820
 const HEIGHT = 380
@@ -83,7 +84,7 @@ type LaidOutLink = SankeyLink<CFNode, CFLink>
  * formatMoney; the only arithmetic in JS is sizing the display geometry
  * (proportional node heights and flow widths), which is explicitly allowed.
  */
-export function CashFlowSankey({ data, label }: { data: CashFlow; label: string }) {
+function CashFlowSankeyUnguarded({ data, label }: { data: CashFlow; label: string }) {
   const [active, setActive] = useState<number | null>(null)
 
   const graph = useMemo(() => buildGraph(data), [data])
@@ -516,4 +517,14 @@ function ariaSummary(data: CashFlow, label: string): string {
   if (leftoverN > 0) parts.push(`${formatMoney(data.leftover)} left to save`)
   else if (leftoverN < 0) parts.push(`${formatMoney(data.leftover)} deficit`)
   return parts.join(', ')
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function CashFlowSankey(props: Parameters<typeof CashFlowSankeyUnguarded>[0]) {
+  return (
+    <ChartBoundary label="cash flow">
+      <CashFlowSankeyUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

@@ -415,6 +415,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/continuity/key-ack", s.handleContinuityKeyAck)
 				r.Post("/continuity/run", s.handleContinuityRun)
 				r.Get("/continuity/export", s.handleContinuityExport)
+
+				// What the instance is doing right now: queue depth, per-item
+				// sync freshness, and whether a worker is alive at all. Same
+				// owner-only reasoning as continuity above — it describes the
+				// deployment rather than the household.
+				r.Get("/status", s.handleSystemStatus)
 			})
 
 			r.Route("/plaid", func(r chi.Router) {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { PayoffSchedulePoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CHART, SERIES, STATUS } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 240
@@ -26,7 +27,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * interest paid. Labelling it as a categorical slot would imply a second
  * measure where there is one.
  */
-export function PayoffScheduleChart({
+function PayoffScheduleChartUnguarded({
   schedule,
   startBalance,
   monthlyPayment,
@@ -278,4 +279,14 @@ function compactMoney(v: number): string {
 
 function labelStride(count: number): number {
   return count > 24 ? 6 : count > 12 ? 3 : count > 8 ? 2 : 1
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function PayoffScheduleChart(props: Parameters<typeof PayoffScheduleChartUnguarded>[0]) {
+  return (
+    <ChartBoundary label="payoff schedule">
+      <PayoffScheduleChartUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

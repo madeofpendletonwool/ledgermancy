@@ -2450,6 +2450,71 @@ export interface Continuity {
   }
 }
 
+// --- Operational status ----------------------------------------------------
+
+/**
+ * The same five-value health vocabulary the continuity panel uses, reused
+ * rather than redefined so the two operator pages colour a state identically.
+ */
+export type StatusHealth = ContinuityHealth
+
+/** One job being worked right now. */
+export interface RunningJob {
+  kind: string
+  attempt: number
+  max_attempts: number
+  started_at?: string
+  age?: string
+}
+
+/**
+ * One kind of job that is failing. `retryable` means the system is still
+ * trying; `discarded` means it has given up and is waiting on a human.
+ */
+export interface JobFailure {
+  kind: string
+  state: 'retryable' | 'discarded'
+  count: number
+  last_error?: string
+  last_at?: string
+  age?: string
+}
+
+export interface SystemStatus {
+  jobs: {
+    health: StatusHealth
+    headline: string
+    /** False means no worker process is alive and nothing is being worked. */
+    worker_alive: boolean
+    counts: Record<string, number>
+    waiting_since?: string
+    waiting_age?: string
+    running: RunningJob[]
+    failures: JobFailure[]
+  }
+  sync: {
+    health: StatusHealth
+    headline: string
+    configured: boolean
+    items: {
+      id: string
+      institution: string
+      health: StatusHealth
+      status: string
+      error_code?: string
+      last_synced_at?: string
+      age?: string
+      backfill_complete: boolean
+    }[]
+  }
+  backup: {
+    health: StatusHealth
+    headline: string
+    at?: string
+    age?: string
+  }
+}
+
 // --- Document vault --------------------------------------------------------
 
 export const DOCUMENT_TYPES = [
@@ -4442,6 +4507,10 @@ export const api = {
   // Queues a backup cycle or a restore test now. Resolves once queued.
   runContinuityJob: (kind: 'backup' | 'restore_test') =>
     request<{ status: string }>('POST', '/api/admin/continuity/run', { kind }),
+
+  // What the instance is doing right now. Polled while the System tab is open,
+  // so it is a single cheap read rather than anything that writes.
+  systemStatus: () => request<SystemStatus>('GET', '/api/admin/status'),
 
   // --- Insights -----------------------------------------------------------
   capabilities: () => request<Capabilities>('GET', '/api/capabilities'),

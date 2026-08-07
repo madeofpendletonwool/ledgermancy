@@ -279,6 +279,71 @@ address it was issued for (so an intercepted link can't be redeemed under a
 different email). This keeps the app a private household ledger rather than an
 open sign-up form on the public internet. See [Households](features/households.md).
 
+## Dependency scanning
+
+Both dependency trees are scanned on every push and pull request, and again
+every Monday — an advisory is published against code that did not change, so a
+push-only trigger would never see the one that matters. The workflow is
+[`.github/workflows/security.yml`](https://github.com/madeofpendletonwool/ledgermancy/blob/main/.github/workflows/security.yml),
+kept separate from CI so that "the supply chain moved" is a distinguishable
+signal from "the build broke".
+
+**The Go side is gated with no exceptions.** `govulncheck ./...` fails the
+build, and needs no allowlist because it is *reachability*-based: it reports a
+vulnerability only when the compiled code actually calls into the affected
+function. Vulnerabilities that merely exist somewhere in `go.sum` stay silent,
+so a finding here means the binary is genuinely exposed and there is nothing to
+argue about. Two such unreachable advisories are present today and correctly
+produce nothing.
+
+**The npm side is gated against a written allowlist**, which is
+`frontend/audit-allowlist.json`, enforced by `npm run audit`. High and critical
+advisories fail the build unless the file carries an entry naming the advisory,
+explaining why it does not apply here, and giving a date by which the
+explanation must be re-checked. Moderate and below are printed, not enforced.
+
+The allowlist exists because the two obvious designs both fail. A bare
+`npm audit --audit-level=high` is red on every run for the advisory below, and a
+check that is always red is a check people learn to click past — the next
+advisory arrives into a build that was already failing. Report-only is worse: it
+is read by nobody. So the gate is loud about anything nobody has assessed and
+silent about everything somebody has, which is the only combination where a red
+build still carries information.
+
+The file is kept from rotting into a list of forgotten excuses from both ends:
+an entry past its review date fails, and so does an entry npm no longer reports.
+The upgrade that finally retires an advisory is the moment to delete the line,
+and CI insists on it rather than leaving a permanent exemption behind.
+
+### The react-router advisory is not exploitable here
+
+[GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — "RSC
+Mode CSRF Bypass Allows Action Execution Before 400 Response", high severity,
+affecting `react-router` from 7.12.0 up to 8.3.0 — is allowlisted, and this is
+the reasoning.
+
+**It applies only to the unstable React Server Components APIs.** This frontend
+is a client-rendered Vite SPA. There is no RSC, no `unstable_` router import, no
+server-side router and no route `loader` or `action` anywhere in `src`: routing
+is declarative `<BrowserRouter>` and `<Routes>`, resolved in the browser. The
+vulnerable code path is not merely unused, it is not part of the bundle, and
+there is no server component boundary for a forged request to cross.
+
+**Upgrading forward is not available.** The fix landed in `react-router@8.3.0`,
+and `react-router-dom` — the package this app depends on, and the one every
+import in `src` names — has no 8.x release at all; v8 retired the compatibility
+package. Taking the patch therefore means a v8 migration across every import
+site, in service of a flaw the app cannot reach.
+
+**And the downgrade npm offers is worse than the finding.** `npm audit fix
+--force` installs `react-router-dom@7.11.0`, which npm itself flags as a
+breaking change. Accepting a breaking major downgrade to silence an
+inapplicable advisory would trade a theoretical risk for a real one.
+
+Everything else `npm audit` reported at the time this was written —
+`brace-expansion`, `fast-uri`, `postcss` — was fixable without a breaking change
+and was simply fixed. That is the default; the allowlist is for the residue.
+
 ## Operational hygiene
 
 - `.env` is gitignored. **Do not commit real Plaid credentials or secrets.**

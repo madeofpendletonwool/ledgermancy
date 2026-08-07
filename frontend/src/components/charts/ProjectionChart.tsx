@@ -4,6 +4,7 @@ import type { AccountProjection, ProjectionEstimate } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { lineDraw, lineFade } from './motion'
 import { CHART, SINGLE_SERIES, STATUS } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 280
@@ -36,7 +37,7 @@ const ESTIMATE_DASH = '5 4'
  *    little every day — so it is drawn as a plain connected line, dashed and
  *    muted so it never reads as fact the way the known line does.
  */
-export function ProjectionChart({
+function ProjectionChartUnguarded({
   series,
   estimate,
 }: {
@@ -336,4 +337,14 @@ function dayLabel(iso: string, long = false): string {
   const [year, month, day] = iso.slice(0, 10).split('-').map(Number)
   return new Date(year, month - 1, day).toLocaleDateString('en-US',
     long ? { weekday: 'short', month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric' })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function ProjectionChart(props: Parameters<typeof ProjectionChartUnguarded>[0]) {
+  return (
+    <ChartBoundary label="projection">
+      <ProjectionChartUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

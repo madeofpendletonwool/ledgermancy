@@ -210,6 +210,86 @@ func TestParseProposalRejectsImplausibleDates(t *testing.T) {
 	}
 }
 
+func hasWarningContaining(warnings []string, needle string) bool {
+	for _, w := range warnings {
+		if strings.Contains(strings.ToLower(w), strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestParseProposalRecognisesProviderTaxLabels covers the abbreviations Paycor
+// and similar providers print for the core tax lines, which a substring needle
+// list alone cannot cover: "FICA EE" (Social Security on a split-FICA stub),
+// "Fed MWT EE" (Medicare Wage Tax) and "WI W/H" (state-code withholding). With
+// gross supplied these are the difference between a stub that balances on
+// import and one the user has to classify by hand.
+func TestParseProposalRecognisesProviderTaxLabels(t *testing.T) {
+	p := ParseProposal([]string{
+		"Pay Date: 06/12/2026",
+		"Gross Pay 4,484.79",
+		"Fed W/H 413.10 5,783.40",   // federal — already recognised
+		"FICA EE 248.32 3,476.48",   // Social Security (Paycor)
+		"Fed MWT EE 58.08 813.05",   // Medicare Wage Tax (Paycor)
+		"WI W/H 175.34 2,454.76",    // Wisconsin state withholding
+		"Accident 1.05 27.30",       // voluntary accident insurance
+		// 4484.79 − 413.10 − 248.32 − 58.08 − 175.34 − 1.05 = 3588.90
+		"Net Pay 3,588.90",
+	})
+
+	byCat := map[Category]Line{}
+	for _, l := range p.Lines {
+		byCat[l.Category] = l
+	}
+	for _, want := range []struct {
+		category Category
+		amount   string
+	}{
+		{CatFederalIncomeTax, "413.1"},
+		{CatSocialSecurity, "248.32"},
+		{CatMedicare, "58.08"},
+		{CatStateIncomeTax, "175.34"},
+		{CatOther, "1.05"},
+	} {
+		got, ok := byCat[want.category]
+		if !ok {
+			t.Errorf("%s was not matched (provider label not recognised)", want.category)
+			continue
+		}
+		if got.Amount.String() != want.amount {
+			t.Errorf("%s amount = %s, want %s", want.category, got.Amount, want.amount)
+		}
+	}
+
+	if !p.Balanced() {
+		t.Errorf("provider tax labels should balance once gross is supplied, residual %s",
+			p.Stub().Residual().StringFixed(2))
+	}
+}
+
+// TestStateWithholdingRegexSafety pins the boundaries of stateWithholdingRe.
+// It must catch every state-code withholding label and must never fire on a
+// federal line, a longer word that happens to start with two letters, or an
+// unrelated deduction — a substring needle could not make that guarantee.
+func TestStateWithholdingRegexSafety(t *testing.T) {
+	for _, label := range []string{
+		"wi w/h", "ca w/h", "ny tax", "il income tax", "oh withholding", "wi wh",
+	} {
+		if !stateWithholdingRe.MatchString(label) {
+			t.Errorf("state regex should match %q", label)
+		}
+	}
+	for _, label := range []string{
+		"fed w/h", "federal withholding", "dental", "medical", "vision",
+		"regular", "earnings", "fica ee", "supplemental life",
+	} {
+		if stateWithholdingRe.MatchString(label) {
+			t.Errorf("state regex misfired on %q", label)
+		}
+	}
+}
+
 // TestParseProposalSplitsEmployerAndEmployeeLife pins the split between
 // employer-paid basic life and employee-paid supplemental life. "Group Term
 // Life" is the classic taxable benefit — the employer pays the premium and the
@@ -260,13 +340,4 @@ func TestParseProposalSplitsEmployerAndEmployeeLife(t *testing.T) {
 		t.Errorf("group term life as employer should balance, residual %s",
 			p.Stub().Residual().StringFixed(2))
 	}
-}
-
-func hasWarningContaining(warnings []string, needle string) bool {
-	for _, w := range warnings {
-		if strings.Contains(strings.ToLower(w), strings.ToLower(needle)) {
-			return true
-		}
-	}
-	return false
 }

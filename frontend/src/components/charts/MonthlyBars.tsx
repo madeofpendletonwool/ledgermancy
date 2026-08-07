@@ -4,6 +4,7 @@ import { formatMoney } from '../../lib/money'
 import { barPath } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SINGLE_SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 220
@@ -37,7 +38,7 @@ export type MonthlyPoint = {
  * requested range so quiet months render as gaps rather than being dropped and
  * silently compressing the timeline.
  */
-export function MonthlyBars({
+function MonthlyBarsUnguarded({
   months,
   from,
   to,
@@ -248,4 +249,14 @@ function shortMonth(key: string, long = false): string {
     month: 'short',
     year: long ? 'numeric' : '2-digit',
   })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function MonthlyBars(props: Parameters<typeof MonthlyBarsUnguarded>[0]) {
+  return (
+    <ChartBoundary label="monthly totals">
+      <MonthlyBarsUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

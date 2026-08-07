@@ -3,6 +3,7 @@ import type { MerchantExplorerRow } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { axisTicks, compactMoney } from './scale'
 import { CHART, SINGLE_SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 240
@@ -33,7 +34,7 @@ const CUM_COLOR = CHART.textSecondary
  * Anything past the top handful folds into "Other", so the chart never grows
  * past its readable cap and the cumulative still reaches 100%.
  */
-export function MerchantPareto({
+function MerchantParetoUnguarded({
   rows,
   windowTotal,
 }: {
@@ -282,4 +283,14 @@ function foldToOther(rows: MerchantExplorerRow[], max: number): MerchantExplorer
       category_color: null,
     },
   ]
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function MerchantPareto(props: Parameters<typeof MerchantParetoUnguarded>[0]) {
+  return (
+    <ChartBoundary label="merchant concentration">
+      <MerchantParetoUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

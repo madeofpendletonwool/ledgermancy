@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate, useOutlet } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
 import { DropdownMenu } from './DropdownMenu'
+import { RouteErrorBoundary } from './ErrorBoundary'
 import { OfflineBanner } from './OfflineBanner'
 import { InstallPrompt } from './PwaPrompts'
 import { SkeletonPage } from './Skeleton'
@@ -248,15 +249,27 @@ export function AppLayout() {
  * deep link shows it while the route's own chunk arrives, and — for the animated
  * branch — while the animation chunk arrives too. Both resolve before the route
  * mounts, so there is no remount flash when the animated wrapper appears.
+ *
+ * It is also where a failing page stops (MAD-61). The boundary is OUTSIDE the
+ * Suspense boundaries on purpose, so it catches a chunk that fails to load — a
+ * stale client asking a new deploy for a file it no longer serves — as well as
+ * a screen that throws while rendering. The header, nav and tab bar are above
+ * it and stay mounted either way, so the user can always navigate away.
  */
 function RouteOutlet() {
   const outlet = useOutlet()
   const reduce = usePrefersReducedMotion()
-  if (reduce) return <Suspense fallback={<SkeletonPage />}>{outlet}</Suspense>
+  const { pathname } = useLocation()
   return (
-    <Suspense fallback={<SkeletonPage />}>
-      <AnimatedOutlet fallback={<SkeletonPage />} />
-    </Suspense>
+    <RouteErrorBoundary resetKey={pathname}>
+      {reduce ? (
+        <Suspense fallback={<SkeletonPage />}>{outlet}</Suspense>
+      ) : (
+        <Suspense fallback={<SkeletonPage />}>
+          <AnimatedOutlet fallback={<SkeletonPage />} />
+        </Suspense>
+      )}
+    </RouteErrorBoundary>
   )
 }
 
