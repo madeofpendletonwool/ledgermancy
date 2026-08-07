@@ -1,13 +1,24 @@
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { lazy, Suspense } from 'react'
+import { NavLink, useLocation, useNavigate, useOutlet } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Wordmark } from './Brand'
 import { DropdownMenu } from './DropdownMenu'
 import { OfflineBanner } from './OfflineBanner'
 import { InstallPrompt } from './PwaPrompts'
-import { AnimatedOutlet } from './motion'
-import { MobileTabBar } from './MobileTabBar'
+import { SkeletonPage } from './Skeleton'
 import { api, isAdult } from '../lib/api'
 import { useLogout, useSession } from '../lib/session'
+import { usePrefersReducedMotion } from '../lib/reducedMotion'
+
+// `motion` (the animation library) is ~140 kB minified and is not needed to
+// paint the shell — only to animate it. Both the crossfading route outlet and
+// the mobile tab bar pull it in, so they sit behind `lazy()`: first paint
+// renders the shell plus a skeleton, and the animation chunk loads in the
+// background. Once the service worker has precached it, warm loads come off
+// disk and nothing flashes. See `lib/reducedMotion.ts` for the fast path that
+// skips the chunk entirely. MAD-65.
+const AnimatedOutlet = lazy(() => import('./motion').then((m) => ({ default: m.AnimatedOutlet })))
+const MobileTabBar = lazy(() => import('./MobileTabBar').then((m) => ({ default: m.MobileTabBar })))
 
 export type NavLeaf = { to: string; label: string; end?: boolean }
 export type NavGroup = { label: string; items: NavLeaf[] }
@@ -203,13 +214,49 @@ export function AppLayout() {
 
       <main className="mx-auto max-w-6xl px-4 pt-6 pb-28 sm:px-6 sm:pt-10 sm:pb-28 lg:pb-10">
         <InstallPrompt />
-        <AnimatedOutlet />
+        {/* The header, nav and tab bar stay mounted while a route chunk loads:
+            the Suspense boundary is inside the outlet, not around the shell. */}
+        <RouteOutlet />
       </main>
 
       {/* Mobile-only bottom tab bar (PWA). Hidden for child logins, whose
-          whole app is a single page with no groups. */}
-      {navGroups.length > 0 && <MobileTabBar home={home} groups={navGroups} />}
+          whole app is a single page with no groups. Loads lazily so its
+          `motion` import stays off the first-paint chunk; the fallback is null
+          because the bar is `position: fixed` (no layout shift) and it appears
+          below the fold, so a brief absence on a cold load is preferable to
+          shipping the animation library on the entry chunk. Warm loads serve it
+          from the service-worker precache. */}
+      {navGroups.length > 0 && (
+        <Suspense fallback={null}>
+          <MobileTabBar home={home} groups={navGroups} />
+        </Suspense>
+      )}
     </div>
+  )
+}
+
+/**
+ * The route content area, and the dividing line for the animation library.
+ *
+ * Under `prefers-reduced-motion` the outlet renders with no animation wrapper
+ * at all — and `motion` is never fetched, which is the point of checking the
+ * preference here (in the eager shell) rather than inside the lazy
+ * `AnimatedOutlet`. Everyone else gets the crossfade, paid for by a lazy chunk
+ * that loads after first paint.
+ *
+ * The Suspense fallback is the same `SkeletonPage` either way: a cold load of a
+ * deep link shows it while the route's own chunk arrives, and — for the animated
+ * branch — while the animation chunk arrives too. Both resolve before the route
+ * mounts, so there is no remount flash when the animated wrapper appears.
+ */
+function RouteOutlet() {
+  const outlet = useOutlet()
+  const reduce = usePrefersReducedMotion()
+  if (reduce) return <Suspense fallback={<SkeletonPage />}>{outlet}</Suspense>
+  return (
+    <Suspense fallback={<SkeletonPage />}>
+      <AnimatedOutlet fallback={<SkeletonPage />} />
+    </Suspense>
   )
 }
 

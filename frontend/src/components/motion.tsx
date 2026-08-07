@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Suspense, useEffect, type ReactNode } from 'react'
 import { useLocation, useOutlet } from 'react-router-dom'
 import {
   AnimatePresence,
@@ -115,13 +115,21 @@ export function AnimatedNumber({
  *
  * Under `prefers-reduced-motion` the outlet renders with no motion wrapper,
  * so route changes are instant.
+ *
+ * Routes are lazily imported (MAD-65), so the outlet is also the Suspense
+ * boundary for the incoming screen's chunk. The boundary sits *inside* the
+ * keyed `motion.div` rather than around the whole `AnimatePresence`: wrapping
+ * the outside would tear down the presence tree the moment a chunk suspended,
+ * losing the exit animation and hard-swapping the page to the fallback. Inside,
+ * the outgoing page still fades out and the fallback fades in as the incoming
+ * one, which is the same 150ms transition the app always had.
  */
-export function AnimatedOutlet() {
+export function AnimatedOutlet({ fallback }: { fallback: ReactNode }) {
   const outlet = useOutlet()
   const { pathname } = useLocation()
   const reduce = useReducedMotion()
 
-  if (reduce) return <>{outlet}</>
+  if (reduce) return <Suspense fallback={fallback}>{outlet}</Suspense>
 
   return (
     <AnimatePresence mode="popLayout" initial={false}>
@@ -132,7 +140,7 @@ export function AnimatedOutlet() {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.15, ease: 'easeOut' }}
       >
-        {outlet}
+        <Suspense fallback={fallback}>{outlet}</Suspense>
       </motion.div>
     </AnimatePresence>
   )

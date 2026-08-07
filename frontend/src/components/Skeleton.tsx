@@ -137,6 +137,36 @@ export function SkeletonDetail() {
 }
 
 /**
+ * The placeholder for a route whose *code* has not arrived yet — the Suspense
+ * fallback for the lazily-imported screens (MAD-65), not for their data.
+ *
+ * Deliberately vaguer than the per-route skeletons above: at this point the app
+ * knows which path it is going to, but nothing has run, so committing to a
+ * specific layout would guess wrong on most screens. A title and a tile row is
+ * the shape every screen here starts with.
+ *
+ * This is usually invisible. Navigating within the app happens inside a
+ * transition, so React keeps the current screen on-screen until the chunk
+ * resolves; and once the service worker has precached, chunks come off disk.
+ * It shows on a cold load of a deep link, which is exactly when a blank main
+ * area would look broken.
+ */
+export function SkeletonPage() {
+  return (
+    <>
+      <SkeletonBlock className="h-7 w-56" />
+      <SkeletonBlock className="mt-2 h-3 w-72" />
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <SkeletonTiles count={4} />
+      </div>
+      <div className="glass mt-6 p-6">
+        <SkeletonRows count={4} />
+      </div>
+    </>
+  )
+}
+
+/**
  * Fades real content in when it replaces a skeleton. Only fires on mount, so at
  * a `isPending ? <Skeleton/> : <Reveal><Content/></Reveal>` hand-off it animates
  * exactly once — when the data first arrives. Under `prefers-reduced-motion` the
