@@ -28,6 +28,19 @@ func buildContentStream(runs []run) string {
 	return b.String()
 }
 
+// buildContentStreamCM renders runs the way a browser-printed or table-driven
+// stub does: each run wrapped in q ... cm BT ... Tm(identity) ... Tj ET ... Q,
+// with the page position carried by the cm translation and Tm left as identity.
+// This is the shape that broke a reader which ignored the CTM — every run
+// landed at (0, 0) and the whole page collapsed into a single line.
+func buildContentStreamCM(runs []run) string {
+	var b strings.Builder
+	for _, r := range runs {
+		fmt.Fprintf(&b, "q 1 0 0 1 %g %g cm BT 1 0 0 1 0 0 Tm /F1 10 Tf (%s) Tj ET Q\n", r.x, r.y, r.text)
+	}
+	return b.String()
+}
+
 // buildPDF wraps a content stream in just enough PDF structure for the scanner:
 // a header, and an object whose dictionary is immediately followed by the
 // stream. Deliberately no xref table — the reader does not walk one, and a
@@ -116,6 +129,51 @@ func TestExtractPDFTextReadsFlateStreams(t *testing.T) {
 	}
 	if !containsLine(lines, "Gross Pay 3,000.00") {
 		t.Errorf("compressed stream did not decode, got:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestExtractPDFTextHonoursCTM is the browser-printed-stub regression. A stub
+// exported through a browser or laid out by a table-driven provider positions
+// every text run with cm inside q/Q pairs and leaves Tm at the identity, so a
+// reader that ignores the CTM records every run at (0, 0) and merges the whole
+// page into a single line. The CTM must be tracked and combined with Tm to
+// recover the real row each run belongs to.
+func TestExtractPDFTextHonoursCTM(t *testing.T) {
+	lines, err := ExtractPDFText(buildPDF(buildContentStreamCM(paystubRuns()), false))
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+
+	// The label and its amounts were three cm-positioned runs at the same
+	// vertical position. Without CTM tracking they all sat at (0, 0) and the
+	// page became one line; with it they group by the cm translation.
+	if !containsLine(lines, "Federal Income Tax 330.00 3960.00") {
+		t.Errorf("cm-positioned runs did not group into rows, got:\n%s", strings.Join(lines, "\n"))
+	}
+	if !containsLine(lines, "Gross Pay 3,000.00") {
+		t.Errorf("expected the gross line, got:\n%s", strings.Join(lines, "\n"))
+	}
+
+	// Reading order still holds: gross (higher y) before net (lower y).
+	grossAt := indexOfLine(lines, "Gross Pay 3,000.00")
+	netAt := indexOfLine(lines, "Net Pay 2,448.15")
+	if grossAt < 0 || netAt < 0 || grossAt > netAt {
+		t.Errorf("rows are not in reading order (gross at %d, net at %d):\n%s",
+			grossAt, netAt, strings.Join(lines, "\n"))
+	}
+
+	// And the proposal built from it balances, which is the property the
+	// importer ultimately hands the user.
+	p := ParseProposal(lines)
+	if !p.Gross.Valid || p.Gross.Decimal.String() != "3000" {
+		t.Errorf("gross = %v, want 3000", p.Gross)
+	}
+	if !p.Net.Valid || p.Net.Decimal.String() != "2448.15" {
+		t.Errorf("net = %v, want 2448.15", p.Net)
+	}
+	if !p.Balanced() {
+		t.Errorf("3000 − 330 − 179.80 − 42.05 = 2448.15 should balance, residual %s",
+			p.Stub().Residual().StringFixed(2))
 	}
 }
 

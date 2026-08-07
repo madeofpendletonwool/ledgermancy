@@ -7,6 +7,7 @@ import {
   ApiError,
   type ActionItem,
   type ActionItemStatus,
+  type Advice,
   type AdviceOption,
   type AdvisorThread,
   type Briefing,
@@ -860,11 +861,17 @@ function Row({ label, value, note }: { label: string; value: string; note?: stri
  * The ranked options, with an accept that WRITES A NOTE and nothing else.
  *
  * The panel is shared with the Dashboard so the two surfaces cannot show
- * different orderings of the same list. The only difference here is the accept.
+ * different orderings of the same list. The only difference here is the accept
+ * — and the empty state. AdvisorPanel degrades to SILENCE when there is nothing
+ * to say, which is the right rule for a Dashboard glance and the wrong one for
+ * a tab a household navigated to on purpose. A dedicated tab that renders
+ * nothing answers "what is the point of this?" with nothing, so the silence is
+ * turned into a stated reason here while the panel itself is left untouched.
  */
 function OptionsTab() {
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState<string | null>(null)
+  const advice = useQuery({ queryKey: ['advisor'], queryFn: api.advisor })
 
   const track = useMutation({
     mutationFn: (o: AdviceOption) =>
@@ -880,9 +887,16 @@ function OptionsTab() {
     },
   })
 
+  const hasList =
+    !!advice.data && advice.data.significant && advice.data.options.length > 0
+
   return (
     <div className="space-y-3">
-      <AdvisorPanel onAccept={(o) => track.mutate(o)} />
+      {hasList ? (
+        <AdvisorPanel onAccept={(o) => track.mutate(o)} />
+      ) : (
+        <OptionsEmpty advice={advice} />
+      )}
       {saved && (
         <p role="status" className="text-sm text-rune-300">
           Tracked “{saved}” in your action items. Nothing was moved — this is a
@@ -890,6 +904,68 @@ function OptionsTab() {
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * The Options tab's reason for being empty, stated rather than left blank.
+ *
+ * The silence rule lives in AdvisorPanel and is not repeated here: this
+ * component owns only the cases where there is no list to render, and its job
+ * is to name the specific one. The copy stays CONDITIONAL on the same slack
+ * figure the panel uses — never "you have $X available", always the framing
+ * the advisor surface keeps everywhere else.
+ */
+function OptionsEmpty({
+  advice,
+}: {
+  advice: ReturnType<typeof useQuery<Advice>>
+}) {
+  const slack = advice.data ? Number(advice.data.slack) : NaN
+  const threshold = advice.data ? Number(advice.data.threshold) : NaN
+
+  return (
+    <section className="glass p-6">
+      <h2 className="text-lg font-medium">Ranked options for surplus cash</h2>
+      <p className="mt-1 text-sm text-mist-500">
+        When a typical month leaves money over, the advisor ranks what it would
+        do with it — fund the emergency fund, capture an employer match, pay a
+        debt, accelerate a goal. Every figure and the order itself are computed
+        from your own data, and nothing here moves any money.
+      </p>
+
+      <div className="mt-5 border-t border-white/5 pt-4">
+        {advice.isPending ? (
+          <p className="text-sm text-mist-500">Reading your position…</p>
+        ) : advice.isError ? (
+          <p className="text-sm text-mist-400">
+            Your options could not be computed just now.
+          </p>
+        ) : Number.isFinite(slack) && slack <= 0 ? (
+          <p className="text-sm text-mist-400">
+            A typical month leaves nothing over to rank right now
+            {slack < 0 ? ` — about ${formatMoney(advice.data!.slack)} short.` : '.'}
+          </p>
+        ) : Number.isFinite(slack) &&
+          Number.isFinite(threshold) &&
+          slack < threshold ? (
+          <p className="text-sm text-mist-400">
+            A typical month leaves about {formatMoney(advice.data!.slack)} over,
+            below the {formatMoney(advice.data!.threshold)} floor you set for
+            when the advisor speaks up. It will appear here once a typical month
+            clears that. Lower the floor under Settings → Advisor if you would
+            like it sooner.
+          </p>
+        ) : (
+          <p className="text-sm text-mist-400">
+            A typical month leaves about {formatMoney(advice.data!.slack)} over,
+            but there is nothing to rank it against yet. Add a debt with an APR,
+            a goal, or a retirement account and the advisor will order what each
+            would do with it.
+          </p>
+        )}
+      </div>
+    </section>
   )
 }
 

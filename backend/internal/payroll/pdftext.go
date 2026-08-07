@@ -37,10 +37,11 @@ import (
 // stub has no text layer and is reported as such so the user types it in, which
 // is the fallback that must work anyway. It assumes single-byte, ASCII-
 // compatible font encodings, which is what every US payroll provider emits;
-// anything else is detected as unreadable rather than guessed at. It ignores
-// the graphics CTM, so text positioned by `cm` rather than `Tm` may group into
-// the wrong row — that too surfaces as a failed parse rather than as a wrong
-// number, because the label/amount pairing simply will not match.
+// anything else is detected as unreadable rather than guessed at. The graphics
+// CTM is tracked (q, Q and cm) and combined with the text matrix when a run is
+// placed: a browser-printed or table-driven stub positions every run with cm
+// and leaves Tm at the identity, so ignoring cm would merge the whole page onto
+// a single row and lose every label/amount pairing on it.
 //
 // Everything this produces is a PROPOSAL. Nothing here writes a paystub.
 
@@ -286,13 +287,40 @@ type textFragment struct {
 	text string
 }
 
+// matMul multiplies two 3×3 affine matrices stored as PDF row-vector arrays
+// [a b c d e f], representing
+//
+//	| a b 0 |
+//	| c d 0 |
+//	| e f 1 |
+//
+// The result is the matrix product M × N, matching the row-vector convention the
+// spec uses for cm concatenation and the text rendering matrix Tm × CTM. It is
+// the only piece of graphics-state arithmetic this reader does: a stub that
+// positions runs with cm needs its translation combined with Tm to recover the
+// device-space row, and nothing else here calls for the full model.
+func matMul(m, n [6]float64) [6]float64 {
+	return [6]float64{
+		m[0]*n[0] + m[1]*n[2],
+		m[0]*n[1] + m[1]*n[3],
+		m[2]*n[0] + m[3]*n[2],
+		m[2]*n[1] + m[3]*n[3],
+		m[4]*n[0] + m[5]*n[2] + n[4],
+		m[4]*n[1] + m[5]*n[3] + n[5],
+	}
+}
+
 // parseContentStream walks the text-showing operators and records what was
 // drawn where.
 //
-// Only the text sub-language is interpreted. Paths, colours, clipping and the
-// graphics CTM are skipped — a paystub's figures are all set with Tm/Td inside
-// BT/ET blocks, and interpreting the full graphics model to place them would be
-// a renderer rather than a reader.
+// Only the text sub-language is interpreted, with one concession: the CTM that
+// q, Q and cm build. A stub exported through a browser or laid out by a
+// table-driven provider positions every text run with cm and leaves Tm at the
+// identity, so the run's real page position lives in the CTM's translation
+// rather than in Tm. The CTM is maintained as a stack (pushed by q, popped by
+// Q, concatenated by cm) and combined with Tm to compute the device-space point
+// each run lands on. Paths, colours and clipping are still skipped — this is a
+// reader, not a renderer.
 func parseContentStream(content []byte) []textFragment {
 	var (
 		out      []textFragment
@@ -302,6 +330,13 @@ func parseContentStream(content []byte) []textFragment {
 		tm, tlm [6]float64
 		leading float64
 		inText  bool
+
+		// ctm is the current transformation matrix; ctmStack is its save/restore
+		// stack under q/Q. A stub that positions every run with cm and leaves
+		// Tm at the identity puts the real coordinates here, so ignoring it
+		// would merge the whole page into a single row.
+		ctm      = [6]float64{1, 0, 0, 1, 0, 0}
+		ctmStack [][6]float64
 
 		// The run being accumulated at the current position. Consecutive show
 		// operators with no repositioning between them are one visual word, and
@@ -326,7 +361,12 @@ func parseContentStream(content []byte) []textFragment {
 			return
 		}
 		if pending.Len() == 0 {
-			pendingX, pendingY = tm[4], tm[5]
+			// The device-space origin of the run is the text-space origin taken
+			// through Tm then the CTM — the text rendering matrix. With an
+			// identity CTM this collapses to Tm's translation, which is what
+			// every Tm-positioned stub produces.
+			r := matMul(tm, ctm)
+			pendingX, pendingY = r[4], r[5]
 		}
 		pending.WriteString(s)
 	}
@@ -410,6 +450,33 @@ func parseContentStream(content []byte) []textFragment {
 		case "TJ":
 			if inText {
 				show(showArray(operands))
+			}
+		case "q":
+			// Save the graphics state. Only the CTM is restored on Q; the text
+			// matrices are reset by the next BT, and the text state is not what
+			// positions a run on this kind of stub.
+			ctmStack = append(ctmStack, ctm)
+		case "Q":
+			if n := len(ctmStack); n > 0 {
+				ctm = ctmStack[n-1]
+				ctmStack = ctmStack[:n-1]
+			}
+		case "cm":
+			// Concatenate the operand matrix onto the CTM. Per the spec the
+			// operand is pre-multiplied (CTM' = M × CTM) and a point is then
+			// mapped by the product, so a translate-by-(e,f) cm moves the text
+			// origin to (e,f) when Tm is identity — exactly the case a
+			// browser-printed stub produces.
+			if len(operands) >= 6 {
+				m := [6]float64{
+					operands[len(operands)-6].num,
+					operands[len(operands)-5].num,
+					operands[len(operands)-4].num,
+					operands[len(operands)-3].num,
+					operands[len(operands)-2].num,
+					operands[len(operands)-1].num,
+				}
+				ctm = matMul(m, ctm)
 			}
 		}
 		operands = operands[:0]
