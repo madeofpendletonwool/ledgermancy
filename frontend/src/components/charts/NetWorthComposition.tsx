@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { NetWorthPoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 260
@@ -28,7 +29,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * them cross wherever the scales met and imply a relationship the data does
  * not contain.
  */
-export function NetWorthComposition({ data }: { data: NetWorthPoint[] }) {
+function NetWorthCompositionUnguarded({ data }: { data: NetWorthPoint[] }) {
   const [active, setActive] = useState<number | null>(null)
 
   // Need at least two points with a breakdown to draw any area at all. A single
@@ -398,4 +399,14 @@ function compactMoney(v: number): string {
 
 function labelStride(count: number): number {
   return count > 24 ? 4 : count > 12 ? 3 : count > 8 ? 2 : 1
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function NetWorthComposition(props: Parameters<typeof NetWorthCompositionUnguarded>[0]) {
+  return (
+    <ChartBoundary label="net worth composition">
+      <NetWorthCompositionUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

@@ -3,6 +3,7 @@ import type { DividendMonth } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 220
@@ -25,7 +26,7 @@ const BAR_RADIUS = 4
  * the full first..last span so a quiet month renders as an honest gap rather
  * than being dropped and silently compressing two payouts into adjacent bars.
  */
-export function DividendBars({ months }: { months: DividendMonth[] }) {
+function DividendBarsUnguarded({ months }: { months: DividendMonth[] }) {
   const [active, setActive] = useState<number | null>(null)
 
   if (months.length === 0) {
@@ -199,4 +200,14 @@ function shortMonth(key: string, long = false): string {
     month: 'short',
     year: long ? 'numeric' : '2-digit',
   })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function DividendBars(props: Parameters<typeof DividendBarsUnguarded>[0]) {
+  return (
+    <ChartBoundary label="dividends">
+      <DividendBarsUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

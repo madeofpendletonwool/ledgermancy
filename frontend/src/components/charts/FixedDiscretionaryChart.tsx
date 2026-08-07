@@ -3,6 +3,7 @@ import type { TrendPoint } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 240
@@ -28,7 +29,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * for the savings use-case, but it is just slot 3 of the validated palette — a
  * calm aqua — and reusing it here does not assert that fixed spend IS leftover.
  */
-export function FixedDiscretionaryChart({ data }: { data: TrendPoint[] }) {
+function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
   const [active, setActive] = useState<number | null>(null)
 
   if (data.length === 0) {
@@ -255,4 +256,14 @@ function monthLabel(month: string, long = false): string {
     month: 'short',
     year: long ? 'numeric' : '2-digit',
   })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function FixedDiscretionaryChart(props: Parameters<typeof FixedDiscretionaryChartUnguarded>[0]) {
+  return (
+    <ChartBoundary label="fixed versus discretionary">
+      <FixedDiscretionaryChartUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

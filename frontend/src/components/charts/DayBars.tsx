@@ -5,6 +5,7 @@ import { formatMoney } from '../../lib/money'
 import { barRect } from './motion'
 import { axisTicks, compactMoney } from './scale'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 220
@@ -24,7 +25,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * `days` holds only the days that had spend; the full 1..N axis is rebuilt here
  * so empty days render as gaps rather than being dropped.
  */
-export function DayBars({
+function DayBarsUnguarded({
   year,
   month,
   days,
@@ -217,5 +218,15 @@ export function DayBars({
         )}
       </div>
     </div>
+  )
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function DayBars(props: Parameters<typeof DayBarsUnguarded>[0]) {
+  return (
+    <ChartBoundary label="spend by day">
+      <DayBarsUnguarded {...props} />
+    </ChartBoundary>
   )
 }

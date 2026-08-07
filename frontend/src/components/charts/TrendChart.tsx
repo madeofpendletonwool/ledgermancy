@@ -5,6 +5,7 @@ import { formatMoney } from '../../lib/money'
 import { areaFade, lineDraw } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES, STATUS } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const WIDTH = 760
 const HEIGHT = 260
@@ -26,7 +27,7 @@ const PLOT_H = HEIGHT - PAD.top - PAD.bottom
  * twelve, and a month with no published index drops out of the projection
  * entirely rather than appearing on a real axis with a nominal value.
  */
-export function TrendChart({
+function TrendChartUnguarded({
   data: input,
   real = false,
   avgLeftover,
@@ -362,4 +363,14 @@ function monthLabel(month: string, long = false): string {
     month: 'short',
     year: long ? 'numeric' : '2-digit',
   })
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function TrendChart(props: Parameters<typeof TrendChartUnguarded>[0]) {
+  return (
+    <ChartBoundary label="income and spending">
+      <TrendChartUnguarded {...props} />
+    </ChartBoundary>
+  )
 }

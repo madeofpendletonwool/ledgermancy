@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Paystub } from '../../lib/api'
 import { formatMoney } from '../../lib/money'
 import { CHART, SERIES } from './tokens'
+import { ChartBoundary } from './ChartBoundary'
 
 const HEIGHT = 46
 const RADIUS = 6
@@ -33,7 +34,7 @@ const RADIUS = 6
  * Identity rides on the legend and on the table beneath the chart, never on hue
  * alone: every segment is also a labelled row with its own figure.
  */
-export function PaycheckBreakdown({ stub }: { stub: Paystub }) {
+function PaycheckBreakdownUnguarded({ stub }: { stub: Paystub }) {
   const [active, setActive] = useState<string | null>(null)
 
   const segments = buildSegments(stub)
@@ -178,4 +179,14 @@ function buildSegments(stub: Paystub): Segment[] {
   })
 
   return segments.filter((s) => Number.isFinite(s.value) && s.value > 0)
+}
+
+// The export is the guarded chart: a throw inside costs the reader the chart,
+// not the page (MAD-61).
+export function PaycheckBreakdown(props: Parameters<typeof PaycheckBreakdownUnguarded>[0]) {
+  return (
+    <ChartBoundary label="paycheck breakdown">
+      <PaycheckBreakdownUnguarded {...props} />
+    </ChartBoundary>
+  )
 }
