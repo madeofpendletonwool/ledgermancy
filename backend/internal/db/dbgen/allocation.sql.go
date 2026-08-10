@@ -162,12 +162,14 @@ SELECT
     g.target_date,
     g.college_years,
     g.account_id,
-    p.birthdate                 AS beneficiary_birthdate,
+    COALESCE(gp.birthdate, ap.birthdate) AS beneficiary_birthdate,
     c.beneficiary_current_age,
     c.beneficiary_target_age
 FROM goals g
-LEFT JOIN household_people      p ON p.id = g.person_id
-LEFT JOIN account_contributions c ON c.account_id = g.account_id
+LEFT JOIN household_people      gp ON gp.id = g.person_id
+LEFT JOIN accounts              a  ON a.id  = g.account_id
+LEFT JOIN household_people      ap ON ap.id = a.beneficiary_person_id
+LEFT JOIN account_contributions c  ON c.account_id = g.account_id
 WHERE g.household_id = $1
   AND g.kind = 'college'
   AND g.archived_at IS NULL
@@ -198,6 +200,17 @@ type ListCollegeGoalsRow struct {
 // horizon in the app. beneficiary_current_age/beneficiary_target_age come from
 // the linked account's contribution plan, which is where doc 15 already put the
 // 529 horizon — this reads that rather than adding a second place to set it.
+//
+// The birthdate is resolved through TWO links, in order: the goal's own
+// person_id, then the linked account's beneficiary_person_id. The goal link is
+// the explicit one, but a goal scoped 'household' cannot carry a person_id
+// (the goals_scope_target CHECK forces it NULL), and for such a goal the 529's
+// beneficiary is the only record of whose money this is. That is the same join
+// ListProjectableAccounts makes (a.beneficiary_person_id -> household_people),
+// so this query and the net-worth projection agree about the horizon — without
+// it, a household that correctly set the beneficiary on the 529 but never
+// opened the goal's person scope would be told the age "is not on file" while
+// every other surface in the app had it.
 func (q *Queries) ListCollegeGoals(ctx context.Context, householdID uuid.UUID) ([]ListCollegeGoalsRow, error) {
 	rows, err := q.db.Query(ctx, listCollegeGoals, householdID)
 	if err != nil {
