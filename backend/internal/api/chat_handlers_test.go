@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/shopspring/decimal"
+
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 )
 
 // Every tool's input schema must be valid JSON, and the set must match what the
@@ -196,5 +200,157 @@ func TestTrailingMonthsRange(t *testing.T) {
 	}
 	if to.Before(from) {
 		t.Errorf("to %s is before from %s", to.Format(time.DateOnly), from.Format(time.DateOnly))
+	}
+}
+
+// trendWindow is the resolver behind the monthly_trend tool. It is the fix for
+// the "redo the average without July" question the advisor could not answer:
+// the window can now be a custom range, and named months can be excluded from
+// both the series and the average. These cases pin the precedence (explicit
+// range over trailing months), the whole-month snap, the reversal handling, and
+// the exclude parsing — including the errors that have to surface so a bad
+// argument does not quietly answer a different question.
+func TestTrendWindow(t *testing.T) {
+	// Default: trailing twelve months, landing on whole-month boundaries, no
+	// exclusions. This is the behaviour every existing caller relied on.
+	from, to, exclude, err := trendWindow(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("empty input: %v", err)
+	}
+	if from.Day() != 1 || exclude != nil {
+		t.Errorf("default window should start on the 1st with nil exclude: %s, %v", from, exclude)
+	}
+	if _, exp := trailingMonthsRange(12); to != exp {
+		t.Errorf("default window should match trailing twelve months' end, got %s", to.Format(time.DateOnly))
+	}
+
+	// An explicit months count overrides 12 but is still a trailing window.
+	from, _, _, err = trendWindow(json.RawMessage(`{"months":3}`))
+	if err != nil {
+		t.Fatalf("months input: %v", err)
+	}
+	if exp, _ := trailingMonthsRange(3); from != exp {
+		t.Errorf("months=3 should match trailing three months' start, got %s", from.Format(time.DateOnly))
+	}
+
+	// An explicit start+end wins over a months count and is snapped to whole
+	// months — the case the advisor needs to answer "the last year excluding
+	// the current partial month".
+	from, to, exclude, err = trendWindow(json.RawMessage(`{"months":3,"start":"2025-09-01","end":"2026-06-30"}`))
+	if err != nil {
+		t.Fatalf("custom range: %v", err)
+	}
+	if from.Format(time.DateOnly) != "2025-09-01" || to.Format(time.DateOnly) != "2026-06-30" {
+		t.Errorf("custom range = %s..%s", from.Format(time.DateOnly), to.Format(time.DateOnly))
+	}
+	if exclude != nil {
+		t.Errorf("custom range should have nil exclude, got %v", exclude)
+	}
+
+	// Mid-month boundaries are snapped to the first and last of their months,
+	// because the tool reports whole months.
+	from, to, _, err = trendWindow(json.RawMessage(`{"start":"2025-09-15","end":"2026-06-10"}`))
+	if err != nil || from.Format(time.DateOnly) != "2025-09-01" || to.Format(time.DateOnly) != "2026-06-30" {
+		t.Errorf("mid-month snap = %s..%s (%v)", from.Format(time.DateOnly), to.Format(time.DateOnly), err)
+	}
+
+	// A reversed range is normalised to whole months AFTER the swap, so "from"
+	// stays a first-of-month rather than the last day of the later month.
+	from, to, _, err = trendWindow(json.RawMessage(`{"start":"2026-06-30","end":"2025-09-01"}`))
+	if err != nil || from.Format(time.DateOnly) != "2025-09-01" || to.Format(time.DateOnly) != "2026-06-30" {
+		t.Errorf("reversed range = %s..%s (%v)", from.Format(time.DateOnly), to.Format(time.DateOnly), err)
+	}
+
+	// exclude parses YYYY-MM entries into a set, over the default window. This
+	// is the exact shape of the "without this month and last month" follow-up.
+	_, _, exclude, err = trendWindow(json.RawMessage(`{"exclude":["2026-07","2026-08"]}`))
+	if err != nil {
+		t.Fatalf("exclude input: %v", err)
+	}
+	if !exclude["2026-07"] || !exclude["2026-08"] || len(exclude) != 2 {
+		t.Errorf("exclude set = %v", exclude)
+	}
+
+	// Duplicates collapse and empty entries are ignored, leaving the set the
+	// caller named rather than one padded with blanks.
+	_, _, exclude, err = trendWindow(json.RawMessage(`{"exclude":["2026-07", " 2026-07 ", ""]}`))
+	if err != nil {
+		t.Fatalf("exclude dedupe input: %v", err)
+	}
+	if len(exclude) != 1 || !exclude["2026-07"] {
+		t.Errorf("exclude should dedupe and drop blanks, got %v", exclude)
+	}
+
+	// Errors that must surface rather than be defaulted to twelve months.
+	for _, in := range []string{
+		`{"start":"2026-06-30"}`,              // one-sided range
+		`{"start":"June","end":"2026-06-30"}`, // malformed date
+		`{"exclude":["July"]}`,                // malformed exclude month
+		`{"months":"x"}`,                      // unreadable months
+		`not json`,                            // not json
+		`{"exclude":"2026-07"}`,               // exclude as string, not array
+	} {
+		if _, _, _, err := trendWindow(json.RawMessage(in)); err == nil {
+			t.Errorf("trendWindow(%s) = nil error, want a retryable error", in)
+		}
+	}
+}
+
+// monthlyTrendSeries computes avg_leftover in exact decimal over EXACTLY the
+// months it returns — the property that lets the advisor quote the average
+// verbatim. Excluding a month has to flow through the same average or the
+// reference line and the months it spans disagree, so this is the case that
+// matters most: the dropped month leaves the total and the count together.
+func TestMonthlyTrendSeries(t *testing.T) {
+	// Three months with leftover 100 / 200 / 300.
+	rows := []dbgen.GetMonthlyTrendRow{
+		{Month: time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(900)},
+		{Month: time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(800)},
+		{Month: time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(700)},
+	}
+
+	// No exclusions: average is the mean of 100, 200, 300.
+	months, avg, hasAvg := monthlyTrendSeries(rows, nil)
+	if !hasAvg || avg != "200.00" {
+		t.Errorf("avg = %q (hasAvg=%v), want 200.00", avg, hasAvg)
+	}
+	if len(months) != 3 || months[0]["leftover"] != "100.00" {
+		t.Errorf("months = %+v", months)
+	}
+
+	// Exclude the 300 month: average is now the mean of 100 and 200.
+	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{"2025-11": true})
+	if !hasAvg || avg != "150.00" {
+		t.Errorf("avg after exclude = %q, want 150.00", avg)
+	}
+	if len(months) != 2 {
+		t.Errorf("expected 2 months after exclude, got %d", len(months))
+	}
+	for _, m := range months {
+		if m["month"] == "2025-11" {
+			t.Errorf("excluded month 2025-11 should not appear in the series")
+		}
+	}
+
+	// An empty row set returns no average — the model has nothing to quote, so
+	// it says so plainly rather than narrating a zero.
+	months, avg, hasAvg = monthlyTrendSeries(nil, nil)
+	if hasAvg || avg != "" || len(months) != 0 {
+		t.Errorf("empty series = %+v avg=%q hasAvg=%v, want no average", months, avg, hasAvg)
+	}
+
+	// An exclude set naming a month that is not in the series is a no-op.
+	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{"1999-01": true})
+	if !hasAvg || avg != "200.00" || len(months) != 3 {
+		t.Errorf("non-matching exclude should be a no-op: avg=%q months=%d", avg, len(months))
+	}
+
+	// Excluding EVERY month leaves no average, because dividing by zero months
+	// is not a figure this app can quote.
+	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{
+		"2025-09": true, "2025-10": true, "2025-11": true,
+	})
+	if hasAvg || avg != "" || len(months) != 0 {
+		t.Errorf("all-excluded series should yield no average: avg=%q months=%d", avg, len(months))
 	}
 }
