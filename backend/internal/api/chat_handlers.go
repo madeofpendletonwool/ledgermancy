@@ -414,9 +414,15 @@ func chatBaseToolDefs() []ai.Tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"group_by":{"type":"string","enum":["category","merchant","account","month","day","pfc"],"description":"Dimension to group by (pfc = Plaid's detailed category). Required."},"flow":{"type":"string","enum":["spending","income","transfers","all"],"description":"Which money to include (default spending). Use \"income\" to see where income came from."},"month":{"type":"string","description":"A single month YYYY-MM"},"months":{"type":"integer","description":"Trailing N months, 1-24. Pair with group_by:\"month\" for a trend."},"start":{"type":"string","description":"Range start date YYYY-MM-DD"},"end":{"type":"string","description":"Range end date YYYY-MM-DD"},"category":{"type":"string","description":"Category name or slug to filter by"},"merchant":{"type":"string","description":"Merchant/payee name substring to filter by"},"source":{"type":"string","enum":["plaid","csv","manual"],"description":"Only transactions imported from this source"},"min_amount":{"type":"number","description":"Only transactions at least this large (absolute dollars)"},"max_amount":{"type":"number","description":"Only transactions at most this large (absolute dollars)"}},"required":["group_by"]}`),
 		},
 		{
-			Name:        "monthly_trend",
-			Description: "Income and spending per calendar month over the last N months (default 12), oldest first, in \"months\". Also returns \"avg_leftover\", the exact mean monthly leftover across the window — quote that figure for \"average leftover\" questions rather than averaging the months yourself.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12)"}}}`),
+			Name: "monthly_trend",
+			Description: "Income, spending, and leftover per calendar month, oldest first, in \"months\". Also returns " +
+				"\"avg_leftover\", the exact mean monthly leftover across the months ACTUALLY RETURNED — quote that figure " +
+				"for \"average leftover\" questions rather than averaging the months yourself. Defaults to the last 12 " +
+				"months. Give start+end (YYYY-MM-DD) for a custom window, e.g. a past year that excludes the current " +
+				"partial month; the window is snapped to whole months. Use exclude ([\"YYYY-MM\", ...]) to drop one-time " +
+				"anomalies like a loan payoff or a month whose income has not arrived yet — excluded months leave both the " +
+				"series and avg_leftover, so the average always matches the months the user sees.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12). Ignored when start+end are given."},"start":{"type":"string","description":"Range start as YYYY-MM-DD. Give both start and end for a custom window instead of trailing months; the window is snapped to whole months."},"end":{"type":"string","description":"Range end as YYYY-MM-DD, paired with start."},"exclude":{"type":"array","items":{"type":"string"},"description":"Months as YYYY-MM to drop from the series AND the average, e.g. [\"2026-07\"] to omit a one-time anomaly."}}}`),
 		},
 		{
 			Name:        "category_averages",
@@ -816,39 +822,29 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		return marshalTool(out)
 
 	case "monthly_trend":
-		window, err := toolMonths(input)
+		from, to, exclude, err := trendWindow(input)
 		if err != nil {
 			return "", err
 		}
-		from, to := trailingMonthsRange(window)
 		rows, err := s.Queries.GetMonthlyTrend(ctx, dbgen.GetMonthlyTrendParams{
 			HouseholdID: identity.HouseholdID, UserID: identity.UserID, Date: from, Date_2: to,
 		})
 		if err != nil {
 			return "", err
 		}
-		months := make([]map[string]string, 0, len(rows))
-		totalLeftover := decimal.Zero
-		for _, m := range rows {
-			leftover := m.Income.Sub(m.Spending)
-			totalLeftover = totalLeftover.Add(leftover)
-			months = append(months, map[string]string{
-				"month":    m.Month.Format("2006-01"),
-				"income":   m.Income.StringFixed(2),
-				"spending": m.Spending.StringFixed(2),
-				"leftover": leftover.StringFixed(2),
-			})
-		}
-		// avg_leftover is computed HERE, in exact decimal, because it is a
-		// finished figure like every other money figure this app returns. It is
-		// the reference line the chat's trend chart draws, and the model quotes
-		// it verbatim when asked "what's our average leftover" — neither the
-		// client nor the model may average the series itself. A client-derived
-		// average is a second answer to a question the server already answered.
+		// avg_leftover is computed HERE, in exact decimal, over EXACTLY the
+		// months returned (after any exclude), because it is a finished figure
+		// like every other money figure this app returns. It is the reference
+		// line the chat's trend chart draws, and the model quotes it verbatim
+		// when asked "what's our average leftover" — neither the client nor the
+		// model may average the series itself, and a client-derived average is
+		// a second answer to a question the server already answered. Excluding
+		// a month has to flow through the same average or the chart's reference
+		// line and the months it spans would disagree.
+		months, avg, hasAvg := monthlyTrendSeries(rows, exclude)
 		result := map[string]any{"months": months}
-		if len(months) > 0 {
-			result["avg_leftover"] = totalLeftover.
-				Div(decimal.NewFromInt(int64(len(months)))).StringFixed(2)
+		if hasAvg {
+			result["avg_leftover"] = avg
 		}
 		return marshalTool(result)
 
@@ -947,6 +943,119 @@ func trailingMonthsRange(months int) (from, to time.Time) {
 	from = firstOfThis.AddDate(0, -(months - 1), 0)
 	to = firstOfThis.AddDate(0, 1, -1)
 	return from, to
+}
+
+// trendWindow resolves the monthly_trend tool's window and optional month
+// exclusions from the model's input.
+//
+// Precedence mirrors toolDateRange: an explicit start+end range wins, then a
+// trailing N-month window (clamped to 1-24, default 12). start/end are YYYY-MM-DD
+// snapped to whole-month boundaries — the tool reports per calendar month, so a
+// window that began mid-month would either drop partial data or fold a month the
+// caller did not name into the series, and both read exactly like a real answer.
+//
+// exclude drops named YYYY-MM months from BOTH the series and the average. That
+// is the case a custom range alone cannot express: "redo the last year without
+// July, which had a one-time loan payoff" is not a contiguous window. Averaging
+// happens in monthlyTrendSeries over exactly the surviving months, so the
+// average always reconciles with the rows the user sees.
+//
+// A decode failure is reported rather than defaulted, for the same reason as in
+// toolMonths: silently substituting the trailing twelve answers a question
+// nobody asked and leaves no trace.
+func trendWindow(input json.RawMessage) (from, to time.Time, exclude map[string]bool, err error) {
+	var in struct {
+		Months  int      `json:"months"`
+		Start   string   `json:"start"`
+		End     string   `json:"end"`
+		Exclude []string `json:"exclude"`
+	}
+	if err = decodeToolInput(input, &in); err != nil {
+		return from, to, nil, err
+	}
+
+	start := strings.TrimSpace(in.Start)
+	end := strings.TrimSpace(in.End)
+	if start != "" || end != "" {
+		if start == "" || end == "" {
+			return from, to, nil, fmt.Errorf("both start and end are required for a custom monthly range")
+		}
+		from, to, err = monthBoundRange(start, end)
+		if err != nil {
+			return from, to, nil, err
+		}
+	} else {
+		months := in.Months
+		if months < 1 || months > 24 {
+			months = 12
+		}
+		from, to = trailingMonthsRange(months)
+	}
+
+	for _, e := range in.Exclude {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if _, perr := time.Parse("2006-01", e); perr != nil {
+			return from, to, nil, fmt.Errorf("invalid exclude month %q (use YYYY-MM)", e)
+		}
+		if exclude == nil {
+			exclude = make(map[string]bool)
+		}
+		exclude[e] = true
+	}
+	return from, to, exclude, nil
+}
+
+// monthBoundRange parses two YYYY-MM-DD dates and snaps them to the first day of
+// the start month and the last day of the end month, normalising a reversed
+// pair. The snap happens AFTER the swap so a reversed range still lands on
+// whole-month boundaries rather than last-day-of-month as "from".
+func monthBoundRange(start, end string) (from, to time.Time, err error) {
+	s, err := time.Parse("2006-01-02", start)
+	if err != nil {
+		return from, to, fmt.Errorf("invalid start date %q (use YYYY-MM-DD)", start)
+	}
+	e, err := time.Parse("2006-01-02", end)
+	if err != nil {
+		return from, to, fmt.Errorf("invalid end date %q (use YYYY-MM-DD)", end)
+	}
+	if e.Before(s) {
+		s, e = e, s
+	}
+	from = time.Date(s.Year(), s.Month(), 1, 0, 0, 0, 0, time.UTC)
+	to = time.Date(e.Year(), e.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, -1)
+	return from, to, nil
+}
+
+// monthlyTrendSeries turns GetMonthlyTrend rows into the tool's output, dropping
+// any month in exclude and computing avg_leftover over EXACTLY the months it
+// returns. The model cannot average or subtract — it is told to quote
+// avg_leftover verbatim — so the average has to come from here, and it has to
+// agree with the rows the user sees. An excluded month leaves both the series
+// and the total, which is what keeps the reference line honest.
+func monthlyTrendSeries(rows []dbgen.GetMonthlyTrendRow, exclude map[string]bool) (months []map[string]string, avg string, hasAvg bool) {
+	months = make([]map[string]string, 0, len(rows))
+	totalLeftover := decimal.Zero
+	for _, m := range rows {
+		if exclude[m.Month.Format("2006-01")] {
+			continue
+		}
+		leftover := m.Income.Sub(m.Spending)
+		totalLeftover = totalLeftover.Add(leftover)
+		months = append(months, map[string]string{
+			"month":    m.Month.Format("2006-01"),
+			"income":   m.Income.StringFixed(2),
+			"spending": m.Spending.StringFixed(2),
+			"leftover": leftover.StringFixed(2),
+		})
+	}
+	if len(months) > 0 {
+		avg = totalLeftover.Div(decimal.NewFromInt(int64(len(months)))).StringFixed(2)
+		hasAvg = true
+	}
+	return months, avg, hasAvg
 }
 
 // optStr trims s and returns a pointer to it, or nil when empty — the shape the
