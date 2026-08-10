@@ -1885,6 +1885,8 @@ export interface ContributionAccount {
   employer_match_limit: string | null
   beneficiary_current_age: number | null
   beneficiary_target_age: number | null
+  /** This account's own assumed real annual return (fraction, 0.06 = 6%). null = use the household rate. */
+  assumed_real_return: string | null
   /** The IRS cap this kind is subject to; null when none applies or the year is unconfigured. */
   annual_limit: string | null
   /** True when that cap covers more than this account (all 401ks share one). */
@@ -1918,6 +1920,7 @@ export interface ContributionInput {
   employer_match_limit: string | null
   beneficiary_current_age: number | null
   beneficiary_target_age: number | null
+  assumed_real_return: string | null
 }
 
 export type AlertType =

@@ -88,7 +88,13 @@ SELECT
     -- integer that decays — see networth.ResolveAge for the order. NULL here
     -- means fall back, which is what an upgraded instance does until somebody
     -- enters a birthdate.
-    bp.birthdate AS beneficiary_birthdate
+    bp.birthdate AS beneficiary_birthdate,
+    -- The account's OWN assumed real return, when somebody has set one. NULL
+    -- means fall back to the household real_return_rate — the engine treats
+    -- zero/null identically (retirement.go: "zero means use the household
+    -- rate"). Surfaced separately from the household rate because a 529, a
+    -- brokerage and a bond ladder are not the same investment.
+    c.assumed_real_return
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
 LEFT JOIN account_contributions c ON c.account_id = a.id
@@ -120,6 +126,7 @@ type ListProjectableAccountsRow struct {
 	BeneficiaryCurrentAge *int32              `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int32              `json:"beneficiary_target_age"`
 	BeneficiaryBirthdate  *stdtime.Time       `json:"beneficiary_birthdate"`
+	AssumedRealReturn     decimal.NullDecimal `json:"assumed_real_return"`
 }
 
 // Every visible investment account with whatever contribution plan it has.
@@ -153,6 +160,7 @@ func (q *Queries) ListProjectableAccounts(ctx context.Context, arg ListProjectab
 			&i.BeneficiaryCurrentAge,
 			&i.BeneficiaryTargetAge,
 			&i.BeneficiaryBirthdate,
+			&i.AssumedRealReturn,
 		); err != nil {
 			return nil, err
 		}
@@ -167,7 +175,8 @@ func (q *Queries) ListProjectableAccounts(ctx context.Context, arg ListProjectab
 const upsertAccountContribution = `-- name: UpsertAccountContribution :one
 INSERT INTO account_contributions (
     account_id, monthly_contribution, employer_match_pct, annual_salary,
-    employer_match_limit, beneficiary_current_age, beneficiary_target_age
+    employer_match_limit, beneficiary_current_age, beneficiary_target_age,
+    assumed_real_return
 )
 SELECT
     a.id,
@@ -176,12 +185,13 @@ SELECT
     $3::numeric,
     $4::numeric,
     $5::int,
-    $6::int
+    $6::int,
+    $7::numeric
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
-WHERE a.id = $7
-  AND v.household_id = $8
-  AND (v.user_id = $9 OR v.is_shared)
+WHERE a.id = $8
+  AND v.household_id = $9
+  AND (v.user_id = $10 OR v.is_shared)
 ON CONFLICT (account_id) DO UPDATE SET
     monthly_contribution    = EXCLUDED.monthly_contribution,
     employer_match_pct      = EXCLUDED.employer_match_pct,
@@ -189,8 +199,9 @@ ON CONFLICT (account_id) DO UPDATE SET
     employer_match_limit    = EXCLUDED.employer_match_limit,
     beneficiary_current_age = EXCLUDED.beneficiary_current_age,
     beneficiary_target_age  = EXCLUDED.beneficiary_target_age,
+    assumed_real_return     = EXCLUDED.assumed_real_return,
     updated_at              = now()
-RETURNING id, account_id, monthly_contribution, employer_match_pct, annual_salary, employer_match_limit, beneficiary_current_age, beneficiary_target_age, updated_at
+RETURNING id, account_id, monthly_contribution, employer_match_pct, annual_salary, employer_match_limit, beneficiary_current_age, beneficiary_target_age, updated_at, assumed_real_return
 `
 
 type UpsertAccountContributionParams struct {
@@ -200,6 +211,7 @@ type UpsertAccountContributionParams struct {
 	EmployerMatchLimit    decimal.NullDecimal `json:"employer_match_limit"`
 	BeneficiaryCurrentAge *int32              `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int32              `json:"beneficiary_target_age"`
+	AssumedRealReturn     decimal.NullDecimal `json:"assumed_real_return"`
 	AccountID             uuid.UUID           `json:"account_id"`
 	HouseholdID           uuid.UUID           `json:"household_id"`
 	UserID                uuid.UUID           `json:"user_id"`
@@ -221,6 +233,7 @@ func (q *Queries) UpsertAccountContribution(ctx context.Context, arg UpsertAccou
 		arg.EmployerMatchLimit,
 		arg.BeneficiaryCurrentAge,
 		arg.BeneficiaryTargetAge,
+		arg.AssumedRealReturn,
 		arg.AccountID,
 		arg.HouseholdID,
 		arg.UserID,
@@ -236,6 +249,7 @@ func (q *Queries) UpsertAccountContribution(ctx context.Context, arg UpsertAccou
 		&i.BeneficiaryCurrentAge,
 		&i.BeneficiaryTargetAge,
 		&i.UpdatedAt,
+		&i.AssumedRealReturn,
 	)
 	return i, err
 }

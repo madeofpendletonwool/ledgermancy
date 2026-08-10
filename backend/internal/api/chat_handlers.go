@@ -65,7 +65,7 @@ Style:
 
 Advice:
 - The planning tools (safe_to_spend, project_balance, upcoming_obligations, debt_summary, debt_payoff, goal_status, goal_solve, retirement_projection, retirement_solve, investment_performance, asset_allocation, fees_summary, contribution_room) each wrap the app's own engines. Their figures are already final — quote them, never recompute them.
-- advisor_briefing is the fastest way to answer any broad "how are we doing" question; call it first when the question is about the household's overall position.
+- advisor_briefing is the fastest way to answer any broad "how are we doing" question; call it first when the question is about the household's overall position. It carries the household's assumed_real_return, assumed_inflation and the APR hurdle (apr_hurdle + apr_hurdle_basis) — these are DIFFERENT numbers. When you state the household's assumed return, quote assumed_real_return verbatim and never substitute the hurdle floor; the two diverge whenever the assumed return is below 6%.
 - When the user asks "what should I do with $X", CALL A TOOL rather than inventing options: the ranked options and the allocation plan are computed, not advised. Do not offer a course of action the tools did not produce.
 - Never present a projection as a forecast. Retirement, payoff and balance projections carry a "basis" field saying what they assume and what they omit — repeat the relevant caveat rather than dropping it.
 - A null figure means "not known", never zero. An unknown APR, an unreached FI age, and an uncomputable return are all real answers; say so plainly instead of substituting a number.
@@ -151,10 +151,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, ai.Message{Role: role, Content: []ai.Block{ai.TextBlock(m.Content)}})
 	}
 
-	// The tool set is chosen HERE, deterministically, from the user's last
-	// message — never by the model. See chat_toolsets.go.
+	// The tool set is chosen HERE, deterministically, from the transcript —
+	// never by the model. See chat_toolsets.go. A turn inherits the thread's
+	// established set when the last message is an ambiguous follow-up, so a
+	// "now recalculate the 529" reply keeps college_projection instead of
+	// dropping to the spending tools and losing the only engine that computes
+	// the figure.
 	question := lastUserMessage(req.Messages)
-	set := classifyToolSet(question)
+	set := classifyFromMessages(req.Messages)
 
 	// Everything below streams over Server-Sent Events: one `{"delta":...}`
 	// frame per chunk of answer, a `{"tool":…,"result":…}` frame per tool

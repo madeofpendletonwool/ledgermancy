@@ -343,6 +343,15 @@ func (b *Baseline) loadInvestments(
 		if r.BeneficiaryTargetAge != nil {
 			p.BeneficiaryTargetAge = int(*r.BeneficiaryTargetAge)
 		}
+		// The account's own real return, where the household has set one. Zero
+		// (the zero value, and what an unset/null column scans as) means "use the
+		// household rate" — exactly the convention ProjectRetirement already
+		// applies, so this line is the whole wire from the column to the
+		// projection. Without it every account compounds at the household rate,
+		// which understates a 529 and overstates a cash bucket.
+		if r.AssumedRealReturn.Valid {
+			p.RealReturnRate = r.AssumedRealReturn.Decimal
+		}
 		b.Plans = append(b.Plans, p)
 
 		if p.Treatment == "" {

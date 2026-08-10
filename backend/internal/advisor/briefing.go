@@ -118,7 +118,31 @@ type Briefing struct {
 	DebtFree DebtFree `json:"debt_free"`
 	Runway   Runway   `json:"runway"`
 
+	// Assumptions is the household's own stated projection input — the real
+	// return every invested dollar is assumed to earn, the general inflation
+	// rate it is measured against, and the APR hurdle above which a guaranteed
+	// return beats that assumption. These are surfaced so a model quoting "your
+	// assumed return" reads the ACTUAL figure rather than the hurdle floor (6%)
+	// or a figure from memory — the two were conflated in conversation and the
+	// household was told its return was 6% when it had set 3%.
+	Assumptions Assumptions `json:"assumptions"`
+
 	Attention []AttentionItem `json:"attention"`
+}
+
+// Assumptions is the household-level projection input. Rates are FRACTIONS
+// (0.03 = 3%) internally and rendered as percents for the model; the hurdle is
+// already a percent because every APR in the app is.
+type Assumptions struct {
+	// RealReturn is the household's assumed REAL annual return, as a fraction.
+	RealReturn decimal.Decimal `json:"real_return"`
+	// Inflation is the household's assumed general inflation, as a fraction.
+	Inflation decimal.Decimal `json:"inflation"`
+	// Hurdle is the APR, as a PERCENT, above which a guaranteed return beats
+	// RealReturn. HurdleBasis says whether that figure IS the household's real
+	// return or the 6% floor that applies when the assumed return is lower.
+	Hurdle      decimal.Decimal `json:"hurdle"`
+	HurdleBasis string          `json:"hurdle_basis"`
 }
 
 // BuildBriefing composes one household's briefing as of `now`.
@@ -253,6 +277,15 @@ func fillRetirement(
 	} else if err != nil {
 		return err
 	}
+
+	// Surface the household's OWN rates so a model quoting them reads the actual
+	// figures. resolveHurdle is the same rule the advisor ranker uses: the
+	// assumed return where it clears the 6% floor, the floor otherwise — and the
+	// basis string says which, which is exactly the distinction the model
+	// conflated when it called the 6% floor "your assumed return".
+	out.Assumptions.RealReturn = stored.RealReturnRate
+	out.Assumptions.Inflation = stored.InflationRate
+	out.Assumptions.Hurdle, out.Assumptions.HurdleBasis = resolveHurdle(stored.RealReturnRate)
 
 	rows, err := q.ListProjectableAccounts(ctx, dbgen.ListProjectableAccountsParams{
 		HouseholdID: householdID, UserID: sharedUser,

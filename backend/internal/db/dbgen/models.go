@@ -68,6 +68,8 @@ type AccountContribution struct {
 	BeneficiaryCurrentAge *int32       `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int32       `json:"beneficiary_target_age"`
 	UpdatedAt             stdtime.Time `json:"updated_at"`
+	// This account's assumed REAL annual return as a fraction (0.06 = 6%), used by the retirement and college projections in place of the household real_return_rate. NULL means use the household rate. Stored REAL (inflation-adjusted) to match every other rate in the app — the drawdown and projection both work in today's dollars.
+	AssumedRealReturn decimal.NullDecimal `json:"assumed_real_return"`
 }
 
 type AccountTerm struct {

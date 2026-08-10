@@ -248,6 +248,55 @@ func TestCollegeUsesTheExcessOverGeneralInflation(t *testing.T) {
 	}
 }
 
+// A 529 with its OWN assumed real return compounds at that rate, not the
+// household's. This is the fix for "3% across everything": the engine had the
+// per-account plumbing (AccountPlan.RealReturnRate) but the standing college
+// projection never populated it and its drawdown read the household default, so
+// every account — a 529 included — compounded at the one household rate. With
+// the column wired through loadInvestments and returnRateFor, an account that
+// carries its own rate uses it even when the request has no split (which is the
+// college_projection path: it runs with no allocation).
+func TestCollegeUsesAccountOwnReturnRate(t *testing.T) {
+	// Two identical households; only the 529's own rate differs.
+	base := func() Baseline {
+		b := collegeBaseline(dec("20000"), dec("100000"), 10, 4)
+		b.CollegeInflation = dec("5.50")
+		b.InflationRate = dec("0.03")
+		b.Assumptions.RealReturnRate = dec("0.03") // household stays conservative
+		return b
+	}
+
+	withHouseholdRate := base() // 529 plan rate unset -> household 3%
+	withAccountRate := base()
+	for i := range withAccountRate.Plans {
+		if withAccountRate.Plans[i].ID == fiveTwo.String() {
+			withAccountRate.Plans[i].RealReturnRate = dec("0.06") // the 529 earns more
+		}
+	}
+
+	req := Request{HorizonYears: 20, Splits: []Split{}}
+	lower := collegeResult(t, run(t, withHouseholdRate, req))
+	higher := collegeResult(t, run(t, withAccountRate, req))
+
+	if !lower.Projectable || !higher.Projectable {
+		t.Fatalf("both must project: household=%v account=%v", lower.Projectable, higher.Projectable)
+	}
+	// A higher compounding rate grows the balance more and shrinks the monthly
+	// figure needed. If these flip, the per-account rate is not being read.
+	if !higher.BalanceAtEnrollment.GreaterThan(lower.BalanceAtEnrollment) {
+		t.Errorf("enrollment balance at 6%% (%s) should exceed 3%% (%s)",
+			higher.BalanceAtEnrollment, lower.BalanceAtEnrollment)
+	}
+	if higher.MonthlyNeeded == nil || lower.MonthlyNeeded == nil {
+		t.Fatal("want a monthly-needed figure for both")
+	}
+	if !higher.MonthlyNeeded.LessThan(*lower.MonthlyNeeded) {
+		t.Errorf("monthly needed at 6%% (%s) should be less than at 3%% (%s)",
+			higher.MonthlyNeeded, lower.MonthlyNeeded)
+	}
+}
+
+
 // A goal whose beneficiary has no resolvable age is REPORTED as unprojectable
 // rather than projected against a guessed enrollment year. Same refusal to guess
 // that networth.ResolveAge exists for.

@@ -280,12 +280,26 @@ func balanceAtYear(p networth.RetirementProjection, accountID string, years int)
 	return pt.Balance, true
 }
 
-// returnRateFor is the real return this account is compounding at: its own
-// override where the plan set one, the household rate otherwise.
+// returnRateFor is the real return this account is compounding at: a split
+// override first (an allocation_plan that named this account with its own rate
+// — the most explicit statement), then the account's OWN assumed rate from its
+// contribution plan, then the household rate.
+//
+// The middle path is the one the standing college_projection takes: it runs
+// with no split, so results is empty and without this lookup a 529 would
+// compound at the household rate regardless of what the household set on the
+// account. The account's own rate wins over the household rate for the same
+// reason it exists: a 529 and a brokerage are not the household's conservative
+// default.
 func returnRateFor(b Baseline, results []BucketResult, accountID uuid.UUID) decimal.Decimal {
 	for _, r := range results {
 		if r.AccountID == accountID && r.Kind == BucketInvestment {
 			return r.ReturnRate
+		}
+	}
+	for _, p := range b.Plans {
+		if p.ID == accountID.String() && p.RealReturnRate.IsPositive() {
+			return p.RealReturnRate
 		}
 	}
 	return b.Assumptions.RealReturnRate
