@@ -91,7 +91,11 @@ export function Transactions() {
   const setPage = (p: number) => patchParams({ page: p <= 0 ? null : String(p) }, true)
   const toggleAccount = (id: string) => {
     const set = new Set(accountIDs)
-    set.has(id) ? set.delete(id) : set.add(id)
+    if (set.has(id)) {
+      set.delete(id)
+    } else {
+      set.add(id)
+    }
     patchParams({ accounts: [...set].join(',') || null })
   }
 
