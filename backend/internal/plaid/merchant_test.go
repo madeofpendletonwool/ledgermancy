@@ -59,3 +59,25 @@ func TestMerchantKeyRejectsNoise(t *testing.T) {
 		}
 	}
 }
+
+// A bank-masked descriptor leaves only a fragment behind — "RUNNQPS" is a
+// location/processor token, not a merchant. It must not produce a key, or it
+// invents a false merchant (this is the failure that turned a masked BP charge
+// into "Runn"). The single asterisk in a processor prefix like "SQ *" is
+// unaffected because it never reaches the redaction threshold.
+func TestMerchantKeyRejectsMaskedDescriptors(t *testing.T) {
+	for _, in := range []string{
+		"**#*********** RUNNQPS",
+		"**#*************** QPS",
+		"************",
+	} {
+		if got := MerchantKey("", in); got != "" {
+			t.Errorf("MerchantKey(%q) = %q, want \"\" (masked descriptor has no reliable merchant)", in, got)
+		}
+	}
+
+	// Processor-prefix asterisks are a single character and must still normalize.
+	if got := MerchantKey("", "SQ *BLUE BOTTLE #4412"); got != "blue bottle" {
+		t.Errorf("MerchantKey(\"SQ *BLUE BOTTLE #4412\") = %q, want \"blue bottle\"", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	plaidapi "github.com/plaid/plaid-go/v40/plaid"
@@ -476,7 +477,7 @@ func convertTransaction(t plaidapi.Transaction) (Transaction, error) {
 		Date:                 date,
 		AuthorizedDate:       authorized,
 		Name:                 t.GetName(),
-		MerchantName:         optionalString(t.GetMerchantName()),
+		MerchantName:         merchantNameIfConfident(t.GetMerchantName(), t.GetCounterparties()),
 		Pending:              t.GetPending(),
 		PendingTransactionID: optionalString(t.GetPendingTransactionId()),
 		PFCPrimary:           pfcPrimary,
@@ -512,6 +513,55 @@ func optionalString(s string) *string {
 	}
 	return &s
 }
+
+// merchantNameIfConfident returns Plaid's merchant_name only when the strongest
+// counterparty Plaid extracted is at least MEDIUM confidence.
+//
+// Plaid's own confidence_level docs define LOW as "we didn't find a matching
+// counterparty in our records, so we are returning a cleansed name parsed out of
+// the request description." That cleansed fragment is a guess, not a match, and
+// keying or displaying it invents merchants — a bank-masked BP charge became
+// "Runn" this way. Dropping it here lets MerchantKey fall back to the raw
+// transaction name, which is always honest about what the bank actually sent.
+func merchantNameIfConfident(name string, counterparties []plaidapi.TransactionCounterparty) *string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	best := -1
+	for i := range counterparties {
+		if rank := confidenceRank(counterparties[i].GetConfidenceLevel()); rank > best {
+			best = rank
+		}
+	}
+	if best < confidenceMedium {
+		return nil
+	}
+	return &name
+}
+
+// confidenceRank orders Plaid's confidence_level values so the strongest
+// counterparty on a transaction can be selected. See the Counterparty model's
+// field doc for the level definitions; anything below MEDIUM means Plaid did
+// not actually recognise the merchant.
+func confidenceRank(level string) int {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "VERY_HIGH":
+		return 4
+	case "HIGH":
+		return 3
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 1
+	case "UNKNOWN":
+		return 0
+	default:
+		return -1
+	}
+}
+
+const confidenceMedium = 2
 
 // plaidID adapts an identifier Plaid always supplies to the nullable column it
 // is now stored in.
