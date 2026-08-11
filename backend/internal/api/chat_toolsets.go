@@ -77,6 +77,13 @@ var toolSetMembers = map[string][]string{
 		"project_balance", "upcoming_obligations",
 		"debt_summary", "debt_payoff",
 		"goal_status", "goal_solve",
+		// A college-savings question is a planning question too: "how do I save
+		// for my kid's education" routes here when it carries none of the
+		// modelling keywords (529/college/tuition). Without the tool in this
+		// set the model would be asked to plan college funding with none of the
+		// engines that compute it — the same hole that produced a fabricated
+		// 529 figure, just on the first turn instead of a follow-up.
+		"college_projection",
 		"retirement_projection", "retirement_solve",
 		"investment_performance", "asset_allocation", "fees_summary",
 		"contribution_room",
@@ -134,17 +141,24 @@ func toolSetNames(set string) []string {
 
 // setKeywords maps a set to the phrases that select it.
 //
-// Checked MOST SPECIFIC FIRST — likelihood, then modelling, then planning —
-// because the narrower phrases subsume the broader ones: "what should I do with
-// $30k" contains "invest", which is also a planning keyword, and the allocator
-// is the right answer to it; "what are the odds this works" is a likelihood
-// question even though it is asked about an allocation.
+// Checked MOST SPECIFIC FIRST — likelihood, then modelling, then planning, then
+// spending — because the narrower phrases subsume the broader ones: "what should
+// I do with $30k" contains "invest", which is also a planning keyword, and the
+// allocator is the right answer to it; "what are the odds this works" is a
+// likelihood question even though it is asked about an allocation.
 //
 // Substring matching over a lowercased message, which is crude and deliberately
 // so. The classifier's job is to be DETERMINISTIC and inspectable, not clever:
 // the same message must pick the same set every time, and a human reading this
 // list must be able to predict which one. A model-chosen set would reintroduce
 // exactly the wrong-tool failure the sets exist to bound.
+//
+// Spending carries its OWN keywords (not just the fallback) so that a topic
+// change INTO spending is detectable: "and what did I spend at Costco" must
+// route to the transaction tools even mid-way through a planning thread. The
+// keywords are high-precision on purpose and none of them is a substring of a
+// planning/modelling/likelihood keyword, so the more-specific sets still win
+// when a message carries cues from more than one.
 var setKeywords = map[string][]string{
 	// Doc 33's, checked FIRST because they are the most specific of all. "What
 	// are the odds I hit my number" contains no allocator keyword, and the tools
@@ -185,25 +199,103 @@ var setKeywords = map[string][]string{
 		"safe to spend", "emergency fund", "runway", "briefing", "brief me",
 		"headroom", "how much room", "contribution room",
 	},
+	// Spending keywords make a topic change INTO spending detectable, which is
+	// the other half of the follow-up problem: once a thread can inherit a
+	// deeper set (see classifyFromMessages), "now show me my Costco spending"
+	// must still route to the transaction tools rather than staying pinned to
+	// planning. None of these is a substring of a deeper set's keyword, so the
+	// order above is what breaks ties.
+	ToolSetSpending: {
+		"spent", "spending", "my spending",
+		"transactions", "transaction",
+		"merchant", "merchants",
+		"costco", "amazon", "groceries", "grocery",
+		"dining", "restaurant",
+		"subscription", "subscriptions",
+	},
 }
 
-// classifyToolSet picks the tool set for a message.
+// classifyExplicit returns the set a message selects when it carries an
+// explicit topic keyword, and matched=false when it carries none (the spending
+// default). The matched flag is what lets a follow-up INHERIT the thread's
+// established set rather than dropping to spending and losing every computation
+// tool the conversation was just using — see classifyFromMessages.
 //
-// Deterministic by construction: lowercase, then substring-match a fixed
-// ordered list. Same message in, same set out, twice and forever — which is the
-// property the verification asserts, and the reason this is not a model call.
-//
-// The default is ToolSetSpending. An unrecognised question gets exactly the
-// tools the assistant has always had, so nothing that worked before this doc
-// stops working because a keyword was missing.
-func classifyToolSet(message string) string {
+// The check order is the same most-specific-first order the keywords are
+// declared in: a message carrying cues from more than one set routes to the
+// narrower one, which is how "what should I do with $30k" lands in modelling
+// even though it also contains the planning keyword "invest".
+func classifyExplicit(message string) (set string, matched bool) {
 	lower := strings.ToLower(message)
-	// Most specific first. See setKeywords.
-	for _, set := range []string{ToolSetLikelihood, ToolSetModelling, ToolSetPlanning} {
+	for _, set := range []string{ToolSetLikelihood, ToolSetModelling, ToolSetPlanning, ToolSetSpending} {
 		for _, kw := range setKeywords[set] {
 			if strings.Contains(lower, kw) {
-				return set
+				return set, true
 			}
+		}
+	}
+	return ToolSetSpending, false
+}
+
+// classifyToolSet picks the tool set for a single message. It is the
+// single-message view the tests pin: deterministic, and defaulting to spending
+// for a message that carries no topic keyword.
+//
+// For an actual advisor turn use classifyFromMessages, which inherits the
+// thread's set when the last message is an ambiguous follow-up. Keeping this
+// function separate preserves the single-message contract the classifier tests
+// assert against.
+func classifyToolSet(message string) string {
+	set, _ := classifyExplicit(message)
+	return set
+}
+
+// classifyFromMessages picks the tool set for a turn from the WHOLE transcript,
+// not just the last message. It is what the chat handler calls.
+//
+// The single-message rule still decides the turn when the last message carries
+// a keyword — including a topic change INTO spending ("and what did I spend at
+// Costco" matches "spent"/"costco"), so the user can still change the subject
+// exactly as before. What this adds is the follow-up case the single-message
+// rule got badly wrong: a message like "now that the birthday's fixed, what's
+// the monthly number?" carries no topic keyword at all, and under the old rule
+// it dropped to the spending set — which removed college_projection from a
+// thread that was using it one turn ago. With the tool gone the model invented
+// a 529 figure instead of computing one, and a fabricated number in a money app
+// is the failure the whole tool architecture exists to prevent.
+//
+// So when the last message matches no keyword, the conversation's most recent
+// EXPLICIT set is inherited, bounded by recency so a topic raised many turns
+// ago does not pin the present. The asymmetry that makes this the right
+// default: losing a planning/modelling tool is DANGEROUS (the model fabricates
+// numbers), while losing a spending tool is merely degraded (the model says it
+// cannot see transactions). A keyword in the last message always wins.
+func classifyFromMessages(messages []chatMessage) string {
+	last := lastUserMessage(messages)
+	if set, matched := classifyExplicit(last); matched {
+		return set
+	}
+
+	// No explicit keyword in the last turn. Walk the earlier user turns, most
+	// recent first, and inherit the first explicit set a message carried. The
+	// window keeps a long-ago topic from sticking — a thread that opened on
+	// retirement and moved to groceries six turns back should not still be
+	// pinned to planning.
+	const historyWindow = 8
+	turns := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			continue
+		}
+		turns++
+		if turns == 1 {
+			continue // the last message — already classified as ambiguous
+		}
+		if turns > historyWindow {
+			break
+		}
+		if set, matched := classifyExplicit(messages[i].Content); matched {
+			return set
 		}
 	}
 	return ToolSetSpending

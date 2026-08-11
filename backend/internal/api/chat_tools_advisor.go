@@ -983,6 +983,15 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		"debt_free":            debtFree,
 		"emergency_fund":       runway,
 		"attention":            attention,
+		// The household's OWN rates. Quoted as percents because that is how the
+		// user sees them and how the model should state them. The hurdle and its
+		// basis travel together so "your assumed return" and "the APR hurdle"
+		// cannot be confused again — they are different numbers whenever the
+		// assumed return is below the 6% floor.
+		"assumed_real_return": b.Assumptions.RealReturn.Mul(decimal.NewFromInt(100)).Round(2).String(),
+		"assumed_inflation":   b.Assumptions.Inflation.Mul(decimal.NewFromInt(100)).Round(2).String(),
+		"apr_hurdle":          b.Assumptions.Hurdle.String(),
+		"apr_hurdle_basis":    b.Assumptions.HurdleBasis,
 	}
 	return out
 }

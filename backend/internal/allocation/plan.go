@@ -436,15 +436,22 @@ func buildPlanInputs(b Baseline, req Request) (planInputs, error) {
 				// bucket the engine never saw.
 				return planInputs{}, fmt.Errorf("internal: no projection plan for account %s", a.bucket.AccountID)
 			}
-			plans[idx].FirstYearContribution = plans[idx].FirstYearContribution.Add(r.AppliedLump)
-			plans[idx].MonthlyContribution = plans[idx].MonthlyContribution.Add(r.AppliedMonthly)
-			if a.split.RealReturnRate.Valid && a.split.RealReturnRate.Decimal.IsPositive() {
-				plans[idx].RealReturnRate = a.split.RealReturnRate.Decimal
-				r.ReturnRate = a.split.RealReturnRate.Decimal
-			} else {
-				r.ReturnRate = b.Assumptions.RealReturnRate
-				r.RateIsHousehold = true
-			}
+		plans[idx].FirstYearContribution = plans[idx].FirstYearContribution.Add(r.AppliedLump)
+		plans[idx].MonthlyContribution = plans[idx].MonthlyContribution.Add(r.AppliedMonthly)
+		switch {
+		case a.split.RealReturnRate.Valid && a.split.RealReturnRate.Decimal.IsPositive():
+			// The most explicit statement: this allocation names its own rate.
+			plans[idx].RealReturnRate = a.split.RealReturnRate.Decimal
+			r.ReturnRate = a.split.RealReturnRate.Decimal
+		case plans[idx].RealReturnRate.IsPositive():
+			// The account's own assumed rate, set on its contribution plan.
+			// Wins over the household rate because a 529 is not the household's
+			// conservative default — the whole reason that column exists.
+			r.ReturnRate = plans[idx].RealReturnRate
+		default:
+			r.ReturnRate = b.Assumptions.RealReturnRate
+			r.RateIsHousehold = true
+		}
 		}
 
 		results = append(results, r)

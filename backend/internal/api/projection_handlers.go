@@ -324,6 +324,10 @@ type contributionAccountResponse struct {
 	BeneficiaryCurrentAge *int32 `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int32 `json:"beneficiary_target_age"`
 
+	// AssumedRealReturn is this account's own assumed real return (fraction),
+	// null when unset — meaning the household rate is in effect.
+	AssumedRealReturn *decimal.Decimal `json:"assumed_real_return"`
+
 	// AnnualLimit is the IRS cap this account's kind is subject to, null when
 	// none applies (taxable, 529, trust) or when the running year's limits are
 	// not configured. LimitShared warns that the cap covers more than this one
@@ -385,6 +389,7 @@ func (s *Server) handleListContributions(w http.ResponseWriter, r *http.Request)
 			EmployerMatchLimit:    nullDecimal(a.EmployerMatchLimit),
 			BeneficiaryCurrentAge: a.BeneficiaryCurrentAge,
 			BeneficiaryTargetAge:  a.BeneficiaryTargetAge,
+			AssumedRealReturn:     nullDecimal(a.AssumedRealReturn),
 		}
 		if a.MonthlyContribution.Valid {
 			item.MonthlyContribution = a.MonthlyContribution.Decimal
@@ -421,6 +426,10 @@ type contributionRequest struct {
 	EmployerMatchLimit    *string `json:"employer_match_limit"`
 	BeneficiaryCurrentAge *int    `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int    `json:"beneficiary_target_age"`
+	// AssumedRealReturn is this account's OWN assumed real annual return, as a
+	// fraction (0.06 = 6%). nil/empty means "use the household rate" — the
+	// behaviour every account had before this field existed.
+	AssumedRealReturn *string `json:"assumed_real_return"`
 }
 
 func (s *Server) handleSaveContribution(w http.ResponseWriter, r *http.Request) {
@@ -464,6 +473,10 @@ func (s *Server) handleSaveContribution(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if params.EmployerMatchLimit, err = optionalMoney(req.EmployerMatchLimit, "employer_match_limit"); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if params.AssumedRealReturn, err = optionalRate(req.AssumedRealReturn, "assumed_real_return"); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

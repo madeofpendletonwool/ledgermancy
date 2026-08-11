@@ -189,3 +189,65 @@ func TestListCollegeGoalsBirthdateNilWhenNoLink(t *testing.T) {
 			rows[0].BeneficiaryBirthdate.Format(time.DateOnly))
 	}
 }
+
+// The per-account assumed real return round-trips through UpsertAccountContribution
+// and back out through ListProjectableAccounts. NULL means "use the household
+// rate" and must survive as a null scan, not collapse to zero — a 0% real return
+// and "not set" are opposite inputs to the projection.
+func TestAccountContributionAssumedRealReturnRoundTrip(t *testing.T) {
+	f := newCollegeGoalFixture(t)
+
+	// Set a 6% real return on the 529's contribution plan.
+	if _, err := f.q.UpsertAccountContribution(f.ctx, dbgen.UpsertAccountContributionParams{
+		AccountID:           f.accountID,
+		HouseholdID:         f.householdID,
+		UserID:              f.ownerID,
+		MonthlyContribution: decimal.RequireFromString("200.00"),
+		AssumedRealReturn:   decimal.NewNullDecimal(decimal.RequireFromString("0.0600")),
+	}); err != nil {
+		t.Fatalf("upsert contribution with return rate: %v", err)
+	}
+
+	rows, err := f.q.ListProjectableAccounts(f.ctx, dbgen.ListProjectableAccountsParams{
+		HouseholdID: f.householdID, UserID: f.ownerID,
+	})
+	if err != nil {
+		t.Fatalf("list projectable accounts: %v", err)
+	}
+	var found bool
+	for _, r := range rows {
+		if r.ID == f.accountID {
+			found = true
+			if !r.AssumedRealReturn.Valid {
+				t.Fatal("assumed_real_return scanned as null after being set to 0.06")
+			}
+			if want := decimal.RequireFromString("0.06"); !r.AssumedRealReturn.Decimal.Equal(want) {
+				t.Errorf("assumed_real_return = %s, want %s", r.AssumedRealReturn.Decimal, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("529 not returned by ListProjectableAccounts")
+	}
+
+	// Clearing it back to null must round-trip as null, not zero. A null means
+	// "use the household rate"; a zero would mean "this account earns nothing".
+	if _, err := f.q.UpsertAccountContribution(f.ctx, dbgen.UpsertAccountContributionParams{
+		AccountID:           f.accountID,
+		HouseholdID:         f.householdID,
+		UserID:              f.ownerID,
+		MonthlyContribution: decimal.RequireFromString("200.00"),
+		AssumedRealReturn:   decimal.NullDecimal{}, // explicitly unset
+	}); err != nil {
+		t.Fatalf("upsert contribution clearing return rate: %v", err)
+	}
+	rows, _ = f.q.ListProjectableAccounts(f.ctx, dbgen.ListProjectableAccountsParams{
+		HouseholdID: f.householdID, UserID: f.ownerID,
+	})
+	for _, r := range rows {
+		if r.ID == f.accountID && r.AssumedRealReturn.Valid {
+			t.Errorf("assumed_real_return = %s after clearing, want null (use household rate)",
+				r.AssumedRealReturn.Decimal)
+		}
+	}
+}

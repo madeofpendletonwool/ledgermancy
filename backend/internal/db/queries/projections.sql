@@ -58,7 +58,13 @@ SELECT
     -- integer that decays — see networth.ResolveAge for the order. NULL here
     -- means fall back, which is what an upgraded instance does until somebody
     -- enters a birthdate.
-    bp.birthdate AS beneficiary_birthdate
+    bp.birthdate AS beneficiary_birthdate,
+    -- The account's OWN assumed real return, when somebody has set one. NULL
+    -- means fall back to the household real_return_rate — the engine treats
+    -- zero/null identically (retirement.go: "zero means use the household
+    -- rate"). Surfaced separately from the household rate because a 529, a
+    -- brokerage and a bond ladder are not the same investment.
+    c.assumed_real_return
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
 LEFT JOIN account_contributions c ON c.account_id = a.id
@@ -80,7 +86,8 @@ ORDER BY v.institution_name, a.name;
 -- sees pgx.ErrNoRows (a 404), rather than the write silently succeeding.
 INSERT INTO account_contributions (
     account_id, monthly_contribution, employer_match_pct, annual_salary,
-    employer_match_limit, beneficiary_current_age, beneficiary_target_age
+    employer_match_limit, beneficiary_current_age, beneficiary_target_age,
+    assumed_real_return
 )
 SELECT
     a.id,
@@ -89,7 +96,8 @@ SELECT
     sqlc.narg('annual_salary')::numeric,
     sqlc.narg('employer_match_limit')::numeric,
     sqlc.narg('beneficiary_current_age')::int,
-    sqlc.narg('beneficiary_target_age')::int
+    sqlc.narg('beneficiary_target_age')::int,
+    sqlc.narg('assumed_real_return')::numeric
 FROM accounts a
 JOIN account_access v ON v.account_id = a.id
 WHERE a.id = sqlc.arg('account_id')
@@ -102,6 +110,7 @@ ON CONFLICT (account_id) DO UPDATE SET
     employer_match_limit    = EXCLUDED.employer_match_limit,
     beneficiary_current_age = EXCLUDED.beneficiary_current_age,
     beneficiary_target_age  = EXCLUDED.beneficiary_target_age,
+    assumed_real_return     = EXCLUDED.assumed_real_return,
     updated_at              = now()
 RETURNING *;
 

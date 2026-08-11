@@ -68,6 +68,8 @@ type AccountContribution struct {
 	BeneficiaryCurrentAge *int32       `json:"beneficiary_current_age"`
 	BeneficiaryTargetAge  *int32       `json:"beneficiary_target_age"`
 	UpdatedAt             stdtime.Time `json:"updated_at"`
+	// This account's assumed REAL annual return as a fraction (0.06 = 6%), used by the retirement and college projections in place of the household real_return_rate. NULL means use the household rate. Stored REAL (inflation-adjusted) to match every other rate in the app — the drawdown and projection both work in today's dollars.
+	AssumedRealReturn decimal.NullDecimal `json:"assumed_real_return"`
 }
 
 type AccountTerm struct {
@@ -796,6 +798,16 @@ type Transaction struct {
 	// User state: a real but non-repeating event (loan payoff, tax bill, car purchase). Counted in the month it fell; skipped by trailing-average and recurring-detection queries that pass exclude_one_time. Preserved across Plaid sync, like excluded_from_reports and notes.
 	IsOneTime    bool       `json:"is_one_time"`
 	ObligationID *uuid.UUID `json:"obligation_id"`
+}
+
+// Two legs of one internal transfer (a debit on one of the household's accounts matched to an equal credit on another). Structural: matched by amount and date, not by payee name, so it catches transfers the name heuristics and Plaid miss. Each transaction is in at most one pair.
+type TransactionPair struct {
+	ID          uuid.UUID       `json:"id"`
+	HouseholdID uuid.UUID       `json:"household_id"`
+	OutTxnID    uuid.UUID       `json:"out_txn_id"`
+	InTxnID     uuid.UUID       `json:"in_txn_id"`
+	Amount      decimal.Decimal `json:"amount"`
+	CreatedAt   stdtime.Time    `json:"created_at"`
 }
 
 type TransactionSplit struct {

@@ -881,6 +881,13 @@ function ContributionRow({
   const [benefTarget, setBenefTarget] = useState(
     account.beneficiary_target_age === null ? '' : String(account.beneficiary_target_age),
   )
+  // This account's own assumed real return, shown as a percent (6 = 6%) and
+  // stored as a fraction. Blank means "use the household rate" — the default
+  // every account had before this field, and still the right one for an account
+  // the household has no separate view on.
+  const [realReturn, setRealReturn] = useState(
+    account.assumed_real_return ? toPercentField(account.assumed_real_return) : '',
+  )
 
   const save = useMutation({
     mutationFn: () =>
@@ -891,6 +898,7 @@ function ContributionRow({
         employer_match_limit: matchLimit.trim() === '' ? null : matchLimit.trim(),
         beneficiary_current_age: benefNow.trim() === '' ? null : Number(benefNow),
         beneficiary_target_age: benefTarget.trim() === '' ? null : Number(benefTarget),
+        assumed_real_return: realReturn.trim() === '' ? null : fromPercentField(realReturn),
       }),
     onSuccess: () => {
       setOpen(false)
@@ -1001,6 +1009,15 @@ function ContributionRow({
               />
             </>
           )}
+
+          <Field
+            id={`real-return-${account.id}`}
+            label="Assumed real return"
+            suffix="%"
+            hint="This account's own real (inflation-adjusted) return. Blank uses the household rate — a 529 is typically higher than a conservative default."
+            value={realReturn}
+            onChange={setRealReturn}
+          />
 
           <div className="flex items-end sm:col-span-3">
             <button type="submit" className="btn-primary" disabled={save.isPending}>

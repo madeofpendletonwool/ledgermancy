@@ -163,3 +163,50 @@ WHERE t.account_id = a.id
 
 -- name: ListHouseholdIDs :many
 SELECT id FROM households ORDER BY created_at;
+
+-- name: ListTransferPairCandidates :many
+-- Transactions the structural transfer pairer may consider, scoped to one
+-- household and a lookback window. The filters encode the pairing safeguards:
+--
+--   * depository or investment accounts only. Credit-card payments have their
+--     own name heuristic and category, and loan payments are SPENDING in this
+--     app's model (is_fixed, not is_transfer) — pairing either would either
+--     relabel pointlessly or hide a real fixed cost.
+--   * not income. A paycheck is a deposit with no matching debit on the
+--     household's own accounts; allowing it to pair with a same-sized expense
+--     is the classic false positive that would hide spending.
+--   * not manually categorised. A manual choice is the user's answer and the
+--     pairer must never override it (ApplyCategory enforces this too).
+--   * not already paired. The transaction_pairs UNIQUE constraints are the
+--     idempotency guarantee; this NOT EXISTS keeps a re-run from reconsidering
+--     a leg that is already linked.
+SELECT t.id, t.account_id, t.amount, t.date
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE v.household_id = $1
+  AND t.date >= $2
+  AND t.amount <> 0
+  AND a.type IN ('depository', 'investment')
+  AND COALESCE(c.is_income, false) = false
+  AND t.category_source IS DISTINCT FROM 'manual'
+  AND NOT EXISTS (
+      SELECT 1 FROM transaction_pairs p
+      WHERE p.out_txn_id = t.id OR p.in_txn_id = t.id
+  )
+ORDER BY t.date;
+
+-- name: CreateTransferPair :one
+-- Records one matched pair. out_txn_id is the debit (money out), in_txn_id the
+-- credit. The caller re-categorises both legs with ApplyCategory BEFORE this
+-- insert, so a failure here leaves the legs correctly categorised and the next
+-- run simply retries the insert (the legs are not yet paired, so they remain
+-- candidates and re-match). The reverse order would leave a pair recorded over
+-- mis-categorised legs that the candidate filter would then refuse to revisit.
+INSERT INTO transaction_pairs (household_id, out_txn_id, in_txn_id, amount)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: CountTransferPairs :one
+SELECT count(*) FROM transaction_pairs WHERE household_id = $1;

@@ -9,6 +9,8 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	decimal "github.com/shopspring/decimal"
+	stdtime "time"
 )
 
 const applyCategory = `-- name: ApplyCategory :exec
@@ -80,6 +82,17 @@ type ApplyMerchantCategoryRewritableParams struct {
 func (q *Queries) ApplyMerchantCategoryRewritable(ctx context.Context, arg ApplyMerchantCategoryRewritableParams) error {
 	_, err := q.db.Exec(ctx, applyMerchantCategoryRewritable, arg.HouseholdID, arg.MerchantKey, arg.CategoryID)
 	return err
+}
+
+const countTransferPairs = `-- name: CountTransferPairs :one
+SELECT count(*) FROM transaction_pairs WHERE household_id = $1
+`
+
+func (q *Queries) CountTransferPairs(ctx context.Context, householdID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransferPairs, householdID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createCategory = `-- name: CreateCategory :one
@@ -166,6 +179,44 @@ func (q *Queries) CreateCategoryRule(ctx context.Context, arg CreateCategoryRule
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createTransferPair = `-- name: CreateTransferPair :one
+INSERT INTO transaction_pairs (household_id, out_txn_id, in_txn_id, amount)
+VALUES ($1, $2, $3, $4)
+RETURNING id, household_id, out_txn_id, in_txn_id, amount, created_at
+`
+
+type CreateTransferPairParams struct {
+	HouseholdID uuid.UUID       `json:"household_id"`
+	OutTxnID    uuid.UUID       `json:"out_txn_id"`
+	InTxnID     uuid.UUID       `json:"in_txn_id"`
+	Amount      decimal.Decimal `json:"amount"`
+}
+
+// Records one matched pair. out_txn_id is the debit (money out), in_txn_id the
+// credit. The caller re-categorises both legs with ApplyCategory BEFORE this
+// insert, so a failure here leaves the legs correctly categorised and the next
+// run simply retries the insert (the legs are not yet paired, so they remain
+// candidates and re-match). The reverse order would leave a pair recorded over
+// mis-categorised legs that the candidate filter would then refuse to revisit.
+func (q *Queries) CreateTransferPair(ctx context.Context, arg CreateTransferPairParams) (TransactionPair, error) {
+	row := q.db.QueryRow(ctx, createTransferPair,
+		arg.HouseholdID,
+		arg.OutTxnID,
+		arg.InTxnID,
+		arg.Amount,
+	)
+	var i TransactionPair
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.OutTxnID,
+		&i.InTxnID,
+		&i.Amount,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -425,6 +476,77 @@ func (q *Queries) ListLLMCandidates(ctx context.Context, arg ListLLMCandidatesPa
 			&i.Name,
 			&i.PlaidPfcPrimary,
 			&i.PlaidPfcDetailed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransferPairCandidates = `-- name: ListTransferPairCandidates :many
+SELECT t.id, t.account_id, t.amount, t.date
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+LEFT JOIN categories c ON c.id = t.category_id
+WHERE v.household_id = $1
+  AND t.date >= $2
+  AND t.amount <> 0
+  AND a.type IN ('depository', 'investment')
+  AND COALESCE(c.is_income, false) = false
+  AND t.category_source IS DISTINCT FROM 'manual'
+  AND NOT EXISTS (
+      SELECT 1 FROM transaction_pairs p
+      WHERE p.out_txn_id = t.id OR p.in_txn_id = t.id
+  )
+ORDER BY t.date
+`
+
+type ListTransferPairCandidatesParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Date        stdtime.Time `json:"date"`
+}
+
+type ListTransferPairCandidatesRow struct {
+	ID        uuid.UUID       `json:"id"`
+	AccountID uuid.UUID       `json:"account_id"`
+	Amount    decimal.Decimal `json:"amount"`
+	Date      stdtime.Time    `json:"date"`
+}
+
+// Transactions the structural transfer pairer may consider, scoped to one
+// household and a lookback window. The filters encode the pairing safeguards:
+//
+//   - depository or investment accounts only. Credit-card payments have their
+//     own name heuristic and category, and loan payments are SPENDING in this
+//     app's model (is_fixed, not is_transfer) — pairing either would either
+//     relabel pointlessly or hide a real fixed cost.
+//   - not income. A paycheck is a deposit with no matching debit on the
+//     household's own accounts; allowing it to pair with a same-sized expense
+//     is the classic false positive that would hide spending.
+//   - not manually categorised. A manual choice is the user's answer and the
+//     pairer must never override it (ApplyCategory enforces this too).
+//   - not already paired. The transaction_pairs UNIQUE constraints are the
+//     idempotency guarantee; this NOT EXISTS keeps a re-run from reconsidering
+//     a leg that is already linked.
+func (q *Queries) ListTransferPairCandidates(ctx context.Context, arg ListTransferPairCandidatesParams) ([]ListTransferPairCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listTransferPairCandidates, arg.HouseholdID, arg.Date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTransferPairCandidatesRow{}
+	for rows.Next() {
+		var i ListTransferPairCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.Amount,
+			&i.Date,
 		); err != nil {
 			return nil, err
 		}
