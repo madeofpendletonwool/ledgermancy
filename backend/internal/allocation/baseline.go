@@ -445,15 +445,18 @@ func (b *Baseline) loadGoals(ctx context.Context, q *dbgen.Queries, householdID 
 		}
 		// The enrollment horizon. Birthdate first, the stored integer second,
 		// neither means the goal is reported as unprojectable — the same order
-		// and the same refusal to guess that ResolveAge exists for.
+		// and the same refusal to guess that ResolveAge exists for. The target
+		// age is networth.EnrollmentAge's business, shared with the retirement
+		// projection so one account cannot end up with two different horizons.
 		storedAge := 0
 		if c.BeneficiaryCurrentAge != nil {
 			storedAge = int(*c.BeneficiaryCurrentAge)
 		}
-		targetAge := defaultEnrollmentAge
-		if c.BeneficiaryTargetAge != nil && *c.BeneficiaryTargetAge > 0 {
-			targetAge = int(*c.BeneficiaryTargetAge)
+		storedTarget := 0
+		if c.BeneficiaryTargetAge != nil {
+			storedTarget = int(*c.BeneficiaryTargetAge)
 		}
+		targetAge := networth.EnrollmentAge(storedTarget)
 		if age, ok := networth.ResolveAge(c.BeneficiaryBirthdate, storedAge, now); ok {
 			years := targetAge - age
 			if years < 0 {
@@ -465,11 +468,6 @@ func (b *Baseline) loadGoals(ctx context.Context, q *dbgen.Queries, householdID 
 	}
 	return nil
 }
-
-// defaultEnrollmentAge is used only when the linked account carries no
-// beneficiary target age. Eighteen is the convention rather than a fact, which
-// is exactly why the account-level field overrides it.
-const defaultEnrollmentAge = 18
 
 // BucketByID finds a bucket. Returns false rather than a zero Bucket for a
 // missing one, so a request naming an account the caller cannot see is a 400

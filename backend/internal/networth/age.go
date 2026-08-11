@@ -64,3 +64,34 @@ func ResolveAge(birthdate *time.Time, stored int, now time.Time) (int, bool) {
 	}
 	return 0, false
 }
+
+// DefaultEnrollmentAge is the age a custodial account's beneficiary is assumed
+// to start spending it when the account carries no target age of its own.
+//
+// This deliberately does NOT follow step 3 above, and the difference is the
+// whole reason it is written down. A beneficiary's age is a FACT about a
+// person: there is no honest default for it, so ResolveAge reports it missing.
+// An enrollment age is a CONVENTION — eighteen, which is exactly why the
+// per-account field exists to override it — and declining to apply it does not
+// leave the projection silent, it leaves the projection WRONG: with no horizon
+// a 529 compounds past enrollment forever and its whole balance counts toward
+// the household's FI number. That error runs in the flattering direction, which
+// is the kind nobody catches. Being off by a couple of years on the stop date
+// is the smaller mistake, and the visible one.
+//
+// The college goal has defaulted this way since it was written. This constant
+// is here rather than private to allocation so the retirement projection reads
+// the same rule from the same place: two surfaces disagreeing about one account
+// is the bug both of them exist downstream of.
+const DefaultEnrollmentAge = 18
+
+// EnrollmentAge applies that rule: the account's own target age where the
+// household set one, the convention otherwise. `stored` is zero when the
+// nullable column is NULL, the same "zero means not set" convention ResolveAge
+// takes for the legacy age integers.
+func EnrollmentAge(stored int) int {
+	if stored > 0 {
+		return stored
+	}
+	return DefaultEnrollmentAge
+}

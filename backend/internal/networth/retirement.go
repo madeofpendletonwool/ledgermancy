@@ -82,6 +82,11 @@ type AccountPlan struct {
 	// person's birthdate aged to `now` and falling back to the stored integer
 	// only when there is no person or no birthdate. See ResolveAge — a stored
 	// age is correct the day it is typed and wrong every year after.
+	//
+	// BeneficiaryTargetAge is the age the money starts being spent. Zero means
+	// the household never set one, and the horizon falls back to
+	// DefaultEnrollmentAge — the same convention the college goal uses, so the
+	// two surfaces cannot disagree about one account.
 	BeneficiaryCurrentAge int
 	BeneficiaryTargetAge  int
 }
@@ -391,12 +396,23 @@ func BuildSchedule(plans []AccountPlan, a RetirementAssumptions, now time.Time) 
 		if rate.IsPositive() {
 			s.Rate, s.MonthlyRate = rate, rate.Div(twelve)
 		}
-		if p.BeneficiaryTargetAge > 0 && p.BeneficiaryCurrentAge > 0 {
+		// The horizon needs the beneficiary's AGE, which cannot be guessed, but
+		// not their target age, which falls back to the convention the college
+		// goal already uses — see DefaultEnrollmentAge for why one of those
+		// defaults and the other refuses to. Without the fallback a household
+		// that tagged its 529 with a child and gave that child a birthdate got
+		// a projected college goal and a retirement projection that compounded
+		// the same account past enrollment forever.
+		//
+		// Gated on Education because only a custodial account has an enrollment
+		// to stop at; that also matches Stopped, which is the only reader of
+		// the pair and already requires it.
+		if s.Education && p.BeneficiaryCurrentAge > 0 {
 			// The account stops for every month AFTER yearsToGo*12. A
 			// beneficiary already at or past their target age gives a stop
 			// month of zero, which stops it from month 1: the money is already
 			// being spent, so nothing more goes in and nothing more compounds.
-			years := p.BeneficiaryTargetAge - p.BeneficiaryCurrentAge
+			years := EnrollmentAge(p.BeneficiaryTargetAge) - p.BeneficiaryCurrentAge
 			if years < 0 {
 				years = 0
 			}
@@ -412,9 +428,10 @@ func BuildSchedule(plans []AccountPlan, a RetirementAssumptions, now time.Time) 
 // thing it was for.
 //
 // Only education accounts ever stop, and only when a horizon actually resolved.
-// An education account with no beneficiary age on file runs the full term
-// rather than being stopped at a guessed year — the same refusal to invent a
-// horizon that ResolveAge exists for.
+// An education account whose beneficiary has no age on file runs the full term:
+// the enrollment age falls back to a convention, but the beneficiary's own age
+// never does, so there is nothing to count the years from — the same refusal to
+// invent a missing fact that ResolveAge exists for.
 func (s AccountSchedule) Stopped(m int) bool {
 	return s.Education && s.HasHorizon && m > s.StopMonth
 }
