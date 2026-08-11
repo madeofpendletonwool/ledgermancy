@@ -57,7 +57,15 @@ const (
 // not a condition to degrade gracefully from, it is a design decision somebody
 // has to make. The next wave hits a build failure and picks a fourth set, which
 // is much better than shipping a quality cliff nobody measured.
-const maxToolsPerSet = 15
+//
+// Raised from 15 to 16 for planning only: monthly_trend had to join that set
+// (see ToolSetPlanning) so a cashflow follow-up that names a planning cue —
+// "redo the average without July, its numbers were skewed by a loan payoff" —
+// does not lose the only tool that answers it. The route is right ("loan
+// payoff" is genuinely a planning cue), so the fix is the tool's membership,
+// and 16 distinct planning tools is still well inside the budget the cap exists
+// to protect.
+const maxToolsPerSet = 16
 
 // commonTools are in EVERY set, because every advisor conversation starts from
 // the same two places: what is the household's position, and how much room does
@@ -87,6 +95,15 @@ var toolSetMembers = map[string][]string{
 		"retirement_projection", "retirement_solve",
 		"investment_performance", "asset_allocation", "fees_summary",
 		"contribution_room",
+		// A cashflow follow-up can land here through its OWN keyword, not just
+		// inheritance: "redo the average monthly leftover without July — that
+		// month was skewed by a big loan payoff" routes to planning on "loan",
+		// even though the question is monthly_trend's. Without the tool in this
+		// set the advisor truthfully reports it has no per-month income/spending
+		// tool, exactly the bug that was reported the day after monthly_trend
+		// shipped its custom-range + exclude support. Same fix shape as
+		// college_projection above: the tool follows the misroute.
+		"monthly_trend",
 	},
 	// A "what should I do with $X" question needs the same position inputs a
 	// planning question does — what is owed, what room is left, where the

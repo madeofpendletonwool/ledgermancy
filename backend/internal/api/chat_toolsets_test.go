@@ -211,6 +211,32 @@ func TestCollegeProjectionReachableOnPlanningFollowUp(t *testing.T) {
 	}
 }
 
+// THE REGRESSION FROM THE LIVE BUG REPORT: a monthly_trend follow-up that
+// explains WHY it is dropping a month — "because of a big loan payoff" —
+// contains the planning keyword "loan", so the last-message rule routes the
+// turn to planning. monthly_trend lives in the spending set, so without it in
+// planning too the advisor truthfully told the user it had no per-month
+// income/spending tool, even though the tool (with custom ranges and exclude)
+// had shipped the day before. The classifier route is correct — "loan payoff"
+// genuinely is a planning cue — so the fix is the same shape as
+// college_projection's: the tool has to be in the set the misroute lands in.
+func TestMonthlyTrendReachableOnLoanPayoffFollowUp(t *testing.T) {
+	transcript := []chatMessage{
+		{Role: "user", Content: "Average money leftover at the end of each month over the course of the last year."},
+		{Role: "assistant", Content: "…"},
+		{Role: "user", Content: "Can you do the math without this month - 2026-08 and last month - 2026-07 " +
+			"because those are skewed because of a big loan payoff and this month income not coming in yet. " +
+			"So just start 2 months prior maybe?"},
+	}
+	got := classifyFromMessages(transcript)
+	if got != ToolSetPlanning {
+		t.Fatalf("follow-up classified as %q, want %q (the \"loan payoff\" cue routes here)", got, ToolSetPlanning)
+	}
+	if !hasTool(got, "monthly_trend") {
+		t.Error("monthly_trend missing from planning — the advisor will tell the user the tool does not exist")
+	}
+}
+
 // The other half of the fix: a topic change INTO spending must still route to
 // the transaction tools, even mid-thread. Once an ambiguous follow-up can
 // inherit a deeper set, "and what did I spend at Costco" must not stay pinned
