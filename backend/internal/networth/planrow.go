@@ -53,13 +53,14 @@ func PlanFromRow(r dbgen.ListProjectableAccountsRow, now time.Time) AccountPlan 
 	if r.BeneficiaryTargetAge != nil {
 		p.BeneficiaryTargetAge = int(*r.BeneficiaryTargetAge)
 	}
-	// The account's own real return, where the household has set one. A NULL
-	// column leaves the field at its zero value, which BuildSchedule reads as
-	// "use the household rate" — so an account nobody has an opinion about
-	// projects exactly as it did before this column existed.
-	if r.AssumedRealReturn.Valid {
-		p.RealReturnRate = r.AssumedRealReturn.Decimal
-	}
+	// The account's own real return, where the household has set one. The
+	// column is nullable and the row carries it as a NullDecimal, so it maps
+	// straight through: NULL becomes Invalid here, which BuildSchedule reads as
+	// "use the household rate", and a stored 0% stays VALID — the two no longer
+	// collapse the way they did when this field was a plain decimal. An account
+	// nobody has an opinion about projects exactly as it did before this column
+	// existed.
+	p.RealReturnRate = r.AssumedRealReturn
 	return p
 }
 

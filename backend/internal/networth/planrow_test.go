@@ -39,19 +39,37 @@ func TestPlanFromRowCarriesAssumedRealReturn(t *testing.T) {
 	rate := decimal.NewNullDecimal(decimal.RequireFromString("0.06"))
 	p := PlanFromRow(rowFor(rate, nil, nil), time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC))
 
-	if want := decimal.RequireFromString("0.06"); !p.RealReturnRate.Equal(want) {
-		t.Errorf("RealReturnRate = %s, want %s", p.RealReturnRate, want)
+	if !p.RealReturnRate.Valid {
+		t.Fatalf("RealReturnRate not valid after mapping a set rate")
+	}
+	if want := decimal.RequireFromString("0.06"); !p.RealReturnRate.Decimal.Equal(want) {
+		t.Errorf("RealReturnRate = %s, want %s", p.RealReturnRate.Decimal, want)
 	}
 }
 
-// NULL is not zero here, but it maps to the same zero VALUE on purpose: the
-// engine's documented convention is that a zero RealReturnRate means "use the
-// household rate". An account nobody has an opinion about must project exactly
-// as it did before the column existed.
+// NULL maps to an INVALID NullDecimal, which BuildSchedule reads as "use the
+// household rate". This is the distinct case from a stored 0%: NULL is "no
+// opinion", a stored zero is "flat". An account nobody has an opinion about
+// must project exactly as it did before the column existed.
 func TestPlanFromRowNullReturnMeansHouseholdRate(t *testing.T) {
 	p := PlanFromRow(rowFor(decimal.NullDecimal{}, nil, nil), time.Now().UTC())
-	if !p.RealReturnRate.IsZero() {
-		t.Errorf("RealReturnRate = %s, want zero (the household-rate sentinel)", p.RealReturnRate)
+	if p.RealReturnRate.Valid {
+		t.Errorf("RealReturnRate is valid (%s) after a NULL column, want Invalid so the household rate applies",
+			p.RealReturnRate.Decimal)
+	}
+}
+
+// A stored 0% is NOT NULL: it survives the mapping as a VALID zero, which is
+// the whole reason the column is nullable and the engine field is a
+// NullDecimal. Collapsing it back to "unset" is the bug this pins against.
+func TestPlanFromRowCarriesAnExplicitZeroReturn(t *testing.T) {
+	zero := decimal.NewNullDecimal(decimal.Zero)
+	p := PlanFromRow(rowFor(zero, nil, nil), time.Now().UTC())
+	if !p.RealReturnRate.Valid {
+		t.Fatal("RealReturnRate not valid after mapping an explicit 0% — NULL and 0 collapsed")
+	}
+	if !p.RealReturnRate.Decimal.IsZero() {
+		t.Errorf("RealReturnRate = %s, want exactly 0 (a cash-like holding modelled flat)", p.RealReturnRate.Decimal)
 	}
 }
 
@@ -110,5 +128,30 @@ func TestScheduleUsesTheAccountsOwnRate(t *testing.T) {
 	unsetRate := BuildSchedule([]AccountPlan{unset}, household, now).Accounts[0].Rate
 	if want := decimal.RequireFromString("0.03"); !unsetRate.Equal(want) {
 		t.Errorf("rate = %s, want the household's %s", unsetRate, want)
+	}
+}
+
+// THE BUG THIS FILE EXISTS FOR: an account explicitly set to 0% real (a
+// cash-like holding the household models flat) must compound at 0%, NOT silently
+// fall back to the household rate. Before RealReturnRate became a NullDecimal
+// the engine gated on IsPositive and a stored 0 was indistinguishable from
+// "unset" — so the household's 3% compounded instead of the typed 0%.
+func TestScheduleHonorsAnExplicitZeroReturnRate(t *testing.T) {
+	now := time.Now().UTC()
+	household := RetirementAssumptions{
+		RealReturnRate: decimal.RequireFromString("0.03"), Months: 120, CurrentAge: 40,
+	}
+
+	flat := PlanFromRow(rowFor(decimal.NewNullDecimal(decimal.Zero), nil, nil), now)
+	unset := PlanFromRow(rowFor(decimal.NullDecimal{}, nil, nil), now)
+
+	flatRate := BuildSchedule([]AccountPlan{flat}, household, now).Accounts[0].Rate
+	if !flatRate.IsZero() {
+		t.Errorf("rate = %s, want exactly 0 — a genuine 0%% must not fall through to the household rate", flatRate)
+	}
+	// And the two stay distinct: 0% is honoured, unset still takes the household.
+	unsetRate := BuildSchedule([]AccountPlan{unset}, household, now).Accounts[0].Rate
+	if want := decimal.RequireFromString("0.03"); !unsetRate.Equal(want) {
+		t.Errorf("unset rate = %s, want the household's %s", unsetRate, want)
 	}
 }

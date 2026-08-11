@@ -149,13 +149,16 @@ function AssumptionsPanel({ assumptions }: { assumptions: RetirementAssumptions 
   useEffect(() => setForm(toForm(assumptions)), [assumptions])
 
   const save = useMutation({
-    mutationFn: (input: AssumptionsInput) => api.saveRetirementAssumptions(input),
+    // fromForm runs inside the mutation so a bad rate (fromPercentField
+    // throws) surfaces as save.error.message below — the same panel the
+    // server's own 400s use — rather than being swallowed into a silent 0%.
+    mutationFn: (f: AssumptionsForm) => api.saveRetirementAssumptions(fromForm(f)),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['retirement'] }),
   })
 
   function onSubmit(e: FormEvent) {
     e.preventDefault()
-    save.mutate(fromForm(form))
+    save.mutate(form)
   }
 
   const set = (key: keyof typeof form) => (value: string) =>
@@ -301,10 +304,18 @@ function toPercentField(fraction: string): string {
   return String(Number((n * 100).toFixed(4)))
 }
 
-/** "5" -> "0.05", as a string: rates never pass through a JSON float. */
+/** "5" -> "0.05", as a string: rates never pass through a JSON float.
+ *
+ *  Throws when `value` is non-empty but not a finite number, so a typo in a
+ *  rate field is a visible error rather than a silent 0%. (Empty string still
+ *  parses as 0: blank handling lives at each call site, which decides whether
+ *  blank means 0% or "use the default".) */
 function fromPercentField(value: string): string {
   const n = Number(value)
-  return Number.isFinite(n) ? String(n / 100) : '0'
+  if (!Number.isFinite(n)) {
+    throw new Error(`“${value}” is not a valid percentage — enter a number like 5 for 5%.`)
+  }
+  return String(n / 100)
 }
 
 function fromForm(f: AssumptionsForm): AssumptionsInput {

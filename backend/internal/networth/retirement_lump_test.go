@@ -202,8 +202,8 @@ func TestUnconfiguredYearCapsNothing(t *testing.T) {
 // ONE run.
 func TestPerBucketReturnsCompoundDifferently(t *testing.T) {
 	plans := []AccountPlan{
-		{ID: "slow", Name: "Bonds", Treatment: "taxable", Balance: dec("10000"), RealReturnRate: dec("0.02")},
-		{ID: "fast", Name: "Equity", Treatment: "taxable", Balance: dec("10000"), RealReturnRate: dec("0.08")},
+		{ID: "slow", Name: "Bonds", Treatment: "taxable", Balance: dec("10000"), RealReturnRate: decimal.NewNullDecimal(dec("0.02"))},
+		{ID: "fast", Name: "Equity", Treatment: "taxable", Balance: dec("10000"), RealReturnRate: decimal.NewNullDecimal(dec("0.08"))},
 	}
 	got := ProjectRetirement(plans, capAssumptions(120), in2026)
 
