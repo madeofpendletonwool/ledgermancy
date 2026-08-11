@@ -318,3 +318,74 @@ func TestToolInt(t *testing.T) {
 		}
 	}
 }
+
+// "APRIL" IS NOT AN APR. The planning keyword "apr" was matched as a bare
+// substring, and planning is checked before spending, so every message
+// mentioning that month routed to planning and lost spending_summary,
+// list_transactions and spend_by_category. A twelfth of the calendar could not
+// ask the app how much it had spent — the same shape as the 529 fabrication:
+// the tool that answers the question was not in the set.
+func TestMonthNamesDoNotRouteToPlanning(t *testing.T) {
+	for _, msg := range []string{
+		"How much did I spend in April?",
+		"what were my biggest purchases in april",
+		"how much did we spend on dining out in April",
+	} {
+		got := classifyToolSet(msg)
+		if got != ToolSetSpending {
+			t.Errorf("%q routed to %q, want spending — \"apr\" matched inside \"april\"", msg, got)
+		}
+		if !hasTool(got, "spending_summary") {
+			t.Errorf("%q lands in a set without spending_summary", msg)
+		}
+	}
+}
+
+// The whole-word treatment must not cost the acronym its real matches. "apr"
+// and "ira" still select planning when they are actually words.
+func TestAcronymKeywordsStillMatch(t *testing.T) {
+	cases := map[string]string{
+		"what's the APR on the Quicksilver?": ToolSetPlanning,
+		"0% apr, is that worth it":           ToolSetPlanning,
+		"how much room is left in my IRA":    ToolSetPlanning,
+		"are my IRAs maxed out":              ToolSetPlanning,
+		"April rent and my apr question":     ToolSetPlanning, // a rejected hit must not hide a real one
+	}
+	for msg, want := range cases {
+		if got := classifyToolSet(msg); got != want {
+			t.Errorf("%q routed to %q, want %q", msg, got, want)
+		}
+	}
+}
+
+// The bare verb "spend" is how the question is usually asked, and it matched
+// nothing. On a first turn that fell to the spending default and looked fine;
+// inside a planning thread the inheritance rule then pinned it to planning and
+// took the transaction tools away. The same sentence must reach the same tools
+// either way.
+func TestBareSpendVerbIsASpendingKeyword(t *testing.T) {
+	const q = "how much did I spend on gas last month"
+
+	if got := classifyToolSet(q); got != ToolSetSpending {
+		t.Errorf("%q classified as %q, want spending", q, got)
+	}
+
+	inThread := []chatMessage{
+		{Role: "user", Content: "how's my debt payoff looking"},
+		{Role: "assistant", Content: "…"},
+		{Role: "user", Content: q},
+	}
+	if got := classifyFromMessages(inThread); got != ToolSetSpending {
+		t.Errorf("inside a planning thread %q inherited %q — a plain spending question "+
+			"must not lose the transaction tools", q, got)
+	}
+}
+
+// "Safe to spend" is the deliberate overlap: it contains the spending keyword
+// "spend" and is a planning question. Check order is what resolves it, so this
+// pins the order rather than the keyword lists.
+func TestSafeToSpendStaysPlanning(t *testing.T) {
+	if got := classifyToolSet("am I safe to spend $500 this week"); got != ToolSetPlanning {
+		t.Errorf("routed to %q, want planning — order must break the spend/safe-to-spend overlap", got)
+	}
+}

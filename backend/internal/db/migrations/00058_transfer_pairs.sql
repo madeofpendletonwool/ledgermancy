@@ -58,9 +58,22 @@ COMMENT ON TABLE transaction_pairs IS
 
 DROP TABLE IF EXISTS transaction_pairs;
 
--- Restore the narrower CHECK. 'pairing' rows would already be gone with the
--- pairs table dropped and the legs re-categorised, so the constraint widens
--- cleanly again.
+-- Retire the 'pairing' source BEFORE narrowing the CHECK back.
+--
+-- Dropping transaction_pairs does not touch transactions.category_source, so on
+-- any database where the pairer has actually run there are rows sitting at
+-- 'pairing' — and ADD CONSTRAINT validates existing rows, so re-adding the
+-- narrower CHECK over them fails outright ("check constraint ... is violated by
+-- some row") and the whole rollback aborts. A Down that only works on a database
+-- the feature never ran on is not a Down.
+--
+-- They become 'heuristic' rather than NULL: the category itself stays correct
+-- (these legs really are transfers), and 'heuristic' is the honest description
+-- of a non-manual, non-rule assignment the app made for itself. NULL would read
+-- as "never categorised" and invite a re-categorisation pass to overwrite a
+-- perfectly good answer.
+UPDATE transactions SET category_source = 'heuristic' WHERE category_source = 'pairing';
+
 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_category_source_check;
 ALTER TABLE transactions ADD CONSTRAINT transactions_category_source_check
     CHECK (category_source IS NULL

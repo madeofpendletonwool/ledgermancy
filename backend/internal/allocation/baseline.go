@@ -314,44 +314,11 @@ func (b *Baseline) loadInvestments(
 		return err
 	}
 	for _, r := range rows {
-		p := networth.AccountPlan{ID: r.ID.String(), Name: r.Name}
-		if r.TaxTreatment != nil {
-			p.Treatment = *r.TaxTreatment
-		}
-		if r.CurrentBalance.Valid {
-			p.Balance = r.CurrentBalance.Decimal
-		}
-		if r.MonthlyContribution.Valid {
-			p.MonthlyContribution = r.MonthlyContribution.Decimal
-		}
-		if r.EmployerMatchPct.Valid {
-			p.EmployerMatchPct = r.EmployerMatchPct.Decimal
-		}
-		if r.AnnualSalary.Valid {
-			p.AnnualSalary = r.AnnualSalary.Decimal
-		}
-		if r.EmployerMatchLimit.Valid {
-			p.EmployerMatchLimit = r.EmployerMatchLimit.Decimal
-		}
-		storedAge := 0
-		if r.BeneficiaryCurrentAge != nil {
-			storedAge = int(*r.BeneficiaryCurrentAge)
-		}
-		if age, ok := networth.ResolveAge(r.BeneficiaryBirthdate, storedAge, now); ok {
-			p.BeneficiaryCurrentAge = age
-		}
-		if r.BeneficiaryTargetAge != nil {
-			p.BeneficiaryTargetAge = int(*r.BeneficiaryTargetAge)
-		}
-		// The account's own real return, where the household has set one. Zero
-		// (the zero value, and what an unset/null column scans as) means "use the
-		// household rate" — exactly the convention ProjectRetirement already
-		// applies, so this line is the whole wire from the column to the
-		// projection. Without it every account compounds at the household rate,
-		// which understates a 529 and overstates a cash bucket.
-		if r.AssumedRealReturn.Valid {
-			p.RealReturnRate = r.AssumedRealReturn.Decimal
-		}
+		// One definition of the row -> plan mapping, shared with the API layer
+		// and the advisor (networth.PlanFromRow). It carries the beneficiary
+		// horizon and the account's OWN assumed real return; a NULL rate leaves
+		// that field zero, which the engine reads as "use the household rate".
+		p := networth.PlanFromRow(r, now)
 		b.Plans = append(b.Plans, p)
 
 		if p.Treatment == "" {

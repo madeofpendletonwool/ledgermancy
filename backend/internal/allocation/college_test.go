@@ -296,7 +296,6 @@ func TestCollegeUsesAccountOwnReturnRate(t *testing.T) {
 	}
 }
 
-
 // A goal whose beneficiary has no resolvable age is REPORTED as unprojectable
 // rather than projected against a guessed enrollment year. Same refusal to guess
 // that networth.ResolveAge exists for.

@@ -339,6 +339,38 @@ It moves no money. Amounts, dates and category assignments on transactions are
 untouched; only the merchant handle and the per-key tables change. Verify with the
 totals on [Spending](features/spending.md) before and after — they must match.
 
+## One-off: linking historical internal transfers
+
+Run this once after upgrading to a build that includes the structural transfer
+pairer.
+
+The app links the two legs of an internal transfer — a debit on one of your
+accounts matched to an equal credit on another within five days — and files both
+as transfers. It is name-independent, so it catches the ones the payee-name
+heuristics miss: a checking→savings move whose outgoing leg your bank labelled
+`ACH CAPITAL ONE - TRANSFER` and whose incoming leg the other institution
+labelled with its own name.
+
+That pass runs after every sync, but only over a 60-day lookback — enough to
+catch a transfer whose legs straddle a sync boundary, and nowhere near enough to
+reach the history you already have. This command covers the rest:
+
+```bash
+# Read-only: prints the pairs it would link and stops.
+docker compose exec api backfill-transfer-pairs
+
+# Writes.
+docker compose exec api backfill-transfer-pairs --apply
+```
+
+It defaults to a two-year lookback; `--days` changes it.
+
+It moves no money, and it will not change your spending total. Both transfer
+categories are marked "transfer", and so is the category a misfiled leg is
+usually sitting in, and transfers are already excluded from spending — this makes
+the ledger say what it means rather than recovering anything. Anything you
+categorised **by hand** is left alone: manual rows are never candidates.
+
 ---
 
 ## Backups

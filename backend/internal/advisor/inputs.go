@@ -345,31 +345,18 @@ func loadRetirement(
 	return matches, headroom, nil
 }
 
-// toPlan maps a projectable-account row onto the engine's plan type. It mirrors
-// the API layer's toAccountPlans, minus the beneficiary birthdate resolution the
-// advisor has no caller for — a custodial account contributes neither a match
-// option nor household headroom, so its horizon does not arise here.
+// toPlan maps a projectable-account row onto the engine's plan type, through the
+// one definition of that mapping (networth.PlanFromRow).
+//
+// It used to be a hand-written copy that dropped the beneficiary horizon on the
+// grounds that "a custodial account contributes neither a match option nor
+// household headroom". That was true of THIS file's caller and false of the
+// other one: fillRetirement maps rows through here and then runs
+// ProjectRetirement for the FI age, where a 529 with no horizon never stops
+// compounding and is counted as retirement money it will never be. Sharing the
+// mapping fixes that and the per-account assumed real return in one move.
 func toPlan(r dbgen.ListProjectableAccountsRow, now time.Time) networth.AccountPlan {
-	p := networth.AccountPlan{ID: r.ID.String(), Name: r.Name}
-	if r.TaxTreatment != nil {
-		p.Treatment = *r.TaxTreatment
-	}
-	if r.CurrentBalance.Valid {
-		p.Balance = r.CurrentBalance.Decimal
-	}
-	if r.MonthlyContribution.Valid {
-		p.MonthlyContribution = r.MonthlyContribution.Decimal
-	}
-	if r.EmployerMatchPct.Valid {
-		p.EmployerMatchPct = r.EmployerMatchPct.Decimal
-	}
-	if r.AnnualSalary.Valid {
-		p.AnnualSalary = r.AnnualSalary.Decimal
-	}
-	if r.EmployerMatchLimit.Valid {
-		p.EmployerMatchLimit = r.EmployerMatchLimit.Decimal
-	}
-	return p
+	return networth.PlanFromRow(r, now)
 }
 
 // loadGoals reads the household's active SAVINGS goals with their feasibility

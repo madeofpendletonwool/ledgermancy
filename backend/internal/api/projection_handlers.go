@@ -758,41 +758,12 @@ func toRetirementAssumptions(
 // toAccountPlans maps query rows onto the engine's plans. A NULL tax_treatment
 // becomes an empty Treatment, which the engine excludes and reports — the whole
 // point of leaving the column nullable in doc 14.
+//
+// The mapping itself lives in networth.PlansFromRows, shared with the advisor
+// and the allocator: three separate copies of it are how the per-account
+// assumed real return ended up wired to only one of the three.
 func toAccountPlans(rows []dbgen.ListProjectableAccountsRow, now time.Time) []networth.AccountPlan {
-	plans := make([]networth.AccountPlan, 0, len(rows))
-	for _, r := range rows {
-		p := networth.AccountPlan{ID: r.ID.String(), Name: r.Name}
-		if r.TaxTreatment != nil {
-			p.Treatment = *r.TaxTreatment
-		}
-		if r.CurrentBalance.Valid {
-			p.Balance = r.CurrentBalance.Decimal
-		}
-		if r.MonthlyContribution.Valid {
-			p.MonthlyContribution = r.MonthlyContribution.Decimal
-		}
-		if r.EmployerMatchPct.Valid {
-			p.EmployerMatchPct = r.EmployerMatchPct.Decimal
-		}
-		if r.AnnualSalary.Valid {
-			p.AnnualSalary = r.AnnualSalary.Decimal
-		}
-		if r.EmployerMatchLimit.Valid {
-			p.EmployerMatchLimit = r.EmployerMatchLimit.Decimal
-		}
-		stored := 0
-		if r.BeneficiaryCurrentAge != nil {
-			stored = int(*r.BeneficiaryCurrentAge)
-		}
-		if age, ok := networth.ResolveAge(r.BeneficiaryBirthdate, stored, now); ok {
-			p.BeneficiaryCurrentAge = age
-		}
-		if r.BeneficiaryTargetAge != nil {
-			p.BeneficiaryTargetAge = int(*r.BeneficiaryTargetAge)
-		}
-		plans = append(plans, p)
-	}
-	return plans
+	return networth.PlansFromRows(rows, now)
 }
 
 // --------------------------------------------------------------------------

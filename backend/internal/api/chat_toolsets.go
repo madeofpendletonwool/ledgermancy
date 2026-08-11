@@ -207,7 +207,7 @@ var setKeywords = map[string][]string{
 		"credit card", "apr", "interest rate", "minimum payment", "utilisation",
 		"utilization", "balance transfer",
 		"goal", "on track", "save up", "saving for",
-		"retire", "retirement", "401k", "401(k)", "ira", "roth", "hsa",
+		"retire", "retirement", "401k", "401(k)", "ira", "iras", "roth", "hsa",
 		"contribute", "contribution", "nest egg", "financial independence",
 		"invest", "portfolio", "holdings", "asset allocation", "expense ratio",
 		"fees", "fee drag", "return", "performance",
@@ -220,16 +220,85 @@ var setKeywords = map[string][]string{
 	// the other half of the follow-up problem: once a thread can inherit a
 	// deeper set (see classifyFromMessages), "now show me my Costco spending"
 	// must still route to the transaction tools rather than staying pinned to
-	// planning. None of these is a substring of a deeper set's keyword, so the
-	// order above is what breaks ties.
+	// planning.
+	//
+	// Spending is checked LAST, which is what resolves the one deliberate
+	// overlap: "spend" sits inside the planning keyword "safe to spend", and
+	// "am I safe to spend $500" is a planning question. Order decides it, so a
+	// spending keyword may overlap a deeper set's — it must simply never be the
+	// only reading of a message that belongs to the deeper set.
 	ToolSetSpending: {
-		"spent", "spending", "my spending",
+		// "spend" rather than only "spending": the bare verb is how the question
+		// is most often asked ("how much did I spend on gas last month") and it
+		// matched NOTHING here, so that message carried no topic keyword at all.
+		// On a first turn it fell to the spending default and looked fine; once
+		// follow-ups began inheriting the thread's set (classifyFromMessages),
+		// the same question asked inside a planning thread inherited planning and
+		// lost every transaction tool. "spend" subsumes "spending"/"my spending";
+		// "spent" is a separate stem and stays.
+		"spend", "spent",
 		"transactions", "transaction",
 		"merchant", "merchants",
 		"costco", "amazon", "groceries", "grocery",
 		"dining", "restaurant",
 		"subscription", "subscriptions",
 	},
+}
+
+// wholeWordKeywords must match as WHOLE WORDS rather than as substrings.
+//
+// Substring matching is the right default and deliberately crude — it is what
+// makes "invest" cover "investing" and "investment" without three entries. But a
+// three-letter acronym is a substring of ordinary English, and the failure is
+// silent: "apr" matches "April", so EVERY message mentioning that month routed
+// to planning (checked before spending) and lost spending_summary,
+// list_transactions and spend_by_category. "How much did I spend in April?" was
+// answered with no transaction tool in the set for a twelfth of the calendar.
+// "ira" is the same shape inside "spiral", "admiral" and "Miracle".
+//
+// Only acronyms belong here. A keyword that wants to catch its own inflections
+// ("debt" -> "debts", "invest" -> "investing") must stay a substring, which is
+// why this is an opt-in list and not a change to the matching rule.
+var wholeWordKeywords = map[string]bool{
+	"apr":  true,
+	"ira":  true,
+	"iras": true,
+}
+
+// matchesKeyword is the matching rule: substring by default, whole word for the
+// acronyms above.
+//
+// A word character is [a-z0-9] over the already-lowercased message. Any other
+// byte — punctuation, space, or the lead byte of a multibyte rune — is a
+// boundary, which is the behaviour we want: "0% APR." and "my IRA," both match
+// and "April" does not.
+func matchesKeyword(lower, kw string) bool {
+	if !wholeWordKeywords[kw] {
+		return strings.Contains(lower, kw)
+	}
+	for from := 0; from+len(kw) <= len(lower); {
+		i := strings.Index(lower[from:], kw)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(kw)
+		if !isWordByte(lower, start-1) && !isWordByte(lower, end) {
+			return true
+		}
+		// Overlapping occurrences matter: a rejected hit must not hide a real one
+		// later in the same message ("April ... 0% apr").
+		from = start + 1
+	}
+	return false
+}
+
+func isWordByte(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // classifyExplicit returns the set a message selects when it carries an
@@ -246,7 +315,7 @@ func classifyExplicit(message string) (set string, matched bool) {
 	lower := strings.ToLower(message)
 	for _, set := range []string{ToolSetLikelihood, ToolSetModelling, ToolSetPlanning, ToolSetSpending} {
 		for _, kw := range setKeywords[set] {
-			if strings.Contains(lower, kw) {
+			if matchesKeyword(lower, kw) {
 				return set, true
 			}
 		}
