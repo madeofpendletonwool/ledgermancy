@@ -23,8 +23,13 @@ import (
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' \
 //	    go test ./internal/insights/ -run TestOverdueBillProducer
 func TestOverdueBillProducer(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, os.Getenv("TEST_DATABASE_URL"))
+	pool, err := db.Connect(ctx, url)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -137,8 +142,13 @@ func TestOverdueBillProducer(t *testing.T) {
 // goal whose current monthly payment will not clear the balance by its target
 // date is coached with the monthly shortfall.
 func TestPayoffProgressProducer(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, os.Getenv("TEST_DATABASE_URL"))
+	pool, err := db.Connect(ctx, url)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
