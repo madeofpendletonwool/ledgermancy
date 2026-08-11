@@ -170,6 +170,19 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 		result.Categorised = n
 	}
 
+	// Pair internal transfers: a debit on one of the household's accounts
+	// matched to an equal credit on another, within a date window. This is
+	// name-independent, so it catches transfers whose two legs carry different
+	// counterparty names (and legs the merchant cache misfiled). Runs after
+	// categorisation so legs have their categories before the pairer links them.
+	if hid, err := s.Queries.GetHouseholdForItem(ctx, item.ID); err != nil {
+		slog.Warn("could not resolve household for transfer pairing", "error", err, "item_id", item.ID)
+	} else if paired, err := categorize.PairTransfers(ctx, s.Queries, hid, time.Now().UTC(), categorize.SyncPairLookback); err != nil {
+		slog.Error("pair transfers after sync", "error", err, "item_id", item.ID)
+	} else if paired > 0 {
+		result.Categorised += paired
+	}
+
 	// Record today's net worth now that balances are fresh. Balances carry no
 	// history, so if this is not written down as it goes there is no trend to
 	// show later.

@@ -288,6 +288,14 @@ var tableCoverage = map[string]Coverage{
 	// last thing worth carrying into a spreadsheet.
 	"merchant_logos": Derived,
 
+	// The structural transfer pairer (categorize.PairAllHouseholds, and the
+	// post-sync pass) rebuilds every row from transactions, which are InExport
+	// above. The match is a pure function of amount/date/account and is
+	// deterministic, so a restore converges to the same pairs — and a manual
+	// re-categorisation on either leg survives the rebuild (manual legs are not
+	// candidates), which is the one way a household overrules a pair.
+	"transaction_pairs": Derived,
+
 	// --- Ephemeral --------------------------------------------------------
 	"sessions":       Ephemeral, // restoring these would resurrect logins
 	"mfa_challenges": Ephemeral, // seconds-lived by design

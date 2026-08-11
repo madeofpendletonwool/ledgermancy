@@ -800,6 +800,16 @@ type Transaction struct {
 	ObligationID *uuid.UUID `json:"obligation_id"`
 }
 
+// Two legs of one internal transfer (a debit on one of the household's accounts matched to an equal credit on another). Structural: matched by amount and date, not by payee name, so it catches transfers the name heuristics and Plaid miss. Each transaction is in at most one pair.
+type TransactionPair struct {
+	ID          uuid.UUID       `json:"id"`
+	HouseholdID uuid.UUID       `json:"household_id"`
+	OutTxnID    uuid.UUID       `json:"out_txn_id"`
+	InTxnID     uuid.UUID       `json:"in_txn_id"`
+	Amount      decimal.Decimal `json:"amount"`
+	CreatedAt   stdtime.Time    `json:"created_at"`
+}
+
 type TransactionSplit struct {
 	ID            uuid.UUID       `json:"id"`
 	TransactionID uuid.UUID       `json:"transaction_id"`
