@@ -103,6 +103,22 @@ UPDATE goals
 SET achieved_at = now()
 WHERE id = $1 AND household_id = $2 AND achieved_at IS NULL;
 
+-- name: SetGoalRemind :one
+-- Toggle the per-item reminders opt-out (MAD-85). Same visibility scoping as
+-- GetGoal: a member can toggle their own and household goals, and (as an adult)
+-- any person goal they can already see.
+UPDATE goals
+SET remind = sqlc.arg('remind')
+WHERE id = sqlc.arg('id')
+  AND household_id = sqlc.arg('household_id')
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = sqlc.narg('user_id'))
+     OR (scope = 'person' AND (sqlc.arg('all_person_goals')::boolean
+                               OR person_id = sqlc.narg('person_id')))
+  )
+RETURNING *;
+
 -- name: ListActiveHouseholdGoals :many
 -- Household-scoped active goals only. The insight feed is household-shared and
 -- has no per-user visibility, so the coaching producer coaches shared goals

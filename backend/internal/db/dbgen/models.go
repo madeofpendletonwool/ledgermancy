@@ -381,6 +381,7 @@ type Goal struct {
 	PersonID     *uuid.UUID      `json:"person_id"`
 	// Years of study a college goal funds. target_amount is ONE year in today's dollars.
 	CollegeYears int16 `json:"college_years"`
+	Remind       bool  `json:"remind"`
 }
 
 type GoalContribution struct {
@@ -605,6 +606,17 @@ type NetWorthSnapshot struct {
 	CreatedAt        stdtime.Time    `json:"created_at"`
 }
 
+// One paid instance of a recurring obligation. The overdue-reminder producer treats a row here as "this occurrence is dealt with" and stops raising it; a member can add a manual row to confirm a match or record a payment the matcher missed.
+type ObligationSatisfaction struct {
+	ObligationID uuid.UUID    `json:"obligation_id"`
+	DueDate      stdtime.Time `json:"due_date"`
+	SatisfiedAt  stdtime.Time `json:"satisfied_at"`
+	Source       string       `json:"source"`
+	MatchedTxnID *uuid.UUID   `json:"matched_txn_id"`
+	UserID       *uuid.UUID   `json:"user_id"`
+	CreatedAt    stdtime.Time `json:"created_at"`
+}
+
 type Paystub struct {
 	ID            uuid.UUID           `json:"id"`
 	UserID        uuid.UUID           `json:"user_id"`
@@ -722,6 +734,7 @@ type RecurringObligation struct {
 	AutoPost         bool            `json:"auto_post"`
 	LastPostedDate   *stdtime.Time   `json:"last_posted_date"`
 	PostingAccountID *uuid.UUID      `json:"posting_account_id"`
+	Remind           bool            `json:"remind"`
 }
 
 type RecurringOverride struct {

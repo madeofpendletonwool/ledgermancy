@@ -28,6 +28,33 @@ func (q *Queries) DismissInsight(ctx context.Context, arg DismissInsightParams) 
 	return err
 }
 
+const dismissInsightByDedupe = `-- name: DismissInsightByDedupe :execrows
+UPDATE insights
+SET dismissed_at = now()
+WHERE household_id = $1
+  AND dedupe_key = $2
+  AND dismissed_at IS NULL
+`
+
+type DismissInsightByDedupeParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	DedupeKey   string    `json:"dedupe_key"`
+}
+
+// Soft-dismiss every current insight matching one dedupe key. Used by the
+// reminders mark-paid action: once a member confirms an occurrence was paid, the
+// overdue_bill insight it raised should leave the feed immediately rather than
+// linger until the next generation pass notices the satisfaction row. Soft
+// (dismissed_at, not a hard delete) so "show dismissed" still tells the story
+// and a re-raise after clearing the satisfaction still re-surfaces.
+func (q *Queries) DismissInsightByDedupe(ctx context.Context, arg DismissInsightByDedupeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dismissInsightByDedupe, arg.HouseholdID, arg.DedupeKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getInsight = `-- name: GetInsight :one
 SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at FROM insights
 WHERE id = $1 AND household_id = $2

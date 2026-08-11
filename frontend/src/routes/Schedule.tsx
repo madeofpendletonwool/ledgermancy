@@ -548,7 +548,34 @@ function ObligationRow({
         </p>
       )}
       <AutoPostControl obligation={obligation} />
+      <RemindToggle obligation={obligation} />
     </div>
+  )
+}
+
+/**
+ * The per-bill reminders opt-out (MAD-85). On by default: the bill calendar
+ * exists to keep bills in front of you, and this is how a member silences the
+ * one recurring charge they do not want overdue coaching about. A plain
+ * checkbox because it is a single boolean with no consequence worth a dialog.
+ */
+function RemindToggle({ obligation }: { obligation: Obligation }) {
+  const qc = useQueryClient()
+  const save = useMutation({
+    mutationFn: (remind: boolean) => api.setObligationRemind(obligation.id, remind),
+    onSuccess: () => invalidateSchedule(qc),
+  })
+  return (
+    <label className="mt-3 flex items-center gap-2 text-xs text-mist-400">
+      <input
+        type="checkbox"
+        className="accent-arcane-500"
+        checked={obligation.remind}
+        disabled={save.isPending}
+        onChange={(e) => save.mutate(e.target.checked)}
+      />
+      Remind me when this is overdue
+    </label>
   )
 }
 

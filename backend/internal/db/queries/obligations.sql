@@ -72,6 +72,16 @@ WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
 RETURNING *;
 
+-- name: SetObligationRemind :one
+-- Toggle the per-item reminders opt-out (MAD-85). user_edited is stamped so a
+-- later promotion pass leaves the row alone, matching SetObligationActive: a
+-- member's choice about reminders must survive re-detection.
+UPDATE recurring_obligations
+SET remind = $4, user_edited = TRUE, updated_at = now()
+WHERE id = $1 AND household_id = $2
+  AND (user_id IS NULL OR user_id = $3 OR is_shared)
+RETURNING *;
+
 -- name: DeleteObligation :exec
 -- Hard delete, for manual rows only. A detected row would be re-promoted, so the
 -- API routes those to SetObligationActive instead.
@@ -419,3 +429,183 @@ FROM accounts a
 WHERE a.id = sqlc.arg('account_id')
 ON CONFLICT (obligation_id, date) WHERE obligation_id IS NOT NULL DO NOTHING
 RETURNING *;
+
+-- --------------------------------------------------------------------------
+-- Reminders (docs MAD-85): overdue detection + per-occurrence satisfaction.
+-- --------------------------------------------------------------------------
+
+-- name: ListOverdueUnsatisfiedObligations :many
+-- Past-due occurrences the matcher believes are STILL UNPAID — the backlog the
+-- overdue_bill insight producer raises and the Reminders view surfaces.
+--
+-- The expansion is the same cadence arithmetic as ListUpcomingObligations
+-- (anchor + n whole periods, so a 31st-monthly bill clamps rather than drifts);
+-- only the WHERE differs: the window is backward (the caller passes today-N ..
+-- today-1), rows are limited to remind = TRUE, and four NOT EXISTS guards drop
+-- any occurrence the household has already dealt with.
+--
+-- What "dealt with" means, weakest to strongest:
+--   (S) a satisfaction row — a member marked it paid, or a prior match recorded.
+--   (A) an auto-posted transaction tied to this obligation near the due date.
+--   (T) a real transaction matching the obligation's merchant, or its category
+--       at a near-expected amount, within a few days of the due date.
+--   (P) a structural transfer pair touching the obligation's account near the
+--       due date — the credit-card-payment case, where the payment is a transfer
+--       and the pair links the legs even when the two payee names disagree.
+--
+-- The category branch is amount-gated (within 25%) so two same-category bills
+-- of different sizes don't suppress each other; the merchant branch is not,
+-- because merchant_key is specific enough on its own. Every check is household-
+-- scoped through account_access, matching the rest of the bill-calendar reads.
+--
+-- Suppression is the safer direction to overdo here: a hidden reminder for a
+-- bill that was genuinely paid is a minor nuisance, while nagging about one that
+-- was paid is the failure that makes a reminder feature untrustworthy. The
+-- manual mark-paid (below) and the remind toggle are the escape hatches when the
+-- matcher gets it wrong either way.
+WITH visible AS (
+    SELECT *
+    FROM recurring_obligations
+    WHERE household_id = $1
+      AND (recurring_obligations.user_id IS NULL
+           OR recurring_obligations.user_id = $2
+           OR recurring_obligations.is_shared)
+      AND is_active
+      AND remind
+),
+bounded AS (
+    SELECT
+        visible.*,
+        CASE interval_unit
+            WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
+            WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM $4::date)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM $4::date)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM $4::date)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM visible
+)
+SELECT
+    b.id           AS obligation_id,
+    b.label,
+    b.amount,
+    b.category_id,
+    b.account_id,
+    b.interval_count,
+    b.interval_unit,
+    b.source,
+    b.merchant_key,
+    d.due_date::date AS due_date
+FROM bounded b
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    -- Cast to date here rather than only in the SELECT: the satisfaction NOT
+    -- EXISTS guards below also reference d.due_date, and make_interval yields a
+    -- timestamp, so an uncast d.due_date would make `d.due_date - 3` a
+    -- timestamp-minus-integer that Postgres has no operator for.
+    SELECT (b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ))::date AS due_date
+) d
+WHERE d.due_date >= $3::date
+  AND d.due_date <= $4::date
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+  -- (S) a member marked it paid, or a match was recorded before.
+  AND NOT EXISTS (
+      SELECT 1 FROM obligation_satisfaction os
+      WHERE os.obligation_id = b.id AND os.due_date = d.due_date
+  )
+  -- (A) the auto-posting worker materialised this occurrence.
+  AND NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.obligation_id = b.id
+        AND t.date BETWEEN d.due_date - 3 AND d.due_date + 3
+  )
+  -- (T) a household transaction under the obligation's merchant, or in its
+  -- category at a near-expected amount, within the payment window.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM transactions t
+      JOIN accounts a   ON a.id = t.account_id
+      JOIN account_access v ON v.account_id = a.id
+      WHERE v.household_id = $1
+        AND t.date BETWEEN d.due_date - 5 AND d.due_date + 10
+        AND NOT t.excluded_from_reports
+        AND NOT t.pending
+        AND (
+            (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
+            OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
+                AND t.amount > 0
+                AND ABS(t.amount - b.amount) <= b.amount * 0.25)
+        )
+  )
+  -- (P) a structural transfer pair touched the obligation's account within the
+  -- window — the card-payment case. Either leg counts: a payment leaving
+  -- checking (out leg) or landing on the card (in leg). Skipped entirely when
+  -- the obligation names no account.
+  AND (
+      b.account_id IS NULL
+      OR NOT EXISTS (
+          SELECT 1 FROM transaction_pairs tp
+          JOIN transactions tl ON tl.id = tp.out_txn_id
+          WHERE tp.household_id = $1
+            AND tl.account_id = b.account_id
+            AND tl.date BETWEEN d.due_date - 5 AND d.due_date + 10
+          UNION ALL
+          SELECT 1 FROM transaction_pairs tp
+          JOIN transactions tl ON tl.id = tp.in_txn_id
+          WHERE tp.household_id = $1
+            AND tl.account_id = b.account_id
+            AND tl.date BETWEEN d.due_date - 5 AND d.due_date + 10
+      )
+  )
+ORDER BY d.due_date, b.label;
+
+-- name: MarkObligationSatisfied :one
+-- Record that one occurrence was paid. A manual mark is authoritative and
+-- overwrites a prior 'matched' row; re-marking refreshes satisfied_at. The
+-- obligation is re-resolved through the household guard so a member can only
+-- satisfy obligations their household owns, and the (obligation_id, due_date)
+-- PK makes the operation an idempotent upsert.
+INSERT INTO obligation_satisfaction (obligation_id, due_date, source, user_id)
+SELECT sqlc.arg('obligation_id')::uuid, sqlc.arg('due_date')::date, 'manual', sqlc.narg('user_id')
+FROM recurring_obligations o
+WHERE o.id = sqlc.arg('obligation_id')
+  AND o.household_id = sqlc.arg('household_id')
+  AND (o.user_id IS NULL OR o.user_id = sqlc.narg('user_id') OR o.is_shared)
+ON CONFLICT (obligation_id, due_date) DO UPDATE SET
+    source       = 'manual',
+    user_id      = EXCLUDED.user_id,
+    satisfied_at = now()
+RETURNING *;
+
+-- name: ClearObligationSatisfied :execrows
+-- Remove a satisfaction row, re-arming the reminder. Used to undo a manual
+-- mark-paid that was wrong, or to clear a stale entry. Household-scoped through
+-- the obligation so a member can only clear their own household's rows.
+DELETE FROM obligation_satisfaction os
+USING recurring_obligations o
+WHERE os.obligation_id = sqlc.arg('obligation_id')
+  AND os.due_date = sqlc.arg('due_date')
+  AND o.id = os.obligation_id
+  AND o.household_id = sqlc.arg('household_id');
+
+-- name: ListSatisfiedOccurrences :many
+-- The paid occurrences for the obligations visible to the caller, inside a date
+-- window. Backs the "already paid" check the Schedule view renders beside each
+-- bill, and is what lets the UI mark an occurrence green without re-running the
+-- matcher.
+SELECT os.obligation_id, os.due_date, os.source, os.satisfied_at
+FROM obligation_satisfaction os
+JOIN recurring_obligations o ON o.id = os.obligation_id
+WHERE o.household_id = $1
+  AND (o.user_id IS NULL OR o.user_id = $2 OR o.is_shared)
+  AND os.due_date BETWEEN $3 AND $4
+ORDER BY os.due_date;

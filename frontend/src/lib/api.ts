@@ -1098,6 +1098,9 @@ export interface Obligation {
   posting_account_id: string | null
   /** Occurrences on or before this date have been posted. */
   last_posted_date: string | null
+  /** Per-item reminders opt-out (MAD-85). On by default; off silences the
+   *  overdue-bill coaching for this one obligation. */
+  remind: boolean
 }
 
 export interface AutoPostInput {
@@ -2068,6 +2071,9 @@ export interface Goal {
   /** Present only on a college goal: the sentence that stops target_amount
    *  being read as the whole cost of a degree. */
   college_basis?: string
+  /** Per-item reminders opt-out (MAD-85). On by default; off silences the
+   *  payoff-progress coaching for this one goal. */
+  remind: boolean
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
@@ -4211,6 +4217,24 @@ export const api = {
   setObligationAutoPost: (id: string, input: AutoPostInput) =>
     request<Obligation>('PUT', `/api/obligations/${id}/auto-post`, input),
 
+  // --- Reminders (MAD-85) ------------------------------------------------
+  // Mark one occurrence paid (the matcher could not find a payment, but the
+  // member confirms it went through); clear that mark to re-arm the reminder;
+  // toggle the per-item reminders opt-out. The Reminders view itself is a
+  // filtered read of /api/insights, so it has no list method here.
+  satisfyObligation: (id: string, dueDate: string) =>
+    request<{ obligation_id: string; due_date: string; source: string; satisfied_at: string }>(
+      'POST',
+      `/api/obligations/${id}/satisfy`,
+      { due_date: dueDate },
+    ),
+
+  clearObligationSatisfied: (id: string, dueDate: string) =>
+    request<void>('DELETE', `/api/obligations/${id}/satisfy`, { due_date: dueDate }),
+
+  setObligationRemind: (id: string, remind: boolean) =>
+    request<Obligation>('PUT', `/api/obligations/${id}/remind`, { remind }),
+
   // --- Manual accounts (doc 30) -------------------------------------------
   // Every one of these refuses a Plaid-linked account id. A linked account's
   // name and balance belong to the institution, and an edit here would last
@@ -4268,6 +4292,10 @@ export const api = {
     request<Goal>('PUT', `/api/goals/${id}`, input),
 
   archiveGoal: (id: string) => request<void>('DELETE', `/api/goals/${id}`),
+
+  // Per-item reminders opt-out (MAD-85). Off silences payoff-progress coaching.
+  setGoalRemind: (id: string, remind: boolean) =>
+    request<Goal>('PUT', `/api/goals/${id}/remind`, { remind }),
 
   // Parses a natural-language goal into a confirmable proposal. Never writes —
   // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.

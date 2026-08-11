@@ -606,10 +606,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/", s.handleCreateObligation)
 				r.Get("/upcoming", s.handleUpcomingObligations)
 				r.Get("/projection", s.handleObligationProjection)
-				r.Put("/{obligationID}", s.handleUpdateObligation)
-				r.Delete("/{obligationID}", s.handleDeleteObligation)
-				r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
-			})
+			r.Put("/{obligationID}", s.handleUpdateObligation)
+			r.Delete("/{obligationID}", s.handleDeleteObligation)
+			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
+			// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
+			// The Reminders view itself reads /api/insights, so there is no list
+			// handler — only the write that records a member's confirmation.
+			r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
+			r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
+			r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
+		})
 
 			// Goals are the one mixed group. Reads are visibility-scoped in SQL
 			// (ListGoals takes all_person_goals, set from the caller's role), so a
@@ -624,9 +630,11 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Use(auth.RequireAdult)
 					r.Post("/", s.handleCreateGoal)
 					r.Post("/parse", s.handleParseGoal)
-					r.Put("/{goalID}", s.handleUpdateGoal)
-					r.Delete("/{goalID}", s.handleArchiveGoal)
-					r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+				r.Put("/{goalID}", s.handleUpdateGoal)
+				r.Delete("/{goalID}", s.handleArchiveGoal)
+				// Reminders opt-out toggle (MAD-85).
+				r.Put("/{goalID}/remind", s.handleSetGoalRemind)
+				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
 					r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
 				})
 			})

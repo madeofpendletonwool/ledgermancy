@@ -71,3 +71,16 @@ WHERE id = $1 AND household_id = $2 AND read_at IS NULL;
 UPDATE insights
 SET dismissed_at = now()
 WHERE id = $1 AND household_id = $2;
+
+-- name: DismissInsightByDedupe :execrows
+-- Soft-dismiss every current insight matching one dedupe key. Used by the
+-- reminders mark-paid action: once a member confirms an occurrence was paid, the
+-- overdue_bill insight it raised should leave the feed immediately rather than
+-- linger until the next generation pass notices the satisfaction row. Soft
+-- (dismissed_at, not a hard delete) so "show dismissed" still tells the story
+-- and a re-raise after clearing the satisfaction still re-surfaces.
+UPDATE insights
+SET dismissed_at = now()
+WHERE household_id = $1
+  AND dedupe_key = $2
+  AND dismissed_at IS NULL;

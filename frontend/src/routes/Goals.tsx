@@ -173,6 +173,7 @@ function GoalCard({ goal }: { goal: Goal }) {
           )}
           {/* A quote, a contract or a policy behind the goal it justifies. */}
           <AttachDocuments target={{ kind: 'goal', id: goal.id }} />
+          <RemindGoalToggle goal={goal} />
           <button
             className="btn-ghost px-2.5 py-1 text-xs text-ember-400"
             disabled={archive.isPending}
@@ -201,6 +202,32 @@ function GoalCard({ goal }: { goal: Goal }) {
 
       {showFunding && <GoalFunding goal={goal} />}
     </div>
+  )
+}
+
+/**
+ * The per-goal reminders opt-out (MAD-85). On by default; off silences the
+ * behind-schedule coaching for this one goal. Rendered inline beside the goal's
+ * other actions because it is a single boolean with no consequence worth a
+ * dialog of its own.
+ */
+function RemindGoalToggle({ goal }: { goal: Goal }) {
+  const qc = useQueryClient()
+  const save = useMutation({
+    mutationFn: (remind: boolean) => api.setGoalRemind(goal.id, remind),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['goals'] }),
+  })
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-mist-400" title="Coach this goal in the reminders feed">
+      <input
+        type="checkbox"
+        className="accent-arcane-500"
+        checked={goal.remind}
+        disabled={save.isPending}
+        onChange={(e) => save.mutate(e.target.checked)}
+      />
+      Remind
+    </label>
   )
 }
 
