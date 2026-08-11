@@ -2,10 +2,11 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The 00034 backfill, verified by replaying its two statements against a
@@ -32,10 +33,7 @@ const (
 )
 
 func TestMigrationBackfill(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)
@@ -170,10 +168,7 @@ func TestMigrationBackfill(t *testing.T) {
 // the choice non-deterministic — and a household could migrate with two owners
 // or, worse, a different owner on every replica.
 func TestBackfillWithIdenticalCreatedAt(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

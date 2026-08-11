@@ -636,7 +636,15 @@ Making it a build failure moves the discovery to the pull request.
   ~102 sandbox transactions for testing.
 - Throwaway Postgres for tests:
   `docker run -d --name lmtest-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=lmtest -p 55432:5432 postgres:17-alpine`
-  then `TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test -p 1 ./...`
+  then `TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./...`
+  — the same command CI runs. `-p 1` used to be mandatory and no longer is:
+  `internal/testdb` gives each package its own database (`lmtest_api`,
+  `lmtest_db`, …) created from the one named above, so parallel packages stop
+  fighting over one schema. A new DB-backed test takes its URL from
+  `testdb.URL(t)` and then calls `db.Migrate` itself — `testdb` provisions but
+  does not migrate. Those databases are reused between runs, so
+  **a migration edited in place has already been applied and will not re-run**:
+  `TESTDB_FRESH=1 go test ./...` drops and rebuilds them.
 - Migrations are numbered, and **`db.Migrate` runs goose in strict-ordering
   mode**. That is the constraint everything below follows from: a new migration
   must be numbered **above every version already applied**, or an instance that

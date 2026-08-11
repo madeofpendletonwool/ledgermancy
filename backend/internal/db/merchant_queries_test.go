@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/merchants"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // merchantFixture is a household seeded with one subscription that bills under
@@ -29,10 +29,7 @@ type merchantFixture struct {
 func setupMerchantFixture(t *testing.T) (context.Context, *merchantFixture) {
 	t.Helper()
 
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

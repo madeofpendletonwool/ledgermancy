@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestEveryBlobStoreIsCaptured is the non-Postgres half of the coverage guard.
@@ -167,10 +167,7 @@ func TestSelectExprPassesStoredJSONThroughAsText(t *testing.T) {
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' \
 //	  go test ./internal/continuity/
 func TestEveryInExportTableHasAnExporter(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
@@ -224,10 +221,7 @@ func TestEveryInExportTableHasAnExporter(t *testing.T) {
 // numeric column arrived as a JSON string, decoding with UseNumber so a bare
 // number cannot be silently re-rendered as one on the way out.
 func TestExportedMoneyIsAlwaysAString(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)

@@ -2,12 +2,14 @@ package jobs
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestDueItemsQuery pins which items a sweep picks up.
@@ -27,10 +29,7 @@ import (
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' \
 //	    go test ./internal/db/ ./internal/jobs/
 func TestDueItemsQuery(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	const (
 		staleAfter   = 55 * time.Minute
@@ -43,6 +42,11 @@ func TestDueItemsQuery(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
+	// testdb hands out an empty database, so every entry point migrates rather
+	// than leaning on whichever test in the package happened to run first.
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 
 	// Ages are expressed relative to the cutoffs rather than as literals, so
 	// the cases stay meaningful if the intervals are ever retuned.

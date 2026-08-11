@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The tests in this file are the point of the package.
@@ -152,10 +153,7 @@ func TestNoStaleVolumeClassifications(t *testing.T) {
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' \
 //	  go test ./internal/continuity/
 func TestSchemaMatchesLiveDatabase(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
