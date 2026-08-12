@@ -98,3 +98,65 @@ func TestBriefingAssumptionsNullWhenNoProjectionRow(t *testing.T) {
 		}
 	}
 }
+
+// THE HEDGE THIS EXISTS TO STOP. Asked how to invest $2,000/month, the advisor
+// looked at a $98 balance in an account named "Individual 6601" and wrote "the
+// 529 is nearly empty — worth considering if college costs are on the horizon",
+// for a household whose one-year-old had a birthdate on file, a linked 529 and a
+// named goal seventeen years out. Every fact was in the database; none of it was
+// in the briefing, which is the tool the model calls first for its position.
+func TestBriefingSurfacesCollegeGoalsAsFacts(t *testing.T) {
+	age, years := 1, 17
+	b := advisor.Briefing{
+		College: []advisor.CollegeBrief{{
+			Name:              "Get Hazel in College",
+			BeneficiaryAge:    &age,
+			YearsToEnrollment: &years,
+			YearsOfStudy:      4,
+			AnnualCostToday:   decimal.RequireFromString("20000"),
+		}},
+	}
+
+	res := briefingToolResult(b)
+	list, ok := res["college"].([]map[string]any)
+	if !ok {
+		t.Fatalf("college missing or wrong type: %#v", res["college"])
+	}
+	if len(list) != 1 {
+		t.Fatalf("college entries = %d, want 1", len(list))
+	}
+	got := list[0]
+	if p, _ := got["beneficiary_age"].(*int); p == nil || *p != 1 {
+		t.Errorf("beneficiary_age = %v, want 1 — without it the model cannot know college is real", got["beneficiary_age"])
+	}
+	if p, _ := got["years_to_enrollment"].(*int); p == nil || *p != 17 {
+		t.Errorf("years_to_enrollment = %v, want 17", got["years_to_enrollment"])
+	}
+	if got["annual_cost_today"] != "20000.00" {
+		t.Errorf("annual_cost_today = %v, want the ONE-year figure 20000.00", got["annual_cost_today"])
+	}
+	// The funding numbers must NOT be here. They are college_projection's, and a
+	// second copy is how two surfaces start disagreeing — which is the entire
+	// history of this feature.
+	for _, banned := range []string{"funded_pct", "monthly_needed", "total_cost", "balance_at_enrollment"} {
+		if _, present := got[banned]; present {
+			t.Errorf("briefing carries %q — that figure belongs to college_projection alone", banned)
+		}
+	}
+	if basis, _ := got["basis"].(string); basis == "" {
+		t.Error("no basis line: ONE year vs the whole cost is exactly the misreading this needs to prevent")
+	}
+}
+
+// A household with no college goals gets an empty list, not a missing key or a
+// null the model reads as "unknown".
+func TestBriefingCollegeEmptyWhenNoGoals(t *testing.T) {
+	res := briefingToolResult(advisor.Briefing{})
+	list, ok := res["college"].([]map[string]any)
+	if !ok {
+		t.Fatalf("college missing or wrong type: %#v", res["college"])
+	}
+	if len(list) != 0 {
+		t.Errorf("college entries = %d, want 0", len(list))
+	}
+}

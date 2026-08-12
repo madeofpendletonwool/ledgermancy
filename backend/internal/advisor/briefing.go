@@ -127,7 +127,42 @@ type Briefing struct {
 	// household was told its return was 6% when it had set 3%.
 	Assumptions Assumptions `json:"assumptions"`
 
+	// College is the household's college goals with their beneficiary and
+	// horizon resolved. It carries FACTS, not the projection: whose goal it is,
+	// how old they are, and how many years until enrollment.
+	//
+	// It exists because the briefing is the tool a model calls FIRST for "what
+	// is my position", and without this it had no idea a college goal existed.
+	// Asked how to invest $2,000 a month, the advisor looked at a $98 balance in
+	// an account named "Individual 6601" and hedged — "the 529 is nearly empty,
+	// worth considering IF college costs are on the horizon" — for a household
+	// whose one-year-old has a birthdate on file, a linked 529 and a named goal
+	// seventeen years out. Every fact it needed was in the database and none of
+	// it was in the briefing.
+	//
+	// Deliberately NOT the funded percentage or the monthly figure. Those are
+	// the college drawdown's answer and they belong to college_projection; a
+	// second copy here is how two surfaces start disagreeing, which is the whole
+	// history of this feature. The model gets enough to know the goal is real
+	// and that it must call that tool for the number.
+	College []CollegeBrief `json:"college"`
+
 	Attention []AttentionItem `json:"attention"`
+}
+
+// CollegeBrief is one college goal's identifying facts.
+type CollegeBrief struct {
+	Name string `json:"name"`
+	// BeneficiaryAge and YearsToEnrollment are nil when no birthdate or stored
+	// age resolves. A missing horizon is a state to report, not a zero to
+	// compute with — the same refusal ResolveAge exists for.
+	BeneficiaryAge    *int `json:"beneficiary_age"`
+	YearsToEnrollment *int `json:"years_to_enrollment"`
+	// YearsOfStudy is how many years the goal funds, and AnnualCostToday is ONE
+	// year in today's dollars — which is what target_amount means on a college
+	// goal, and is misread as the whole cost often enough to be worth naming.
+	YearsOfStudy    int             `json:"years_of_study"`
+	AnnualCostToday decimal.Decimal `json:"annual_cost_today"`
 }
 
 // Assumptions is the household-level projection input. Rates are FRACTIONS
@@ -181,6 +216,10 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 	out.DebtFree = debtFreeDate(debts, now)
 
 	if err := fillRetirement(ctx, q, householdID, now, &out); err != nil {
+		return Briefing{}, err
+	}
+
+	if err := fillCollege(ctx, q, householdID, now, &out); err != nil {
 		return Briefing{}, err
 	}
 
@@ -258,6 +297,51 @@ func debtFreeDate(debts []debt, now time.Time) DebtFree {
 
 	out.TotalBalance = out.TotalBalance.Round(2)
 	return out
+}
+
+// fillCollege lists the household's college goals with the horizon resolved.
+//
+// It reads ListCollegeGoals — the same query the allocator's baseline reads, so
+// the briefing and the drawdown cannot disagree about whose goal it is or when
+// enrollment lands — and resolves the horizon through the same
+// networth.ResolveAge / networth.EnrollmentAge pair. Nothing here computes a
+// funded percentage or a monthly figure: that is college_projection's answer,
+// and duplicating it is how this feature's surfaces started contradicting each
+// other in the first place.
+func fillCollege(
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time, out *Briefing,
+) error {
+	rows, err := q.ListCollegeGoals(ctx, householdID)
+	if err != nil {
+		return err
+	}
+	out.College = make([]CollegeBrief, 0, len(rows))
+	for _, c := range rows {
+		brief := CollegeBrief{
+			Name:            c.Name,
+			YearsOfStudy:    int(c.CollegeYears),
+			AnnualCostToday: c.TargetAmount.Round(2),
+		}
+
+		storedAge := 0
+		if c.BeneficiaryCurrentAge != nil {
+			storedAge = int(*c.BeneficiaryCurrentAge)
+		}
+		storedTarget := 0
+		if c.BeneficiaryTargetAge != nil {
+			storedTarget = int(*c.BeneficiaryTargetAge)
+		}
+		if age, ok := networth.ResolveAge(c.BeneficiaryBirthdate, storedAge, now); ok {
+			years := networth.EnrollmentAge(storedTarget) - age
+			if years < 0 {
+				years = 0 // already enrolled
+			}
+			brief.BeneficiaryAge = &age
+			brief.YearsToEnrollment = &years
+		}
+		out.College = append(out.College, brief)
+	}
+	return nil
 }
 
 // fillRetirement runs the household's own retirement projection for the FI age.
