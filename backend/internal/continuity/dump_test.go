@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The version check is the one place in this package where carrying on after a
@@ -40,10 +41,7 @@ func stubPGDump(t *testing.T, version string) string {
 }
 
 func TestVersionMismatchIsDetected(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {
@@ -70,10 +68,7 @@ func TestVersionMismatchIsDetected(t *testing.T) {
 // keep it, the panel would call it a backup, and it would fail on the day it
 // was needed.
 func TestVersionMismatchWritesNoDump(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {
@@ -111,10 +106,7 @@ func TestVersionMismatchWritesNoDump(t *testing.T) {
 // TestMatchingVersionIsAccepted keeps the guard honest: a check that refuses
 // everything would pass the two tests above and break every deployment.
 func TestMatchingVersionIsAccepted(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {

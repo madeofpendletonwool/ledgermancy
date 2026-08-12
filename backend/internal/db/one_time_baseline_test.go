@@ -2,13 +2,13 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestOneTimeExclusionAndMedianBaselines pins the two mechanisms that stop a
@@ -19,10 +19,7 @@ import (
 // PAYOFF. The payoff is real spending and must stay in July's Spending page. It
 // must not become $2,383/month of "fixed bills" for the following six months.
 func TestOneTimeExclusionAndMedianBaselines(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)
@@ -152,10 +149,7 @@ func TestOneTimeExclusionAndMedianBaselines(t *testing.T) {
 // must not promote a car loan at the average of its payments AND its payoff. The
 // household never paid that figure once, and the loan no longer exists.
 func TestRecurringDetectorUsesMedianAmount(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

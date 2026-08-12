@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // Manual accounts and scheduled posting (doc 30).
@@ -39,10 +39,7 @@ type manualFixture struct {
 func newManualFixture(t *testing.T) *manualFixture {
 	t.Helper()
 
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

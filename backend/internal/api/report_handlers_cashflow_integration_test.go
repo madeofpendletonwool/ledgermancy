@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -14,6 +13,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // handleCashFlow, end to end against a real Postgres. The unit test covers the
@@ -25,10 +25,7 @@ import (
 //
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./internal/api/
 func TestHandleCashFlowReconcilesWithDB(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
@@ -140,10 +137,7 @@ func TestHandleCashFlowReconcilesWithDB(t *testing.T) {
 // uses that sign to draw a deficit inflow rather than a savings outflow, so the
 // handler reporting it faithfully is the whole contract.
 func TestHandleCashFlowDeficitWithDB(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)

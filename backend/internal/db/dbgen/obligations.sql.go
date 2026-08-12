@@ -13,13 +13,39 @@ import (
 	stdtime "time"
 )
 
+const clearObligationSatisfied = `-- name: ClearObligationSatisfied :execrows
+DELETE FROM obligation_satisfaction os
+USING recurring_obligations o
+WHERE os.obligation_id = $1
+  AND os.due_date = $2
+  AND o.id = os.obligation_id
+  AND o.household_id = $3
+`
+
+type ClearObligationSatisfiedParams struct {
+	ObligationID uuid.UUID    `json:"obligation_id"`
+	DueDate      stdtime.Time `json:"due_date"`
+	HouseholdID  uuid.UUID    `json:"household_id"`
+}
+
+// Remove a satisfaction row, re-arming the reminder. Used to undo a manual
+// mark-paid that was wrong, or to clear a stale entry. Household-scoped through
+// the obligation so a member can only clear their own household's rows.
+func (q *Queries) ClearObligationSatisfied(ctx context.Context, arg ClearObligationSatisfiedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearObligationSatisfied, arg.ObligationID, arg.DueDate, arg.HouseholdID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createObligation = `-- name: CreateObligation :one
 
 INSERT INTO recurring_obligations (
     household_id, user_id, is_shared, label, amount, category_id, account_id,
     interval_count, interval_unit, anchor_date, end_date, source, merchant_key
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'manual', NULL)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
 `
 
 type CreateObligationParams struct {
@@ -86,6 +112,7 @@ func (q *Queries) CreateObligation(ctx context.Context, arg CreateObligationPara
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -257,7 +284,7 @@ func (q *Queries) GetMerchantDominantCategories(ctx context.Context, arg GetMerc
 }
 
 const getObligation = `-- name: GetObligation :one
-SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id FROM recurring_obligations
+SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind FROM recurring_obligations
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
 `
@@ -293,6 +320,7 @@ func (q *Queries) GetObligation(ctx context.Context, arg GetObligationParams) (R
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -369,7 +397,7 @@ func (q *Queries) InsertScheduledTransaction(ctx context.Context, arg InsertSche
 }
 
 const listObligations = `-- name: ListObligations :many
-SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id FROM recurring_obligations
+SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind FROM recurring_obligations
 WHERE household_id = $1
   AND (user_id IS NULL OR user_id = $2 OR is_shared)
 ORDER BY is_active DESC, label
@@ -422,6 +450,7 @@ func (q *Queries) ListObligations(ctx context.Context, arg ListObligationsParams
 			&i.AutoPost,
 			&i.LastPostedDate,
 			&i.PostingAccountID,
+			&i.Remind,
 		); err != nil {
 			return nil, err
 		}
@@ -435,7 +464,7 @@ func (q *Queries) ListObligations(ctx context.Context, arg ListObligationsParams
 
 const listObligationsDueForPosting = `-- name: ListObligationsDueForPosting :many
 WITH due AS (
-    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
     FROM recurring_obligations
     WHERE auto_post
       AND is_active
@@ -444,7 +473,7 @@ WITH due AS (
 ),
 bounded AS (
     SELECT
-        due.id, due.household_id, due.user_id, due.is_shared, due.label, due.amount, due.category_id, due.account_id, due.interval_count, due.interval_unit, due.anchor_date, due.end_date, due.source, due.merchant_key, due.user_edited, due.is_active, due.created_at, due.updated_at, due.auto_post, due.last_posted_date, due.posting_account_id,
+        due.id, due.household_id, due.user_id, due.is_shared, due.label, due.amount, due.category_id, due.account_id, due.interval_count, due.interval_unit, due.anchor_date, due.end_date, due.source, due.merchant_key, due.user_edited, due.is_active, due.created_at, due.updated_at, due.auto_post, due.last_posted_date, due.posting_account_id, due.remind,
         CASE interval_unit
             WHEN 'day'   THEN ($1::date - anchor_date) / interval_count
             WHEN 'week'  THEN ($1::date - anchor_date) / (7 * interval_count)
@@ -556,6 +585,202 @@ func (q *Queries) ListObligationsDueForPosting(ctx context.Context, arg ListObli
 	return items, nil
 }
 
+const listOverdueUnsatisfiedObligations = `-- name: ListOverdueUnsatisfiedObligations :many
+
+WITH visible AS (
+    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
+    FROM recurring_obligations
+    WHERE household_id = $1
+      AND (recurring_obligations.user_id IS NULL
+           OR recurring_obligations.user_id = $2
+           OR recurring_obligations.is_shared)
+      AND is_active
+      AND remind
+),
+bounded AS (
+    SELECT
+        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind,
+        CASE interval_unit
+            WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
+            WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM $4::date)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM $4::date)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM $4::date)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM visible
+)
+SELECT
+    b.id           AS obligation_id,
+    b.label,
+    b.amount,
+    b.category_id,
+    b.account_id,
+    b.interval_count,
+    b.interval_unit,
+    b.source,
+    b.merchant_key,
+    d.due_date::date AS due_date
+FROM bounded b
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    -- Cast to date here rather than only in the SELECT: the satisfaction NOT
+    -- EXISTS guards below also reference d.due_date, and make_interval yields a
+    -- timestamp, so an uncast d.due_date would make ` + "`" + `d.due_date - 3` + "`" + ` a
+    -- timestamp-minus-integer that Postgres has no operator for.
+    SELECT (b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ))::date AS due_date
+) d
+WHERE d.due_date >= $3::date
+  AND d.due_date <= $4::date
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+  -- (S) a member marked it paid, or a match was recorded before.
+  AND NOT EXISTS (
+      SELECT 1 FROM obligation_satisfaction os
+      WHERE os.obligation_id = b.id AND os.due_date = d.due_date
+  )
+  -- (A) the auto-posting worker materialised this occurrence.
+  AND NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.obligation_id = b.id
+        AND t.date BETWEEN d.due_date - 3 AND d.due_date + 3
+  )
+  -- (T) a household transaction under the obligation's merchant, or in its
+  -- category at a near-expected amount, within the payment window.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM transactions t
+      JOIN accounts a   ON a.id = t.account_id
+      JOIN account_access v ON v.account_id = a.id
+      WHERE v.household_id = $1
+        AND t.date BETWEEN d.due_date - 5 AND d.due_date + 10
+        AND NOT t.excluded_from_reports
+        AND NOT t.pending
+        AND (
+            (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
+            OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
+                AND t.amount > 0
+                AND ABS(t.amount - b.amount) <= b.amount * 0.25)
+        )
+  )
+  -- (P) a structural transfer pair touched the obligation's account within the
+  -- window — the card-payment case. Either leg counts: a payment leaving
+  -- checking (out leg) or landing on the card (in leg). Skipped entirely when
+  -- the obligation names no account.
+  AND (
+      b.account_id IS NULL
+      OR NOT EXISTS (
+          SELECT 1 FROM transaction_pairs tp
+          JOIN transactions tl ON tl.id = tp.out_txn_id
+          WHERE tp.household_id = $1
+            AND tl.account_id = b.account_id
+            AND tl.date BETWEEN d.due_date - 5 AND d.due_date + 10
+          UNION ALL
+          SELECT 1 FROM transaction_pairs tp
+          JOIN transactions tl ON tl.id = tp.in_txn_id
+          WHERE tp.household_id = $1
+            AND tl.account_id = b.account_id
+            AND tl.date BETWEEN d.due_date - 5 AND d.due_date + 10
+      )
+  )
+ORDER BY d.due_date, b.label
+`
+
+type ListOverdueUnsatisfiedObligationsParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      *uuid.UUID   `json:"user_id"`
+	Column3     stdtime.Time `json:"column_3"`
+	Column4     stdtime.Time `json:"column_4"`
+}
+
+type ListOverdueUnsatisfiedObligationsRow struct {
+	ObligationID  uuid.UUID       `json:"obligation_id"`
+	Label         string          `json:"label"`
+	Amount        decimal.Decimal `json:"amount"`
+	CategoryID    *uuid.UUID      `json:"category_id"`
+	AccountID     *uuid.UUID      `json:"account_id"`
+	IntervalCount int32           `json:"interval_count"`
+	IntervalUnit  string          `json:"interval_unit"`
+	Source        string          `json:"source"`
+	MerchantKey   *string         `json:"merchant_key"`
+	DueDate       stdtime.Time    `json:"due_date"`
+}
+
+// --------------------------------------------------------------------------
+// Reminders (docs MAD-85): overdue detection + per-occurrence satisfaction.
+// --------------------------------------------------------------------------
+// Past-due occurrences the matcher believes are STILL UNPAID — the backlog the
+// overdue_bill insight producer raises and the Reminders view surfaces.
+//
+// The expansion is the same cadence arithmetic as ListUpcomingObligations
+// (anchor + n whole periods, so a 31st-monthly bill clamps rather than drifts);
+// only the WHERE differs: the window is backward (the caller passes today-N ..
+// today-1), rows are limited to remind = TRUE, and four NOT EXISTS guards drop
+// any occurrence the household has already dealt with.
+//
+// What "dealt with" means, weakest to strongest:
+//
+//	(S) a satisfaction row — a member marked it paid, or a prior match recorded.
+//	(A) an auto-posted transaction tied to this obligation near the due date.
+//	(T) a real transaction matching the obligation's merchant, or its category
+//	    at a near-expected amount, within a few days of the due date.
+//	(P) a structural transfer pair touching the obligation's account near the
+//	    due date — the credit-card-payment case, where the payment is a transfer
+//	    and the pair links the legs even when the two payee names disagree.
+//
+// The category branch is amount-gated (within 25%) so two same-category bills
+// of different sizes don't suppress each other; the merchant branch is not,
+// because merchant_key is specific enough on its own. Every check is household-
+// scoped through account_access, matching the rest of the bill-calendar reads.
+//
+// Suppression is the safer direction to overdo here: a hidden reminder for a
+// bill that was genuinely paid is a minor nuisance, while nagging about one that
+// was paid is the failure that makes a reminder feature untrustworthy. The
+// manual mark-paid (below) and the remind toggle are the escape hatches when the
+// matcher gets it wrong either way.
+func (q *Queries) ListOverdueUnsatisfiedObligations(ctx context.Context, arg ListOverdueUnsatisfiedObligationsParams) ([]ListOverdueUnsatisfiedObligationsRow, error) {
+	rows, err := q.db.Query(ctx, listOverdueUnsatisfiedObligations,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Column3,
+		arg.Column4,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOverdueUnsatisfiedObligationsRow{}
+	for rows.Next() {
+		var i ListOverdueUnsatisfiedObligationsRow
+		if err := rows.Scan(
+			&i.ObligationID,
+			&i.Label,
+			&i.Amount,
+			&i.CategoryID,
+			&i.AccountID,
+			&i.IntervalCount,
+			&i.IntervalUnit,
+			&i.Source,
+			&i.MerchantKey,
+			&i.DueDate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectionAccounts = `-- name: ListProjectionAccounts :many
 SELECT
     a.id,
@@ -618,9 +843,67 @@ func (q *Queries) ListProjectionAccounts(ctx context.Context, arg ListProjection
 	return items, nil
 }
 
+const listSatisfiedOccurrences = `-- name: ListSatisfiedOccurrences :many
+SELECT os.obligation_id, os.due_date, os.source, os.satisfied_at
+FROM obligation_satisfaction os
+JOIN recurring_obligations o ON o.id = os.obligation_id
+WHERE o.household_id = $1
+  AND (o.user_id IS NULL OR o.user_id = $2 OR o.is_shared)
+  AND os.due_date BETWEEN $3 AND $4
+ORDER BY os.due_date
+`
+
+type ListSatisfiedOccurrencesParams struct {
+	HouseholdID uuid.UUID    `json:"household_id"`
+	UserID      *uuid.UUID   `json:"user_id"`
+	DueDate     stdtime.Time `json:"due_date"`
+	DueDate_2   stdtime.Time `json:"due_date_2"`
+}
+
+type ListSatisfiedOccurrencesRow struct {
+	ObligationID uuid.UUID    `json:"obligation_id"`
+	DueDate      stdtime.Time `json:"due_date"`
+	Source       string       `json:"source"`
+	SatisfiedAt  stdtime.Time `json:"satisfied_at"`
+}
+
+// The paid occurrences for the obligations visible to the caller, inside a date
+// window. Backs the "already paid" check the Schedule view renders beside each
+// bill, and is what lets the UI mark an occurrence green without re-running the
+// matcher.
+func (q *Queries) ListSatisfiedOccurrences(ctx context.Context, arg ListSatisfiedOccurrencesParams) ([]ListSatisfiedOccurrencesRow, error) {
+	rows, err := q.db.Query(ctx, listSatisfiedOccurrences,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.DueDate,
+		arg.DueDate_2,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSatisfiedOccurrencesRow{}
+	for rows.Next() {
+		var i ListSatisfiedOccurrencesRow
+		if err := rows.Scan(
+			&i.ObligationID,
+			&i.DueDate,
+			&i.Source,
+			&i.SatisfiedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUpcomingObligations = `-- name: ListUpcomingObligations :many
 WITH visible AS (
-    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
     FROM recurring_obligations
     WHERE household_id = $1
       AND (user_id IS NULL OR user_id = $2 OR is_shared)
@@ -628,7 +911,7 @@ WITH visible AS (
 ),
 bounded AS (
     SELECT
-        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id,
+        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind,
         CASE interval_unit
             WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
             WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
@@ -772,12 +1055,58 @@ func (q *Queries) MarkObligationPosted(ctx context.Context, arg MarkObligationPo
 	return result.RowsAffected(), nil
 }
 
+const markObligationSatisfied = `-- name: MarkObligationSatisfied :one
+INSERT INTO obligation_satisfaction (obligation_id, due_date, source, user_id)
+SELECT $1::uuid, $2::date, 'manual', $3
+FROM recurring_obligations o
+WHERE o.id = $1
+  AND o.household_id = $4
+  AND (o.user_id IS NULL OR o.user_id = $3 OR o.is_shared)
+ON CONFLICT (obligation_id, due_date) DO UPDATE SET
+    source       = 'manual',
+    user_id      = EXCLUDED.user_id,
+    satisfied_at = now()
+RETURNING obligation_id, due_date, satisfied_at, source, matched_txn_id, user_id, created_at
+`
+
+type MarkObligationSatisfiedParams struct {
+	ObligationID uuid.UUID    `json:"obligation_id"`
+	DueDate      stdtime.Time `json:"due_date"`
+	UserID       *uuid.UUID   `json:"user_id"`
+	HouseholdID  uuid.UUID    `json:"household_id"`
+}
+
+// Record that one occurrence was paid. A manual mark is authoritative and
+// overwrites a prior 'matched' row; re-marking refreshes satisfied_at. The
+// obligation is re-resolved through the household guard so a member can only
+// satisfy obligations their household owns, and the (obligation_id, due_date)
+// PK makes the operation an idempotent upsert.
+func (q *Queries) MarkObligationSatisfied(ctx context.Context, arg MarkObligationSatisfiedParams) (ObligationSatisfaction, error) {
+	row := q.db.QueryRow(ctx, markObligationSatisfied,
+		arg.ObligationID,
+		arg.DueDate,
+		arg.UserID,
+		arg.HouseholdID,
+	)
+	var i ObligationSatisfaction
+	err := row.Scan(
+		&i.ObligationID,
+		&i.DueDate,
+		&i.SatisfiedAt,
+		&i.Source,
+		&i.MatchedTxnID,
+		&i.UserID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const setObligationActive = `-- name: SetObligationActive :one
 UPDATE recurring_obligations
 SET is_active = $4, user_edited = TRUE, updated_at = now()
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
 `
 
 type SetObligationActiveParams struct {
@@ -820,6 +1149,7 @@ func (q *Queries) SetObligationActive(ctx context.Context, arg SetObligationActi
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -841,7 +1171,7 @@ WHERE id = $3
   AND (NOT $1
        OR $2::uuid IS NOT NULL
        OR account_id IS NOT NULL)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
 `
 
 type SetObligationAutoPostParams struct {
@@ -895,6 +1225,60 @@ func (q *Queries) SetObligationAutoPost(ctx context.Context, arg SetObligationAu
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
+	)
+	return i, err
+}
+
+const setObligationRemind = `-- name: SetObligationRemind :one
+UPDATE recurring_obligations
+SET remind = $4, user_edited = TRUE, updated_at = now()
+WHERE id = $1 AND household_id = $2
+  AND (user_id IS NULL OR user_id = $3 OR is_shared)
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
+`
+
+type SetObligationRemindParams struct {
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID uuid.UUID  `json:"household_id"`
+	UserID      *uuid.UUID `json:"user_id"`
+	Remind      bool       `json:"remind"`
+}
+
+// Toggle the per-item reminders opt-out (MAD-85). user_edited is stamped so a
+// later promotion pass leaves the row alone, matching SetObligationActive: a
+// member's choice about reminders must survive re-detection.
+func (q *Queries) SetObligationRemind(ctx context.Context, arg SetObligationRemindParams) (RecurringObligation, error) {
+	row := q.db.QueryRow(ctx, setObligationRemind,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.Remind,
+	)
+	var i RecurringObligation
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.UserID,
+		&i.IsShared,
+		&i.Label,
+		&i.Amount,
+		&i.CategoryID,
+		&i.AccountID,
+		&i.IntervalCount,
+		&i.IntervalUnit,
+		&i.AnchorDate,
+		&i.EndDate,
+		&i.Source,
+		&i.MerchantKey,
+		&i.UserEdited,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AutoPost,
+		&i.LastPostedDate,
+		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -915,7 +1299,7 @@ SET label          = $4,
     updated_at     = now()
 WHERE id = $1 AND household_id = $2
   AND (user_id IS NULL OR user_id = $3 OR is_shared)
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
 `
 
 type UpdateObligationParams struct {
@@ -976,6 +1360,7 @@ func (q *Queries) UpdateObligation(ctx context.Context, arg UpdateObligationPara
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -995,7 +1380,7 @@ DO UPDATE SET
     anchor_date    = EXCLUDED.anchor_date,
     updated_at     = now()
 WHERE NOT recurring_obligations.user_edited
-RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id
+RETURNING id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind
 `
 
 type UpsertDetectedObligationParams struct {
@@ -1049,6 +1434,7 @@ func (q *Queries) UpsertDetectedObligation(ctx context.Context, arg UpsertDetect
 		&i.AutoPost,
 		&i.LastPostedDate,
 		&i.PostingAccountID,
+		&i.Remind,
 	)
 	return i, err
 }

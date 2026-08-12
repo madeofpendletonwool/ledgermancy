@@ -55,6 +55,10 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/advisor', label: 'Advisor' },
       { to: '/budgets', label: 'Budgets' },
       { to: '/schedule', label: 'Schedule' },
+      // Reminders (MAD-85): the action inbox for bills/goals/paperwork with a
+      // date on them. Beside Schedule because the two are read together — what
+      // is due, and what is already overdue.
+      { to: '/reminders', label: 'Reminders' },
       { to: '/goals', label: 'Goals' },
       { to: '/shared', label: 'Shared expenses' },
       { to: '/retirement', label: 'Retirement' },

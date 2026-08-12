@@ -152,6 +152,11 @@ var tableCoverage = map[string]Coverage{
 	// --- Recurring and obligations ----------------------------------------
 	"recurring_obligations": InExport,
 	"recurring_overrides":   InExport,
+	// Per-occurrence "this bill was paid" records (MAD-85). Every row is a
+	// member's manual mark — the matcher reads transactions on the fly and
+	// writes nothing — so nothing a re-sync does can re-derive a row. Losing it
+	// re-arms every reminder the household had laid to rest.
+	"obligation_satisfaction": InExport,
 
 	// --- Anomaly detection ------------------------------------------------
 	// The same kind of thing as recurring_overrides: the record of a household

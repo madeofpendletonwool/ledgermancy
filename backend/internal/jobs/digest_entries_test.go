@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/mailer"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The in-app digest, end to end against a real Postgres (doc 25).
@@ -46,10 +46,7 @@ import (
 //
 //     TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./internal/jobs/
 func TestDigestEntries(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
@@ -381,10 +378,7 @@ func TestDigestEntries(t *testing.T) {
 // the cache, and it must leave that shared cache untouched (a partial month
 // cannot overwrite the canonical full-month recap).
 func TestDigestInProgressNarrativeNotServedStale(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
@@ -444,12 +438,12 @@ func TestDigestInProgressNarrativeNotServedStale(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":           "msg_test",
-			"type":         "message",
-			"role":         "assistant",
-			"content":      []map[string]string{{"type": "text", "text": freshText}},
-			"stop_reason":  "end_turn",
-			"usage":        map[string]int{"input_tokens": 1, "output_tokens": 1},
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"content":     []map[string]string{{"type": "text", "text": freshText}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]int{"input_tokens": 1, "output_tokens": 1},
 		})
 	}))
 	t.Cleanup(srv.Close)

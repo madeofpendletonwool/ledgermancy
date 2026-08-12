@@ -54,7 +54,7 @@ INSERT INTO goals (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     COALESCE($11::smallint, 4)
 )
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind
 `
 
 type CreateGoalParams struct {
@@ -132,6 +132,7 @@ func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, e
 		&i.ArchivedAt,
 		&i.PersonID,
 		&i.CollegeYears,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -212,7 +213,7 @@ func (q *Queries) DeleteGoalContribution(ctx context.Context, arg DeleteGoalCont
 }
 
 const getGoal = `-- name: GetGoal :one
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind FROM goals
 WHERE id = $1
   AND household_id = $2
   AND (
@@ -256,6 +257,7 @@ func (q *Queries) GetGoal(ctx context.Context, arg GetGoalParams) (Goal, error) 
 		&i.ArchivedAt,
 		&i.PersonID,
 		&i.CollegeYears,
+		&i.Remind,
 	)
 	return i, err
 }
@@ -362,7 +364,7 @@ func (q *Queries) GetGoalDebtTerms(ctx context.Context, arg GetGoalDebtTermsPara
 }
 
 const listActiveHouseholdGoals = `-- name: ListActiveHouseholdGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind FROM goals
 WHERE household_id = $1 AND scope = 'household' AND archived_at IS NULL
 `
 
@@ -396,6 +398,7 @@ func (q *Queries) ListActiveHouseholdGoals(ctx context.Context, householdID uuid
 			&i.ArchivedAt,
 			&i.PersonID,
 			&i.CollegeYears,
+			&i.Remind,
 		); err != nil {
 			return nil, err
 		}
@@ -462,7 +465,7 @@ func (q *Queries) ListGoalContributions(ctx context.Context, arg ListGoalContrib
 }
 
 const listGoals = `-- name: ListGoals :many
-SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years FROM goals
+SELECT id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind FROM goals
 WHERE household_id = $1
   AND archived_at IS NULL
   AND (
@@ -512,6 +515,7 @@ func (q *Queries) ListGoals(ctx context.Context, arg ListGoalsParams) ([]Goal, e
 			&i.ArchivedAt,
 			&i.PersonID,
 			&i.CollegeYears,
+			&i.Remind,
 		); err != nil {
 			return nil, err
 		}
@@ -539,6 +543,63 @@ type MarkGoalAchievedParams struct {
 func (q *Queries) MarkGoalAchieved(ctx context.Context, arg MarkGoalAchievedParams) error {
 	_, err := q.db.Exec(ctx, markGoalAchieved, arg.ID, arg.HouseholdID)
 	return err
+}
+
+const setGoalRemind = `-- name: SetGoalRemind :one
+UPDATE goals
+SET remind = $1
+WHERE id = $2
+  AND household_id = $3
+  AND (
+        scope = 'household'
+     OR (scope = 'user'   AND user_id = $4)
+     OR (scope = 'person' AND ($5::boolean
+                               OR person_id = $6))
+  )
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind
+`
+
+type SetGoalRemindParams struct {
+	Remind         bool       `json:"remind"`
+	ID             uuid.UUID  `json:"id"`
+	HouseholdID    uuid.UUID  `json:"household_id"`
+	UserID         *uuid.UUID `json:"user_id"`
+	AllPersonGoals bool       `json:"all_person_goals"`
+	PersonID       *uuid.UUID `json:"person_id"`
+}
+
+// Toggle the per-item reminders opt-out (MAD-85). Same visibility scoping as
+// GetGoal: a member can toggle their own and household goals, and (as an adult)
+// any person goal they can already see.
+func (q *Queries) SetGoalRemind(ctx context.Context, arg SetGoalRemindParams) (Goal, error) {
+	row := q.db.QueryRow(ctx, setGoalRemind,
+		arg.Remind,
+		arg.ID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.AllPersonGoals,
+		arg.PersonID,
+	)
+	var i Goal
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.Scope,
+		&i.UserID,
+		&i.Kind,
+		&i.Name,
+		&i.TargetAmount,
+		&i.TargetDate,
+		&i.AccountID,
+		&i.CategoryID,
+		&i.CreatedAt,
+		&i.AchievedAt,
+		&i.ArchivedAt,
+		&i.PersonID,
+		&i.CollegeYears,
+		&i.Remind,
+	)
+	return i, err
 }
 
 const sumGoalContributions = `-- name: SumGoalContributions :one
@@ -623,7 +684,7 @@ WHERE id = $7
      OR (scope = 'person' AND ($10::boolean
                                OR person_id = $11))
   )
-RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years
+RETURNING id, household_id, scope, user_id, kind, name, target_amount, target_date, account_id, category_id, created_at, achieved_at, archived_at, person_id, college_years, remind
 `
 
 type UpdateGoalParams struct {
@@ -671,6 +732,7 @@ func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, e
 		&i.ArchivedAt,
 		&i.PersonID,
 		&i.CollegeYears,
+		&i.Remind,
 	)
 	return i, err
 }

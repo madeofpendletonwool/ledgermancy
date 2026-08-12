@@ -2,7 +2,6 @@ package insights
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // expansionFixture is a seeded household with an income and a spending category,
@@ -74,10 +74,7 @@ func (f expansionFixture) spend(amount, date, merchant string) {
 
 func expansionPool(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {

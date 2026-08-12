@@ -2,7 +2,6 @@ package advisor
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The database-backed half of the advisor's verification. Everything here is
@@ -37,10 +37,7 @@ type advisorFixture struct {
 
 func newFixture(t *testing.T) *advisorFixture {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {

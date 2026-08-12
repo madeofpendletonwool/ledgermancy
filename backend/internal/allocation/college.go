@@ -290,7 +290,8 @@ func balanceAtYear(p networth.RetirementProjection, accountID string, years int)
 // compound at the household rate regardless of what the household set on the
 // account. The account's own rate wins over the household rate for the same
 // reason it exists: a 529 and a brokerage are not the household's conservative
-// default.
+// default. A VALID account rate is honoured as-is, including a genuine 0% (a
+// cash-like holding modelled flat); only an unset (Invalid) rate falls through.
 func returnRateFor(b Baseline, results []BucketResult, accountID uuid.UUID) decimal.Decimal {
 	for _, r := range results {
 		if r.AccountID == accountID && r.Kind == BucketInvestment {
@@ -298,8 +299,8 @@ func returnRateFor(b Baseline, results []BucketResult, accountID uuid.UUID) deci
 		}
 	}
 	for _, p := range b.Plans {
-		if p.ID == accountID.String() && p.RealReturnRate.IsPositive() {
-			return p.RealReturnRate
+		if p.ID == accountID.String() && p.RealReturnRate.Valid {
+			return p.RealReturnRate.Decimal
 		}
 	}
 	return b.Assumptions.RealReturnRate

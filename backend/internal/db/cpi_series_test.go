@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/reporting"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // Doc 27's verification list for the shipped series, against a real Postgres.
@@ -20,10 +20,7 @@ import (
 func cpiQueries(t *testing.T) (context.Context, *pgxpool.Pool, *dbgen.Queries) {
 	t.Helper()
 
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

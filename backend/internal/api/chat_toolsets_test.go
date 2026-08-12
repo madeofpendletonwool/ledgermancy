@@ -37,16 +37,38 @@ func TestChatAdvisorToolDefs(t *testing.T) {
 // THE CAP IS THE POINT OF THE SETS. A set that grows past it has to be split,
 // and finding that out as a build failure is the whole reason this is a test
 // rather than a runtime clamp.
+//
+// It counts DOMAIN tools. A retrieval budget is about definitions that compete
+// to answer the same question, and the escape hatch competes with none of them
+// — see metaTools.
 func TestToolSetsAreUnderTheCap(t *testing.T) {
 	for _, set := range ToolSets() {
 		defs := toolSetDefs(set)
-		if len(defs) > maxToolsPerSet {
-			t.Errorf("tool set %q has %d definitions, over the cap of %d — split the set",
-				set, len(defs), maxToolsPerSet)
+		domain := 0
+		for _, d := range defs {
+			if !isMetaTool(d.Name) {
+				domain++
+			}
+		}
+		if domain > maxToolsPerSet {
+			t.Errorf("tool set %q has %d domain definitions, over the cap of %d — split the set",
+				set, domain, maxToolsPerSet)
 		}
 		if len(defs) == 0 {
 			t.Errorf("tool set %q is empty", set)
 		}
+	}
+}
+
+// The exemption must stay a single documented tool. Without this guard, "meta"
+// becomes the drawer things get filed in to dodge the cap, and the cap stops
+// meaning anything.
+func TestMetaToolsStayExactlyTheEscapeHatch(t *testing.T) {
+	if len(metaTools) != 1 || metaTools[0] != toolFinderName {
+		t.Fatalf("metaTools is %v; the cap exemption covers the escape hatch ONLY. "+
+			"A tool added here leaves the retrieval budget — if it competes with a "+
+			"domain tool to answer a question, it belongs in a set instead.",
+			metaTools)
 	}
 }
 
@@ -55,18 +77,10 @@ func TestToolSetsAreUnderTheCap(t *testing.T) {
 // smaller set rather than an error.
 func TestToolSetMembersAllExist(t *testing.T) {
 	catalogue := map[string]bool{}
-	for _, d := range chatBaseToolDefs() {
+	for _, d := range chatToolCatalogue() {
 		catalogue[d.Name] = true
 	}
-	for _, d := range chatAdvisorToolDefs() {
-		catalogue[d.Name] = true
-	}
-	for _, d := range chatAllocationToolDefs() {
-		catalogue[d.Name] = true
-	}
-	for _, d := range chatLikelihoodToolDefs() {
-		catalogue[d.Name] = true
-	}
+	catalogue[chatToolFinderDef().Name] = true
 
 	for _, set := range ToolSets() {
 		for _, name := range toolSetNames(set) {
@@ -127,6 +141,49 @@ func TestClassifyToolSetIsDeterministic(t *testing.T) {
 		// is what makes a wrong pick reproducible and therefore fixable.
 		if again := classifyToolSet(message); again != got {
 			t.Errorf("classifyToolSet(%q) is not deterministic: %q then %q", message, got, again)
+		}
+	}
+}
+
+// Cashflow phrasings must select spending EXPLICITLY, not merely land there by
+// falling through the default.
+//
+// The reported question — "average money leftover at the end of each month over
+// the last year" — carried no keyword at all, so it reached monthly_trend only
+// because the default happens to be the set that holds it. That is luck, and it
+// runs out inside a planning thread, where an unmatched follow-up inherits
+// planning instead of dropping to spending.
+func TestCashflowPhrasingsSelectSpendingExplicitly(t *testing.T) {
+	for _, message := range []string{
+		"Average money leftover at the end of each month over the course of the last year.",
+		"what was left over each month last year",
+		"show me my cash flow month by month",
+		"monthly breakdown of income vs spending",
+		"how big were my paychecks this year",
+	} {
+		set, matched := classifyExplicit(message)
+		if !matched {
+			t.Errorf("classifyExplicit(%q) matched nothing — it reaches spending only by luck", message)
+		}
+		if set != ToolSetSpending {
+			t.Errorf("classifyExplicit(%q) = %q, want the spending set", message, set)
+		}
+	}
+}
+
+// The other half of that change, and the one that could regress the fabrication
+// fix: a GENERIC cadence phrase must NOT pull a planning follow-up out of
+// planning. "How much should I put in each month?" asked in a retirement thread
+// belongs to the engines, and a spending keyword broad enough to catch it would
+// strip them — the 529 bug, run backwards.
+func TestGenericCadencePhrasesDoNotHijackPlanningFollowUps(t *testing.T) {
+	for _, message := range []string{
+		"how much should I contribute each month?",
+		"what do I need to save up per month to get there",
+		"can I retire at 60 on that monthly number",
+	} {
+		if got := classifyToolSet(message); got != ToolSetPlanning {
+			t.Errorf("classifyToolSet(%q) = %q, want the planning set — a spending keyword is too broad", message, got)
 		}
 	}
 }
@@ -211,6 +268,32 @@ func TestCollegeProjectionReachableOnPlanningFollowUp(t *testing.T) {
 	}
 }
 
+// THE REGRESSION FROM THE LIVE BUG REPORT: a monthly_trend follow-up that
+// explains WHY it is dropping a month — "because of a big loan payoff" —
+// contains the planning keyword "loan", so the last-message rule routes the
+// turn to planning. monthly_trend lives in the spending set, so without it in
+// planning too the advisor truthfully told the user it had no per-month
+// income/spending tool, even though the tool (with custom ranges and exclude)
+// had shipped the day before. The classifier route is correct — "loan payoff"
+// genuinely is a planning cue — so the fix is the same shape as
+// college_projection's: the tool has to be in the set the misroute lands in.
+func TestMonthlyTrendReachableOnLoanPayoffFollowUp(t *testing.T) {
+	transcript := []chatMessage{
+		{Role: "user", Content: "Average money leftover at the end of each month over the course of the last year."},
+		{Role: "assistant", Content: "…"},
+		{Role: "user", Content: "Can you do the math without this month - 2026-08 and last month - 2026-07 " +
+			"because those are skewed because of a big loan payoff and this month income not coming in yet. " +
+			"So just start 2 months prior maybe?"},
+	}
+	got := classifyFromMessages(transcript)
+	if got != ToolSetPlanning {
+		t.Fatalf("follow-up classified as %q, want %q (the \"loan payoff\" cue routes here)", got, ToolSetPlanning)
+	}
+	if !hasTool(got, "monthly_trend") {
+		t.Error("monthly_trend missing from planning — the advisor will tell the user the tool does not exist")
+	}
+}
+
 // The other half of the fix: a topic change INTO spending must still route to
 // the transaction tools, even mid-thread. Once an ambiguous follow-up can
 // inherit a deeper set, "and what did I spend at Costco" must not stay pinned
@@ -290,5 +373,76 @@ func TestToolInt(t *testing.T) {
 		if _, err := toolInt(json.RawMessage(in), "days", 30, 1, 365); err == nil {
 			t.Errorf("toolInt(%s) = nil error, want a retryable decode error", in)
 		}
+	}
+}
+
+// "APRIL" IS NOT AN APR. The planning keyword "apr" was matched as a bare
+// substring, and planning is checked before spending, so every message
+// mentioning that month routed to planning and lost spending_summary,
+// list_transactions and spend_by_category. A twelfth of the calendar could not
+// ask the app how much it had spent — the same shape as the 529 fabrication:
+// the tool that answers the question was not in the set.
+func TestMonthNamesDoNotRouteToPlanning(t *testing.T) {
+	for _, msg := range []string{
+		"How much did I spend in April?",
+		"what were my biggest purchases in april",
+		"how much did we spend on dining out in April",
+	} {
+		got := classifyToolSet(msg)
+		if got != ToolSetSpending {
+			t.Errorf("%q routed to %q, want spending — \"apr\" matched inside \"april\"", msg, got)
+		}
+		if !hasTool(got, "spending_summary") {
+			t.Errorf("%q lands in a set without spending_summary", msg)
+		}
+	}
+}
+
+// The whole-word treatment must not cost the acronym its real matches. "apr"
+// and "ira" still select planning when they are actually words.
+func TestAcronymKeywordsStillMatch(t *testing.T) {
+	cases := map[string]string{
+		"what's the APR on the Quicksilver?": ToolSetPlanning,
+		"0% apr, is that worth it":           ToolSetPlanning,
+		"how much room is left in my IRA":    ToolSetPlanning,
+		"are my IRAs maxed out":              ToolSetPlanning,
+		"April rent and my apr question":     ToolSetPlanning, // a rejected hit must not hide a real one
+	}
+	for msg, want := range cases {
+		if got := classifyToolSet(msg); got != want {
+			t.Errorf("%q routed to %q, want %q", msg, got, want)
+		}
+	}
+}
+
+// The bare verb "spend" is how the question is usually asked, and it matched
+// nothing. On a first turn that fell to the spending default and looked fine;
+// inside a planning thread the inheritance rule then pinned it to planning and
+// took the transaction tools away. The same sentence must reach the same tools
+// either way.
+func TestBareSpendVerbIsASpendingKeyword(t *testing.T) {
+	const q = "how much did I spend on gas last month"
+
+	if got := classifyToolSet(q); got != ToolSetSpending {
+		t.Errorf("%q classified as %q, want spending", q, got)
+	}
+
+	inThread := []chatMessage{
+		{Role: "user", Content: "how's my debt payoff looking"},
+		{Role: "assistant", Content: "…"},
+		{Role: "user", Content: q},
+	}
+	if got := classifyFromMessages(inThread); got != ToolSetSpending {
+		t.Errorf("inside a planning thread %q inherited %q — a plain spending question "+
+			"must not lose the transaction tools", q, got)
+	}
+}
+
+// "Safe to spend" is the deliberate overlap: it contains the spending keyword
+// "spend" and is a planning question. Check order is what resolves it, so this
+// pins the order rather than the keyword lists.
+func TestSafeToSpendStaysPlanning(t *testing.T) {
+	if got := classifyToolSet("am I safe to spend $500 this week"); got != ToolSetPlanning {
+		t.Errorf("routed to %q, want planning — order must break the spend/safe-to-spend overlap", got)
 	}
 }

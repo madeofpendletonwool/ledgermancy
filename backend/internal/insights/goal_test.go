@@ -3,7 +3,6 @@ package insights
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestGoalProducerCoachesBehind proves the coaching producer raises a kind=goal
@@ -24,10 +24,7 @@ import (
 //
 //	TEST_DATABASE_URL='postgres://…' go test ./internal/insights/ -run TestGoalProducer
 func TestGoalProducerCoachesBehind(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)

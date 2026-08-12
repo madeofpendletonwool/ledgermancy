@@ -270,7 +270,7 @@ func TestCollegeUsesAccountOwnReturnRate(t *testing.T) {
 	withAccountRate := base()
 	for i := range withAccountRate.Plans {
 		if withAccountRate.Plans[i].ID == fiveTwo.String() {
-			withAccountRate.Plans[i].RealReturnRate = dec("0.06") // the 529 earns more
+			withAccountRate.Plans[i].RealReturnRate = nd("0.06") // the 529 earns more
 		}
 	}
 
@@ -296,6 +296,46 @@ func TestCollegeUsesAccountOwnReturnRate(t *testing.T) {
 	}
 }
 
+// A 529 explicitly set to 0% real compounds FLAT, not at the household rate.
+// This is the college-drawdown half of the bug this change fixes: the column is
+// nullable, the storage layer keeps "unset" (NULL) and "flat" (0) apart, and
+// returnRateFor honours a VALID zero rather than collapsing it onto the
+// household default the way the old IsPositive gate did.
+func TestCollegeHonorsAccountOwnZeroReturnRate(t *testing.T) {
+	base := func() Baseline {
+		b := collegeBaseline(dec("20000"), dec("100000"), 10, 4)
+		b.CollegeInflation = dec("5.50")
+		b.InflationRate = dec("0.03")
+		b.Assumptions.RealReturnRate = dec("0.03") // household stays conservative
+		return b
+	}
+
+	unset := base() // 529 plan rate unset -> household 3%
+	flat := base()
+	for i := range flat.Plans {
+		if flat.Plans[i].ID == fiveTwo.String() {
+			flat.Plans[i].RealReturnRate = nd("0") // the household models this one flat
+		}
+	}
+
+	req := Request{HorizonYears: 20, Splits: []Split{}}
+	higher := collegeResult(t, run(t, unset, req))
+	lower := collegeResult(t, run(t, flat, req))
+
+	if !higher.Projectable || !lower.Projectable {
+		t.Fatalf("both must project: household=%v flat=%v", higher.Projectable, lower.Projectable)
+	}
+	// At 0% the $20,000 balance earns nothing for ten years, so the
+	// enrollment balance is exactly the opening balance. The unset case
+	// compounds at the household 3% and ends strictly higher.
+	if want := dec("20000"); !lower.BalanceAtEnrollment.Equal(want) {
+		t.Errorf("flat enrollment balance = %s, want exactly %s (0%% means no growth)", lower.BalanceAtEnrollment, want)
+	}
+	if !higher.BalanceAtEnrollment.GreaterThan(lower.BalanceAtEnrollment) {
+		t.Errorf("household-rate enrollment balance %s did not exceed the flat %s — the 0%% rate fell through to 3%%",
+			higher.BalanceAtEnrollment, lower.BalanceAtEnrollment)
+	}
+}
 
 // A goal whose beneficiary has no resolvable age is REPORTED as unprojectable
 // rather than projected against a guessed enrollment year. Same refusal to guess

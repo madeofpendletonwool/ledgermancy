@@ -1098,6 +1098,9 @@ export interface Obligation {
   posting_account_id: string | null
   /** Occurrences on or before this date have been posted. */
   last_posted_date: string | null
+  /** Per-item reminders opt-out (MAD-85). On by default; off silences the
+   *  overdue-bill coaching for this one obligation. */
+  remind: boolean
 }
 
 export interface AutoPostInput {
@@ -2068,6 +2071,9 @@ export interface Goal {
   /** Present only on a college goal: the sentence that stops target_amount
    *  being read as the whole cost of a degree. */
   college_basis?: string
+  /** Per-item reminders opt-out (MAD-85). On by default; off silences the
+   *  payoff-progress coaching for this one goal. */
+  remind: boolean
 }
 
 /** Fields to create or update a goal. Amounts/dates are strings, never floats. */
@@ -4211,6 +4217,24 @@ export const api = {
   setObligationAutoPost: (id: string, input: AutoPostInput) =>
     request<Obligation>('PUT', `/api/obligations/${id}/auto-post`, input),
 
+  // --- Reminders (MAD-85) ------------------------------------------------
+  // Mark one occurrence paid (the matcher could not find a payment, but the
+  // member confirms it went through); clear that mark to re-arm the reminder;
+  // toggle the per-item reminders opt-out. The Reminders view itself is a
+  // filtered read of /api/insights, so it has no list method here.
+  satisfyObligation: (id: string, dueDate: string) =>
+    request<{ obligation_id: string; due_date: string; source: string; satisfied_at: string }>(
+      'POST',
+      `/api/obligations/${id}/satisfy`,
+      { due_date: dueDate },
+    ),
+
+  clearObligationSatisfied: (id: string, dueDate: string) =>
+    request<void>('DELETE', `/api/obligations/${id}/satisfy`, { due_date: dueDate }),
+
+  setObligationRemind: (id: string, remind: boolean) =>
+    request<Obligation>('PUT', `/api/obligations/${id}/remind`, { remind }),
+
   // --- Manual accounts (doc 30) -------------------------------------------
   // Every one of these refuses a Plaid-linked account id. A linked account's
   // name and balance belong to the institution, and an edit here would last
@@ -4268,6 +4292,10 @@ export const api = {
     request<Goal>('PUT', `/api/goals/${id}`, input),
 
   archiveGoal: (id: string) => request<void>('DELETE', `/api/goals/${id}`),
+
+  // Per-item reminders opt-out (MAD-85). Off silences payoff-progress coaching.
+  setGoalRemind: (id: string, remind: boolean) =>
+    request<Goal>('PUT', `/api/goals/${id}/remind`, { remind }),
 
   // Parses a natural-language goal into a confirmable proposal. Never writes —
   // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.
@@ -4768,9 +4796,11 @@ export const api = {
     }),
 
   // The chat endpoint streams its answer as Server-Sent Events: a
-  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, one
-  // {"delta":"…"} frame per chunk of prose, a {"tool":…,"result":…} frame per
-  // tool result, then a terminal {"done":true} or {"error":"…"}.
+  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, an
+  // optional {"tools_added":[…]} frame when the assistant loads a tool that set
+  // did not carry, one {"delta":"…"} frame per chunk of prose, a
+  // {"tool":…,"result":…} frame per tool result, then a terminal {"done":true}
+  // or {"error":"…"}.
   //
   // The tool frames arrive BEFORE the final prose, because tool calls complete
   // earlier in the server's loop — so a chart mounts while the answer composes,
@@ -4790,6 +4820,16 @@ export interface ChatStreamOptions {
   onTool?: (result: ChatToolResult) => void
   /** Fires once with the tool set the server chose, so a wrong pick is visible. */
   onToolSet?: (set: string) => void
+  /**
+   * Fires when the assistant pulls in a tool the chosen set did not carry.
+   *
+   * The set is picked from the question's wording and can pick wrong; the
+   * assistant recovers by loading what it needs mid-turn. Surfacing that is what
+   * makes a bad pick MEASURABLE — a set escalated out of on most turns is a
+   * membership bug, where the only previous symptom was an answer that quietly
+   * declined to compute something.
+   */
+  onToolsAdded?: (names: string[]) => void
 }
 
 /**
@@ -4946,10 +4986,12 @@ async function streamChat(
       tool?: string
       result?: unknown
       tool_set?: string
+      tools_added?: string[]
     }
     if (evt.error) throw new ApiError(500, evt.error)
     if (evt.delta) onDelta(evt.delta)
     if (evt.tool_set) opts?.onToolSet?.(evt.tool_set)
+    if (evt.tools_added?.length) opts?.onToolsAdded?.(evt.tools_added)
     if (evt.tool) opts?.onTool?.({ tool: evt.tool, result: evt.result })
   }
 

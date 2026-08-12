@@ -43,7 +43,8 @@ type Split struct {
 	LumpPct    decimal.Decimal
 	MonthlyPct decimal.Decimal
 	// RealReturnRate is this bucket's assumed real return as a FRACTION.
-	// Invalid means "use the household rate", which is the same convention
+	// Invalid means "use the household rate", and a VALID value — including a
+	// genuine 0% — is honoured, the same convention
 	// networth.AccountPlan.RealReturnRate uses and for the same reason.
 	// Investment buckets only.
 	RealReturnRate decimal.NullDecimal
@@ -436,22 +437,25 @@ func buildPlanInputs(b Baseline, req Request) (planInputs, error) {
 				// bucket the engine never saw.
 				return planInputs{}, fmt.Errorf("internal: no projection plan for account %s", a.bucket.AccountID)
 			}
-		plans[idx].FirstYearContribution = plans[idx].FirstYearContribution.Add(r.AppliedLump)
-		plans[idx].MonthlyContribution = plans[idx].MonthlyContribution.Add(r.AppliedMonthly)
-		switch {
-		case a.split.RealReturnRate.Valid && a.split.RealReturnRate.Decimal.IsPositive():
-			// The most explicit statement: this allocation names its own rate.
-			plans[idx].RealReturnRate = a.split.RealReturnRate.Decimal
-			r.ReturnRate = a.split.RealReturnRate.Decimal
-		case plans[idx].RealReturnRate.IsPositive():
-			// The account's own assumed rate, set on its contribution plan.
-			// Wins over the household rate because a 529 is not the household's
-			// conservative default — the whole reason that column exists.
-			r.ReturnRate = plans[idx].RealReturnRate
-		default:
-			r.ReturnRate = b.Assumptions.RealReturnRate
-			r.RateIsHousehold = true
-		}
+			plans[idx].FirstYearContribution = plans[idx].FirstYearContribution.Add(r.AppliedLump)
+			plans[idx].MonthlyContribution = plans[idx].MonthlyContribution.Add(r.AppliedMonthly)
+			switch {
+			case a.split.RealReturnRate.Valid:
+				// The most explicit statement: this allocation names its own
+				// rate. A VALID rate wins as-is, including a genuine 0% — a
+				// bucket the household models flat must compound flat.
+				plans[idx].RealReturnRate = a.split.RealReturnRate
+				r.ReturnRate = a.split.RealReturnRate.Decimal
+			case plans[idx].RealReturnRate.Valid:
+				// The account's own assumed rate, set on its contribution plan.
+				// Wins over the household rate because a 529 is not the household's
+				// conservative default — the whole reason that column exists — and
+				// a genuine 0% is honoured for the same reason a positive one is.
+				r.ReturnRate = plans[idx].RealReturnRate.Decimal
+			default:
+				r.ReturnRate = b.Assumptions.RealReturnRate
+				r.RateIsHousehold = true
+			}
 		}
 
 		results = append(results, r)

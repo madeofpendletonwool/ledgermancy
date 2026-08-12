@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // ListCollegeGoals resolves the enrollment horizon from the beneficiary's
@@ -35,10 +35,7 @@ type collegeGoalFixture struct {
 func newCollegeGoalFixture(t *testing.T) *collegeGoalFixture {
 	t.Helper()
 
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	pf := newPeopleFixture(t)
 
 	ctx := context.Background()

@@ -70,3 +70,31 @@ func TestBriefingHurdleEqualsAssumedReturnAboveFloor(t *testing.T) {
 		t.Errorf("apr_hurdle = %q, want 7 (equals the assumed return above the floor)", hurdle)
 	}
 }
+
+// A household that has never opened the projections page has no
+// projection_assumptions row, so fillRetirement returns before Assumptions is
+// populated and the briefing's rates are not known. Reporting them as 0% would
+// be the same substitution the whole rates surface exists to stop — the model
+// was quoting the 6% floor as "your return", and a fabricated 0% is no better.
+// Every rate key is emitted as null so the model cannot read them
+// inconsistently (a null return beside a "0" hurdle would be the trap). This
+// is the rule the system prompt already states verbatim: a null figure means
+// "not known", never zero.
+func TestBriefingAssumptionsNullWhenNoProjectionRow(t *testing.T) {
+	// The no-row case: fillRetirement left Assumptions at its zero value, which
+	// is the briefing's representation of "rates not loaded".
+	b := advisor.Briefing{}
+
+	res := briefingToolResult(b)
+
+	for _, key := range []string{"assumed_real_return", "assumed_inflation", "apr_hurdle", "apr_hurdle_basis"} {
+		v, present := res[key]
+		if !present {
+			t.Errorf("%s missing from briefing; want it present as null", key)
+			continue
+		}
+		if v != nil {
+			t.Errorf("%s = %v, want nil (no projection_assumptions row means rates are not known, not zero)", key, v)
+		}
+	}
+}

@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/categorize"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // The structural transfer pairer against a real Postgres. The case is the one
@@ -33,10 +33,7 @@ type transferFixture struct {
 
 func newTransferFixture(t *testing.T) *transferFixture {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)
 	if err != nil {

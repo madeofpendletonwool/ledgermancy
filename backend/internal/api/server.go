@@ -119,24 +119,30 @@ const (
 	// THIS NUMBER IS NOT FREE TO CHOOSE. It has to cover the worst case the loop
 	// can actually produce:
 	//
-	//	maxToolIterations (8, chat_handlers.go)
-	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 480s of model time
+	//	maxToolIterations (9, chat_handlers.go)
+	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 540s of model time
 	//	+ aiToolBudget                                       =  60s of our own
-	//	                                                     = 540s
+	//	                                                     = 600s
 	//
-	// 600s leaves a minute of headroom on top. It is a CEILING, not a target —
+	// 660s leaves a minute of headroom on top. It is a CEILING, not a target —
 	// a real turn answers in seconds, and the defences against a turn that does
 	// not are maxToolIterations and aiLimiter, not this. Cutting it lower would
 	// only reintroduce the original bug: a budget the loop below it can exceed.
 	//
+	// Moved 600s → 660s with maxToolIterations 8 → 9 (the find_tools escape
+	// hatch spends an iteration). Note that nginx's proxy_read_timeout is NOT
+	// this number and does not need to move with it: it bounds the gap BETWEEN
+	// reads on a streaming response, and the longest gap this loop can produce
+	// is one ai.RequestTimeout.
+	//
 	// TestAIRouteTimeoutFitsToolLoop fails if any of the three numbers moves
 	// without the others.
-	aiRouteTimeout = 600 * time.Second
+	aiRouteTimeout = 660 * time.Second
 
 	// aiToolBudget is how much of aiRouteTimeout is reserved for OUR work rather
 	// than the model's: the scoped queries executeChatTool runs between
 	// iterations, plus serialising their results back into the prompt. Every one
-	// is a local database read, so a minute across all eight is slack, not an
+	// is a local database read, so a minute across all nine is slack, not an
 	// estimate.
 	aiToolBudget = 60 * time.Second
 )
@@ -606,10 +612,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/", s.handleCreateObligation)
 				r.Get("/upcoming", s.handleUpcomingObligations)
 				r.Get("/projection", s.handleObligationProjection)
-				r.Put("/{obligationID}", s.handleUpdateObligation)
-				r.Delete("/{obligationID}", s.handleDeleteObligation)
-				r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
-			})
+			r.Put("/{obligationID}", s.handleUpdateObligation)
+			r.Delete("/{obligationID}", s.handleDeleteObligation)
+			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
+			// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
+			// The Reminders view itself reads /api/insights, so there is no list
+			// handler — only the write that records a member's confirmation.
+			r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
+			r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
+			r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
+		})
 
 			// Goals are the one mixed group. Reads are visibility-scoped in SQL
 			// (ListGoals takes all_person_goals, set from the caller's role), so a
@@ -624,9 +636,11 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Use(auth.RequireAdult)
 					r.Post("/", s.handleCreateGoal)
 					r.Post("/parse", s.handleParseGoal)
-					r.Put("/{goalID}", s.handleUpdateGoal)
-					r.Delete("/{goalID}", s.handleArchiveGoal)
-					r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+				r.Put("/{goalID}", s.handleUpdateGoal)
+				r.Delete("/{goalID}", s.handleArchiveGoal)
+				// Reminders opt-out toggle (MAD-85).
+				r.Put("/{goalID}/remind", s.handleSetGoalRemind)
+				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
 					r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
 				})
 			})

@@ -60,6 +60,10 @@ type obligationResponse struct {
 	// been materialised. Surfaced so the UI can say what has actually happened
 	// rather than only what is scheduled to.
 	LastPostedDate *string `json:"last_posted_date"`
+	// Remind is the per-item reminders opt-out (MAD-85). On by default: the bill
+	// calendar exists to keep bills in front of you, and a member turns this off
+	// for the rare item they do not want overdue coaching about.
+	Remind bool `json:"remind"`
 }
 
 func (s *Server) handleListObligations(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +113,7 @@ func buildObligationResponse(o dbgen.RecurringObligation, nextDue time.Time, now
 		IsPersonal:       o.UserID != nil && !o.IsShared,
 		AutoPost:         o.AutoPost,
 		PostingAccountID: o.PostingAccountID,
+		Remind:           o.Remind,
 	}
 	if o.LastPostedDate != nil {
 		d := o.LastPostedDate.Format(time.DateOnly)

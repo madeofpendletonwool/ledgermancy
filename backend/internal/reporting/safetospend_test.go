@@ -2,7 +2,6 @@ package reporting
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestBuildSafeToSpend drives the calculation against a real Postgres: six
@@ -20,10 +20,7 @@ import (
 //
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./internal/reporting/
 func TestBuildSafeToSpend(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {
@@ -139,10 +136,7 @@ func TestBuildSafeToSpend(t *testing.T) {
 // $5,000 income, $1,000 of rent, a $400 dining budget — so the two figures can
 // be compared directly.
 func TestSafeToSpendDoesNotDoubleCountBills(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
 	if err != nil {

@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // Doc 21's verification list, against a real Postgres.
@@ -36,10 +36,7 @@ type peopleFixture struct {
 func newPeopleFixture(t *testing.T) *peopleFixture {
 	t.Helper()
 
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

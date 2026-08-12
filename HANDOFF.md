@@ -131,7 +131,9 @@ These are load-bearing. Each one is a bug that was already found and fixed:
   `.env` and is decoded to raw bytes before HMAC.
 - Run `go build ./... && go vet ./... && go test ./...` and
   `npm run build` before claiming done. `tsc --noEmit` is **not** sufficient —
-  the project-references build catches things it misses.
+  the project-references build catches things it misses. Set
+  `TEST_DATABASE_URL` at a throwaway Postgres or every DB-backed test silently
+  skips; each package then gets its own database off it (`internal/testdb`).
 
 ### The bar
 

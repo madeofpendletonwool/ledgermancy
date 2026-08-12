@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, DOCUMENT_TYPES } from '../lib/api'
 import type {
@@ -775,6 +776,7 @@ function DocumentModal({
 function Preview({ document: doc }: { document: VaultDocument }) {
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     if (!doc.preview_type) return
@@ -817,21 +819,141 @@ function Preview({ document: doc }: { document: VaultDocument }) {
   }
   if (!url) return <SkeletonBlock className="h-72 w-full" />
 
-  if (doc.preview_type === 'application/pdf') {
-    return (
-      <iframe
-        src={url}
-        title={doc.title}
-        className="h-96 w-full rounded-xl border border-white/10 bg-white"
-      />
-    )
-  }
   return (
-    <img
-      src={url}
-      alt={doc.title}
-      className="max-h-96 w-full rounded-xl border border-white/10 object-contain"
-    />
+    <div className="relative">
+      {doc.preview_type === 'application/pdf' ? (
+        <iframe
+          src={url}
+          title={doc.title}
+          className="h-96 w-full rounded-xl border border-white/10 bg-white"
+        />
+      ) : (
+        <img
+          src={url}
+          alt={doc.title}
+          className="max-h-96 w-full cursor-zoom-in rounded-xl border border-white/10 object-contain"
+          onClick={() => setExpanded(true)}
+        />
+      )}
+
+      {/* Not hover-only: a PDF preview swallows pointer events into the
+          iframe, and on a phone there is no hover at all. */}
+      <button
+        className="absolute right-2 top-2 rounded-lg bg-ink-950/70 p-1.5 text-mist-300 backdrop-blur-sm transition hover:text-mist-100"
+        aria-label="Expand preview"
+        title="Expand"
+        onClick={() => setExpanded(true)}
+      >
+        <ExpandIcon />
+      </button>
+
+      {expanded && (
+        <ExpandedPreview
+          document={doc}
+          url={url}
+          onClose={() => setExpanded(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The preview at full-viewport size, over the document modal.
+ *
+ * It reuses the object URL Preview already made rather than fetching again —
+ * the bytes are decrypted and in memory, so expanding costs nothing and the
+ * single revoke on unmount still owns them.
+ *
+ * Portalled to <body> out of necessity, not taste: `.glass` carries a
+ * backdrop-filter, which makes the modal panel the containing block for any
+ * fixed-position descendant. Left in place this would size itself to the
+ * panel — the very box it is trying to escape.
+ */
+function ExpandedPreview({
+  document: doc,
+  url,
+  onClose,
+}: {
+  document: VaultDocument
+  url: string
+  onClose: () => void
+}) {
+  // Escape has to close this and leave the modal underneath open. Both
+  // handlers sit on window, so capture first and stop the event dead.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[60] flex flex-col bg-ink-950/95 p-3 backdrop-blur-sm sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${doc.title} — expanded`}
+      onClick={onClose}
+    >
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <h3 className="truncate text-sm text-mist-300">{doc.title}</h3>
+        <button
+          className="rounded-lg p-1 text-mist-400 transition hover:text-mist-100"
+          aria-label="Close expanded preview"
+          onClick={onClose}
+        >
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1" onClick={(e) => e.stopPropagation()}>
+        {doc.preview_type === 'application/pdf' ? (
+          <iframe
+            src={url}
+            title={doc.title}
+            className="h-full w-full rounded-xl border border-white/10 bg-white"
+          />
+        ) : (
+          <img
+            src={url}
+            alt={doc.title}
+            className="h-full w-full rounded-xl object-contain"
+          />
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function ExpandIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M15 3h6v6M21 3l-7 7M9 21H3v-6M3 21l7-7" />
+    </svg>
   )
 }
 

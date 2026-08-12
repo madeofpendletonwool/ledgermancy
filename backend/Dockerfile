@@ -12,10 +12,14 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/api  ./cmd/api
 RUN CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker
 
-# A one-off maintenance command, shipped in the api image so an operator can run
-# it with `docker compose exec` against the deployment's own DATABASE_URL rather
-# than needing a Go toolchain on the host. It defaults to a dry run.
+# One-off maintenance commands, shipped in the api image so an operator can run
+# them with `docker compose exec` against the deployment's own DATABASE_URL
+# rather than needing a Go toolchain on the host. Both default to a dry run.
 RUN CGO_ENABLED=0 go build -trimpath -o /out/normalise-merchant-keys ./cmd/normalise-merchant-keys
+
+# The post-sync transfer pairer only looks back 60 days, so a household's
+# existing history stays unlinked until this is run once after deploying.
+RUN CGO_ENABLED=0 go build -trimpath -o /out/backfill-transfer-pairs ./cmd/backfill-transfer-pairs
 
 # ---- api -------------------------------------------------------------------
 FROM alpine:3.21 AS api
@@ -40,6 +44,7 @@ RUN mkdir -p /var/lib/ledgermancy/documents \
 
 COPY --from=build /out/api /usr/local/bin/api
 COPY --from=build /out/normalise-merchant-keys /usr/local/bin/normalise-merchant-keys
+COPY --from=build /out/backfill-transfer-pairs /usr/local/bin/backfill-transfer-pairs
 USER ledgermancy
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \

@@ -2,10 +2,11 @@ package db
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/shopspring/decimal"
+
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/testdb"
 )
 
 // TestMigrate applies the full migration set against a real Postgres. It is
@@ -16,10 +17,7 @@ import (
 //	  -e POSTGRES_DB=lmtest -p 55432:5432 postgres:17-alpine
 //	TEST_DATABASE_URL='postgres://postgres:test@localhost:55432/lmtest?sslmode=disable' go test ./internal/db/
 func TestMigrate(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)
@@ -62,10 +60,7 @@ func TestMigrate(t *testing.T) {
 // must survive a database round trip exactly. If the pgx decimal codec is ever
 // dropped from Connect, this fails rather than silently degrading to a float.
 func TestDecimalRoundTrip(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testdb.URL(t)
 
 	ctx := context.Background()
 	pool, err := Connect(ctx, url)

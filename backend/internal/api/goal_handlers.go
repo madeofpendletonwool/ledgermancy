@@ -80,6 +80,9 @@ type goalResponse struct {
 	// with the per-year shortfall, lives on the Advisor's allocator. Empty for
 	// every other kind.
 	CollegeBasis string `json:"college_basis,omitempty"`
+	// Remind is the per-item reminders opt-out (MAD-85). On by default; the
+	// payoff_progress producer skips a goal that has it off.
+	Remind bool `json:"remind"`
 }
 
 // collegeBasis is rendered verbatim beside a college goal's standing.
@@ -211,6 +214,7 @@ func (s *Server) buildGoalResponse(ctx context.Context, g dbgen.Goal, now time.T
 		AccountID:    g.AccountID,
 		CategoryID:   g.CategoryID,
 		CreatedAt:    g.CreatedAt.UTC().Format(time.RFC3339),
+		Remind:       g.Remind,
 	}
 	if g.TargetDate != nil {
 		d := g.TargetDate.Format(time.DateOnly)

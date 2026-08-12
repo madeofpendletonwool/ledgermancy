@@ -72,6 +72,15 @@ func DefaultProducers() []Producer {
 		budgetTrendProducer{},
 		// Bill calendar (upcomingbill.go).
 		upcomingBillProducer{},
+		// Overdue bills (reminders.go, MAD-85). The backward-looking companion
+		// to upcoming_bill: where that says "due in N days", this says "was due
+		// and we can't find a payment". Registered beside it so the two halves
+		// of the bill reminder sit together.
+		overdueBillProducer{},
+		// Debt-payoff coaching (reminders.go, MAD-85). goalProducer above
+		// deliberately skips kind='debt_payoff'; this producer owns it, coaching
+		// a payoff goal whose current payment won't hit its target date.
+		payoffProgressProducer{},
 		// Document vault (documentexpiry.go, receiptmatch.go).
 		documentExpiryProducer{},
 		receiptMatchProducer{},

@@ -53,13 +53,14 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        # -p 1 is mandatory: the DB-gated tests share one throwaway Postgres
-        # and cannot tolerate parallel packages. Without it, packages collide
-        # on the same schema. Tests skip themselves when TEST_DATABASE_URL is
+        # Packages run in parallel. internal/testdb gives each DB-backed package
+        # its own database (lmtest_api, lmtest_db, …) created from the one named
+        # below, so they no longer collide on a shared schema — the flake that
+        # forced -p 1 here. Tests skip themselves when TEST_DATABASE_URL is
         # unset, so the service container above is what makes them actually run.
         env:
           TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/lmtest?sslmode=disable
-        run: go test -p 1 ./...
+        run: go test ./...
 
   frontend:
     name: Frontend (lint / build / test)

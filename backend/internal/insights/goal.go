@@ -57,6 +57,13 @@ func (goalProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uu
 		if g.Kind != "savings" {
 			continue
 		}
+		// Per-item reminders opt-out (MAD-85). A household that has silenced a
+		// goal's coaching keeps that decision honoured here, matching the
+		// payoff_progress producer and the overdue_bill producer's use of the
+		// obligations.remind column.
+		if !g.Remind {
+			continue
+		}
 
 		current, err := goalProgress(ctx, q, g, now)
 		if err != nil {

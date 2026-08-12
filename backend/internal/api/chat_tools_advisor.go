@@ -134,18 +134,13 @@ func chatAdvisorToolDefs() []ai.Tool {
 // missing entry the guard test catches, not a silently smaller set.
 func toolSetDefs(set string) []ai.Tool {
 	catalogue := map[string]ai.Tool{}
-	for _, t := range chatBaseToolDefs() {
+	for _, t := range chatToolCatalogue() {
 		catalogue[t.Name] = t
 	}
-	for _, t := range chatAllocationToolDefs() {
-		catalogue[t.Name] = t
-	}
-	for _, t := range chatLikelihoodToolDefs() {
-		catalogue[t.Name] = t
-	}
-	for _, t := range chatAdvisorToolDefs() {
-		catalogue[t.Name] = t
-	}
+	// The escape hatch is not IN the catalogue — it is not something find_tools
+	// can hand out, and listing itself among the tools it offers would be a loop
+	// with nothing at the end of it. It joins here, where sets are assembled.
+	catalogue[toolFinderName] = chatToolFinderDef()
 
 	names := toolSetNames(set)
 	out := make([]ai.Tool, 0, len(names))
@@ -983,15 +978,27 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		"debt_free":            debtFree,
 		"emergency_fund":       runway,
 		"attention":            attention,
-		// The household's OWN rates. Quoted as percents because that is how the
-		// user sees them and how the model should state them. The hurdle and its
-		// basis travel together so "your assumed return" and "the APR hurdle"
-		// cannot be confused again — they are different numbers whenever the
-		// assumed return is below the 6% floor.
-		"assumed_real_return": b.Assumptions.RealReturn.Mul(decimal.NewFromInt(100)).Round(2).String(),
-		"assumed_inflation":   b.Assumptions.Inflation.Mul(decimal.NewFromInt(100)).Round(2).String(),
-		"apr_hurdle":          b.Assumptions.Hurdle.String(),
-		"apr_hurdle_basis":    b.Assumptions.HurdleBasis,
+	}
+	// The household's OWN rates, quoted as percents. All four keys travel
+	// together: either the household has a projection_assumptions row — in which
+	// case fillRetirement ran resolveHurdle and filled HurdleBasis — or it does
+	// not, in which case every rate is "not known" rather than a fabricated 0%.
+	// resolveHurdle always returns a non-empty basis, so an empty HurdleBasis is
+	// the reliable signature of the no-row case. Emitting null for all four (and
+	// never a null rate beside a "0" hurdle) is the same rule the system prompt
+	// already states: a null figure means "not known", never zero. A household
+	// that has never opened the projections page is not assuming a 0% return any
+	// more than it was assuming the 6% floor this surface replaced.
+	if b.Assumptions.HurdleBasis != "" {
+		out["assumed_real_return"] = b.Assumptions.RealReturn.Mul(decimal.NewFromInt(100)).Round(2).String()
+		out["assumed_inflation"] = b.Assumptions.Inflation.Mul(decimal.NewFromInt(100)).Round(2).String()
+		out["apr_hurdle"] = b.Assumptions.Hurdle.String()
+		out["apr_hurdle_basis"] = b.Assumptions.HurdleBasis
+	} else {
+		out["assumed_real_return"] = nil
+		out["assumed_inflation"] = nil
+		out["apr_hurdle"] = nil
+		out["apr_hurdle_basis"] = nil
 	}
 	return out
 }

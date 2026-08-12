@@ -57,12 +57,37 @@ const (
 // not a condition to degrade gracefully from, it is a design decision somebody
 // has to make. The next wave hits a build failure and picks a fourth set, which
 // is much better than shipping a quality cliff nobody measured.
-const maxToolsPerSet = 15
+//
+// Raised from 15 to 16 for planning only: monthly_trend had to join that set
+// (see ToolSetPlanning) so a cashflow follow-up that names a planning cue —
+// "redo the average without July, its numbers were skewed by a loan payoff" —
+// does not lose the only tool that answers it. The route is right ("loan
+// payoff" is genuinely a planning cue), so the fix is the tool's membership,
+// and 16 distinct planning tools is still well inside the budget the cap exists
+// to protect.
+//
+// It counts DOMAIN tools only — see metaTools for why the escape hatch is not
+// charged against it.
+const maxToolsPerSet = 16
 
 // commonTools are in EVERY set, because every advisor conversation starts from
 // the same two places: what is the household's position, and how much room does
 // it have this month.
 var commonTools = []string{"advisor_briefing", "safe_to_spend"}
+
+// metaTools are in every set and are NOT charged against maxToolsPerSet.
+//
+// The exemption is not an accounting dodge, it follows from what the cap is
+// for. The cap bounds a RETRIEVAL problem: N similarly-named finance tools, all
+// plausible answers to the same money question, one of which is right.
+// find_tools is not in that contest — it takes a description of a lookup and
+// returns tools, it computes nothing, and no question has it and a domain tool
+// as competing answers. Charging it would force a real engine out of a set to
+// make room for the mechanism whose entire job is to put engines back.
+//
+// The exemption is narrow on purpose: this list is asserted to hold exactly one
+// name, so "meta" cannot quietly become the drawer that lets sets grow.
+var metaTools = []string{toolFinderName}
 
 // toolSetMembers is the membership table. Names only — the definitions live in
 // chatToolDefs and chatAdvisorToolDefs, and toolSetDefs filters those by this.
@@ -87,6 +112,15 @@ var toolSetMembers = map[string][]string{
 		"retirement_projection", "retirement_solve",
 		"investment_performance", "asset_allocation", "fees_summary",
 		"contribution_room",
+		// A cashflow follow-up can land here through its OWN keyword, not just
+		// inheritance: "redo the average monthly leftover without July — that
+		// month was skewed by a big loan payoff" routes to planning on "loan",
+		// even though the question is monthly_trend's. Without the tool in this
+		// set the advisor truthfully reports it has no per-month income/spending
+		// tool, exactly the bug that was reported the day after monthly_trend
+		// shipped its custom-range + exclude support. Same fix shape as
+		// college_projection above: the tool follows the misroute.
+		"monthly_trend",
 	},
 	// A "what should I do with $X" question needs the same position inputs a
 	// planning question does — what is owed, what room is left, where the
@@ -127,16 +161,32 @@ func ToolSets() []string {
 	return []string{ToolSetSpending, ToolSetPlanning, ToolSetModelling, ToolSetLikelihood}
 }
 
-// toolSetNames returns one set's full membership, common tools included.
+// toolSetNames returns one set's full membership, common and meta tools
+// included.
+//
+// The meta tools go LAST. Tool order is read order, and the escape hatch should
+// be the thing the model reaches for after the domain tools have failed it, not
+// the first entry it sees.
 func toolSetNames(set string) []string {
 	members, ok := toolSetMembers[set]
 	if !ok {
 		members = toolSetMembers[ToolSetSpending]
 	}
-	out := make([]string, 0, len(commonTools)+len(members))
+	out := make([]string, 0, len(commonTools)+len(members)+len(metaTools))
 	out = append(out, commonTools...)
 	out = append(out, members...)
+	out = append(out, metaTools...)
 	return out
+}
+
+// isMetaTool reports whether a name is infrastructure rather than an engine.
+func isMetaTool(name string) bool {
+	for _, m := range metaTools {
+		if m == name {
+			return true
+		}
+	}
+	return false
 }
 
 // setKeywords maps a set to the phrases that select it.
@@ -190,7 +240,7 @@ var setKeywords = map[string][]string{
 		"credit card", "apr", "interest rate", "minimum payment", "utilisation",
 		"utilization", "balance transfer",
 		"goal", "on track", "save up", "saving for",
-		"retire", "retirement", "401k", "401(k)", "ira", "roth", "hsa",
+		"retire", "retirement", "401k", "401(k)", "ira", "iras", "roth", "hsa",
 		"contribute", "contribution", "nest egg", "financial independence",
 		"invest", "portfolio", "holdings", "asset allocation", "expense ratio",
 		"fees", "fee drag", "return", "performance",
@@ -203,16 +253,103 @@ var setKeywords = map[string][]string{
 	// the other half of the follow-up problem: once a thread can inherit a
 	// deeper set (see classifyFromMessages), "now show me my Costco spending"
 	// must still route to the transaction tools rather than staying pinned to
-	// planning. None of these is a substring of a deeper set's keyword, so the
-	// order above is what breaks ties.
+	// planning.
+	//
+	// Spending is checked LAST, which is what resolves the one deliberate
+	// overlap: "spend" sits inside the planning keyword "safe to spend", and
+	// "am I safe to spend $500" is a planning question. Order decides it, so a
+	// spending keyword may overlap a deeper set's — it must simply never be the
+	// only reading of a message that belongs to the deeper set.
 	ToolSetSpending: {
-		"spent", "spending", "my spending",
+		// "spend" rather than only "spending": the bare verb is how the question
+		// is most often asked ("how much did I spend on gas last month") and it
+		// matched NOTHING here, so that message carried no topic keyword at all.
+		// On a first turn it fell to the spending default and looked fine; once
+		// follow-ups began inheriting the thread's set (classifyFromMessages),
+		// the same question asked inside a planning thread inherited planning and
+		// lost every transaction tool. "spend" subsumes "spending"/"my spending";
+		// "spent" is a separate stem and stays.
+		"spend", "spent",
 		"transactions", "transaction",
 		"merchant", "merchants",
 		"costco", "amazon", "groceries", "grocery",
 		"dining", "restaurant",
 		"subscription", "subscriptions",
+		// CASHFLOW vocabulary, and the reason it is here is the reported bug.
+		// "Average money leftover at the end of each month over the last year"
+		// is monthly_trend's question and it matched NOTHING — it only reached
+		// the right tools by falling through to the spending default, which is
+		// luck, not routing. Luck runs out the moment such a message is asked
+		// inside a planning thread, where the ambiguous-follow-up rule inherits
+		// planning instead.
+		//
+		// Every phrase here is DISTINCTIVE on purpose. The generic ones that
+		// would also fit — "each month", "per month", "income", "average" —
+		// are deliberately absent: spending is checked last, so a keyword here
+		// binds a message that matched nothing deeper, and a generic phrase
+		// would start yanking genuine planning follow-ups ("how much should I
+		// put in each month?") out of the set that answers them. That is the
+		// 529-fabrication bug run backwards.
+		"leftover", "left over", "cash flow", "cashflow",
+		"month by month", "month-by-month", "monthly trend", "monthly breakdown",
+		"income vs", "income versus", "paycheck", "paychecks",
 	},
+}
+
+// wholeWordKeywords must match as WHOLE WORDS rather than as substrings.
+//
+// Substring matching is the right default and deliberately crude — it is what
+// makes "invest" cover "investing" and "investment" without three entries. But a
+// three-letter acronym is a substring of ordinary English, and the failure is
+// silent: "apr" matches "April", so EVERY message mentioning that month routed
+// to planning (checked before spending) and lost spending_summary,
+// list_transactions and spend_by_category. "How much did I spend in April?" was
+// answered with no transaction tool in the set for a twelfth of the calendar.
+// "ira" is the same shape inside "spiral", "admiral" and "Miracle".
+//
+// Only acronyms belong here. A keyword that wants to catch its own inflections
+// ("debt" -> "debts", "invest" -> "investing") must stay a substring, which is
+// why this is an opt-in list and not a change to the matching rule.
+var wholeWordKeywords = map[string]bool{
+	"apr":  true,
+	"ira":  true,
+	"iras": true,
+}
+
+// matchesKeyword is the matching rule: substring by default, whole word for the
+// acronyms above.
+//
+// A word character is [a-z0-9] over the already-lowercased message. Any other
+// byte — punctuation, space, or the lead byte of a multibyte rune — is a
+// boundary, which is the behaviour we want: "0% APR." and "my IRA," both match
+// and "April" does not.
+func matchesKeyword(lower, kw string) bool {
+	if !wholeWordKeywords[kw] {
+		return strings.Contains(lower, kw)
+	}
+	for from := 0; from+len(kw) <= len(lower); {
+		i := strings.Index(lower[from:], kw)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(kw)
+		if !isWordByte(lower, start-1) && !isWordByte(lower, end) {
+			return true
+		}
+		// Overlapping occurrences matter: a rejected hit must not hide a real one
+		// later in the same message ("April ... 0% apr").
+		from = start + 1
+	}
+	return false
+}
+
+func isWordByte(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // classifyExplicit returns the set a message selects when it carries an
@@ -229,7 +366,7 @@ func classifyExplicit(message string) (set string, matched bool) {
 	lower := strings.ToLower(message)
 	for _, set := range []string{ToolSetLikelihood, ToolSetModelling, ToolSetPlanning, ToolSetSpending} {
 		for _, kw := range setKeywords[set] {
-			if strings.Contains(lower, kw) {
+			if matchesKeyword(lower, kw) {
 				return set, true
 			}
 		}

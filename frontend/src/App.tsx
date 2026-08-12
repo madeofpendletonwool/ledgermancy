@@ -55,6 +55,7 @@ const MyMoney = lazy(() => import('./routes/MyMoney').then((m) => ({ default: m.
 const NetWorth = lazy(() => import('./routes/NetWorth').then((m) => ({ default: m.NetWorth })))
 const Paystubs = lazy(() => import('./routes/Paystubs').then((m) => ({ default: m.Paystubs })))
 const Register = lazy(() => import('./routes/Register').then((m) => ({ default: m.Register })))
+const Reminders = lazy(() => import('./routes/Reminders').then((m) => ({ default: m.Reminders })))
 const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Report })))
 const Retirement = lazy(() =>
   import('./routes/Retirement').then((m) => ({ default: m.Retirement })),
@@ -112,6 +113,7 @@ export default function App() {
           <Route path="/spending" element={<Spending />} />
           <Route path="/budgets" element={<Budgets />} />
           <Route path="/schedule" element={<Schedule />} />
+          <Route path="/reminders" element={<Reminders />} />
           <Route path="/goals" element={<Goals />} />
           <Route path="/shared" element={<Shared />} />
           <Route path="/net-worth" element={<NetWorth />} />
