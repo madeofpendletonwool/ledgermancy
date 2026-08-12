@@ -41,6 +41,9 @@ func collegeBaseline(balance, annualCost decimal.Decimal, yearsOut, years int) B
 		ID: colID, Name: "State university", AnnualCost: annualCost,
 		Years: years, AccountID: &fiveTwo,
 		YearsToEnrollment: yearsOut, HorizonKnown: true,
+		// The age the horizon resolved FROM, kept coherent with the plan's
+		// BeneficiaryCurrentAge above: the two describe one child.
+		BeneficiaryAge: 18 - yearsOut,
 	}}
 	return b
 }
@@ -354,6 +357,12 @@ func TestCollegeWithNoHorizonIsReportedNotGuessed(t *testing.T) {
 	if len(got.Years_) != 0 {
 		t.Error("want no per-year figures for an unprojectable goal")
 	}
+	// No horizon means no age either, and the age must be NULL rather than 0 —
+	// a newborn beneficiary and an unknown one are opposite answers that would
+	// otherwise render identically.
+	if got.BeneficiaryAge != nil {
+		t.Errorf("beneficiary_age = %d, want nil when the horizon does not resolve", *got.BeneficiaryAge)
+	}
 }
 
 // A goal with no linked account has no balance to draw down, and says so rather
@@ -368,6 +377,37 @@ func TestCollegeWithNoLinkedAccountIsReported(t *testing.T) {
 	}
 	if got.Note == "" {
 		t.Error("want a note pointing at the missing link")
+	}
+	// The BENEFICIARY is still known: whether a 529 is linked is a fact about
+	// the money, not about the child. Reporting "0 years to enrollment" here —
+	// which is what this did before the horizon moved ahead of the account
+	// check — reads as "starting college now", the opposite of an eight-year-old.
+	if got.BeneficiaryAge == nil || *got.BeneficiaryAge != 8 {
+		t.Errorf("beneficiary_age = %v, want 8 even with no account linked", got.BeneficiaryAge)
+	}
+	if got.YearsToEnrollment != 10 {
+		t.Errorf("years_to_enrollment = %d, want 10 even with no account linked", got.YearsToEnrollment)
+	}
+}
+
+// The beneficiary's age travels with the projection, because it is what makes
+// the horizon legible: "seventeen years out" is a number, "your one-year-old" is
+// the reason it matters. advisor_briefing reports it, so the drawdown has to
+// carry it rather than every caller re-resolving the birthdate for itself.
+func TestCollegeCarriesBeneficiaryAge(t *testing.T) {
+	b := collegeBaseline(dec("20000"), dec("30000"), 17, 4)
+
+	got := collegeResult(t, run(t, b, Request{HorizonYears: 25, Splits: []Split{}}))
+	if !got.Projectable {
+		t.Fatalf("want projectable: %s", got.Note)
+	}
+	if got.BeneficiaryAge == nil {
+		t.Fatal("beneficiary_age is nil for a goal whose horizon resolved")
+	}
+	// The two describe one child and must stay consistent: age + years = 18.
+	if sum := *got.BeneficiaryAge + got.YearsToEnrollment; sum != 18 {
+		t.Errorf("beneficiary_age (%d) + years_to_enrollment (%d) = %d, want 18 — they describe one child",
+			*got.BeneficiaryAge, got.YearsToEnrollment, sum)
 	}
 }
 

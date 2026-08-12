@@ -121,6 +121,12 @@ type CollegeGoal struct {
 	// unprojectable rather than projected against a guessed year.
 	YearsToEnrollment int
 	HorizonKnown      bool
+	// BeneficiaryAge is the age the horizon was resolved FROM, kept rather than
+	// discarded because it is the fact that makes a college goal legible: "your
+	// one-year-old" is what stops a reader — human or model — treating a
+	// seventeen-year horizon as hypothetical. It is only meaningful when
+	// HorizonKnown, which is the same flag that gates YearsToEnrollment.
+	BeneficiaryAge int
 }
 
 // Baseline is the household's position as it actually stands: every read this
@@ -463,6 +469,7 @@ func (b *Baseline) loadGoals(ctx context.Context, q *dbgen.Queries, householdID 
 				years = 0 // already enrolled: the drawdown starts now
 			}
 			goal.YearsToEnrollment, goal.HorizonKnown = years, true
+			goal.BeneficiaryAge = age
 		}
 		b.CollegeGoals = append(b.CollegeGoals, goal)
 	}

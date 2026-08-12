@@ -60,10 +60,14 @@ type CollegeResult struct {
 	Projectable bool   `json:"projectable"`
 	Note        string `json:"note,omitempty"`
 
-	AccountID         *uuid.UUID `json:"account_id,omitempty"`
-	AccountName       string     `json:"account_name,omitempty"`
-	YearsToEnrollment int        `json:"years_to_enrollment"`
-	Years             int        `json:"years"`
+	AccountID   *uuid.UUID `json:"account_id,omitempty"`
+	AccountName string     `json:"account_name,omitempty"`
+	// BeneficiaryAge is nil when the horizon could not be resolved. It is a
+	// pointer for the same reason MonthlyNeeded is: a newborn beneficiary and an
+	// unknown one are opposite answers, and both would render as 0.
+	BeneficiaryAge    *int `json:"beneficiary_age"`
+	YearsToEnrollment int  `json:"years_to_enrollment"`
+	Years             int  `json:"years"`
 
 	// AnnualCostToday is the goal's target_amount: ONE year in today's dollars.
 	AnnualCostToday decimal.Decimal `json:"annual_cost_today"`
@@ -122,6 +126,17 @@ func projectCollege(
 			Years_: []CollegeYear{},
 		}
 
+		// The horizon is a fact about the BENEFICIARY, so it is reported as soon
+		// as it resolves — before the account and projection checks below, which
+		// are facts about the money. A goal with no 529 linked yet still knows
+		// it is seventeen years out, and saying "17 years, nothing linked" is
+		// both more useful and more honest than the 0 it used to report.
+		if g.HorizonKnown {
+			age := g.BeneficiaryAge
+			res.BeneficiaryAge = &age
+			res.YearsToEnrollment = g.YearsToEnrollment
+		}
+
 		if g.AccountID == nil {
 			res.Note = "No account is linked to this goal, so there is no balance to project. " +
 				"Link the 529 on the Goals page."
@@ -137,7 +152,6 @@ func projectCollege(
 			out = append(out, res)
 			continue
 		}
-		res.YearsToEnrollment = g.YearsToEnrollment
 
 		balance, ok := balanceAtYear(projection, g.AccountID.String(), g.YearsToEnrollment)
 		if !ok {
