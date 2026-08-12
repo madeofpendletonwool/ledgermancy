@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type Summary } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
@@ -10,8 +10,11 @@ import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
 import { RealBasis, RealToggle } from '../components/RealToggle'
+import { OneTimeToggle } from '../components/OneTimeToggle'
 import { useInflation, useRealPreference } from '../lib/inflation'
+import { useHideOneTimePreference } from '../lib/oneTime'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
+
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
 import { SpendingHeatmap } from '../components/charts/SpendingHeatmap'
 import { CategoryMultiples } from '../components/charts/CategoryMultiples'
@@ -21,6 +24,21 @@ import { SkeletonChart, SkeletonRows, SkeletonText, Reveal } from '../components
 import { enterProps } from '../lib/motion'
 import { motion } from 'motion/react'
 import { CHART, STATUS } from '../components/charts/tokens'
+
+/**
+ * What sits under the savings-rate tile. Three states, and the middle one is the
+ * point: "not yet" and "never for this period" are different facts and a reader
+ * who sees a dash deserves to know which one they are looking at.
+ */
+function savingsRateHint(s: Summary | undefined): string | undefined {
+  if (!s) return undefined
+  if (s.in_progress) {
+    return s.as_of
+      ? `Through ${formatDate(s.as_of)} — the rate needs the month's full income`
+      : "Month in progress — the rate needs the month's full income"
+  }
+  return s.savings_rate == null ? 'No income recorded this period' : undefined
+}
 
 /** Month options: the current month plus the previous eleven. */
 function recentMonths(count = 12) {
@@ -72,15 +90,23 @@ export function Spending() {
   // rate and fixed/discretionary charts below are untouched by the toggle.
   const inflation = useInflation()
   const { enabled: real, setEnabled: setReal } = useRealPreference()
+  // The "Hide one-time charges" lens is one toggle for every trailing view on
+  // this page — the three trend-fed charts and the two heatmap-fed ones. It
+  // re-asks the same real-period queries with exclude_one_time, so the reader
+  // can look at the trailing year without the charges they have flagged as not
+  // repeating, and flip back. Both keys carry the flag, or the toggle would
+  // serve a stale cached series.
+  const { enabled: hideOneTime, setEnabled: setHideOneTime } =
+    useHideOneTimePreference()
   const trend = useQuery({
-    queryKey: ['trend', real],
-    queryFn: () => api.trend({ real }),
+    queryKey: ['trend', real, hideOneTime],
+    queryFn: () => api.trend({ real, exclude_one_time: hideOneTime }),
   })
   // The category × month matrix is the trailing twelve months the trend chart
   // uses, fetched once and rendered two ways (heatmap + small multiples).
   const heatmap = useQuery({
-    queryKey: ['heatmap'],
-    queryFn: () => api.spendingHeatmap(),
+    queryKey: ['heatmap', hideOneTime],
+    queryFn: () => api.spendingHeatmap({ exclude_one_time: hideOneTime }),
   })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
   const capabilities = useQuery({
@@ -129,13 +155,20 @@ export function Spending() {
           value={s ? s.leftover : null}
           tone={s && Number(s.leftover) < 0 ? 'critical' : 'good'}
         />
+        {/*
+          The three tiles above are measurements and stand on their own in a
+          month still running: the money in, out and left over so far is exactly
+          what it says. The fourth is a RATIO of two of them, and in an
+          unfinished month it divides a whole month's spending by however much
+          of the month's income has landed. Paid twice a month, on the 12th,
+          after a trip, that read -53,702% (MAD-110). It is withheld rather than
+          shown, because there is no value it could show that would be true.
+        */}
         <Tile
           label="Savings rate"
-          value={s?.savings_rate ?? null}
+          value={s?.in_progress ? null : s?.savings_rate ?? null}
           format={(n) => `${(n * 100).toFixed(1)}%`}
-          hint={
-            s?.savings_rate == null ? 'No income recorded this period' : undefined
-          }
+          hint={savingsRateHint(s)}
         />
       </div>
 
@@ -202,16 +235,26 @@ export function Spending() {
       <section className="glass p-6">
         <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
           <h2 className="text-lg font-medium">Income vs spending</h2>
-          <RealToggle
-            enabled={real}
-            onChange={setReal}
-            inflation={inflation.data}
-          />
+          <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center">
+            {/*
+              Two reader-driven lenses over the trailing views, side by side.
+              RealToggle is nominal-vs-real on this chart; OneTimeToggle governs
+              every trailing chart on the page (the three trend-fed ones and the
+              two heatmap-fed ones further down), because they all answer the
+              same trailing-twelve question.
+            */}
+            <RealToggle
+              enabled={real}
+              onChange={setReal}
+              inflation={inflation.data}
+            />
+            <OneTimeToggle enabled={hideOneTime} onChange={setHideOneTime} />
+          </div>
         </div>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <TrendChart data={trend.data ?? []} real={real} />
+            <TrendChart data={trend.data?.points ?? []} real={real} />
           </Reveal>
         )}
         <RealBasis enabled={real} inflation={inflation.data} />
@@ -225,7 +268,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <SavingsRateChart data={trend.data ?? []} />
+            <SavingsRateChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>
@@ -239,7 +282,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <FixedDiscretionaryChart data={trend.data ?? []} />
+            <FixedDiscretionaryChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>
@@ -258,6 +301,8 @@ export function Spending() {
             <SpendingHeatmap
               months={heatmap.data?.months ?? []}
               categories={heatmap.data?.categories ?? []}
+              inProgressMonth={heatmap.data?.in_progress_month}
+              asOf={heatmap.data?.as_of}
             />
           </Reveal>
         )}
@@ -277,6 +322,7 @@ export function Spending() {
             <CategoryMultiples
               months={heatmap.data?.months ?? []}
               categories={heatmap.data?.categories ?? []}
+              inProgressMonth={heatmap.data?.in_progress_month}
             />
           </Reveal>
         )}

@@ -19,6 +19,11 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+// refNow is the clock the pivot tests below run against. It sits AFTER every
+// window they use, so none of them has an in-progress column and the pivot
+// assertions stay about the pivot alone. The marker gets its own test.
+var refNow = time.Date(2027, 6, 15, 0, 0, 0, 0, time.UTC)
+
 // TestBuildHeatmapEmpty verifies the empty state: no rows means an empty
 // category list but a STILL-COMPLETE month axis, so the chart renders the
 // columns it asked for rather than collapsing to nothing.
@@ -26,7 +31,7 @@ func TestBuildHeatmapEmpty(t *testing.T) {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
 
-	got := buildHeatmap(from, to, nil)
+	got := buildHeatmap(from, to, refNow, false, nil)
 
 	if len(got.Categories) != 0 {
 		t.Errorf("empty rows = %d categories, want 0", len(got.Categories))
@@ -70,7 +75,7 @@ func TestBuildHeatmapPivotsAndRanks(t *testing.T) {
 		matrixRow(rent, "Rent", "rent", "#f00", true, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), "1000.00"),
 	}
 
-	got := buildHeatmap(from, to, rows)
+	got := buildHeatmap(from, to, refNow, false, rows)
 
 	if len(got.Months) != 3 || got.Months[0] != "2026-01" || got.Months[2] != "2026-03" {
 		t.Fatalf("months = %v, want 2026-01..2026-03", got.Months)
@@ -135,7 +140,7 @@ func TestBuildHeatmapAccumulatesDuplicateRows(t *testing.T) {
 		matrixRow(cat, "Groceries", "groceries", "#abc", false, time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC), "70.00"),
 	}
 
-	got := buildHeatmap(from, to, rows)
+	got := buildHeatmap(from, to, refNow, false, rows)
 
 	if len(got.Categories) != 1 {
 		t.Fatalf("categories = %d, want 1", len(got.Categories))
@@ -155,7 +160,7 @@ func TestBuildHeatmapReversedRange(t *testing.T) {
 	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	got := buildHeatmap(from, to, nil)
+	got := buildHeatmap(from, to, refNow, false, nil)
 	if len(got.Months) != 0 {
 		t.Errorf("reversed range months = %v, want empty", got.Months)
 	}

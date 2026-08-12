@@ -31,7 +31,21 @@
 -- Every query that reports on a REAL PERIOD passes exclude_one_time = false —
 -- which is also the zero value, so an existing caller keeps its meaning. Only
 -- a query feeding a TRAILING BASELINE passes true. If you add a caller, ask
--- which of those two things it is; there is no third answer.
+-- which of those two things it is.
+--
+-- That rule governs what a QUERY HARDCODES — the answer the app has decided a
+-- report is, on the reader's behalf, once and for all. It does not bind a
+-- reader-driven toggle, which is a different thing: not the app deciding what
+-- kind of report this is, but the reader stating which question they are
+-- asking of the same data, per view, reversibly. The "Hide one-time charges"
+-- toggle on the Spending page's trailing-twelve charts is that one exception.
+-- It passes exclude_one_time through, untouched, to GetMonthlyTrend and
+-- GetCategoryMonthMatrix — the same two real-period queries, asked the
+-- trailing-baseline question on the reader's say-so and flipped back the
+-- moment they untick it. The toggle owns the only reader-driven path; there
+-- is still no third thing a query hardcodes, and a new caller that is NOT
+-- that toggle still has to pick real-period-or-trailing-baseline and hardcode
+-- it.
 
 -- name: GetSpendingSummary :one
 -- Headline figures for one period: what came in, what went out, and what was
@@ -215,10 +229,13 @@ ORDER BY c.id, 2;
 --
 -- Same spending definition and visibility scoping as every other report:
 -- money out (is_spend), no income, no transfers, active accounts, not excluded,
--- not pending. exclude_one_time is False here on purpose: this is a REAL PERIOD
--- report ("what actually happened each month"), and a one-time charge — a loan
--- payoff, an annual true-up — is spend in the month it landed. Only queries
--- feeding a TRAILING BASELINE pass true; this is not one of them.
+-- not pending. The caller passes exclude_one_time = false on purpose: this is a
+-- REAL PERIOD report ("what actually happened each month"), and a one-time
+-- charge — a loan payoff, an annual true-up — is spend in the month it landed.
+-- The Spending page's "Hide one-time charges" toggle is the one reader-driven
+-- exception named in the file header: it threads true through here so the
+-- reader can ask the trailing-baseline question of this same matrix, per view,
+-- reversibly. The query itself stays hardcoded to its default caller.
 --
 -- Ordered by category id then month only so the rows are stable; the handler
 -- re-sorts by total to rank categories and builds the month axis itself, so the
