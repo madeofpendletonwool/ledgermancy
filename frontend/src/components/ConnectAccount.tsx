@@ -29,7 +29,9 @@ export function ConnectAccount() {
   })
 
   const onSuccess = useCallback(
-    (publicToken: string) => exchange.mutate(publicToken),
+    (publicToken: string | null) => {
+      if (publicToken) exchange.mutate(publicToken)
+    },
     [exchange],
   )
 
