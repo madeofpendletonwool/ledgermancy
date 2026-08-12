@@ -503,7 +503,7 @@ WHERE v.household_id = $1
       SELECT 1 FROM transaction_pairs p
       WHERE p.out_txn_id = t.id OR p.in_txn_id = t.id
   )
-ORDER BY t.date
+ORDER BY t.date, t.id
 `
 
 type ListTransferPairCandidatesParams struct {
@@ -533,6 +533,11 @@ type ListTransferPairCandidatesRow struct {
 //   - not already paired. The transaction_pairs UNIQUE constraints are the
 //     idempotency guarantee; this NOT EXISTS keeps a re-run from reconsidering
 //     a leg that is already linked.
+//
+// t.id breaks the date tie. Date alone is not a total order, so same-dated
+// candidates would come back in whatever order the plan happened to produce,
+// and differently after a VACUUM, a restore, or a parallel scan — exactly the
+// case MatchPairs' closest-dated tie-break exists to decide.
 func (q *Queries) ListTransferPairCandidates(ctx context.Context, arg ListTransferPairCandidatesParams) ([]ListTransferPairCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listTransferPairCandidates, arg.HouseholdID, arg.Date)
 	if err != nil {

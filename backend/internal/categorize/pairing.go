@@ -14,6 +14,7 @@ package categorize
 // is the DB-backed pass that runs after CategoriseHousehold on each sync.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -61,6 +62,13 @@ const PairWindowDays = 5
 // the matching itself. A credit is consumed by the closest-dated unmatched
 // debit, so two same-day debits split a same-day pair deterministically rather
 // than at random.
+//
+// Every ordering decision falls through to the leg's ID, never to the order the
+// caller happened to supply: debits are walked by (date, ID), and a credit tie
+// at the same date gap is broken by (ID). That makes the guarantee hold on this
+// function's own terms rather than resting on the candidate query's ORDER BY —
+// the query is totally ordered too (date, id), but a set of candidates fed in
+// any order still yields the same pairs, so a restore converges.
 func MatchPairs(candidates []PairCandidate) []Pair {
 	type leg = PairCandidate
 	debits := make([]leg, 0)
@@ -82,7 +90,7 @@ func MatchPairs(candidates []PairCandidate) []Pair {
 	// different account. Walking debits in date order and credits by closeness
 	// keeps the result stable across input ordering — the same ledger yields the
 	// same pairs every run, which is what makes a re-run safe.
-	debits = sortByDate(debits)
+	debits = sortByDateThenID(debits)
 	for _, d := range debits {
 		best := -1
 		var bestGap time.Duration
@@ -100,7 +108,10 @@ func MatchPairs(candidates []PairCandidate) []Pair {
 			if gap > window {
 				continue
 			}
-			if best == -1 || gap < bestGap {
+			// Strictly-closer wins; an exact tie goes to the lower ID. Without
+			// the ID tie-break this would resolve by slice position, i.e. by
+			// whatever order the caller supplied.
+			if best == -1 || gap < bestGap || (gap == bestGap && lessID(c.ID, credits[best].ID)) {
 				best, bestGap = i, gap
 			}
 		}
@@ -224,18 +235,32 @@ func PairAllHouseholds(ctx context.Context, q *dbgen.Queries, now time.Time) (in
 // it), which is why ApplyCategory — not the sticky manual write — applies it.
 const SourcePairing Source = "pairing"
 
-func sortByDate(xs []PairCandidate) []PairCandidate {
-	// Stable insertion sort: candidate lists are small (a household's 60-day
-	// window) and determinism matters more than big-O here.
+// sortByDateThenID orders candidates by date, breaking ties on ID so the result
+// is a total order. Date alone would leave same-dated legs in input order, which
+// is the caller's accident, not a property of the ledger.
+func sortByDateThenID(xs []PairCandidate) []PairCandidate {
+	// Insertion sort: candidate lists are small (a household's 60-day window)
+	// and determinism matters more than big-O here.
 	out := make([]PairCandidate, len(xs))
 	copy(out, xs)
 	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].Date.After(out[j].Date); j-- {
+		for j := i; j > 0 && lessCandidate(out[j], out[j-1]); j-- {
 			out[j-1], out[j] = out[j], out[j-1]
 		}
 	}
 	return out
 }
+
+func lessCandidate(a, b PairCandidate) bool {
+	if !a.Date.Equal(b.Date) {
+		return a.Date.Before(b.Date)
+	}
+	return lessID(a.ID, b.ID)
+}
+
+// lessID orders two UUIDs by their raw bytes. Any total order will do; this one
+// is stable across processes and restores, which is the point.
+func lessID(a, b uuid.UUID) bool { return bytes.Compare(a[:], b[:]) < 0 }
 
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
