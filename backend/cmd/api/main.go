@@ -119,7 +119,7 @@ func run() error {
 		Addr:              cfg.HTTPAddr,
 		Handler:           server.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      api.HTTPServerWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 

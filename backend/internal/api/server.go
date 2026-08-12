@@ -145,6 +145,35 @@ const (
 	// is a local database read, so a minute across all nine is slack, not an
 	// estimate.
 	aiToolBudget = 60 * time.Second
+
+	// HTTPServerWriteTimeout is the value main.go assigns to net/http's
+	// http.Server.WriteTimeout. It is exported only so the timeout test can pin
+	// it next to the budgets below.
+	//
+	// It is zero — DISABLED — and that is not a relaxation. WriteTimeout is a
+	// hard ceiling the net/http server enforces BELOW the chi router, so a
+	// handler's own context.WithTimeout cannot widen it: whichever fires first
+	// wins, and WriteTimeout always wins against a longer route budget. That is
+	// the exact bug this constant exists to prevent.
+	//
+	// The streaming chat route (POST /api/chat) writes its answer as Server-Sent
+	// Events for the full duration of the model↔tool loop, which aiRouteTimeout
+	// budgets at up to 660s. A server-level WriteTimeout of anything less than
+	// that — the previous 60s, for example — tears the SSE connection down
+	// mid-stream the moment it elapses, the response writer's context cancels,
+	// the in-flight GLM stream read returns context.Canceled, and the browser is
+	// left holding a half-finished HTTP/2 stream it can only report as
+	// ERR_HTTP2_PROTOCOL_ERROR. The route's middleware.Timeout(aiRouteTimeout)
+	// already cancels the handler's context on the same budget, which is the
+	// correct layer to enforce it because it cooperates with the stream instead
+	// of cutting it from underneath.
+	//
+	// Non-streaming routes keep their defence: defaultRouteTimeout via
+	// middleware.Timeout cancels their context, and a handler that respects ctx
+	// stops writing. Slowloris-style read attacks are bounded by
+	// ReadHeaderTimeout, not WriteTimeout, so disabling this one does not weaken
+	// that protection either.
+	HTTPServerWriteTimeout time.Duration = 0
 )
 
 // NewServer builds a Server from an open connection pool. The AI client is
