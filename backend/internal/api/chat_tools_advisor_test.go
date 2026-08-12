@@ -107,13 +107,21 @@ func TestBriefingAssumptionsNullWhenNoProjectionRow(t *testing.T) {
 // in the briefing, which is the tool the model calls first for its position.
 func TestBriefingSurfacesCollegeGoalsAsFacts(t *testing.T) {
 	age, years := 1, 17
+	monthly := decimal.RequireFromString("305.42")
 	b := advisor.Briefing{
 		College: []advisor.CollegeBrief{{
-			Name:              "Get Hazel in College",
-			BeneficiaryAge:    &age,
-			YearsToEnrollment: &years,
-			YearsOfStudy:      4,
-			AnnualCostToday:   decimal.RequireFromString("20000"),
+			Name:               "Get Hazel in College",
+			BeneficiaryAge:     &age,
+			YearsToEnrollment:  &years,
+			YearsOfStudy:       4,
+			AnnualCostToday:    decimal.RequireFromString("20000"),
+			Projectable:        true,
+			TotalCost:          decimal.RequireFromString("83105.19"),
+			TotalShortfall:     decimal.RequireFromString("82938.42"),
+			FundedPct:          decimal.RequireFromString("0.2"),
+			FirstShortfallYear: 1,
+			MonthlyNeeded:      &monthly,
+			Summary:            "Funded through year 0; $19,833.23 short in year 1.",
 		}},
 	}
 
@@ -135,16 +143,76 @@ func TestBriefingSurfacesCollegeGoalsAsFacts(t *testing.T) {
 	if got["annual_cost_today"] != "20000.00" {
 		t.Errorf("annual_cost_today = %v, want the ONE-year figure 20000.00", got["annual_cost_today"])
 	}
-	// The funding numbers must NOT be here. They are college_projection's, and a
-	// second copy is how two surfaces start disagreeing — which is the entire
-	// history of this feature.
-	for _, banned := range []string{"funded_pct", "monthly_needed", "total_cost", "balance_at_enrollment"} {
-		if _, present := got[banned]; present {
-			t.Errorf("briefing carries %q — that figure belongs to college_projection alone", banned)
-		}
+	// The standing rides along. Knowing the goal exists and NOT knowing whether
+	// it is on track reproduced the same hedge one step later: the model would
+	// name the goal and then decline to say anything about it rather than make a
+	// second call. These figures are the drawdown's own — fillCollege reads them
+	// off allocation.Run — so carrying them is not a second copy of anything.
+	if got["funded_pct"] != "0.2" {
+		t.Errorf("funded_pct = %v, want 0.2", got["funded_pct"])
+	}
+	if got["monthly_needed"] != "305.42" {
+		t.Errorf("monthly_needed = %v, want 305.42", got["monthly_needed"])
+	}
+	if got["total_cost"] != "83105.19" {
+		t.Errorf("total_cost = %v, want the FOUR-year inflated total 83105.19", got["total_cost"])
+	}
+	if got["total_shortfall"] != "82938.42" {
+		t.Errorf("total_shortfall = %v, want 82938.42", got["total_shortfall"])
+	}
+	if got["first_shortfall_year"] != 1 {
+		t.Errorf("first_shortfall_year = %v, want 1", got["first_shortfall_year"])
+	}
+	if s, _ := got["summary"].(string); s == "" {
+		t.Error("no summary: it is the sentence the model quotes instead of doing arithmetic")
+	}
+	// total_cost and annual_cost_today must stay visibly different. Collapsing
+	// them is how "$20,000 for college" gets said about an $83,000 obligation.
+	if got["total_cost"] == got["annual_cost_today"] {
+		t.Error("total_cost == annual_cost_today — one year is not four")
 	}
 	if basis, _ := got["basis"].(string); basis == "" {
 		t.Error("no basis line: ONE year vs the whole cost is exactly the misreading this needs to prevent")
+	}
+}
+
+// An unprojectable goal is NOT a 0%-funded goal. With no 529 linked, or no
+// birthdate to resolve the horizon from, the drawdown has nothing to run — so
+// the briefing carries the reason and no figures at all. Emitting a zeroed
+// funded_pct here would be a worse failure than the hedge the college list
+// exists to stop: "you are 0% funded" is a confident wrong answer, where "no
+// account is linked to this goal" is actionable.
+func TestBriefingCollegeOmitsFiguresWhenUnprojectable(t *testing.T) {
+	age, years := 1, 17
+	b := advisor.Briefing{
+		College: []advisor.CollegeBrief{{
+			Name:              "Get Hazel in College",
+			BeneficiaryAge:    &age,
+			YearsToEnrollment: &years,
+			YearsOfStudy:      4,
+			AnnualCostToday:   decimal.RequireFromString("20000"),
+			Projectable:       false,
+			Note:              "No account is linked to this goal, so there is no balance to project.",
+		}},
+	}
+
+	got := briefingToolResult(b)["college"].([]map[string]any)[0]
+	if got["projectable"] != false {
+		t.Errorf("projectable = %v, want false", got["projectable"])
+	}
+	if note, _ := got["note"].(string); note == "" {
+		t.Error("no note — the reason it cannot be projected is the only useful thing to say")
+	}
+	for _, absent := range []string{"funded_pct", "monthly_needed", "total_cost", "total_shortfall", "first_shortfall_year"} {
+		if _, present := got[absent]; present {
+			t.Errorf("unprojectable goal carries %q = %v; it must carry no funding figure at all",
+				absent, got[absent])
+		}
+	}
+	// The FACTS survive: the beneficiary and the horizon are known regardless of
+	// whether any money is linked, and they are what make the goal real.
+	if p, _ := got["beneficiary_age"].(*int); p == nil || *p != 1 {
+		t.Errorf("beneficiary_age = %v, want 1 even when unprojectable", got["beneficiary_age"])
 	}
 }
 
