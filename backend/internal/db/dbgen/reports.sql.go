@@ -641,6 +641,40 @@ func (q *Queries) GetCategorySummary(ctx context.Context, arg GetCategorySummary
 	return i, err
 }
 
+const getHouseholdBudgetByCategory = `-- name: GetHouseholdBudgetByCategory :one
+SELECT id, household_id, category_id, owner_scope, user_id, period, amount, effective_from, created_at, updated_at, rollover FROM budgets
+WHERE household_id = $1
+  AND category_id = $2
+  AND owner_scope = 'household'
+`
+
+type GetHouseholdBudgetByCategoryParams struct {
+	HouseholdID uuid.UUID `json:"household_id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+}
+
+// The household-scoped budget for one category, read for audit before-state
+// ahead of the upsert. No row means the upsert is a create rather than an edit,
+// so the audit diff records every field as new.
+func (q *Queries) GetHouseholdBudgetByCategory(ctx context.Context, arg GetHouseholdBudgetByCategoryParams) (Budget, error) {
+	row := q.db.QueryRow(ctx, getHouseholdBudgetByCategory, arg.HouseholdID, arg.CategoryID)
+	var i Budget
+	err := row.Scan(
+		&i.ID,
+		&i.HouseholdID,
+		&i.CategoryID,
+		&i.OwnerScope,
+		&i.UserID,
+		&i.Period,
+		&i.Amount,
+		&i.EffectiveFrom,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Rollover,
+	)
+	return i, err
+}
+
 const getIncomeByCategory = `-- name: GetIncomeByCategory :many
 SELECT
     c.id      AS category_id,

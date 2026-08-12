@@ -28,8 +28,17 @@ export function ConnectAccount() {
     onError: (err: Error) => setError(err.message),
   })
 
+  // Plaid types the public token as nullable: Link can report success without
+  // one (the OAuth hand-off is the case that does it). There is nothing to
+  // exchange then, so say so rather than posting "null" to the API.
   const onSuccess = useCallback(
-    (publicToken: string) => exchange.mutate(publicToken),
+    (publicToken: string | null) => {
+      if (publicToken === null) {
+        setError('Plaid finished without returning a token. Please try connecting again.')
+        return
+      }
+      exchange.mutate(publicToken)
+    },
     [exchange],
   )
 

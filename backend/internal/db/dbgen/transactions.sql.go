@@ -323,6 +323,60 @@ func (q *Queries) GetImportAccount(ctx context.Context, arg GetImportAccountPara
 	return i, err
 }
 
+const getVisibleTransaction = `-- name: GetVisibleTransaction :one
+SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = $1
+  AND v.household_id = $2
+  AND (v.user_id = $3::uuid OR v.is_shared)
+`
+
+type GetVisibleTransactionParams struct {
+	ID           uuid.UUID  `json:"id"`
+	HouseholdID  uuid.UUID  `json:"household_id"`
+	ViewerUserID *uuid.UUID `json:"viewer_user_id"`
+}
+
+// A single transaction scoped exactly like the list: own items ∪ shared. Used
+// inside the audit transaction to read a row's before-state before a mutation,
+// so the field-level diff is computed against what the caller was allowed to
+// see in the first place — a private account's transaction is unreadable, and
+// therefore uneditable and un-auditable, by the other member.
+func (q *Queries) GetVisibleTransaction(ctx context.Context, arg GetVisibleTransactionParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, getVisibleTransaction, arg.ID, arg.HouseholdID, arg.ViewerUserID)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsOneTime,
+		&i.ObligationID,
+	)
+	return i, err
+}
+
 const insertImportedTransactionIfNew = `-- name: InsertImportedTransactionIfNew :one
 INSERT INTO transactions (
     account_id, amount, currency, date, name, merchant_name, merchant_key,

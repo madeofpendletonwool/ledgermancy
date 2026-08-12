@@ -2198,6 +2198,85 @@ export interface GoalProposal {
   account_name: string
 }
 
+/**
+ * One row of an object's change history (the "History" panel). old_value and
+ * new_value are the raw JSONB the server stored: a string for most fields, null
+ * when a field was set on create or cleared. `field === 'created'` marks the
+ * object's first appearance — render it as "created by X" rather than a diff.
+ */
+export type ObjectChangeKind = 'transaction' | 'budget' | 'goal'
+
+export interface ObjectChange {
+  field: string
+  old_value: unknown
+  new_value: unknown
+  actor_user_id: string | null
+  actor_display_name: string | null
+  created_at: string
+}
+
+/**
+ * A piggy bank: a lightweight savings envelope ("Car Repair Fund") sitting on
+ * an asset account. `current_amount` is DERIVED server-side from the
+ * append-only event log (deposits − withdrawals, summed in SQL) — never stored,
+ * so it can't drift. Money fields are decimal strings, never summed here.
+ *
+ * A piggy bank is an ANNOTATION on part of the account's balance, not a
+ * separate balance: the money is already in the account, so a deposit/withdraw
+ * here only earmarks a slice of it. Net worth never moves when a piggy bank
+ * does — say so on the page so users don't double-count.
+ */
+export interface PiggyBank {
+  id: string
+  account_id: string
+  name: string
+  /** Nullable: an open-ended jar with no finish line. */
+  target_amount: string | null
+  current_amount: string
+  created_at: string
+}
+
+/** Fields to create or update a piggy bank. account_id is fixed at create. */
+export interface PiggyBankInput {
+  name: string
+  /** Required on create; ignored on update (the account can't be moved). */
+  account_id?: string
+  /** Omit for an open-ended jar. */
+  target_amount?: string
+}
+
+/** One row of the append-only deposit/withdraw event log. */
+export interface PiggyBankEvent {
+  id: string
+  type: 'deposit' | 'withdraw'
+  amount: string
+  /** Optional link to a real transaction this event corresponds to. */
+  transaction_id: string | null
+  created_at: string
+}
+
+/**
+ * The funding account's unassigned balance: its current balance minus the sum
+ * of every piggy bank's derived balance drawing from it. Negative means the
+ * household has earmarked more than the account holds — the over-allocation
+ * case the UI must surface as a loud warning, never a silently clipped number.
+ */
+export interface AccountAllocation {
+  account_id: string
+  account_balance: string
+  assigned: string
+  available: string
+  over_allocated: boolean
+}
+
+/** The result of a deposit or withdraw: the event, the piggy bank's new
+ *  standing, and the funding account's allocation afterward. */
+export interface PiggyBankMovement {
+  event: PiggyBankEvent
+  piggy_bank: PiggyBank
+  allocation: AccountAllocation
+}
+
 /** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */
 export interface ParsedAlert {
   type: AlertType
@@ -4390,6 +4469,46 @@ export const api = {
   // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.
   parseGoal: (text: string) =>
     request<GoalProposal>('POST', '/api/goals/parse', { text }),
+
+  // --- Change history -----------------------------------------------------
+  // The field-level "who changed what, when" log for any audited object. One
+  // read endpoint serves every kind; visibility is re-resolved server-side per
+  // kind, so the caller only names the object it is already viewing.
+  objectHistory: (kind: ObjectChangeKind, objectId: string) =>
+    request<ObjectChange[]>(
+      'GET',
+      `/api/audit?object_kind=${kind}&object_id=${objectId}`,
+    ),
+
+  // --- Piggy banks --------------------------------------------------------
+  // Lightweight savings jars on an asset account. A deposit/withdraw only
+  // annotates part of the balance — it never moves real money — so the whole
+  // group is read-mostly and every total stays server-computed.
+  piggyBanks: () => request<PiggyBank[]>('GET', '/api/piggy-banks'),
+
+  createPiggyBank: (input: PiggyBankInput) =>
+    request<PiggyBank>('POST', '/api/piggy-banks', input),
+
+  updatePiggyBank: (id: string, input: PiggyBankInput) =>
+    request<PiggyBank>('PUT', `/api/piggy-banks/${id}`, input),
+
+  deletePiggyBank: (id: string) =>
+    request<void>('DELETE', `/api/piggy-banks/${id}`),
+
+  depositPiggyBank: (id: string, amount: string) =>
+    request<PiggyBankMovement>('POST', `/api/piggy-banks/${id}/deposit`, { amount }),
+
+  withdrawPiggyBank: (id: string, amount: string) =>
+    request<PiggyBankMovement>('POST', `/api/piggy-banks/${id}/withdraw`, { amount }),
+
+  piggyBankEvents: (id: string) =>
+    request<PiggyBankEvent[]>('GET', `/api/piggy-banks/${id}/events`),
+
+  accountPiggyBanks: (accountId: string) =>
+    request<PiggyBank[]>('GET', `/api/accounts/${accountId}/piggy-banks`),
+
+  accountAvailableForPiggy: (accountId: string) =>
+    request<AccountAllocation>('GET', `/api/accounts/${accountId}/available-for-piggy`),
 
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),

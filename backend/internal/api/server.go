@@ -495,6 +495,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
 				r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
 				r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
+				// Piggy banks drawing from one account, and the unassigned
+				// balance left on it (account balance − every piggy bank's
+				// derived balance). The latter is what stops a household
+				// earmarking the same dollars across jars twice.
+				r.Get("/{accountID}/piggy-banks", s.handleListAccountPiggyBanks)
+				r.Get("/{accountID}/available-for-piggy", s.handleAccountAvailableForPiggy)
 			})
 
 			// Securities are reference data, not household data: a row states what
@@ -632,6 +638,14 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Delete("/{budgetID}", s.handleDeleteBudget)
 			})
 
+			// Per-object change history. Read-only and visibility-scoped in SQL,
+			// so a single authenticated endpoint serves every object kind; the
+			// handler dispatches on object_kind to the right scoping query.
+			r.Route("/audit", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleListObjectChanges)
+			})
+
 			// The bill calendar. /upcoming expands cadences into occurrences and
 			// /projection carries balances forward through them; both are derived,
 			// so neither is a second source of truth for what is due.
@@ -641,16 +655,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/", s.handleCreateObligation)
 				r.Get("/upcoming", s.handleUpcomingObligations)
 				r.Get("/projection", s.handleObligationProjection)
-			r.Put("/{obligationID}", s.handleUpdateObligation)
-			r.Delete("/{obligationID}", s.handleDeleteObligation)
-			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
-			// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
-			// The Reminders view itself reads /api/insights, so there is no list
-			// handler — only the write that records a member's confirmation.
-			r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
-			r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
-			r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
-		})
+				r.Put("/{obligationID}", s.handleUpdateObligation)
+				r.Delete("/{obligationID}", s.handleDeleteObligation)
+				r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
+				// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
+				// The Reminders view itself reads /api/insights, so there is no list
+				// handler — only the write that records a member's confirmation.
+				r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
+				r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
+				r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
+			})
 
 			// Goals are the one mixed group. Reads are visibility-scoped in SQL
 			// (ListGoals takes all_person_goals, set from the caller's role), so a
@@ -665,12 +679,32 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Use(auth.RequireAdult)
 					r.Post("/", s.handleCreateGoal)
 					r.Post("/parse", s.handleParseGoal)
-				r.Put("/{goalID}", s.handleUpdateGoal)
-				r.Delete("/{goalID}", s.handleArchiveGoal)
-				// Reminders opt-out toggle (MAD-85).
-				r.Put("/{goalID}/remind", s.handleSetGoalRemind)
-				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+					r.Put("/{goalID}", s.handleUpdateGoal)
+					r.Delete("/{goalID}", s.handleArchiveGoal)
+					// Reminders opt-out toggle (MAD-85).
+					r.Put("/{goalID}/remind", s.handleSetGoalRemind)
+					r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
 					r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
+				})
+			})
+
+			// Piggy banks: lightweight savings jars on an asset account. Reads
+			// are household-scoped in SQL; writes are adult-only, matching every
+			// other earmarking of household money (goals, budgets). A deposit or
+			// withdraw only annotates part of the account balance — it never
+			// moves real money — so the whole group stays read-mostly.
+			r.Route("/piggy-banks", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleListPiggyBanks)
+				r.Get("/{piggyBankID}/events", s.handleListPiggyBankEvents)
+
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireAdult)
+					r.Post("/", s.handleCreatePiggyBank)
+					r.Put("/{piggyBankID}", s.handleUpdatePiggyBank)
+					r.Delete("/{piggyBankID}", s.handleDeletePiggyBank)
+					r.Post("/{piggyBankID}/deposit", s.handleDepositPiggyBank)
+					r.Post("/{piggyBankID}/withdraw", s.handleWithdrawPiggyBank)
 				})
 			})
 
