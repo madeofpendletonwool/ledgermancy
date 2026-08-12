@@ -68,6 +68,11 @@ export function Transactions() {
 
   const [modal, setModal] = useState<ModalState>(null)
   const [importing, setImporting] = useState(false)
+  // The transaction whose merchant name is being fixed in the rename dialog.
+  // Separate from `modal` (the full add/edit form), because the rename path is
+  // the one a Plaid-synced row can take: it re-points the descriptor rather than
+  // editing columns the next sync would overwrite.
+  const [editingName, setEditingName] = useState<Transaction | null>(null)
   // The list itself reads fine from cache offline; adding and importing do not.
   const online = useOnline()
 
@@ -320,6 +325,7 @@ export function Transactions() {
                 spendCats={spendCats}
                 documentCount={countFor(t.id)}
                 onEdit={() => setModal({ mode: 'edit', transaction: t })}
+                onEditName={() => setEditingName(t)}
               />
             ))}
           </ul>
@@ -357,6 +363,13 @@ export function Transactions() {
         <ImportTransactionsModal
           accounts={accounts.data ?? []}
           onClose={() => setImporting(false)}
+        />
+      )}
+
+      {editingName && (
+        <EditMerchantNameDialog
+          transaction={editingName}
+          onClose={() => setEditingName(null)}
         />
       )}
     </div>
@@ -445,6 +458,7 @@ function TransactionRow({
   spendCats,
   documentCount,
   onEdit,
+  onEditName,
 }: {
   transaction: Transaction
   index: number
@@ -452,6 +466,7 @@ function TransactionRow({
   spendCats: Category[]
   documentCount: number
   onEdit: () => void
+  onEditName: () => void
 }) {
   const qc = useQueryClient()
   const amount = formatTransactionAmount(t.amount, t.currency)
@@ -635,6 +650,7 @@ function TransactionRow({
         documentCount={documentCount}
         canEdit={isManual}
         onEdit={onEdit}
+        onEditName={onEditName}
         onDelete={() => remove.mutate()}
         deletePending={remove.isPending}
       />
@@ -688,6 +704,7 @@ function RowMenu({
   documentCount,
   canEdit = false,
   onEdit,
+  onEditName,
   onDelete,
   deletePending = false,
 }: {
@@ -700,11 +717,18 @@ function RowMenu({
    */
   canEdit?: boolean
   onEdit?: () => void
+  /** Open the rename/re-map dialog. Offered for any row with a merchant_key
+   *  that does not already have a full row editor (manual rows do). */
+  onEditName?: () => void
   onDelete?: () => void
   deletePending?: boolean
 }) {
   const qc = useQueryClient()
   const online = useOnline()
+  // The rename path needs a descriptor to re-point. Manual rows already have a
+  // full editor; scheduled rows are owned by the obligation that posts them.
+  const canEditName =
+    Boolean(t.merchant_key) && t.source !== 'manual' && t.source !== 'scheduled'
   // Which popover this row is showing, if any — the menu itself or one of the
   // two it opens.
   const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | null>(null)
@@ -768,6 +792,39 @@ function RowMenu({
             role="menu"
             className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
           >
+            {/* Fix a wrong merchant name. Plaid occasionally hands back a
+                descriptor that is just noise (a row of asterisks, a processor
+                code) for a real business; this re-points the descriptor at the
+                right canonical merchant so the name is correct here and on
+                every report, and stays fixed across future syncs. Offered for
+                any row with a descriptor that is not already fully editable
+                (manual rows have their own editor). Scheduled rows are posted
+                by the obligation worker, so their identity is changed there. */}
+            {canEditName && onEditName && (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                  disabled={!online}
+                  title={online ? undefined : OFFLINE_WRITE_HINT}
+                  onClick={() => {
+                    close()
+                    onEditName()
+                  }}
+                >
+                  <span className="block font-medium text-mist-100">
+                    Edit name…
+                  </span>
+                  <span className="block text-mist-500">
+                    Correct this merchant's real name.
+                  </span>
+                </button>
+
+                <div className="my-1 border-t border-white/10" role="none" />
+              </>
+            )}
+
             {/* Whose share this charge was. An attribution overlay — it never
                 changes what the household spent. */}
             <button
@@ -1221,6 +1278,209 @@ function ManualTransactionModal({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// EditMerchantNameDialog fixes a wrong merchant name on a synced/imported row.
+//
+// Plaid sometimes returns a descriptor that is just noise — a row of asterisks,
+// a processor code, "#******* QPS" — for a charge that is really a known
+// business. The name on the row can't simply be rewritten: the next sync's
+// upsert overwrites transactions.merchant_name and merchant_key (only a manual
+// category and the flags/notes are preserved). So the durable fix is to map the
+// bad descriptor at the merchant layer — the same place a manual merge from the
+// Merchants page lands. Re-pointing the descriptor:
+//
+//   * changes the name shown here and on every report (reports read the
+//     canonical name), for this charge AND every past and future charge Plaid
+//     sends with the same descriptor;
+//   * survives sync, because the merchant_aliases table is never touched by it;
+//   * lets the user "match the name to existing merchants" by folding the
+//     descriptor into an existing canonical merchant, picked from a typeahead.
+//
+// That is the same rename/merge flow MerchantDetail already uses; this dialog
+// just opens it from a transaction row.
+function EditMerchantNameDialog({
+  transaction: t,
+  onClose,
+}: {
+  transaction: Transaction
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  // The name the row currently shows — merchant_name with the raw name as the
+  // fallback, matching how the row and the reports render it.
+  const currentDisplay = t.merchant_name ?? t.name
+  const [name, setName] = useState(currentDisplay)
+  // Set only by clicking a suggestion: saving then folds this descriptor into
+  // that existing merchant instead of creating a new one. Cleared the moment
+  // the text is hand-edited, so it never outlives the exact name it matched.
+  const [matchID, setMatchID] = useState<string | null>(null)
+
+  const merchantsList = useQuery({
+    queryKey: ['merchants'],
+    queryFn: api.merchantGroups,
+  })
+
+  const query = name.trim().toLowerCase()
+  const suggestions =
+    query.length >= 2 && merchantsList.data
+      ? merchantsList.data
+          .filter(
+            (m) =>
+              m.canonical_name.toLowerCase().includes(query) &&
+              // Exclude the merchant this descriptor already resolves to —
+              // merging into it would be a no-op. When the descriptor is not
+              // yet grouped, the resolved key is the raw descriptor (not an
+              // entity id) and matches nothing here.
+              m.id !== t.merchant_key_resolved,
+          )
+          .slice(0, 6)
+      : []
+
+  const trimmed = name.trim()
+  const changed =
+    trimmed.toLowerCase() !== currentDisplay.toLowerCase()
+  // There is something to save when the name changed OR a merge target was
+  // picked (folding the descriptor into an existing merchant even if its name
+  // happens to read the same as the current one).
+  const canSave = trimmed !== '' && (changed || matchID !== null)
+
+  const save = useMutation({
+    mutationFn: async () => {
+      // The RAW descriptor is what an alias attaches to. Sending the resolved
+      // key instead would strand every other fragment of a grouped merchant.
+      const key = t.merchant_key ?? ''
+      if (matchID) {
+        const result = await api.mergeMerchants({
+          merchant_keys: [key],
+          entity_id: matchID,
+        })
+        return result.entity_id
+      }
+      const result = await api.mergeMerchants({
+        merchant_keys: [key],
+        canonical_name: trimmed,
+      })
+      return result.entity_id
+    },
+    onSuccess: () => {
+      // The merchant name feeds the row, every report total keyed by it, and
+      // the merchant pages — refetch them all so nothing reads the old name.
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['merchants'] })
+      qc.invalidateQueries({ queryKey: ['merchant-keys'] })
+      qc.invalidateQueries({ queryKey: ['merchant-detail'] })
+      qc.invalidateQueries({ queryKey: ['top-merchants'] })
+      qc.invalidateQueries({ queryKey: ['by-category'] })
+      qc.invalidateQueries({ queryKey: ['summary'] })
+      qc.invalidateQueries({ queryKey: ['averages'] })
+      qc.invalidateQueries({ queryKey: ['recurring'] })
+      onClose()
+    },
+  })
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <form
+        className="glass w-full max-w-lg space-y-4 p-6"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (canSave && !save.isPending) save.mutate()
+        }}
+      >
+        <div>
+          <h2 className="text-lg font-medium">Edit merchant name</h2>
+          <p className="mt-1 text-sm text-mist-300">
+            Correct the real business behind this charge. The same descriptor
+            arrives on every charge from this source, so this fixes the name
+            here and on future ones too — not just this row.
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="emn-current">
+            Currently shows as
+          </label>
+          <input
+            id="emn-current"
+            className="field w-full opacity-70"
+            value={currentDisplay}
+            readOnly
+            tabIndex={-1}
+          />
+        </div>
+
+        <div className="relative">
+          <label className="label" htmlFor="emn-name">
+            Real merchant name
+          </label>
+          <input
+            id="emn-name"
+            className="field w-full"
+            maxLength={80}
+            autoFocus
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value)
+              setMatchID(null)
+            }}
+          />
+          {suggestions.length > 0 && (
+            <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+              {suggestions.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+                  onClick={() => {
+                    setName(m.canonical_name)
+                    setMatchID(m.id)
+                  }}
+                >
+                  {m.canonical_name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {matchID && (
+          <p className="text-xs text-arcane-300">
+            Saving folds this charge into the existing “{name.trim()}”, so its
+            history is counted with theirs.
+          </p>
+        )}
+
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            className="btn-primary px-4 py-2 text-sm"
+            disabled={!canSave || save.isPending}
+          >
+            {save.isPending ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost px-3 py-2 text-sm text-mist-300"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          {save.isError && (
+            <span role="alert" className="text-sm text-ember-400">
+              {save.error.message}
+            </span>
+          )}
+        </div>
+      </form>
     </div>
   )
 }
