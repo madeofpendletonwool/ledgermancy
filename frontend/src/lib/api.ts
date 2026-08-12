@@ -735,6 +735,23 @@ export interface TrendPoint {
   as_of?: string
 }
 
+/**
+ * The envelope `/api/reports/trend` returns. Carries the monthly `points`
+ * alongside the request that produced them.
+ *
+ * `exclude_one_time` is the echo of the "Hide one-time charges" toggle: true
+ * means `is_one_time` rows were dropped from every point, false means the
+ * default real-period series. It exists so the three trend-fed charts on
+ * Spending can never render filtered figures under an unfiltered label — the
+ * react-query key already prevents a stale cache, and this makes the payload
+ * self-describing too. Read it before labelling the chart, not just before
+ * drawing it.
+ */
+export interface TrendResponse {
+  points: TrendPoint[]
+  exclude_one_time: boolean
+}
+
 export interface CategoryAverage extends CategorySpend {
   monthly_average: string
 }
@@ -770,6 +787,15 @@ export interface SpendingHeatmap {
   in_progress_month?: string
   /** "YYYY-MM-DD" the in-progress column runs through. */
   as_of?: string
+  /**
+   * Echo of the "Hide one-time charges" toggle. True means `is_one_time` rows
+   * were dropped from every cell — the matrix is the trailing year without the
+   * charges the reader flagged as not repeating, so a cell no longer reconciles
+   * to the cent with the same month's real-period figures. Read it before
+   * labelling the heatmap; the react-query key already prevents a stale cache,
+   * and this makes the payload agree with its own label.
+   */
+  exclude_one_time?: boolean
 }
 
 export interface SpendingHeatmapCategory {
@@ -1260,6 +1286,23 @@ export interface PeriodQuery {
  */
 export interface RealQuery {
   real?: boolean
+}
+
+/**
+ * Opt into dropping `is_one_time` rows from a trailing-baseline view.
+ *
+ * The mirror of `RealQuery` for the "Hide one-time charges" toggle. Omitting
+ * it, or sending `exclude_one_time: false`, returns the same real-period
+ * figures the endpoint has always returned — the money did leave, and the
+ * default view keeps it. The server reads "1" or "true" as on and anything
+ * else (including the bare zero value) as off, matching how `real` is parsed.
+ *
+ * One toggle sends this flag to both `/trend` and `/heatmap`; the response
+ * echoes it back so a chart can never render filtered figures under an
+ * unfiltered label.
+ */
+export interface OneTimeQuery {
+  exclude_one_time?: boolean
 }
 
 /**
@@ -4048,8 +4091,8 @@ export const api = {
       withQuery('/api/reports/merchant-explorer', params),
     ),
 
-  trend: (params: PeriodQuery & RealQuery = {}) =>
-    request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
+  trend: (params: PeriodQuery & RealQuery & OneTimeQuery = {}) =>
+    request<TrendResponse>('GET', withQuery('/api/reports/trend', params)),
 
   /**
    * The category × month spending matrix behind the heatmap (item #8) and the
@@ -4058,7 +4101,7 @@ export const api = {
    * themselves at eight. Every money field is a decimal string — the only
    * arithmetic in the client is display-side intensity scaling.
    */
-  spendingHeatmap: (params: PeriodQuery = {}) =>
+  spendingHeatmap: (params: PeriodQuery & OneTimeQuery = {}) =>
     request<SpendingHeatmap>('GET', withQuery('/api/reports/heatmap', params)),
 
   /**

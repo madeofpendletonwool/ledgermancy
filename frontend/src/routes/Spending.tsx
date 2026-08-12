@@ -10,7 +10,9 @@ import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
 import { RealBasis, RealToggle } from '../components/RealToggle'
+import { OneTimeToggle } from '../components/OneTimeToggle'
 import { useInflation, useRealPreference } from '../lib/inflation'
+import { useHideOneTimePreference } from '../lib/oneTime'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
 
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
@@ -88,15 +90,23 @@ export function Spending() {
   // rate and fixed/discretionary charts below are untouched by the toggle.
   const inflation = useInflation()
   const { enabled: real, setEnabled: setReal } = useRealPreference()
+  // The "Hide one-time charges" lens is one toggle for every trailing view on
+  // this page — the three trend-fed charts and the two heatmap-fed ones. It
+  // re-asks the same real-period queries with exclude_one_time, so the reader
+  // can look at the trailing year without the charges they have flagged as not
+  // repeating, and flip back. Both keys carry the flag, or the toggle would
+  // serve a stale cached series.
+  const { enabled: hideOneTime, setEnabled: setHideOneTime } =
+    useHideOneTimePreference()
   const trend = useQuery({
-    queryKey: ['trend', real],
-    queryFn: () => api.trend({ real }),
+    queryKey: ['trend', real, hideOneTime],
+    queryFn: () => api.trend({ real, exclude_one_time: hideOneTime }),
   })
   // The category × month matrix is the trailing twelve months the trend chart
   // uses, fetched once and rendered two ways (heatmap + small multiples).
   const heatmap = useQuery({
-    queryKey: ['heatmap'],
-    queryFn: () => api.spendingHeatmap(),
+    queryKey: ['heatmap', hideOneTime],
+    queryFn: () => api.spendingHeatmap({ exclude_one_time: hideOneTime }),
   })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
   const capabilities = useQuery({
@@ -225,16 +235,26 @@ export function Spending() {
       <section className="glass p-6">
         <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
           <h2 className="text-lg font-medium">Income vs spending</h2>
-          <RealToggle
-            enabled={real}
-            onChange={setReal}
-            inflation={inflation.data}
-          />
+          <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center">
+            {/*
+              Two reader-driven lenses over the trailing views, side by side.
+              RealToggle is nominal-vs-real on this chart; OneTimeToggle governs
+              every trailing chart on the page (the three trend-fed ones and the
+              two heatmap-fed ones further down), because they all answer the
+              same trailing-twelve question.
+            */}
+            <RealToggle
+              enabled={real}
+              onChange={setReal}
+              inflation={inflation.data}
+            />
+            <OneTimeToggle enabled={hideOneTime} onChange={setHideOneTime} />
+          </div>
         </div>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <TrendChart data={trend.data ?? []} real={real} />
+            <TrendChart data={trend.data?.points ?? []} real={real} />
           </Reveal>
         )}
         <RealBasis enabled={real} inflation={inflation.data} />
@@ -248,7 +268,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <SavingsRateChart data={trend.data ?? []} />
+            <SavingsRateChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>
@@ -262,7 +282,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <FixedDiscretionaryChart data={trend.data ?? []} />
+            <FixedDiscretionaryChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>

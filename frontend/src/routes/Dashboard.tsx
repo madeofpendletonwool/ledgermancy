@@ -200,8 +200,8 @@ export function Dashboard() {
               : 'Money out this month'
           }
           footer={
-            trend.data && trend.data.length >= 2 ? (
-              <SpendSparkline data={trend.data} />
+            trend.data && trend.data.points.length >= 2 ? (
+              <SpendSparkline data={trend.data.points} />
             ) : null
           }
         />

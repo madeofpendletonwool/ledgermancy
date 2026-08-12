@@ -28,6 +28,21 @@ func period(r *http.Request) (from, to time.Time) {
 	return parseDate(q.Get("from"), defaultFrom), parseDate(q.Get("to"), defaultTo)
 }
 
+// excludeOneTimeRequested reads the opt-in flag that drops `is_one_time` rows
+// from a report. Mirrors realRequested exactly — same two spellings accepted,
+// anything else (including the bare zero value of an unset param) means "keep
+// them", because keeping one-time rows is the default every report was built on.
+//
+// This is the READER-DRIVEN surface the reports.sql header names as the one
+// exception to its two-answer rule. It does not let a query decide what kind of
+// report it is; it hands the reader's question ("the trailing year without the
+// things I have flagged as not repeating") to the same real-period queries, per
+// view, reversibly. See reports.sql and docs/concepts.md.
+func excludeOneTimeRequested(r *http.Request) bool {
+	v := r.URL.Query().Get("exclude_one_time")
+	return v == "1" || v == "true"
+}
+
 // monthInProgress reports whether `month` is the calendar month `now` falls in —
 // the month that has started but not finished, so every figure computed over it
 // is a month-to-date figure and not a month's total.
@@ -270,6 +285,22 @@ type trendPoint struct {
 	AsOf string `json:"as_of,omitempty"`
 }
 
+// trendResponse wraps the monthly series with the request that produced it.
+//
+// Points alone would leave a cached response indistinguishable from one fetched
+// with a different filter: react-query keys guard the cache, but the payload
+// itself must also say which question it answers, so a chart can never render
+// filtered figures under an unfiltered label (the same standard the real/nominal
+// path holds for its base period).
+//
+// ExcludeOneTime is true when `is_one_time` rows were dropped per the reader's
+// "Hide one-time charges" toggle. False is the byte-identical default — the same
+// series every consumer received before the toggle existed.
+type trendResponse struct {
+	Points         []trendPoint `json:"points"`
+	ExcludeOneTime bool         `json:"exclude_one_time"`
+}
+
 // handleTrend returns income/spending/leftover per month. Defaults to the
 // trailing twelve months, which is the span this app is built around.
 //
@@ -288,11 +319,14 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	from, to := parseDate(q.Get("from"), start), parseDate(q.Get("to"), end)
 
+	exclude := excludeOneTimeRequested(r)
+
 	rows, err := s.Queries.GetMonthlyTrend(r.Context(), dbgen.GetMonthlyTrendParams{
-		HouseholdID: identity.HouseholdID,
-		UserID:      identity.UserID,
-		Date:        from,
-		Date_2:      to,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         identity.UserID,
+		Date:           from,
+		Date_2:         to,
+		ExcludeOneTime: exclude,
 	})
 	if err != nil {
 		s.internalError(w, "monthly trend", err)
@@ -334,7 +368,7 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, point)
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, trendResponse{Points: out, ExcludeOneTime: exclude})
 }
 
 type categoryAverageResponse struct {
@@ -832,6 +866,14 @@ type spendingHeatmapResponse struct {
 	InProgressMonth string `json:"in_progress_month,omitempty"`
 	// AsOf is the day the in-progress column runs through, present only with it.
 	AsOf string `json:"as_of,omitempty"`
+	// ExcludeOneTime echoes whether `is_one_time` rows were dropped from this
+	// matrix. False is the default and means every cell is the spend that
+	// actually happened; true means the reader asked for the trailing year
+	// without the charges they flagged as not repeating, so a cell no longer
+	// reconciles with the same month's real-period figures to the cent. The
+	// echo exists so a heatmap can never render filtered cells under an
+	// unfiltered label (MAD-116).
+	ExcludeOneTime bool `json:"exclude_one_time"`
 }
 
 // handleSpendingHeatmap answers the spending-by-category-by-month matrix behind
@@ -853,30 +895,36 @@ func (s *Server) handleSpendingHeatmap(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	from, to := parseDate(q.Get("from"), start), parseDate(q.Get("to"), end)
 
+	exclude := excludeOneTimeRequested(r)
+
 	rows, err := s.Queries.GetCategoryMonthMatrix(r.Context(), dbgen.GetCategoryMonthMatrixParams{
-		HouseholdID: identity.HouseholdID,
-		UserID:      identity.UserID,
-		Date:        from,
-		Date_2:      to,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         identity.UserID,
+		Date:           from,
+		Date_2:         to,
+		ExcludeOneTime: exclude,
 	})
 	if err != nil {
 		s.internalError(w, "category month matrix", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildHeatmap(from, to, time.Now(), rows))
+	writeJSON(w, http.StatusOK, buildHeatmap(from, to, time.Now(), exclude, rows))
 }
 
 // buildHeatmap pivots the per-(category, month) rows into the matrix response.
 // Kept separate from the handler so the pivot — month axis, ranking, cell keys —
 // is unit-testable without a database. `now` is a parameter for the same reason:
-// which column is in progress is a fact about the clock.
+// which column is in progress is a fact about the clock. `excludeOneTime` is not
+// used by the pivot — it is the request flag, threaded in solely so the response
+// echoes it back and a filtered matrix can never be rendered under an unfiltered
+// label.
 //
 // Rows arrive ordered by category id then month, but the pivot does not rely on
 // that ordering: it indexes categories by id and accumulates both the per-month
 // cells and the whole-range total in one pass, then sorts by total descending
 // so the heatmap's top rows are its biggest categories.
-func buildHeatmap(from, to, now time.Time, rows []dbgen.GetCategoryMonthMatrixRow) spendingHeatmapResponse {
+func buildHeatmap(from, to, now time.Time, excludeOneTime bool, rows []dbgen.GetCategoryMonthMatrixRow) spendingHeatmapResponse {
 	months := monthsBetween(from, to)
 
 	type acc struct {
@@ -964,6 +1012,7 @@ func buildHeatmap(from, to, now time.Time, rows []dbgen.GetCategoryMonthMatrixRo
 		Categories:      cats,
 		InProgressMonth: inProgressMonth,
 		AsOf:            asOf,
+		ExcludeOneTime:  excludeOneTime,
 	}
 }
 

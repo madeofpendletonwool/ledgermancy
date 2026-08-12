@@ -244,3 +244,25 @@ legend, so the clipping is visible rather than silent, and the rest of the grid
 keeps the colour resolution that makes seasonality readable. The category
 small-multiples solve the same problem differently — one panel per category, each
 on its own scale.
+
+The reader gets a fourth move, because sometimes the right question is the
+trailing year *without* the charge that broke the scale. A "Hide one-time
+charges" toggle sits over the trailing-twelve charts on the Spending page — the
+trend, the savings rate, fixed-vs-discretionary, the heatmap and the category
+small-multiples — and re-asks the same real-period queries those charts already
+use, with the one-time rows dropped. One toggle, not five, because every one of
+those charts answers the same trailing question and a reader wants to switch
+lenses once.
+
+It is a lens, not a correction. The money did leave, and it stays on the
+transaction and in the month it landed; flip the toggle back and the payoff is
+right there again. What changes is the question: "the trailing year as it
+actually happened" off, "the trailing year without the things I have flagged as
+not repeating" on. The flag itself is the household's judgement, set by hand on
+each transaction — the toggle only decides whether the trailing charts honour
+it. With it on, the heatmap's row ranking recomputes from the filtered totals,
+so a single payoff no longer keeps a category at the top of the grid on the
+strength of one month. Planning surfaces (safe-to-spend, the projection) always
+drop one-time rows; the period tiles, the Sankey and `/report` always keep them,
+because they describe one real period the reader picked. The toggle is the
+in-between: a real-period view, read on purpose as a baseline.

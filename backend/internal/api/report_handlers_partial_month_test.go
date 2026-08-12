@@ -134,6 +134,7 @@ func TestHeatmapMarksTheRunningColumn(t *testing.T) {
 			time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 			time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
 			time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC),
+			false,
 			rows,
 		)
 		if got.InProgressMonth != "2026-08" {
@@ -149,6 +150,7 @@ func TestHeatmapMarksTheRunningColumn(t *testing.T) {
 			time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 			time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
 			time.Date(2027, 1, 9, 0, 0, 0, 0, time.UTC),
+			false,
 			rows,
 		)
 		if got.InProgressMonth != "" {
@@ -167,6 +169,7 @@ func TestHeatmapMarksTheRunningColumn(t *testing.T) {
 			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC),
 			time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC),
+			false,
 			nil,
 		)
 		if got.InProgressMonth != "" {
