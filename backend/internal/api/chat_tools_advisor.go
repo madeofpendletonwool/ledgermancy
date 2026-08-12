@@ -965,6 +965,22 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		})
 	}
 
+	// College goals, as FACTS. A nil age or horizon stays null rather than
+	// becoming a zero that reads as "enrolling now".
+	college := make([]map[string]any, 0, len(b.College))
+	for _, c := range b.College {
+		college = append(college, map[string]any{
+			"name":                c.Name,
+			"beneficiary_age":     c.BeneficiaryAge,
+			"years_to_enrollment": c.YearsToEnrollment,
+			"years_of_study":      c.YearsOfStudy,
+			"annual_cost_today":   c.AnnualCostToday.StringFixed(2),
+			"basis": "annual_cost_today is ONE year in today's dollars, not the whole cost. " +
+				"Call college_projection for the funded percentage and the monthly figure; " +
+				"do not derive them from these fields.",
+		})
+	}
+
 	out := map[string]any{
 		"net_worth":            b.NetWorth.StringFixed(2),
 		"assets":               b.Assets.StringFixed(2),
@@ -978,6 +994,12 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		"debt_free":            debtFree,
 		"emergency_fund":       runway,
 		"attention":            attention,
+		// Without this the model had no way to know a college goal existed at
+		// all, and hedged — "worth considering if college costs are on the
+		// horizon" — about a one-year-old whose birthdate, 529 and named goal
+		// were all on file. The funding numbers are deliberately absent; they
+		// are college_projection's answer.
+		"college": college,
 	}
 	// The household's OWN rates, quoted as percents. All four keys travel
 	// together: either the household has a projection_assumptions row — in which
