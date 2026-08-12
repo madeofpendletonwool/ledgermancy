@@ -46,6 +46,14 @@ func MerchantKey(merchantName, transactionName string) string {
 		source = transactionName
 	}
 
+	// A descriptor dominated by '*' redaction — as banks send when they mask the
+	// merchant portion of a charge (e.g. "**#*********** RUNNQPS") — has too
+	// little real signal to key on. The surviving fragment is a location or
+	// processor token, not a merchant, and keying on it invents false ones.
+	if mostlyMasked(source) {
+		return ""
+	}
+
 	key := strings.ToLower(strings.TrimSpace(source))
 	if key == "" {
 		return ""
@@ -103,4 +111,27 @@ func dropReferenceTokens(s string) string {
 	}
 
 	return strings.Join(kept, " ")
+}
+
+// mostlyMasked reports whether more than half of a descriptor's non-space
+// characters are '*' redactions. Banks mask the merchant portion of a charge
+// this way (turning "BP#6999361HOOPS TRAQPS" into "**#*********** RUNNQPS"),
+// leaving only a fragment that is not a merchant at all. The processor-prefix
+// asterisks real descriptors carry ("SQ *BLUE BOTTLE") are a single character
+// and never reach this threshold, so legitimate names are unaffected.
+func mostlyMasked(s string) bool {
+	var stars, sig int
+	for _, r := range s {
+		if r == ' ' {
+			continue
+		}
+		sig++
+		if r == '*' {
+			stars++
+		}
+	}
+	if sig == 0 {
+		return false
+	}
+	return stars*2 > sig
 }

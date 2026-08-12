@@ -5,6 +5,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	plaidapi "github.com/plaid/plaid-go/v40/plaid"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/config"
 )
 
@@ -176,5 +177,69 @@ func TestEnvironmentRejectsRetiredDevelopment(t *testing.T) {
 	// Plaid retired this environment; accepting it would fail confusingly later.
 	if _, err := environment("development"); err == nil {
 		t.Error("expected 'development' to be rejected")
+	}
+}
+
+// confidenceLevel is the exact failure mode behind the masked-BP-charge-became-
+// "Runn" bug: Plaid returned a cleansed fragment with LOW confidence and the
+// ingest path trusted it. Per Plaid's own docs, LOW means "we didn't find a
+// matching counterparty", so the merchant_name must be dropped there and fall
+// back to the raw description. MEDIUM and above are real matches and kept.
+func TestMerchantNameIfConfident(t *testing.T) {
+	cases := []struct {
+		name            string
+		merchant        string
+		confidences     []string // counterparty confidence_level values
+		wantTrusted     bool
+	}{
+		{"empty merchant never trusted", "", []string{"VERY_HIGH"}, false},
+		{"very high trusted", "Amazon", []string{"VERY_HIGH"}, true},
+		{"high trusted", "Target", []string{"HIGH"}, true},
+		{"medium trusted", "Trader Joe's", []string{"MEDIUM"}, true},
+		{"low dropped (the BP/Runn case)", "Runn", []string{"LOW"}, false},
+		{"unknown dropped", "Mystery", []string{"UNKNOWN"}, false},
+		{"no counterparties dropped", "Alone", nil, false},
+		{"best of several wins", "Amazon", []string{"LOW", "VERY_HIGH", "LOW"}, true},
+		{"best is only low", "Runn", []string{"LOW", "UNKNOWN"}, false},
+		{"whitespace merchant treated as empty", "   ", []string{"HIGH"}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cps := make([]plaidapi.TransactionCounterparty, 0, len(tc.confidences))
+			for _, c := range tc.confidences {
+				cp := plaidapi.NewTransactionCounterpartyWithDefaults()
+				cp.SetConfidenceLevel(c)
+				cps = append(cps, *cp)
+			}
+			got := merchantNameIfConfident(tc.merchant, cps)
+			if tc.wantTrusted && got == nil {
+				t.Fatalf("expected merchant_name %q to be trusted, got nil", tc.merchant)
+			}
+			if tc.wantTrusted && *got != tc.merchant {
+				t.Errorf("trusted merchant_name = %q, want %q", *got, tc.merchant)
+			}
+			if !tc.wantTrusted && got != nil {
+				t.Errorf("expected merchant_name %q to be dropped, got %q", tc.merchant, *got)
+			}
+		})
+	}
+}
+
+func TestConfidenceRank(t *testing.T) {
+	cases := map[string]int{
+		"VERY_HIGH": 4,
+		"very_high": 4, // case-insensitive
+		"HIGH":      3,
+		"MEDIUM":    2,
+		"LOW":       1,
+		"UNKNOWN":   0,
+		"":          -1,
+		"BOGUS":     -1,
+	}
+	for level, want := range cases {
+		if got := confidenceRank(level); got != want {
+			t.Errorf("confidenceRank(%q) = %d, want %d", level, got, want)
+		}
 	}
 }
