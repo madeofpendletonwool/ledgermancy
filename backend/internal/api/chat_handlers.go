@@ -30,7 +30,14 @@ import (
 // likelihood check. At six that is the whole budget with no room for a
 // correction; at eight there is slack for one wrong turn and a recovery, which
 // is what the cap should leave and what six no longer did.
-const maxToolIterations = 8
+//
+// Raised from 8 to 9 for the escape hatch. A find_tools call costs one whole
+// iteration — the model asks, the loop answers, and only the NEXT round-trip
+// can call what it loaded — so a turn that escalates had 7 left for work under
+// the old cap, below the 8 the paragraph above argues for. Nine restores it.
+// aiRouteTimeout moved with it; TestAIRouteTimeoutFitsToolLoop is what makes
+// changing one of them without the other a build failure.
+const maxToolIterations = 9
 
 // maxChatMessages caps the transcript a client may send, so a runaway history
 // cannot blow up the prompt.
@@ -69,7 +76,14 @@ Advice:
 - When the user asks "what should I do with $X", CALL A TOOL rather than inventing options: the ranked options and the allocation plan are computed, not advised. Do not offer a course of action the tools did not produce.
 - Never present a projection as a forecast. Retirement, payoff and balance projections carry a "basis" field saying what they assume and what they omit — repeat the relevant caveat rather than dropping it.
 - A null figure means "not known", never zero. An unknown APR, an unreached FI age, and an uncomputable return are all real answers; say so plainly instead of substituting a number.
-- You cannot move money. Never offer to make a transfer, a payment or a contribution — you describe and compute, the household acts.` + chatGuardrailPrompt
+- You cannot move money. Never offer to make a transfer, a payment or a contribution — you describe and compute, the household acts.
+
+Your tool list is a SUBSET, and find_tools is how you widen it:
+- The tools you were given this turn were selected automatically from the wording of the question. They are NOT the full set of things this app can do, and a capability missing from your list usually still exists.
+- Before you say a lookup is unavailable, that you lack a tool, or that you cannot produce a breakdown — CALL find_tools with a plain-language description of what you need. "I don't have a tool for that" is only ever true after find_tools has come back without one.
+- Before you work a figure out yourself from numbers already in the conversation, CALL find_tools. A missing tool is never a licence to do the arithmetic.
+- Never substitute a DIFFERENT figure for the one asked for and present it as the closest available answer. A median is not an average and a projection is not a total. Load the right tool, or say plainly which part you could not compute.
+- If find_tools returns nothing that fits, say so plainly and stop. That is a real answer; an invented number is not.` + chatGuardrailPrompt
 
 type chatRequestBody struct {
 	Messages []chatMessage `json:"messages"`
@@ -203,7 +217,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sendSSE(map[string]any{"tool": name, "result": json.RawMessage(result)})
 	}
 
-	answer, err := s.runChat(r.Context(), identity, set, messages, onDelta, onTool)
+	// An escalation is announced for the same reason the set is: it makes the
+	// classifier's mistakes MEASURABLE. A set that is escalated out of on most
+	// turns is a membership bug with a visible symptom, where before the only
+	// symptom was an answer that quietly declined to compute something.
+	onGrant := func(names []string) {
+		sendSSE(map[string]any{"tools_added": names})
+	}
+
+	answer, err := s.runChat(r.Context(), identity, set, messages, onDelta, onTool, onGrant)
 	if err != nil {
 		slog.Error("chat", "error", err)
 		sendSSE(map[string]string{"error": "Something went wrong answering that."})
@@ -294,8 +316,18 @@ func (s *Server) persistTurn(
 func (s *Server) runChat(
 	ctx context.Context, identity auth.Identity, set string,
 	messages []ai.Message, onText func(string), onTool func(name, result string),
+	onGrant func(names []string),
 ) (string, error) {
+	// The chosen set is the turn's STARTING tool list, not its final one. A
+	// find_tools call appends to this slice mid-loop, so the next iteration is
+	// sent the definitions the model asked for — see chat_tool_escalation.go for
+	// why a set had to stop being a one-way door.
 	tools := toolSetDefs(set)
+	available := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		available[t.Name] = true
+	}
+	granted := 0
 
 	// The model has no clock of its own, so it cannot resolve "July" or "last
 	// month" without being told today's date. Inject it into the system prompt.
@@ -329,6 +361,37 @@ func (s *Server) runChat(
 		messages = append(messages, resp.AsMessage())
 		results := make([]ai.Block, 0, len(uses))
 		for _, use := range uses {
+			// find_tools is answered HERE rather than in executeChatTool, because
+			// it is the one tool whose effect is on the request itself: it widens
+			// the tool list the next iteration is sent. Handling it beside the
+			// slice it mutates is what keeps the grant and the definitions the
+			// model actually receives from drifting apart.
+			if use.Name == toolFinderName {
+				out, added, err := grantTools(use.Input, available, granted)
+				if err != nil {
+					results = append(results, ai.ToolResultBlock(use.ID, err.Error(), true))
+					continue
+				}
+				for _, t := range added {
+					tools = append(tools, t)
+					available[t.Name] = true
+				}
+				granted += len(added)
+				results = append(results, ai.ToolResultBlock(use.ID, out, false))
+				// Not forwarded to onTool: the trace is the PROVENANCE of the
+				// figures in an answer, and a tool lookup produced none of them.
+				// It gets its own frame instead, so an escalation is visible
+				// without being mistaken for a source.
+				if onGrant != nil && len(added) > 0 {
+					names := make([]string, 0, len(added))
+					for _, t := range added {
+						names = append(names, t.Name)
+					}
+					onGrant(names)
+				}
+				continue
+			}
+
 			out, err := s.executeChatTool(ctx, identity, use.Name, use.Input)
 			if err != nil {
 				// Hand the model the error so it can recover or apologise,
@@ -896,7 +959,18 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		return marshalTool(out)
 
 	default:
-		return "", fmt.Errorf("unknown tool %q", name)
+		// A bare "unknown tool" is a DEAD END, and to the model it reads exactly
+		// like the capability not existing — which is the failure the escape
+		// hatch exists to end. Naming the closest real tools turns a hallucinated
+		// name into a correction it can act on in the next iteration.
+		if near := nearestToolNames(name, 3); len(near) > 0 {
+			return "", fmt.Errorf(
+				"unknown tool %q. The closest real tools are: %s. Call %s with their names to load them, or with a description of what you need. Do not tell the user this cannot be done",
+				name, strings.Join(near, ", "), toolFinderName)
+		}
+		return "", fmt.Errorf(
+			"unknown tool %q. Call %s with a plain-language description of the lookup you need; it returns the real tool names. Do not tell the user this cannot be done without calling it first",
+			name, toolFinderName)
 	}
 }
 

@@ -65,12 +65,29 @@ const (
 // payoff" is genuinely a planning cue), so the fix is the tool's membership,
 // and 16 distinct planning tools is still well inside the budget the cap exists
 // to protect.
+//
+// It counts DOMAIN tools only — see metaTools for why the escape hatch is not
+// charged against it.
 const maxToolsPerSet = 16
 
 // commonTools are in EVERY set, because every advisor conversation starts from
 // the same two places: what is the household's position, and how much room does
 // it have this month.
 var commonTools = []string{"advisor_briefing", "safe_to_spend"}
+
+// metaTools are in every set and are NOT charged against maxToolsPerSet.
+//
+// The exemption is not an accounting dodge, it follows from what the cap is
+// for. The cap bounds a RETRIEVAL problem: N similarly-named finance tools, all
+// plausible answers to the same money question, one of which is right.
+// find_tools is not in that contest — it takes a description of a lookup and
+// returns tools, it computes nothing, and no question has it and a domain tool
+// as competing answers. Charging it would force a real engine out of a set to
+// make room for the mechanism whose entire job is to put engines back.
+//
+// The exemption is narrow on purpose: this list is asserted to hold exactly one
+// name, so "meta" cannot quietly become the drawer that lets sets grow.
+var metaTools = []string{toolFinderName}
 
 // toolSetMembers is the membership table. Names only — the definitions live in
 // chatToolDefs and chatAdvisorToolDefs, and toolSetDefs filters those by this.
@@ -144,16 +161,32 @@ func ToolSets() []string {
 	return []string{ToolSetSpending, ToolSetPlanning, ToolSetModelling, ToolSetLikelihood}
 }
 
-// toolSetNames returns one set's full membership, common tools included.
+// toolSetNames returns one set's full membership, common and meta tools
+// included.
+//
+// The meta tools go LAST. Tool order is read order, and the escape hatch should
+// be the thing the model reaches for after the domain tools have failed it, not
+// the first entry it sees.
 func toolSetNames(set string) []string {
 	members, ok := toolSetMembers[set]
 	if !ok {
 		members = toolSetMembers[ToolSetSpending]
 	}
-	out := make([]string, 0, len(commonTools)+len(members))
+	out := make([]string, 0, len(commonTools)+len(members)+len(metaTools))
 	out = append(out, commonTools...)
 	out = append(out, members...)
+	out = append(out, metaTools...)
 	return out
+}
+
+// isMetaTool reports whether a name is infrastructure rather than an engine.
+func isMetaTool(name string) bool {
+	for _, m := range metaTools {
+		if m == name {
+			return true
+		}
+	}
+	return false
 }
 
 // setKeywords maps a set to the phrases that select it.
@@ -242,6 +275,24 @@ var setKeywords = map[string][]string{
 		"costco", "amazon", "groceries", "grocery",
 		"dining", "restaurant",
 		"subscription", "subscriptions",
+		// CASHFLOW vocabulary, and the reason it is here is the reported bug.
+		// "Average money leftover at the end of each month over the last year"
+		// is monthly_trend's question and it matched NOTHING — it only reached
+		// the right tools by falling through to the spending default, which is
+		// luck, not routing. Luck runs out the moment such a message is asked
+		// inside a planning thread, where the ambiguous-follow-up rule inherits
+		// planning instead.
+		//
+		// Every phrase here is DISTINCTIVE on purpose. The generic ones that
+		// would also fit — "each month", "per month", "income", "average" —
+		// are deliberately absent: spending is checked last, so a keyword here
+		// binds a message that matched nothing deeper, and a generic phrase
+		// would start yanking genuine planning follow-ups ("how much should I
+		// put in each month?") out of the set that answers them. That is the
+		// 529-fabrication bug run backwards.
+		"leftover", "left over", "cash flow", "cashflow",
+		"month by month", "month-by-month", "monthly trend", "monthly breakdown",
+		"income vs", "income versus", "paycheck", "paychecks",
 	},
 }
 

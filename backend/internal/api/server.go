@@ -119,24 +119,30 @@ const (
 	// THIS NUMBER IS NOT FREE TO CHOOSE. It has to cover the worst case the loop
 	// can actually produce:
 	//
-	//	maxToolIterations (8, chat_handlers.go)
-	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 480s of model time
+	//	maxToolIterations (9, chat_handlers.go)
+	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 540s of model time
 	//	+ aiToolBudget                                       =  60s of our own
-	//	                                                     = 540s
+	//	                                                     = 600s
 	//
-	// 600s leaves a minute of headroom on top. It is a CEILING, not a target —
+	// 660s leaves a minute of headroom on top. It is a CEILING, not a target —
 	// a real turn answers in seconds, and the defences against a turn that does
 	// not are maxToolIterations and aiLimiter, not this. Cutting it lower would
 	// only reintroduce the original bug: a budget the loop below it can exceed.
 	//
+	// Moved 600s → 660s with maxToolIterations 8 → 9 (the find_tools escape
+	// hatch spends an iteration). Note that nginx's proxy_read_timeout is NOT
+	// this number and does not need to move with it: it bounds the gap BETWEEN
+	// reads on a streaming response, and the longest gap this loop can produce
+	// is one ai.RequestTimeout.
+	//
 	// TestAIRouteTimeoutFitsToolLoop fails if any of the three numbers moves
 	// without the others.
-	aiRouteTimeout = 600 * time.Second
+	aiRouteTimeout = 660 * time.Second
 
 	// aiToolBudget is how much of aiRouteTimeout is reserved for OUR work rather
 	// than the model's: the scoped queries executeChatTool runs between
 	// iterations, plus serialising their results back into the prompt. Every one
-	// is a local database read, so a minute across all eight is slack, not an
+	// is a local database read, so a minute across all nine is slack, not an
 	// estimate.
 	aiToolBudget = 60 * time.Second
 )

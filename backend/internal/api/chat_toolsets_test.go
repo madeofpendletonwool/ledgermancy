@@ -37,16 +37,38 @@ func TestChatAdvisorToolDefs(t *testing.T) {
 // THE CAP IS THE POINT OF THE SETS. A set that grows past it has to be split,
 // and finding that out as a build failure is the whole reason this is a test
 // rather than a runtime clamp.
+//
+// It counts DOMAIN tools. A retrieval budget is about definitions that compete
+// to answer the same question, and the escape hatch competes with none of them
+// — see metaTools.
 func TestToolSetsAreUnderTheCap(t *testing.T) {
 	for _, set := range ToolSets() {
 		defs := toolSetDefs(set)
-		if len(defs) > maxToolsPerSet {
-			t.Errorf("tool set %q has %d definitions, over the cap of %d — split the set",
-				set, len(defs), maxToolsPerSet)
+		domain := 0
+		for _, d := range defs {
+			if !isMetaTool(d.Name) {
+				domain++
+			}
+		}
+		if domain > maxToolsPerSet {
+			t.Errorf("tool set %q has %d domain definitions, over the cap of %d — split the set",
+				set, domain, maxToolsPerSet)
 		}
 		if len(defs) == 0 {
 			t.Errorf("tool set %q is empty", set)
 		}
+	}
+}
+
+// The exemption must stay a single documented tool. Without this guard, "meta"
+// becomes the drawer things get filed in to dodge the cap, and the cap stops
+// meaning anything.
+func TestMetaToolsStayExactlyTheEscapeHatch(t *testing.T) {
+	if len(metaTools) != 1 || metaTools[0] != toolFinderName {
+		t.Fatalf("metaTools is %v; the cap exemption covers the escape hatch ONLY. "+
+			"A tool added here leaves the retrieval budget — if it competes with a "+
+			"domain tool to answer a question, it belongs in a set instead.",
+			metaTools)
 	}
 }
 
@@ -55,18 +77,10 @@ func TestToolSetsAreUnderTheCap(t *testing.T) {
 // smaller set rather than an error.
 func TestToolSetMembersAllExist(t *testing.T) {
 	catalogue := map[string]bool{}
-	for _, d := range chatBaseToolDefs() {
+	for _, d := range chatToolCatalogue() {
 		catalogue[d.Name] = true
 	}
-	for _, d := range chatAdvisorToolDefs() {
-		catalogue[d.Name] = true
-	}
-	for _, d := range chatAllocationToolDefs() {
-		catalogue[d.Name] = true
-	}
-	for _, d := range chatLikelihoodToolDefs() {
-		catalogue[d.Name] = true
-	}
+	catalogue[chatToolFinderDef().Name] = true
 
 	for _, set := range ToolSets() {
 		for _, name := range toolSetNames(set) {
@@ -127,6 +141,49 @@ func TestClassifyToolSetIsDeterministic(t *testing.T) {
 		// is what makes a wrong pick reproducible and therefore fixable.
 		if again := classifyToolSet(message); again != got {
 			t.Errorf("classifyToolSet(%q) is not deterministic: %q then %q", message, got, again)
+		}
+	}
+}
+
+// Cashflow phrasings must select spending EXPLICITLY, not merely land there by
+// falling through the default.
+//
+// The reported question — "average money leftover at the end of each month over
+// the last year" — carried no keyword at all, so it reached monthly_trend only
+// because the default happens to be the set that holds it. That is luck, and it
+// runs out inside a planning thread, where an unmatched follow-up inherits
+// planning instead of dropping to spending.
+func TestCashflowPhrasingsSelectSpendingExplicitly(t *testing.T) {
+	for _, message := range []string{
+		"Average money leftover at the end of each month over the course of the last year.",
+		"what was left over each month last year",
+		"show me my cash flow month by month",
+		"monthly breakdown of income vs spending",
+		"how big were my paychecks this year",
+	} {
+		set, matched := classifyExplicit(message)
+		if !matched {
+			t.Errorf("classifyExplicit(%q) matched nothing — it reaches spending only by luck", message)
+		}
+		if set != ToolSetSpending {
+			t.Errorf("classifyExplicit(%q) = %q, want the spending set", message, set)
+		}
+	}
+}
+
+// The other half of that change, and the one that could regress the fabrication
+// fix: a GENERIC cadence phrase must NOT pull a planning follow-up out of
+// planning. "How much should I put in each month?" asked in a retirement thread
+// belongs to the engines, and a spending keyword broad enough to catch it would
+// strip them — the 529 bug, run backwards.
+func TestGenericCadencePhrasesDoNotHijackPlanningFollowUps(t *testing.T) {
+	for _, message := range []string{
+		"how much should I contribute each month?",
+		"what do I need to save up per month to get there",
+		"can I retire at 60 on that monthly number",
+	} {
+		if got := classifyToolSet(message); got != ToolSetPlanning {
+			t.Errorf("classifyToolSet(%q) = %q, want the planning set — a spending keyword is too broad", message, got)
 		}
 	}
 }

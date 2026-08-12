@@ -311,6 +311,7 @@ function Conversation() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [toolSet, setToolSet] = useState<string | null>(null)
+  const [addedTools, setAddedTools] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -345,6 +346,7 @@ function Conversation() {
     setThreadID(null)
     setTurns([])
     setToolSet(null)
+    setAddedTools([])
     setError(null)
   }
 
@@ -372,6 +374,10 @@ function Conversation() {
     setTurns([...history, { role: 'assistant', content: '', tools: [] }])
     setInput('')
     setError(null)
+    // Cleared per TURN, not per thread: the line below the composer describes
+    // the answer just given, and carrying a previous turn's escalation into it
+    // would credit this answer with tools it never used.
+    setAddedTools([])
     setStreaming(true)
 
     const appendToLast = (update: (t: ChatTurn) => ChatTurn) =>
@@ -393,6 +399,8 @@ function Conversation() {
       await api.chat(sent, (delta) => appendToLast((t) => ({ ...t, content: t.content + delta })), {
         threadID: target ?? undefined,
         onToolSet: setToolSet,
+        onToolsAdded: (names) =>
+          setAddedTools((prev) => [...prev, ...names.filter((n) => !prev.includes(n))]),
         onTool: (frame) =>
           appendToLast((t) => ({ ...t, tools: [...(t.tools ?? []), frame] })),
       })
@@ -471,7 +479,20 @@ function Conversation() {
            * visible instead of mysterious.
            */
           <p className="text-[11px] text-mist-600">
-            Answered with the <span className="text-mist-400">{toolSet}</span> tools.
+            Answered with the <span className="text-mist-400">{toolSet}</span> tools
+            {addedTools.length > 0 && (
+              /*
+               * And what it had to fetch on top. The set can be picked wrong;
+               * the assistant now recovers by loading what it needs mid-turn
+               * instead of reporting the capability missing. Naming the additions
+               * is what turns that recovery into a measurable signal — a set
+               * escalated out of on most turns is a membership bug.
+               */
+              <>
+                , plus <span className="text-mist-400">{addedTools.join(', ')}</span>
+              </>
+            )}
+            .
           </p>
         )}
       </div>

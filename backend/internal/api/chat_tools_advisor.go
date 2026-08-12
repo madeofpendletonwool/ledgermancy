@@ -134,18 +134,13 @@ func chatAdvisorToolDefs() []ai.Tool {
 // missing entry the guard test catches, not a silently smaller set.
 func toolSetDefs(set string) []ai.Tool {
 	catalogue := map[string]ai.Tool{}
-	for _, t := range chatBaseToolDefs() {
+	for _, t := range chatToolCatalogue() {
 		catalogue[t.Name] = t
 	}
-	for _, t := range chatAllocationToolDefs() {
-		catalogue[t.Name] = t
-	}
-	for _, t := range chatLikelihoodToolDefs() {
-		catalogue[t.Name] = t
-	}
-	for _, t := range chatAdvisorToolDefs() {
-		catalogue[t.Name] = t
-	}
+	// The escape hatch is not IN the catalogue — it is not something find_tools
+	// can hand out, and listing itself among the tools it offers would be a loop
+	// with nothing at the end of it. It joins here, where sets are assembled.
+	catalogue[toolFinderName] = chatToolFinderDef()
 
 	names := toolSetNames(set)
 	out := make([]ai.Tool, 0, len(names))

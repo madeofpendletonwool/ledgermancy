@@ -4796,9 +4796,11 @@ export const api = {
     }),
 
   // The chat endpoint streams its answer as Server-Sent Events: a
-  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, one
-  // {"delta":"…"} frame per chunk of prose, a {"tool":…,"result":…} frame per
-  // tool result, then a terminal {"done":true} or {"error":"…"}.
+  // {"tool_set":"…"} frame naming the deterministically-chosen tool set, an
+  // optional {"tools_added":[…]} frame when the assistant loads a tool that set
+  // did not carry, one {"delta":"…"} frame per chunk of prose, a
+  // {"tool":…,"result":…} frame per tool result, then a terminal {"done":true}
+  // or {"error":"…"}.
   //
   // The tool frames arrive BEFORE the final prose, because tool calls complete
   // earlier in the server's loop — so a chart mounts while the answer composes,
@@ -4818,6 +4820,16 @@ export interface ChatStreamOptions {
   onTool?: (result: ChatToolResult) => void
   /** Fires once with the tool set the server chose, so a wrong pick is visible. */
   onToolSet?: (set: string) => void
+  /**
+   * Fires when the assistant pulls in a tool the chosen set did not carry.
+   *
+   * The set is picked from the question's wording and can pick wrong; the
+   * assistant recovers by loading what it needs mid-turn. Surfacing that is what
+   * makes a bad pick MEASURABLE — a set escalated out of on most turns is a
+   * membership bug, where the only previous symptom was an answer that quietly
+   * declined to compute something.
+   */
+  onToolsAdded?: (names: string[]) => void
 }
 
 /**
@@ -4974,10 +4986,12 @@ async function streamChat(
       tool?: string
       result?: unknown
       tool_set?: string
+      tools_added?: string[]
     }
     if (evt.error) throw new ApiError(500, evt.error)
     if (evt.delta) onDelta(evt.delta)
     if (evt.tool_set) opts?.onToolSet?.(evt.tool_set)
+    if (evt.tools_added?.length) opts?.onToolsAdded?.(evt.tools_added)
     if (evt.tool) opts?.onTool?.({ tool: evt.tool, result: evt.result })
   }
 
