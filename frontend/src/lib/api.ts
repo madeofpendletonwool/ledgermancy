@@ -617,9 +617,25 @@ export interface Summary {
   fixed_spending: string
   discretionary_spending: string
   leftover: string
-  /** 0–1, or null when the period had no income (the ratio is meaningless). */
+  /**
+   * 0–1, or null when the period had no income (the ratio is meaningless).
+   *
+   * Still a real ratio when `in_progress` is true — but a ratio of a whole
+   * month's spending SO FAR to however much of the month's income has landed,
+   * which is not a savings rate. Do not render it as one; render the in-progress
+   * state instead (MAD-110).
+   */
   savings_rate: string | null
   transaction_count: number
+  /**
+   * True when this period is a single calendar month that has not ended, so
+   * every figure above is month-to-date. False for a rolling window that merely
+   * runs up to today — the trailing-twelve report's one partial month is diluted
+   * across eleven whole ones and needs no caveat.
+   */
+  in_progress: boolean
+  /** "YYYY-MM-DD" the figures run through. Present only when `in_progress`. */
+  as_of?: string
 }
 
 export interface CategorySpend {
@@ -703,6 +719,20 @@ export interface TrendPoint {
   real_income?: string
   real_spending?: string
   real_leftover?: string
+  /**
+   * True on the one point the clock is currently inside. Its figures are real
+   * but month-to-date: the spending is everything spent so far, the income is
+   * however many paychecks have landed so far.
+   *
+   * The point is NOT dropped server-side, because the money did move — a chart
+   * that plots amounts should keep it and mark it. A chart that plots a RATIO of
+   * income to spending must not plot it at all: a whole month of spending over a
+   * fraction of a month's income produces an arbitrarily large negative number,
+   * and an axis fitted to it flattens every real month beside it (MAD-110).
+   */
+  in_progress: boolean
+  /** "YYYY-MM-DD" this point runs through. Present only when `in_progress`. */
+  as_of?: string
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -731,6 +761,15 @@ export interface SpendingHeatmap {
   months: string[]
   /** Sorted by whole-range `total` descending. */
   categories: SpendingHeatmapCategory[]
+  /**
+   * The one entry in `months` that has not finished yet, or absent when the
+   * window ends in the past. Its cells are part-month figures, so they are not
+   * comparable with the columns beside them and must stay out of the colour
+   * ramp's ceiling (MAD-110).
+   */
+  in_progress_month?: string
+  /** "YYYY-MM-DD" the in-progress column runs through. */
+  as_of?: string
 }
 
 export interface SpendingHeatmapCategory {

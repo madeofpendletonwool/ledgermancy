@@ -4,6 +4,11 @@ import { formatMoney } from '../../lib/money'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES } from './tokens'
 import { ChartBoundary } from './ChartBoundary'
+import {
+  PartialMonthHatch,
+  PartialMonthOverlay,
+  PartialMonthTooltipNote,
+} from './partialMonth'
 
 const WIDTH = 760
 const HEIGHT = 240
@@ -71,6 +76,8 @@ function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
           aria-label="Fixed versus discretionary spending per month"
           onMouseLeave={() => setActive(null)}
         >
+          <PartialMonthHatch />
+
           {ticks.map((t) => (
             <g key={t}>
               <line
@@ -93,8 +100,11 @@ function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
             </g>
           ))}
 
+          {/* The month in flight is always labelled, stride or not: it is the
+              one bar whose short height means something other than "spent
+              less", so the reader needs it named. */}
           {data.map((d, i) =>
-            i % stride === 0 ? (
+            i % stride === 0 || d.in_progress ? (
               <text
                 key={d.month}
                 x={x(i)}
@@ -102,6 +112,7 @@ function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
                 textAnchor="middle"
                 fontSize="11"
                 fill={CHART.textMuted}
+                fontStyle={d.in_progress ? 'italic' : undefined}
               >
                 {monthLabel(d.month)}
               </text>
@@ -139,6 +150,14 @@ function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
                     d={topRoundedRect(x(i) - barW / 2, discTop, barW, discH)}
                     fill={SERIES.spending}
                     opacity={dim ? 0.45 : 0.9}
+                  />
+                )}
+                {d.in_progress && (
+                  <PartialMonthOverlay
+                    x={x(i) - barW / 2}
+                    y={discTop}
+                    width={barW}
+                    height={fixedH + discH}
                   />
                 )}
               </g>
@@ -187,6 +206,9 @@ function FixedDiscretionaryChartUnguarded({ data }: { data: TrendPoint[] }) {
             <p className="mt-1 border-t border-white/10 pt-1 text-mist-300">
               Total <span className="tabular">{formatMoney(activePoint.spending)}</span>
             </p>
+            {activePoint.in_progress && (
+              <PartialMonthTooltipNote asOf={activePoint.as_of} />
+            )}
           </div>
         )}
       </div>

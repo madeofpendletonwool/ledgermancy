@@ -28,6 +28,45 @@ func period(r *http.Request) (from, to time.Time) {
 	return parseDate(q.Get("from"), defaultFrom), parseDate(q.Get("to"), defaultTo)
 }
 
+// monthInProgress reports whether `month` is the calendar month `now` falls in —
+// the month that has started but not finished, so every figure computed over it
+// is a month-to-date figure and not a month's total.
+//
+// The absence of this predicate is the whole of MAD-110. A trailing-twelve window
+// always ends on the current month, nothing in the payload said so, and the chart
+// layer divided a whole month's spending by half a month's income: on 2026-08-12 a
+// household with one of two paychecks banked read as a -53,702% savings rate, and
+// the axis fitted to it flattened the eleven real months to a line on the floor.
+//
+// The planning layer has always known this — BuildSafeToSpend and
+// BuildEstimatedProjection both end their window at firstOfMonth(now) - 1 day, and
+// the recap flips tense on reporting.buildMonthlySummaryInput's InProgress. This is
+// the same fact, handed to the charts.
+//
+// Compared on year and month rather than by instant because every window in this
+// file is built from local Y/M pinned into UTC (see period above); comparing the
+// two the same way keeps the predicate agreeing with the window it describes.
+func monthInProgress(month, now time.Time) bool {
+	return month.Year() == now.Year() && month.Month() == now.Month()
+}
+
+// periodIsMonthInProgress reports whether [from, to] is exactly one calendar month
+// AND that month is still running.
+//
+// Deliberately narrower than "now falls inside the window": the financial summary
+// report asks this same endpoint for a rolling 365 days ending today, and that
+// window is not month-to-date in any sense that matters — its one partial month is
+// diluted across eleven whole ones. Only a window that IS a single unfinished month
+// carries the distortion, so only that window is flagged.
+func periodIsMonthInProgress(from, to, now time.Time) bool {
+	first := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, from.Location())
+	last := first.AddDate(0, 1, -1)
+	if !from.Equal(first) || !to.Equal(last) {
+		return false
+	}
+	return monthInProgress(from, now)
+}
+
 type summaryResponse struct {
 	From                  string          `json:"from"`
 	To                    string          `json:"to"`
@@ -39,8 +78,23 @@ type summaryResponse struct {
 	Leftover decimal.Decimal `json:"leftover"`
 	// SavingsRate is leftover as a share of income, 0–1. Null when there is no
 	// income in the period, because the ratio would be meaningless.
+	//
+	// It keeps this meaning when InProgress is true. Suppressing it here was the
+	// obvious fix for MAD-110 and the wrong one: the recap, the digest and the
+	// chat all read this field, and redefining it would move all three at once to
+	// fix one tile. The month-to-date rate is a real ratio over a real window —
+	// it is just not a month's savings rate, and InProgress is what says so.
 	SavingsRate      *decimal.Decimal `json:"savings_rate"`
 	TransactionCount int64            `json:"transaction_count"`
+
+	// InProgress is true when this period is a single calendar month that has not
+	// finished yet, so every figure above is month-to-date. Consumers that compare
+	// the period against a whole month — or render a ratio of two figures only one
+	// of which has fully landed — must say so rather than present it as a month.
+	//
+	// AsOf is the day the figures run through, present only when InProgress.
+	InProgress bool   `json:"in_progress"`
+	AsOf       string `json:"as_of,omitempty"`
 }
 
 func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -58,12 +112,14 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildSummary(from, to, row))
+	writeJSON(w, http.StatusOK, buildSummary(from, to, time.Now(), row))
 }
 
 // buildSummary derives leftover and savings rate. Kept separate so the maths
-// is testable without a database.
-func buildSummary(from, to time.Time, row dbgen.GetSpendingSummaryRow) summaryResponse {
+// is testable without a database; `now` is a parameter for the same reason —
+// the in-progress flag is a fact about the clock, and a test that cannot move
+// the clock cannot cover it.
+func buildSummary(from, to, now time.Time, row dbgen.GetSpendingSummaryRow) summaryResponse {
 	leftover := row.Income.Sub(row.Spending)
 
 	var savingsRate *decimal.Decimal
@@ -72,6 +128,12 @@ func buildSummary(from, to time.Time, row dbgen.GetSpendingSummaryRow) summaryRe
 	if row.Income.IsPositive() {
 		rate := leftover.Div(row.Income).Round(4)
 		savingsRate = &rate
+	}
+
+	inProgress := periodIsMonthInProgress(from, to, now)
+	asOf := ""
+	if inProgress {
+		asOf = now.Format(time.DateOnly)
 	}
 
 	return summaryResponse{
@@ -84,6 +146,8 @@ func buildSummary(from, to time.Time, row dbgen.GetSpendingSummaryRow) summaryRe
 		Leftover:              leftover,
 		SavingsRate:           savingsRate,
 		TransactionCount:      row.TransactionCount,
+		InProgress:            inProgress,
+		AsOf:                  asOf,
 	}
 }
 
@@ -184,6 +248,26 @@ type trendPoint struct {
 	RealIncome   *decimal.Decimal `json:"real_income,omitempty"`
 	RealSpending *decimal.Decimal `json:"real_spending,omitempty"`
 	RealLeftover *decimal.Decimal `json:"real_leftover,omitempty"`
+
+	// InProgress marks the month the clock is currently inside — at most one point
+	// in the series, and only when the window reaches the present. Every figure on
+	// that point is month-to-date: the spending is real and complete-to-today, the
+	// income is however much of the month's income has landed so far.
+	//
+	// It is a MARKER, not a filter. The point stays in the series with its real
+	// figures, because the money genuinely moved; what the marker buys is the
+	// chart's ability to render it as a month in flight rather than as a month
+	// that collapsed. Dropping the point server-side would trade one wrong reading
+	// ("spending fell off a cliff in August") for another ("August hasn't
+	// happened"), and would take the choice away from charts that legitimately
+	// want to plot it.
+	//
+	// The one figure that must NOT be derived from an in-progress point is a
+	// ratio of income to spending. A whole month of spending over a fraction of a
+	// month's income is not a savings rate at any value it returns (MAD-110).
+	InProgress bool `json:"in_progress"`
+	// AsOf is the day the in-progress point runs through, set only on that point.
+	AsOf string `json:"as_of,omitempty"`
 }
 
 // handleTrend returns income/spending/leftover per month. Defaults to the
@@ -238,6 +322,10 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 			Leftover:              m.Income.Sub(m.Spending),
 			FixedSpending:         m.FixedSpending,
 			DiscretionarySpending: m.DiscretionarySpending,
+		}
+		if monthInProgress(m.Month, now) {
+			point.InProgress = true
+			point.AsOf = now.Format(time.DateOnly)
 		}
 		if deflate {
 			point.RealIncome = realOrNil(point.Income, m.Month, base, series)
@@ -732,6 +820,18 @@ type spendingHeatmapResponse struct {
 	// client-side, matching CategoryBars' foldToOther rule. Returned in full so
 	// the small-multiples chart (item #12) can pick its own top-N.
 	Categories []heatmapCategory `json:"categories"`
+
+	// InProgressMonth is the "YYYY-MM" in Months that has not finished yet, or ""
+	// when the window ends in the past. At most one column is ever in progress.
+	//
+	// Every cell in that column is a part-month figure, so it is not comparable
+	// with the eleven beside it: on the 12th an ordinary category reads about a
+	// third of its usual month and the column looks like a collapse in spending
+	// across the board. The client labels the column and — this is the load-bearing
+	// part — keeps it out of the colour ramp's ceiling.
+	InProgressMonth string `json:"in_progress_month,omitempty"`
+	// AsOf is the day the in-progress column runs through, present only with it.
+	AsOf string `json:"as_of,omitempty"`
 }
 
 // handleSpendingHeatmap answers the spending-by-category-by-month matrix behind
@@ -764,18 +864,19 @@ func (s *Server) handleSpendingHeatmap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildHeatmap(from, to, rows))
+	writeJSON(w, http.StatusOK, buildHeatmap(from, to, time.Now(), rows))
 }
 
 // buildHeatmap pivots the per-(category, month) rows into the matrix response.
 // Kept separate from the handler so the pivot — month axis, ranking, cell keys —
-// is unit-testable without a database.
+// is unit-testable without a database. `now` is a parameter for the same reason:
+// which column is in progress is a fact about the clock.
 //
 // Rows arrive ordered by category id then month, but the pivot does not rely on
 // that ordering: it indexes categories by id and accumulates both the per-month
 // cells and the whole-range total in one pass, then sorts by total descending
 // so the heatmap's top rows are its biggest categories.
-func buildHeatmap(from, to time.Time, rows []dbgen.GetCategoryMonthMatrixRow) spendingHeatmapResponse {
+func buildHeatmap(from, to, now time.Time, rows []dbgen.GetCategoryMonthMatrixRow) spendingHeatmapResponse {
 	months := monthsBetween(from, to)
 
 	type acc struct {
@@ -844,11 +945,25 @@ func buildHeatmap(from, to time.Time, rows []dbgen.GetCategoryMonthMatrixRow) sp
 		})
 	}
 
+	// At most one column can be running. Resolved against the rendered axis
+	// rather than against `to`, so a window that ends in the past — a custom
+	// range, or the same pivot reused for an archived report — flags nothing.
+	inProgressMonth, asOf := "", ""
+	nowKey := now.Format("2006-01")
+	for _, m := range months {
+		if m == nowKey {
+			inProgressMonth, asOf = m, now.Format(time.DateOnly)
+			break
+		}
+	}
+
 	return spendingHeatmapResponse{
-		From:       from.Format(time.DateOnly),
-		To:         to.Format(time.DateOnly),
-		Months:     months,
-		Categories: cats,
+		From:            from.Format(time.DateOnly),
+		To:              to.Format(time.DateOnly),
+		Months:          months,
+		Categories:      cats,
+		InProgressMonth: inProgressMonth,
+		AsOf:            asOf,
 	}
 }
 
