@@ -1,6 +1,7 @@
 package categorize
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -119,4 +120,61 @@ func TestMatchPairsMultipleTransfers(t *testing.T) {
 	if got := len(MatchPairs(candidates)); got != 2 {
 		t.Errorf("pairs = %d, want 2", got)
 	}
+}
+
+// THE DETERMINISM PROPERTY, on MatchPairs' own terms. Four same-day legs of the
+// same amount — two debits, two credits, all on different accounts — is the
+// worst case: every debit can reach every credit at a zero date gap, so nothing
+// but a tie-break decides who pairs with whom. Feeding the identical set in
+// different orders must still produce identical pairs, or the "same candidates
+// in, same pairs out" guarantee (and the Derived classification transaction_pairs
+// carries in continuity/coverage.go) is only true by accident of how Postgres
+// happened to return the rows.
+func TestMatchPairsIndependentOfInputOrder(t *testing.T) {
+	day := mustTime(t, "2026-08-06")
+	candidates := []PairCandidate{
+		{ID: uuid.New(), AccountID: uuid.New(), Amount: pdec("700.00"), Date: day},
+		{ID: uuid.New(), AccountID: uuid.New(), Amount: pdec("700.00"), Date: day},
+		{ID: uuid.New(), AccountID: uuid.New(), Amount: pdec("-700.00"), Date: day},
+		{ID: uuid.New(), AccountID: uuid.New(), Amount: pdec("-700.00"), Date: day},
+	}
+
+	want := fingerprint(MatchPairs(candidates))
+	if len(want) != 2 {
+		t.Fatalf("pairs = %d, want 2", len(want))
+	}
+
+	for _, order := range permutations(candidates) {
+		if got := fingerprint(MatchPairs(order)); !slices.Equal(got, want) {
+			t.Fatalf("input order changed the pairing:\n got %v\nwant %v", got, want)
+		}
+	}
+}
+
+// fingerprint reduces pairs to the comparable thing: which debit went with which
+// credit, in which order. Pair order is part of the guarantee, so it is not
+// sorted away here.
+func fingerprint(pairs []Pair) []string {
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.Out.ID.String()+"->"+p.In.ID.String())
+	}
+	return out
+}
+
+// permutations returns every ordering of xs. The candidate sets in these tests
+// are tiny, and exhausting the orderings beats a seeded shuffle that might never
+// hit the one arrangement that breaks.
+func permutations(xs []PairCandidate) [][]PairCandidate {
+	if len(xs) <= 1 {
+		return [][]PairCandidate{slices.Clone(xs)}
+	}
+	var out [][]PairCandidate
+	for i := range xs {
+		rest := slices.Concat(xs[:i:i], xs[i+1:])
+		for _, p := range permutations(rest) {
+			out = append(out, append([]PairCandidate{xs[i]}, p...))
+		}
+	}
+	return out
 }

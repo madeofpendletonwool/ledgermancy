@@ -195,7 +195,11 @@ WHERE v.household_id = $1
       SELECT 1 FROM transaction_pairs p
       WHERE p.out_txn_id = t.id OR p.in_txn_id = t.id
   )
-ORDER BY t.date;
+-- t.id breaks the date tie. Date alone is not a total order, so same-dated
+-- candidates would come back in whatever order the plan happened to produce,
+-- and differently after a VACUUM, a restore, or a parallel scan — exactly the
+-- case MatchPairs' closest-dated tie-break exists to decide.
+ORDER BY t.date, t.id;
 
 -- name: CreateTransferPair :one
 -- Records one matched pair. out_txn_id is the debit (money out), in_txn_id the
