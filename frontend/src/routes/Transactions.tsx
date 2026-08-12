@@ -10,6 +10,7 @@ import {
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
+import { HistoryPanel } from '../components/HistoryPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
@@ -1256,6 +1257,15 @@ function ManualTransactionModal({
             />
           </div>
         </div>
+
+        {/* The change log is only meaningful on an existing row; a create has
+            no history yet, and showing the empty state in the add form is noise. */}
+        {editing && (
+          <details className="text-sm">
+            <summary className="cursor-pointer text-mist-300">History</summary>
+            <HistoryPanel kind="transaction" objectId={editing.id} />
+          </details>
+        )}
 
         <div className="flex items-center gap-3">
           <button

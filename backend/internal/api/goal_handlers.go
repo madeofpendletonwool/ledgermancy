@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/audit"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
@@ -601,7 +602,16 @@ func (s *Server) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 		personID = req.PersonID
 	}
 
-	g, err := s.Queries.CreateGoal(r.Context(), dbgen.CreateGoalParams{
+	ctx := r.Context()
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "create goal", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	g, err := qtx.CreateGoal(ctx, dbgen.CreateGoalParams{
 		HouseholdID:  identity.HouseholdID,
 		Scope:        scope,
 		UserID:       userID,
@@ -619,7 +629,24 @@ func (s *Server) handleCreateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.buildGoalResponse(r.Context(), g, time.Now())
+	// Attribute the create in the same tx so the goal's first appearance is
+	// recorded alongside the insert that made it.
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindGoal,
+		ObjectID:    g.ID,
+		ActorUserID: identity.UserID,
+	}, audit.Created()); err != nil {
+		s.internalError(w, "record goal change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.internalError(w, "create goal", err)
+		return
+	}
+
+	resp, err := s.buildGoalResponse(ctx, g, time.Now())
 	if err != nil {
 		s.internalError(w, "derive goal standing", err)
 		return
@@ -661,7 +688,36 @@ func (s *Server) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, personID, all := goalVisibility(identity)
-	g, err := s.Queries.UpdateGoal(r.Context(), dbgen.UpdateGoalParams{
+
+	ctx := r.Context()
+	// One transaction so the edit and its history row land together. The
+	// before-state read shares the tx, so the diff is computed against the row
+	// under the same lock and a rolled-back edit writes no history.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "update goal", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	before, err := qtx.GetGoal(ctx, dbgen.GetGoalParams{
+		ID:             goalID,
+		HouseholdID:    identity.HouseholdID,
+		UserID:         userID,
+		AllPersonGoals: all,
+		PersonID:       personID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "goal not found")
+			return
+		}
+		s.internalError(w, "load goal", err)
+		return
+	}
+
+	g, err := qtx.UpdateGoal(ctx, dbgen.UpdateGoalParams{
 		ID:             goalID,
 		HouseholdID:    identity.HouseholdID,
 		UserID:         userID,
@@ -683,7 +739,22 @@ func (s *Server) handleUpdateGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.buildGoalResponse(r.Context(), g, time.Now())
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindGoal,
+		ObjectID:    goalID,
+		ActorUserID: identity.UserID,
+	}, audit.GoalDiff(before, g)); err != nil {
+		s.internalError(w, "record goal change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.internalError(w, "update goal", err)
+		return
+	}
+
+	resp, err := s.buildGoalResponse(ctx, g, time.Now())
 	if err != nil {
 		s.internalError(w, "derive goal standing", err)
 		return

@@ -997,6 +997,15 @@ JOIN categories c ON c.id = b.category_id
 WHERE b.household_id = @household_id
 ORDER BY c.sort_order, c.name;
 
+-- name: GetHouseholdBudgetByCategory :one
+-- The household-scoped budget for one category, read for audit before-state
+-- ahead of the upsert. No row means the upsert is a create rather than an edit,
+-- so the audit diff records every field as new.
+SELECT * FROM budgets
+WHERE household_id = sqlc.arg('household_id')
+  AND category_id = sqlc.arg('category_id')
+  AND owner_scope = 'household';
+
 -- name: UpsertBudget :one
 -- One household budget per category; setting it again updates its amount,
 -- period, and rollover flag in place.

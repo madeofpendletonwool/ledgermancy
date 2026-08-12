@@ -479,6 +479,20 @@ WHERE t.id = sqlc.arg('id')
   AND v.household_id = sqlc.arg('household_id')
 RETURNING t.*;
 
+-- name: GetVisibleTransaction :one
+-- A single transaction scoped exactly like the list: own items ∪ shared. Used
+-- inside the audit transaction to read a row's before-state before a mutation,
+-- so the field-level diff is computed against what the caller was allowed to
+-- see in the first place — a private account's transaction is unreadable, and
+-- therefore uneditable and un-auditable, by the other member.
+SELECT t.*
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = sqlc.arg('id')
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.narg('viewer_user_id')::uuid OR v.is_shared);
+
 -- name: DeleteManualTransaction :execrows
 -- Same source='manual' + household guard as the update. :execrows returns 0
 -- when nothing matched (wrong household, or a Plaid id), which the handler maps

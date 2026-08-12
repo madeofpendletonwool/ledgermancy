@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/audit"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
@@ -328,7 +329,16 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 
 	// Household scoping lives in the query's SELECT: a foreign or invisible
 	// account_id inserts nothing and comes back as ErrNoRows.
-	created, err := s.Queries.CreateManualTransaction(r.Context(), dbgen.CreateManualTransactionParams{
+	ctx := r.Context()
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "create manual transaction", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	created, err := qtx.CreateManualTransaction(ctx, dbgen.CreateManualTransactionParams{
 		AccountID:    req.AccountID,
 		HouseholdID:  identity.HouseholdID,
 		UserID:       identity.UserID,
@@ -345,6 +355,23 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, "account not found")
 			return
 		}
+		s.internalError(w, "create manual transaction", err)
+		return
+	}
+
+	// Attribute the create in the same tx — a hand-entered row is a state
+	// change too, and the History panel renders it as "created by X".
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindTransaction,
+		ObjectID:    created.ID,
+		ActorUserID: identity.UserID,
+	}, audit.Created()); err != nil {
+		s.internalError(w, "record transaction change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "create manual transaction", err)
 		return
 	}
@@ -380,9 +407,35 @@ func (s *Server) handleUpdateManualTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	ctx := r.Context()
+	// One transaction so the edit and its history row land together. The
+	// before-state read shares the tx, so the diff is computed against the row
+	// under the same lock and a rolled-back edit writes no history.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "update manual transaction", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	before, err := qtx.GetVisibleTransaction(ctx, dbgen.GetVisibleTransactionParams{
+		ID:           transactionID,
+		HouseholdID:  identity.HouseholdID,
+		ViewerUserID: &identity.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "manual transaction not found")
+			return
+		}
+		s.internalError(w, "load transaction", err)
+		return
+	}
+
 	// The source='manual' + household guard in the query means an id belonging
 	// to another household, or to a Plaid-synced row, matches nothing → 404.
-	updated, err := s.Queries.UpdateManualTransaction(r.Context(), dbgen.UpdateManualTransactionParams{
+	updated, err := qtx.UpdateManualTransaction(ctx, dbgen.UpdateManualTransactionParams{
 		ID:           transactionID,
 		HouseholdID:  identity.HouseholdID,
 		Amount:       p.amount,
@@ -398,6 +451,21 @@ func (s *Server) handleUpdateManualTransaction(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, "manual transaction not found")
 			return
 		}
+		s.internalError(w, "update manual transaction", err)
+		return
+	}
+
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindTransaction,
+		ObjectID:    transactionID,
+		ActorUserID: identity.UserID,
+	}, audit.TransactionDiff(before, updated)); err != nil {
+		s.internalError(w, "record transaction change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "update manual transaction", err)
 		return
 	}

@@ -102,7 +102,20 @@ var tableCoverage = map[string]Coverage{
 	"budgets":               InExport,
 	"goals":                 InExport,
 	"goal_contributions":    InExport,
-	"preferences":           InExport,
+	// Savings jars and their append-only deposit/withdraw log. The jar is an
+	// annotation the household invented over part of an account balance — no
+	// bank knows it exists, so nothing outside this table could name it or say
+	// how much of the account it claims. piggy_bank_events is the only record of
+	// how a jar reached its balance; without it a restored jar is a number with
+	// no history behind it.
+	"piggy_banks":       InExport,
+	"piggy_bank_events": InExport,
+	// The per-object change log: who edited a transaction/budget/goal and how.
+	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
+	// recomputation can ever reconstruct — so losing it loses the audit trail
+	// behind every correction in the ledger.
+	"object_changes": InExport,
+	"preferences":    InExport,
 
 	// --- Merchants --------------------------------------------------------
 	// merchant_merge_rejections is user work, not bookkeeping: it is the record

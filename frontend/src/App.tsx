@@ -54,6 +54,9 @@ const Merchants = lazy(() => import('./routes/Merchants').then((m) => ({ default
 const MyMoney = lazy(() => import('./routes/MyMoney').then((m) => ({ default: m.MyMoney })))
 const NetWorth = lazy(() => import('./routes/NetWorth').then((m) => ({ default: m.NetWorth })))
 const Paystubs = lazy(() => import('./routes/Paystubs').then((m) => ({ default: m.Paystubs })))
+const PiggyBanks = lazy(() =>
+  import('./routes/PiggyBanks').then((m) => ({ default: m.PiggyBanks })),
+)
 const Register = lazy(() => import('./routes/Register').then((m) => ({ default: m.Register })))
 const Reminders = lazy(() => import('./routes/Reminders').then((m) => ({ default: m.Reminders })))
 const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Report })))
@@ -115,6 +118,7 @@ export default function App() {
           <Route path="/schedule" element={<Schedule />} />
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/goals" element={<Goals />} />
+          <Route path="/piggy-banks" element={<PiggyBanks />} />
           <Route path="/shared" element={<Shared />} />
           <Route path="/net-worth" element={<NetWorth />} />
           <Route path="/investments" element={<Investments />} />

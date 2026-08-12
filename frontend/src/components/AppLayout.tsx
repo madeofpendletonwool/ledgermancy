@@ -60,6 +60,9 @@ const NAV_GROUPS: NavGroup[] = [
       // is due, and what is already overdue.
       { to: '/reminders', label: 'Reminders' },
       { to: '/goals', label: 'Goals' },
+      // Casual savings envelopes on an account — the no-target, no-projection
+      // counterpart of Goals. Beside it because the two are read together.
+      { to: '/piggy-banks', label: 'Piggy banks' },
       { to: '/shared', label: 'Shared expenses' },
       { to: '/retirement', label: 'Retirement' },
     ],

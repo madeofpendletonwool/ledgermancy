@@ -606,6 +606,18 @@ type NetWorthSnapshot struct {
 	CreatedAt        stdtime.Time    `json:"created_at"`
 }
 
+type ObjectChange struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	ObjectKind  string       `json:"object_kind"`
+	ObjectID    uuid.UUID    `json:"object_id"`
+	ActorUserID *uuid.UUID   `json:"actor_user_id"`
+	Field       string       `json:"field"`
+	OldValue    []byte       `json:"old_value"`
+	NewValue    []byte       `json:"new_value"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+}
+
 // One paid instance of a recurring obligation. The overdue-reminder producer treats a row here as "this occurrence is dealt with" and stops raising it; a member can add a manual row to confirm a match or record a payment the matcher missed.
 type ObligationSatisfaction struct {
 	ObligationID uuid.UUID    `json:"obligation_id"`
@@ -654,6 +666,24 @@ type PfcCategoryMap struct {
 	PfcPrimary   string    `json:"pfc_primary"`
 	PfcDetailed  *string   `json:"pfc_detailed"`
 	CategorySlug string    `json:"category_slug"`
+}
+
+type PiggyBank struct {
+	ID           uuid.UUID           `json:"id"`
+	HouseholdID  uuid.UUID           `json:"household_id"`
+	AccountID    uuid.UUID           `json:"account_id"`
+	Name         string              `json:"name"`
+	TargetAmount decimal.NullDecimal `json:"target_amount"`
+	CreatedAt    stdtime.Time        `json:"created_at"`
+}
+
+type PiggyBankEvent struct {
+	ID            uuid.UUID       `json:"id"`
+	PiggyBankID   uuid.UUID       `json:"piggy_bank_id"`
+	Type          string          `json:"type"`
+	Amount        decimal.Decimal `json:"amount"`
+	TransactionID *uuid.UUID      `json:"transaction_id"`
+	CreatedAt     stdtime.Time    `json:"created_at"`
 }
 
 type PlaidItem struct {
