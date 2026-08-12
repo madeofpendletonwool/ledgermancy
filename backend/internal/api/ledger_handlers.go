@@ -93,6 +93,13 @@ type transactionResponse struct {
 	Date         time.Time `json:"date"`
 	Name         string    `json:"name"`
 	MerchantName *string   `json:"merchant_name"`
+	// Merchant is the name to DISPLAY for the row: the canonical merchant name
+	// when the descriptor has been grouped or renamed, otherwise the raw
+	// merchant_name/name the bank sent. This is the field the row and recent
+	// activity render — MerchantName/Name above stay raw so search and the manual
+	// editor keep working against the bank's own text. Mirrors the COALESCE every
+	// report reads, so a rename from the row menu is reflected here immediately.
+	Merchant string `json:"merchant"`
 	// MerchantKey is the normalized key the app caches categories by. Present
 	// even when MerchantName is null (it falls back to the raw name), and empty
 	// when the description carried too little signal to key on. The UI shows the
@@ -212,6 +219,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 			Date:                t.Date,
 			Name:                t.Name,
 			MerchantName:        t.MerchantName,
+			Merchant:            t.Merchant,
 			MerchantKey:         t.MerchantKey,
 			MerchantKeyResolved: t.ResolvedMerchantKey,
 			Amount:              t.Amount,

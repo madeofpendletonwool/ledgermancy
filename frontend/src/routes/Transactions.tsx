@@ -294,7 +294,7 @@ export function Transactions() {
               without a second request. With no rows there is nothing to name it
               after, and the key itself is the honest fallback. */}
           <span className="inline-flex items-center gap-1.5 rounded-full border border-rune-400/30 bg-rune-400/10 px-2.5 py-1 text-xs text-rune-200">
-            {rows[0]?.merchant_name ?? rows[0]?.name ?? merchantFilter}
+            {rows[0]?.merchant ?? merchantFilter}
             <button
               type="button"
               className="text-rune-300/70 transition-colors hover:text-rune-100"
@@ -500,7 +500,7 @@ function TransactionRow({
       </div>
 
       <MerchantAvatar
-        name={t.merchant_name ?? t.name}
+        name={t.merchant}
         merchantKey={t.merchant_key_resolved}
       />
 
@@ -525,7 +525,7 @@ function TransactionRow({
                 merchant_key_resolved, never merchant_key — the raw descriptor
                 would strand every fragment of a grouped merchant but one. */}
             <MerchantLink
-              name={t.merchant_name ?? t.name}
+              name={t.merchant}
               merchantKey={t.merchant_key_resolved}
             />
             {isManual && (
@@ -986,7 +986,7 @@ function CategoryEditor({
   // Gate on merchant_key (what the server caches by), not merchant_name — many
   // Plaid rows have a key derived from the name with no merchant_name set.
   const hasMerchant = Boolean(t.merchant_key)
-  const merchantLabel = t.merchant_name ?? t.name
+  const merchantLabel = t.merchant
 
   const save = useMutation({
     mutationFn: () => api.recategorise(t.id, categoryID, applyToMerchant && hasMerchant),
@@ -1309,9 +1309,11 @@ function EditMerchantNameDialog({
   onClose: () => void
 }) {
   const qc = useQueryClient()
-  // The name the row currently shows — merchant_name with the raw name as the
-  // fallback, matching how the row and the reports render it.
-  const currentDisplay = t.merchant_name ?? t.name
+  // The resolved name the row is currently showing — the canonical merchant
+  // name when the descriptor has been grouped/renamed, else the raw bank text.
+  // Reading the resolved name (not merchant_name ?? name) is what makes the
+  // dialog reopen showing the post-rename state instead of the stale raw text.
+  const currentDisplay = t.merchant
   const [name, setName] = useState(currentDisplay)
   // Set only by clicking a suggestion: saving then folds this descriptor into
   // that existing merchant instead of creating a new one. Cleared the moment

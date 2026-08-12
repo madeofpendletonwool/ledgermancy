@@ -477,6 +477,13 @@ export interface Transaction {
   date: string
   name: string
   merchant_name: string | null
+  /**
+   * The name to DISPLAY for this row: the canonical merchant name when the
+   * descriptor has been grouped or renamed, otherwise the raw merchant_name/name
+   * the bank sent. This is what the row and recent activity render — prefer it
+   * over `merchant_name ?? name`, which shows stale bank text after a rename.
+   */
+  merchant: string
   /** Normalized key the app caches categories by; present even when
    * merchant_name is null, empty when there was too little signal to key on. */
   merchant_key: string | null

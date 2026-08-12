@@ -591,6 +591,14 @@ SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date,
     -- merchant_aliases is UNIQUE (household_id, merchant_key), so the LEFT JOIN
     -- cannot fan a transaction out into several rows.
     COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
+    -- The name to DISPLAY for this row: the canonical name of the merchant the
+    -- descriptor resolves to when the household has grouped or renamed it, else
+    -- the raw merchant_name/name the bank sent. Mirrors what every report reads
+    -- (COALESCE(me.canonical_name, t.merchant_name, t.name)), so renaming a
+    -- merchant is reflected on the row and not only on the merchant pages. The
+    -- raw columns above are still returned so search and the manual editor keep
+    -- working against the bank's own text.
+    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
     -- the same account for the same amount within four days — the issuer having
     -- finally delivered a charge the user already entered by hand. Computed at
@@ -609,6 +617,7 @@ LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
 WHERE v.household_id = $1
   AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
@@ -647,13 +656,14 @@ WHERE v.household_id = $1
     OR t.merchant_key = $10::text
   )
   -- Optional free-text search over what the user actually reads in the row: the
-  -- merchant name the UI shows, its raw name fallback, and the descriptor key.
-  -- Deliberately NOT the canonical name — a household that has renamed a merchant
-  -- still recognises the bank's text, and both forms are covered here.
+  -- resolved (canonical) merchant name the UI now displays, the raw name the bank
+  -- sent, and the descriptor key. Both name forms are matched so a renamed
+  -- merchant is findable by what it shows now AND by the bank's original wording.
   AND (
     $11::text IS NULL
     OR t.merchant_key ILIKE '%' || $11::text || '%'
     OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $11::text || '%'
+    OR me.canonical_name ILIKE '%' || $11::text || '%'
   )
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
@@ -711,9 +721,13 @@ type ListVisibleTransactionsRow struct {
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
 	ResolvedMerchantKey  string          `json:"resolved_merchant_key"`
+	Merchant             string          `json:"merchant"`
 	IsPossibleDuplicate  *bool           `json:"is_possible_duplicate"`
 }
 
+// merchant_entities sits behind the alias join, so a row whose descriptor has
+// not been grouped gets NULL here and the COALESCE above falls back to the raw
+// name. No fan-out: ma is unique on (household_id, merchant_key).
 func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTransactionsParams) ([]ListVisibleTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleTransactions,
 		arg.HouseholdID,
@@ -765,6 +779,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.AccountName,
 			&i.InstitutionName,
 			&i.ResolvedMerchantKey,
+			&i.Merchant,
 			&i.IsPossibleDuplicate,
 		); err != nil {
 			return nil, err
