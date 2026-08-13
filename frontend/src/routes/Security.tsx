@@ -667,6 +667,10 @@ const EVENT_LABELS: Record<string, string> = {
   invite_accepted: 'Invite accepted',
   api_token_created: 'API token created',
   api_token_revoked: 'API token revoked',
+  webhook_created: 'Webhook created',
+  webhook_updated: 'Webhook changed',
+  webhook_deleted: 'Webhook deleted',
+  webhook_secret_rotated: 'Webhook secret rotated',
 }
 
 /** Events worth making visually obvious when scanning the list. */
@@ -680,6 +684,11 @@ const NOTABLE = new Set([
   // A credential that outlives every session, minted. Worth noticing in a scan
   // even when it was you who did it.
   'api_token_created',
+  // A standing instruction to send this household's events somewhere. Creating
+  // one, or pointing an existing one at a new address, changes where the data
+  // goes — the same class of change as minting a credential.
+  'webhook_created',
+  'webhook_updated',
 ])
 
 function ActivitySection() {

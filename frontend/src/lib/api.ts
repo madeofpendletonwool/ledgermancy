@@ -133,6 +133,65 @@ export interface AuthEvent {
   created_at: string
 }
 
+/** An outgoing webhook subscription. The signing secret is never in here. */
+export interface Webhook {
+  id: string
+  /**
+   * The member who created it. Load-bearing rather than decorative: alert
+   * deliveries are filtered by what this user can see, so a webhook created by
+   * one partner never carries the other's private-account alerts.
+   */
+  user_id: string
+  name: string
+  url: string
+  /** A paused subscription keeps its delivery history and stops receiving. */
+  active: boolean
+  triggers: string[]
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * The one response that carries the signing secret.
+ *
+ * Returned by a create or a rotate and never again — the server stores it
+ * sealed and only the delivery worker ever opens it. Held in component state
+ * to be shown and copied, exactly like {@link CreatedApiToken}.
+ */
+export interface CreatedWebhook extends Webhook {
+  secret: string
+}
+
+/** One event owed to one subscriber. */
+export interface WebhookMessage {
+  id: string
+  webhook_id: string
+  trigger: string
+  /** The exact body that was (or will be) sent and signed. */
+  payload: unknown
+  /** pending until delivered; sent on a 2xx; failed once the retries run out. */
+  status: 'pending' | 'sent' | 'failed'
+  attempts: number
+  delivered_at: string | null
+  last_error: string | null
+  created_at: string
+}
+
+/** One HTTP request and whatever came back — or why nothing did. */
+export interface WebhookAttempt {
+  id: string
+  attempt: number
+  request_headers: Record<string, string>
+  request_body: string
+  /** Null when the request never completed; `error` says why. */
+  response_status: number | null
+  response_headers: Record<string, string[]> | null
+  response_body: string | null
+  error: string | null
+  duration_ms: number
+  created_at: string
+}
+
 export interface Household {
   id: string
   name: string
@@ -4009,6 +4068,41 @@ export const api = {
     request<CreatedApiToken>('POST', '/api/auth/tokens', input),
 
   revokeApiToken: (id: string) => request<void>('DELETE', `/api/auth/tokens/${id}`),
+
+  // Outgoing webhooks. Every one of these answers 503 when the instance has not
+  // set WEBHOOKS_ENABLED, which is what the settings section keys off — the
+  // feature is not merely hidden, it is genuinely absent.
+  webhooks: () => request<Webhook[]>('GET', '/api/webhooks/'),
+
+  /** The trigger vocabulary, read from the server so the UI cannot offer one it does not have. */
+  webhookTriggers: () => request<string[]>('GET', '/api/webhooks/triggers'),
+
+  createWebhook: (input: { name: string; url: string; triggers: string[]; active?: boolean }) =>
+    request<CreatedWebhook>('POST', '/api/webhooks/', input),
+
+  updateWebhook: (
+    id: string,
+    input: { name: string; url: string; triggers: string[]; active: boolean },
+  ) => request<Webhook>('PUT', `/api/webhooks/${id}`, input),
+
+  deleteWebhook: (id: string) => request<void>('DELETE', `/api/webhooks/${id}`),
+
+  /** Mints a new signing secret and returns it once. Every receiver holding the old one breaks. */
+  rotateWebhookSecret: (id: string) =>
+    request<{ secret: string }>('POST', `/api/webhooks/${id}/secret`),
+
+  /** Queues a test delivery. It does not wait for the receiver — poll the messages list. */
+  testWebhook: (id: string) =>
+    request<{ message_id: string }>('POST', `/api/webhooks/${id}/test`),
+
+  webhookMessages: (id: string) =>
+    request<WebhookMessage[]>('GET', `/api/webhooks/${id}/messages`),
+
+  webhookAttempts: (webhookId: string, messageId: string) =>
+    request<WebhookAttempt[]>(
+      'GET',
+      `/api/webhooks/${webhookId}/messages/${messageId}/attempts`,
+    ),
 
   household: () => request<Household>('GET', '/api/household/'),
 
