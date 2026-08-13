@@ -19,6 +19,7 @@ import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { ConnectAccount } from '../components/ConnectAccount'
 import { ReconnectAccount } from '../components/ReconnectAccount'
 import { AddManualAccount, ManualAccountsCard } from '../components/ManualAccounts'
+import { BalanceTrend } from '../components/charts/AccountBalanceChart'
 
 export function Accounts() {
   const items = useQuery({ queryKey: ['items'], queryFn: api.items })
@@ -254,6 +255,7 @@ function InstitutionCard({
               <DebtTerms account={a} terms={termsByAccount.get(a.id)} />
             )}
             {a.type === 'depository' && <DepositYield account={a} />}
+            <BalanceTrend accountId={a.id} currency={a.currency} />
           </li>
         ))}
         {accounts.length === 0 && (

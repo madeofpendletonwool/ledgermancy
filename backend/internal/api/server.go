@@ -484,15 +484,22 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
 				r.Get("/idle-cash", s.handleIdleCash)
 
-				// Manual accounts (doc 30). Every one of these refuses a
-				// source='plaid' id — a linked account's identity and balance
-				// belong to the institution, and an edit here would survive only
-				// until the next sync silently reverted it.
-				r.Post("/", s.handleCreateManualAccount)
-				r.Put("/{accountID}", s.handleUpdateManualAccount)
-				r.Delete("/{accountID}", s.handleDeleteManualAccount)
-				r.Put("/{accountID}/balance", s.handleSetManualBalance)
-				r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+			// Manual accounts (doc 30). Every mutation below refuses a
+			// source='plaid' id — a linked account's identity and balance
+			// belong to the institution, and an edit here would survive only
+			// until the next sync silently reverted it.
+			//
+			// The read at the bottom is the exception: balance-history serves
+			// BOTH sources. A manual account's rows are the user's writes; a
+			// Plaid account's are the snapshot path's (MAD-119), recorded after
+			// each sync and on the daily sweep because Plaid keeps no balance
+			// history of its own. The list query scopes through account_access
+			// for either, so the same endpoint draws both trends.
+			r.Post("/", s.handleCreateManualAccount)
+			r.Put("/{accountID}", s.handleUpdateManualAccount)
+			r.Delete("/{accountID}", s.handleDeleteManualAccount)
+			r.Put("/{accountID}/balance", s.handleSetManualBalance)
+			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
 				r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
 				r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
 				// Piggy banks drawing from one account, and the unassigned

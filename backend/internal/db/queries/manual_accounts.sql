@@ -105,13 +105,23 @@ RETURNING *;
 
 -- name: ListAccountBalanceHistory :many
 -- The trend behind one account's current balance. Ascending, because it is
--- drawn as a line.
+-- drawn as a line. Source-agnostic by design: a manual account's rows are the
+-- user's writes, a Plaid account's are the snapshot path's (MAD-119), and the
+-- account_access join resolves either — a manual account reaches its owner
+-- through accounts.user_id and a Plaid one through its item.
+--
+-- from / to are OPTIONAL range bounds. Left NULL they return the whole trail
+-- (the manual balance editor's existing behaviour, which shows every entry); a
+-- caller drawing a chart passes a window so a year of daily Plaid snapshots
+-- does not pull the full history every time.
 SELECT h.*
 FROM account_balance_history h
 JOIN account_access v ON v.account_id = h.account_id
 WHERE h.account_id = sqlc.arg('account_id')
   AND v.household_id = sqlc.arg('household_id')
   AND (v.user_id = sqlc.arg('user_id') OR v.is_shared)
+  AND (sqlc.narg('from')::date IS NULL OR h.as_of >= sqlc.narg('from'))
+  AND (sqlc.narg('to')::date IS NULL OR h.as_of <= sqlc.narg('to'))
 ORDER BY h.as_of;
 
 -- --------------------------------------------------------------------------

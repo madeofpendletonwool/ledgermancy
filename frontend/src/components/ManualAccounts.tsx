@@ -8,6 +8,7 @@ import {
 } from '../lib/api'
 import { formatMoney, isLiability } from '../lib/money'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
+import { BalanceTrend } from './charts/AccountBalanceChart'
 
 /**
  * Accounts that exist without Plaid.
@@ -311,6 +312,7 @@ function ManualAccountRow({ account }: { account: Account }) {
 
       {balanceOpen && <BalanceEditor account={account} />}
       {editing && <ManualAccountModal account={account} onClose={() => setEditing(false)} />}
+      <BalanceTrend accountId={account.id} currency={account.currency} />
     </li>
   )
 }

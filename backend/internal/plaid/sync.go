@@ -190,6 +190,13 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 		if _, err := networth.Snapshot(ctx, s.Queries, householdID, nil); err != nil {
 			slog.Error("net worth snapshot", "error", err, "item_id", item.ID)
 		}
+		// The per-account analog: write today's balance to each Plaid account's
+		// own history so an account-level trend exists, not just the household
+		// total. Same trigger and same caveat as the snapshot above — the trend
+		// for an account starts the day the app began recording it, not earlier.
+		if _, err := networth.SnapshotAccountBalances(ctx, s.Queries, householdID); err != nil {
+			slog.Error("account balance snapshot", "error", err, "item_id", item.ID)
+		}
 	}
 
 	// Report the history actually retrieved, so the caller can warn when an

@@ -394,7 +394,7 @@ export interface ManualAccountInput {
 export interface AccountBalanceEntry {
   as_of: string
   balance: string
-  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend'
+  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend' | 'snapshot'
   note: string | null
 }
 
@@ -4563,8 +4563,14 @@ export const api = {
   setManualAccountBalance: (id: string, input: SetBalanceInput) =>
     request<Account>('PUT', `/api/accounts/${id}/balance`, input),
 
-  accountBalanceHistory: (id: string) =>
-    request<AccountBalanceEntry[]>('GET', `/api/accounts/${id}/balance-history`),
+  // from / to bound the window (YYYY-MM-DD). Absent returns the whole trail —
+  // the manual balance editor's call — and a chart passes a year so a linked
+  // account's daily snapshots are not pulled in full every render.
+  accountBalanceHistory: (id: string, params: { from?: string; to?: string } = {}) =>
+    request<AccountBalanceEntry[]>(
+      'GET',
+      withQuery(`/api/accounts/${id}/balance-history`, params),
+    ),
 
   listSecurities: (search?: string) =>
     request<Security[]>('GET', withQuery('/api/securities', { q: search })),
