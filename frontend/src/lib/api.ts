@@ -101,6 +101,30 @@ export interface ActiveSession {
   is_current: boolean
 }
 
+/** A personal API token as its owner sees it in the revoke list. */
+export interface ApiToken {
+  id: string
+  name: string
+  /** `read` is always present; `write` is what makes it read-write. */
+  scopes: string[]
+  /** Null until something authenticates with it. */
+  last_used_at: string | null
+  /** Null means it never expires, which is the normal case. */
+  expires_at: string | null
+  created_at: string
+}
+
+/**
+ * The one response that carries the plaintext token.
+ *
+ * The server stores only an HMAC, so this value exists exactly once, in this
+ * response. It is held in component state to be shown and copied, and is never
+ * written to storage — there would be nowhere to retrieve it from anyway.
+ */
+export interface CreatedApiToken extends ApiToken {
+  token: string
+}
+
 export interface AuthEvent {
   event_type: string
   client_ip: string | null
@@ -587,7 +611,17 @@ export interface TransactionQuery {
    * page passes.
    */
   merchant?: string
-  /** Free-text search over the merchant name, raw name and descriptor key. */
+  /**
+   * A composable search query. Bare words are free text over the merchant name,
+   * raw name and descriptor key — which is all `q` used to be, so existing links
+   * keep working. `key:value` terms narrow further (`over:10`, `since:-30d`,
+   * `has_no_category`), a leading `-` negates one, and everything is ANDed. See
+   * the backend's `internal/search` for the vocabulary, or api.searchOperators().
+   *
+   * A query that names its own dates owns the date window: `from`/`to` are
+   * ignored for it, so `since:2019-01-01` is not silently clipped to the page's
+   * rolling year.
+   */
   q?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
@@ -606,6 +640,19 @@ export interface TransactionQuery {
   /** Only rows nobody has labelled yet — the tag counterpart of
    *  `uncategorised`, and how a backlog of untagged charges gets drained. */
   untagged?: boolean
+}
+
+/**
+ * One operator the `q` grammar accepts. The list comes from the parser via
+ * api.searchOperators() rather than being written out here, so the search bar
+ * can never suggest something the server would treat as free text.
+ */
+export interface SearchOperator {
+  /** The operator as typed, without the trailing colon. */
+  name: string
+  /** False for flags (`has_no_category`), which are written bare. */
+  takes_value: boolean
+  help: string
 }
 
 export interface Category {
@@ -3953,6 +4000,16 @@ export const api = {
 
   authEvents: () => request<AuthEvent[]>('GET', '/api/auth/events'),
 
+  // Personal API tokens. These routes need the session cookie: a token cannot
+  // manage tokens, so a leaked one cannot mint replacements for itself or
+  // revoke the ones you would use to lock it out.
+  apiTokens: () => request<ApiToken[]>('GET', '/api/auth/tokens'),
+
+  createApiToken: (input: { name: string; scopes: string[]; expires_at?: string }) =>
+    request<CreatedApiToken>('POST', '/api/auth/tokens', input),
+
+  revokeApiToken: (id: string) => request<void>('DELETE', `/api/auth/tokens/${id}`),
+
   household: () => request<Household>('GET', '/api/household/'),
 
   members: () => request<Member[]>('GET', '/api/household/members'),
@@ -4126,6 +4183,15 @@ export const api = {
 
   transactions: (params: TransactionQuery = {}) =>
     request<Transaction[]>('GET', withQuery('/api/transactions', params)),
+
+  /**
+   * The operator vocabulary the `q` grammar accepts, for the search bar's
+   * autocomplete. Generated from the parser, so the suggestions cannot drift
+   * from what the server will actually accept.
+   */
+  searchOperators: () =>
+    request<SearchOperator[]>('GET', '/api/transactions/search-operators'),
+
 
   recategorise: (
     transactionID: string,

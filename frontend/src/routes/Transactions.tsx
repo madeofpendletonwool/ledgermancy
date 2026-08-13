@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   api,
+  ApiError,
   type Account,
   type Category,
   type ManualTransactionInput,
@@ -15,6 +16,7 @@ import { HistoryPanel } from '../components/HistoryPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
+import { TransactionSearchBar } from '../components/TransactionSearchBar'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
@@ -167,10 +169,20 @@ export function Transactions() {
     // Keeps the previous page on screen while the next loads, so paging does
     // not flash an empty table.
     placeholderData: keepPreviousData,
+    // A 400 is the search grammar rejecting a value (`over:banana`). Retrying it
+    // three times cannot change the answer and only delays telling the user.
+    retry: (attempt, error) =>
+      !(error instanceof ApiError && error.status === 400) && attempt < 2,
   })
 
   const rows = transactions.data ?? []
   const isLastPage = rows.length < PAGE_SIZE
+  // The one error worth putting in front of the user rather than logging: their
+  // query said something the parser could not resolve, and the message names it.
+  const searchError =
+    transactions.error instanceof ApiError && transactions.error.status === 400
+      ? transactions.error.message
+      : null
 
   // Attachment counts for the whole page in one request, so a paperclip badge
   // costs one round trip rather than fifty. A vault that is switched off
@@ -285,19 +297,13 @@ export function Transactions() {
           </div>
         )}
 
-        <div className="min-w-40 flex-1">
-          <label className="label" htmlFor="search">
-            Search
-          </label>
-          <input
-            id="search"
-            type="search"
-            className="field"
-            placeholder="Merchant or description…"
-            value={search}
-            onChange={(e) => patchParams({ q: e.target.value || null })}
-          />
-        </div>
+        {/* A bare word here still searches merchant and description, exactly as
+            this box always did. The chips above compose with whatever is typed,
+            so the grammar is an addition rather than a replacement. */}
+        <TransactionSearchBar
+          value={search}
+          onChange={(next) => patchParams({ q: next || null })}
+        />
 
         <label className="flex items-center gap-2 pb-2 text-sm text-mist-300">
           <input
@@ -338,6 +344,12 @@ export function Transactions() {
           {transactions.isFetching ? 'Updating…' : `${rows.length} shown`}
         </p>
       </div>
+
+      {searchError && (
+        <p className="text-sm text-amber-300/90" role="status">
+          {searchError}
+        </p>
+      )}
 
       {merchantFilter && (
         <div className="flex items-center gap-2 text-sm text-mist-300">

@@ -823,7 +823,16 @@ func (w *SecuritySweepWorker) Work(ctx context.Context, job *river.Job[SecurityS
 		return fmt.Errorf("delete old auth events: %w", err)
 	}
 
+	// Only personal API tokens the user gave an expiry to. A token without one
+	// is the normal case for an integration meant to keep working, and is the
+	// user's to revoke — never this sweep's.
+	tokens, err := w.Queries.DeleteExpiredAPITokens(ctx)
+	if err != nil {
+		return fmt.Errorf("delete expired api tokens: %w", err)
+	}
+
 	slog.Info("security sweep",
-		"sessions", sessions, "mfa_challenges", challenges, "auth_events", events)
+		"sessions", sessions, "mfa_challenges", challenges,
+		"auth_events", events, "api_tokens", tokens)
 	return nil
 }
