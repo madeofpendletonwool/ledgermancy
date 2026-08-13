@@ -46,6 +46,34 @@ Authenticator, 1Password, Aegis, Bitwarden) — scan a QR, enter 6 digits.
   and last-used time, with per-device revoke and a "sign out everywhere" action.
 - **Recent activity**: the last 50 sign-ins, failures, and security changes.
 
+## Personal API tokens
+
+A user can mint a bearer token from **Settings → Security** so a third-party
+client reaches the API without a session cookie. See
+[API → Two ways to authenticate](api.md#two-ways-to-authenticate) for how to use
+one; what makes it safe:
+
+- **Shown once, hashed at rest.** Stored as HMAC-SHA256 keyed with
+  `SESSION_SECRET`, exactly like a session token, so a leaked database alone
+  cannot be used to forge or recognise a live token. It is never logged.
+- **Same identity, same visibility.** A token resolves to precisely what its
+  owner sees — no more, and not a different scoping path that could drift.
+- **Read-only by default.** `write` has to be asked for, and its absence is
+  enforced in the authentication middleware rather than per handler, so a route
+  written later inherits the refusal.
+- **CSRF-exempt, safely.** A bearer request is not browser-initiated, so it is
+  not held to the double-submit check. The exemption cannot be turned into a
+  bypass because a request carrying an `Authorization` header is *never*
+  resolved from the session cookie — the worst a forged cross-site request with
+  a junk bearer header achieves is a 401.
+- **Not a credential factory.** Token creation and revocation, password changes,
+  MFA enrolment and session revocation all require the session cookie. A leaked
+  token cannot mint replacements for itself or lock the owner out.
+- **Revocation is immediate** (the row is deleted; authentication reads the table
+  on every request), and creation/revocation are recorded in **Recent activity**.
+- **Rate limits are unchanged** — a token-authenticated request is subject to the
+  same per-address and per-user budgets as a browser's.
+
 ## Credentials
 
 - **Plaid access tokens are encrypted at rest** (AES-GCM) and **never returned

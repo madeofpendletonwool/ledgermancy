@@ -101,6 +101,30 @@ export interface ActiveSession {
   is_current: boolean
 }
 
+/** A personal API token as its owner sees it in the revoke list. */
+export interface ApiToken {
+  id: string
+  name: string
+  /** `read` is always present; `write` is what makes it read-write. */
+  scopes: string[]
+  /** Null until something authenticates with it. */
+  last_used_at: string | null
+  /** Null means it never expires, which is the normal case. */
+  expires_at: string | null
+  created_at: string
+}
+
+/**
+ * The one response that carries the plaintext token.
+ *
+ * The server stores only an HMAC, so this value exists exactly once, in this
+ * response. It is held in component state to be shown and copied, and is never
+ * written to storage — there would be nowhere to retrieve it from anyway.
+ */
+export interface CreatedApiToken extends ApiToken {
+  token: string
+}
+
 export interface AuthEvent {
   event_type: string
   client_ip: string | null
@@ -3874,6 +3898,16 @@ export const api = {
     request<void>('POST', '/api/auth/sessions/revoke-others'),
 
   authEvents: () => request<AuthEvent[]>('GET', '/api/auth/events'),
+
+  // Personal API tokens. These routes need the session cookie: a token cannot
+  // manage tokens, so a leaked one cannot mint replacements for itself or
+  // revoke the ones you would use to lock it out.
+  apiTokens: () => request<ApiToken[]>('GET', '/api/auth/tokens'),
+
+  createApiToken: (input: { name: string; scopes: string[]; expires_at?: string }) =>
+    request<CreatedApiToken>('POST', '/api/auth/tokens', input),
+
+  revokeApiToken: (id: string) => request<void>('DELETE', `/api/auth/tokens/${id}`),
 
   household: () => request<Household>('GET', '/api/household/'),
 

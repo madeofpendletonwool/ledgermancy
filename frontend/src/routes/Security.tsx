@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type CreatedApiToken } from '../lib/api'
 import { useChangePassword } from '../lib/session'
 import { SkeletonRows } from '../components/Skeleton'
 
@@ -18,6 +18,7 @@ export function Security() {
       <TwoFactorSection />
       <PasswordSection />
       <SessionsSection />
+      <ApiTokensSection />
       <ActivitySection />
     </div>
   )
@@ -483,6 +484,167 @@ function describeDevice(userAgent: string | null): string {
 }
 
 // ---------------------------------------------------------------------------
+// Personal API tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint, list and revoke the bearer tokens third-party clients authenticate
+ * with.
+ *
+ * Sits beside the signed-in devices list because it answers the same question —
+ * what can currently read my finances — for the half of the answer that is not
+ * a browser.
+ *
+ * The plaintext is held in state only while it is on screen. There is no
+ * localStorage write and no refetch that could bring it back: the server keeps
+ * an HMAC, so once this component drops it, it is gone.
+ */
+function ApiTokensSection() {
+  const qc = useQueryClient()
+  const tokens = useQuery({ queryKey: ['api-tokens'], queryFn: api.apiTokens })
+
+  const [name, setName] = useState('')
+  const [canWrite, setCanWrite] = useState(false)
+  const [created, setCreated] = useState<CreatedApiToken | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const create = useMutation({
+    mutationFn: api.createApiToken,
+    onSuccess: (token) => {
+      setCreated(token)
+      setCopied(false)
+      setName('')
+      setCanWrite(false)
+      qc.invalidateQueries({ queryKey: ['api-tokens'] })
+    },
+  })
+
+  const revoke = useMutation({
+    mutationFn: api.revokeApiToken,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['api-tokens'] }),
+  })
+
+  if (created) {
+    return (
+      <Section title="Copy your new API token">
+        <p className="text-sm text-mist-300">
+          This is shown <span className="font-medium text-mist-100">once</span>.
+          Only a hash is stored, so it cannot be retrieved later — if you lose
+          it, revoke it and make another. Treat it like your password: anything
+          holding it can read your finances
+          {created.scopes.includes('write') ? ' and change them' : ''}.
+        </p>
+
+        <code className="mt-4 block break-all rounded-lg bg-ink-950/60 px-3 py-2.5 font-mono text-sm text-mist-200">
+          {created.token}
+        </code>
+
+        <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={() => {
+              navigator.clipboard?.writeText(created.token)
+              setCopied(true)
+            }}
+          >
+            {copied ? 'Copied' : 'Copy token'}
+          </button>
+          <button type="button" className="btn-primary" onClick={() => setCreated(null)}>
+            I have saved it
+          </button>
+        </div>
+      </Section>
+    )
+  }
+
+  return (
+    <Section
+      title="API tokens"
+      description="For apps and scripts that talk to Ledgermancy directly, instead of signing in through this browser. Each one sees exactly what you see, and nothing more."
+    >
+      {tokens.isPending && <SkeletonRows count={2} />}
+      {tokens.data?.length === 0 && (
+        <p className="text-sm text-mist-500">No tokens yet.</p>
+      )}
+
+      <ul className="divide-y divide-white/5">
+        {tokens.data?.map((token) => (
+          <li key={token.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {token.name}
+                <span className="ml-2 rounded-full bg-rune-400/15 px-2 py-0.5 text-xs text-rune-300">
+                  {token.scopes.includes('write') ? 'read & write' : 'read only'}
+                </span>
+              </p>
+              <p className="truncate text-xs text-mist-500">
+                {token.last_used_at
+                  ? `last used ${new Date(token.last_used_at).toLocaleString()}`
+                  : 'never used'}{' '}
+                · created {new Date(token.created_at).toLocaleDateString()}
+                {token.expires_at &&
+                  ` · expires ${new Date(token.expires_at).toLocaleDateString()}`}
+              </p>
+            </div>
+            <button
+              className="shrink-0 text-xs text-ember-400 hover:underline disabled:opacity-50"
+              disabled={revoke.isPending}
+              onClick={() => revoke.mutate(token.id)}
+            >
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {revoke.isError && <ErrorNote>{revoke.error.message}</ErrorNote>}
+
+      <form
+        className="mt-6 space-y-3 border-t border-white/5 pt-5"
+        onSubmit={(e: FormEvent) => {
+          e.preventDefault()
+          create.mutate({ name: name.trim(), scopes: canWrite ? ['read', 'write'] : ['read'] })
+        }}
+      >
+        <div>
+          <label className="label" htmlFor="api-token-name">
+            What is it for?
+          </label>
+          <input
+            id="api-token-name"
+            className="field"
+            maxLength={100}
+            placeholder="Home Assistant"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+
+        <label className="flex items-start gap-2 text-sm text-mist-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={canWrite}
+            onChange={(e) => setCanWrite(e.target.checked)}
+          />
+          <span>
+            Let it make changes. Leave this off unless the app needs to write —
+            a read-only token is refused on every request that would alter
+            anything.
+          </span>
+        </label>
+
+        <button type="submit" className="btn-primary" disabled={create.isPending || !name.trim()}>
+          {create.isPending ? 'Creating…' : 'Create token'}
+        </button>
+        {create.isError && <ErrorNote>{create.error.message}</ErrorNote>}
+      </form>
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Recent activity
 // ---------------------------------------------------------------------------
 
@@ -503,6 +665,8 @@ const EVENT_LABELS: Record<string, string> = {
   session_revoked: 'Device signed out',
   invite_created: 'Invite created',
   invite_accepted: 'Invite accepted',
+  api_token_created: 'API token created',
+  api_token_revoked: 'API token revoked',
 }
 
 /** Events worth making visually obvious when scanning the list. */
@@ -513,6 +677,9 @@ const NOTABLE = new Set([
   'mfa_disabled',
   'recovery_code_used',
   'password_changed',
+  // A credential that outlives every session, minted. Worth noticing in a scan
+  // even when it was you who did it.
+  'api_token_created',
 ])
 
 function ActivitySection() {

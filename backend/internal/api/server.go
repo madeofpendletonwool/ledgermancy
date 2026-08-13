@@ -320,22 +320,56 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Get("/me", s.handleMe)
 
 					r.Get("/sessions", s.handleListSessions)
-					r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
-					r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
 					r.Get("/events", s.handleListAuthEvents)
 
 					r.Get("/mfa", s.handleMFAStatus)
 
-					// Changing a password or a second factor is account takeover
-					// if guessed, so these carry their own budget on top of the
-					// password/code each one already demands.
+					// ── Credential management ─────────────────────────────
+					//
+					// Everything that mints or destroys a way IN to this
+					// account, and the one group a personal API token may not
+					// reach — auth.RequireSession, which demands the session
+					// cookie.
+					//
+					// The reason is that a token which can manage credentials
+					// is not one credential but a factory: a leaked read-write
+					// token could mint replacements for itself and revoke the
+					// ones the user would have used to lock it out. Requiring
+					// the cookie means taking the account back always comes down
+					// to the password.
+					//
+					// It is also a correctness fence, not only a policy one.
+					// handleRevokeOtherSessions keys on Identity.TokenHash,
+					// which names a session row and is empty for a token —
+					// letting a token in would sign the user out everywhere.
 					r.Group(func(r chi.Router) {
-						r.Use(s.accountLimiter.Middleware)
-						r.Post("/password", s.handleChangePassword)
-						r.Post("/mfa/setup", s.handleMFASetup)
-						r.Post("/mfa/activate", s.handleMFAActivate)
-						r.Post("/mfa/disable", s.handleMFADisable)
-						r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+						r.Use(auth.RequireSession)
+
+						r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
+						r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
+
+						// Personal API tokens: the credential a third-party
+						// client authenticates with. Only POST carries
+						// accountLimiter — minting one belongs in the same
+						// budget as a password change, while listing and
+						// revoking are the recovery path and must not be
+						// throttled alongside it.
+						r.Get("/tokens", s.handleListAPITokens)
+						r.With(s.accountLimiter.Middleware).
+							Post("/tokens", s.handleCreateAPIToken)
+						r.Delete("/tokens/{tokenID}", s.handleRevokeAPIToken)
+
+						// Changing a password or a second factor is account
+						// takeover if guessed, so these carry their own budget
+						// on top of the password/code each one already demands.
+						r.Group(func(r chi.Router) {
+							r.Use(s.accountLimiter.Middleware)
+							r.Post("/password", s.handleChangePassword)
+							r.Post("/mfa/setup", s.handleMFASetup)
+							r.Post("/mfa/activate", s.handleMFAActivate)
+							r.Post("/mfa/disable", s.handleMFADisable)
+							r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+						})
 					})
 				})
 			})
