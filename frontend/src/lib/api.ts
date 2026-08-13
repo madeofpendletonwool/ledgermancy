@@ -529,6 +529,22 @@ export interface Transaction {
    * month cannot rewrite the household's idea of its fixed costs.
    */
   is_one_time: boolean
+  /**
+   * The free-form labels on this row, orthogonal to `category_id` above: a
+   * transaction has exactly one category and any number of tags. Always an
+   * array — empty when nothing is labelled, never null.
+   */
+  tags: TransactionTag[]
+}
+
+/**
+ * A tag as a ledger row renders it: id to act on, name to show. Deliberately
+ * not the full {@link Tag} — a row has no use for the tag's all-time total, and
+ * computing fifty of those per page would be a report query per chip.
+ */
+export interface TransactionTag {
+  id: string
+  name: string
 }
 
 /**
@@ -581,6 +597,15 @@ export interface TransactionQuery {
    * is no way back from excluding a row.
    */
   include_excluded?: boolean
+  /**
+   * Restrict to rows carrying ANY of these tags. Serialized comma-joined like
+   * `accounts`. OR rather than AND: picking two widens the view to "the trip or
+   * the remodel", which is the question a household actually asks.
+   */
+  tags?: string[]
+  /** Only rows nobody has labelled yet — the tag counterpart of
+   *  `uncategorised`, and how a backlog of untagged charges gets drained. */
+  untagged?: boolean
 }
 
 export interface Category {
@@ -2213,6 +2238,82 @@ export interface ObjectChange {
   actor_user_id: string | null
   actor_display_name: string | null
   created_at: string
+}
+
+/**
+ * A tag: a free-form label that cuts ACROSS categories.
+ *
+ * A category answers "what kind of spending is this?" and a transaction has
+ * exactly one. A tag answers "what was this FOR?" and a transaction can carry
+ * several — "Summer Vacation" spans Food, Travel and Lodging. Tags are
+ * household-scoped, but the counts and totals below are computed for the
+ * CALLING member: a tag on a charge from another member's private account is
+ * not counted here, exactly as that charge is not listed in the ledger.
+ *
+ * Both figures are server-computed decimal strings. They deliberately answer
+ * different questions — see the field comments.
+ */
+export interface Tag {
+  id: string
+  name: string
+  description: string | null
+  /** The envelope's target ("this trip is meant to cost 3,000"), or null when
+   *  none is set. Null and "0.00" are different facts: one renders no progress
+   *  bar, the other renders a full one. */
+  expected_amount: string | null
+  /** How many visible transactions carry the tag — all of them, including
+   *  income and pending rows. A fact about the LABEL. */
+  transaction_count: number
+  /** What the tag has COST, all-time, under the same money rules as every other
+   *  spending figure in the app. This is what reads against expected_amount. */
+  total: string
+  created_at: string
+}
+
+/** Fields to create or update a tag. Amounts are strings, never floats; an
+ *  empty `expected_amount` clears the target. */
+export interface TagInput {
+  name: string
+  description?: string | null
+  expected_amount?: string | null
+}
+
+/** One row of a tag's transaction list. A trimmed ledger row: enough to
+ *  recognise the charge, not the full {@link Transaction} shape. */
+export interface TagTransaction {
+  id: string
+  date: string
+  name: string
+  merchant: string
+  amount: string
+  currency: string
+  category_id: string | null
+  account_name: string
+}
+
+/** The tag detail payload: header figures and the charges behind them, read
+ *  under the same visibility scope in the same request. */
+export interface TagDetail {
+  tag: Tag
+  transactions: TagTransaction[]
+}
+
+/**
+ * One tag's spend in a reporting window — the by-tag breakdown, beside
+ * by-category and by-merchant.
+ *
+ * The three panels obey the same money rules, so a figure here means what a
+ * figure there means. They will NOT sum to the same period total, and that is
+ * correct: a transaction can carry several tags (so it appears under each) or
+ * none (so it appears under none). A tag breakdown is a set of overlapping
+ * answers, not a partition of the month.
+ */
+export interface TagSpend {
+  tag_id: string
+  name: string
+  expected_amount: string | null
+  total: string
+  transaction_count: number
 }
 
 /**
@@ -4080,6 +4181,45 @@ export const api = {
   deleteCategory: (id: string) =>
     request<void>('DELETE', `/api/categories/${id}`),
 
+  // --- Tags ---------------------------------------------------------------
+  // The second axis over a transaction. Nothing here touches a row's category:
+  // tagging a charge never changes what kind of spending it is.
+  tags: () => request<Tag[]>('GET', '/api/tags'),
+
+  createTag: (input: TagInput) => request<Tag>('POST', '/api/tags', input),
+
+  updateTag: (id: string, input: TagInput) =>
+    request<Tag>('PUT', `/api/tags/${id}`, input),
+
+  /** Deleting a tag unlabels its transactions; the transactions themselves are
+   *  untouched. */
+  deleteTag: (id: string) => request<void>('DELETE', `/api/tags/${id}`),
+
+  tagDetail: (id: string) =>
+    request<TagDetail>('GET', `/api/tags/${id}/transactions`),
+
+  /**
+   * Replaces a transaction's whole tag set — the editor is a list of checkboxes
+   * the user confirms, not a stream of deltas.
+   *
+   * `applyToMerchant` additionally ADDS these tags to every visible charge from
+   * the same merchant. It never removes, which is where this differs from
+   * "apply category to all from this merchant": a category is single-valued so
+   * applying one necessarily overwrites, while replacing a tag set across a
+   * merchant would silently strip labels somebody put there for unrelated
+   * reasons.
+   */
+  setTransactionTags: (
+    transactionID: string,
+    tagIDs: string[],
+    applyToMerchant = false,
+  ) =>
+    request<{ tags: TransactionTag[] }>(
+      'PUT',
+      `/api/transactions/${transactionID}/tags`,
+      { tag_ids: tagIDs, apply_to_merchant: applyToMerchant },
+    ),
+
   // --- Merchants ----------------------------------------------------------
   // Canonical merchants and the review queue for proposed merges. Everything
   // the suggestion job writes is inert until confirmed here, so nothing on this
@@ -4150,6 +4290,9 @@ export const api = {
 
   byCategory: (params: PeriodQuery = {}) =>
     request<CategorySpend[]>('GET', withQuery('/api/reports/by-category', params)),
+
+  byTag: (params: PeriodQuery = {}) =>
+    request<TagSpend[]>('GET', withQuery('/api/reports/by-tag', params)),
 
   byDay: (params: PeriodQuery = {}) =>
     request<DaySpend[]>('GET', withQuery('/api/reports/by-day', params)),

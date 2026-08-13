@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   api,
   type Account,
   type Category,
   type ManualTransactionInput,
+  type Tag,
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
@@ -65,6 +66,11 @@ export function Transactions() {
   // feeds. This is the only way to see them again — and therefore the only way
   // to un-exclude one.
   const showExcluded = searchParams.get('excluded') === '1'
+  // Tag filters. `tags` is OR-ed across the selected ids (the same shape as the
+  // account filter), and `untagged` is its opposite — the backlog of charges
+  // nobody has labelled. Both are ignored together when neither is set.
+  const tagIDs = (searchParams.get('tags') || '').split(',').filter(Boolean)
+  const onlyUntagged = searchParams.get('untagged') === '1'
   const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
 
   const [modal, setModal] = useState<ModalState>(null)
@@ -104,9 +110,19 @@ export function Transactions() {
     }
     patchParams({ accounts: [...set].join(',') || null })
   }
+  const toggleTag = (id: string) => {
+    const set = new Set(tagIDs)
+    if (set.has(id)) {
+      set.delete(id)
+    } else {
+      set.add(id)
+    }
+    patchParams({ tags: [...set].join(',') || null })
+  }
 
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
   const categories = useQuery({ queryKey: ['categories'], queryFn: api.categories })
+  const tags = useQuery({ queryKey: ['tags'], queryFn: api.tags })
 
   // id → category, for showing each row's resolved (app) category, and the list
   // a user can pick from when recategorising.
@@ -129,6 +145,8 @@ export function Transactions() {
       debouncedSearch,
       onlyUncat,
       showExcluded,
+      tagIDs.join(','),
+      onlyUntagged,
       page,
     ],
     queryFn: () =>
@@ -141,6 +159,8 @@ export function Transactions() {
         q: debouncedSearch || undefined,
         uncategorised: onlyUncat || undefined,
         include_excluded: showExcluded || undefined,
+        tags: tagIDs,
+        untagged: onlyUntagged || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
@@ -248,6 +268,23 @@ export function Transactions() {
           </select>
         </div>
 
+        {/* A multi-select rather than the category dropdown's single choice,
+            because tags are multi-valued by nature: "the trip or the remodel"
+            is a question that has no shape in a <select>. Hidden entirely until
+            the household has a tag, so the bar does not carry a control that
+            can only say "none". */}
+        {(tags.data ?? []).length > 0 && (
+          <div>
+            <span className="label">Tags</span>
+            <TagMultiSelect
+              tags={tags.data ?? []}
+              selected={tagIDs}
+              onToggle={toggleTag}
+              onClear={() => patchParams({ tags: null })}
+            />
+          </div>
+        )}
+
         <div className="min-w-40 flex-1">
           <label className="label" htmlFor="search">
             Search
@@ -270,6 +307,20 @@ export function Transactions() {
           />
           Needs a category
         </label>
+
+        {(tags.data ?? []).length > 0 && (
+          <label
+            className="flex items-center gap-2 pb-2 text-sm text-mist-300"
+            title="Charges nobody has labelled yet — the backlog for a trip or a project."
+          >
+            <input
+              type="checkbox"
+              checked={onlyUntagged}
+              onChange={(e) => patchParams({ untagged: e.target.checked ? '1' : null })}
+            />
+            Untagged
+          </label>
+        )}
 
         <label
           className="flex items-center gap-2 pb-2 text-sm text-mist-300"
@@ -440,6 +491,60 @@ function AccountMultiSelect({
   )
 }
 
+// TagMultiSelect is the tag filter: a checkbox dropdown, same <details> popover
+// as AccountMultiSelect. An empty selection means "every tag and none", i.e. no
+// filter, so the common case needs no clicks. Selecting several ORs them —
+// picking "Vacation" and "Remodel" shows both, which is what a household asks
+// for; an AND across tags would return the tiny set of charges that are both.
+function TagMultiSelect({
+  tags,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  tags: Tag[]
+  selected: string[]
+  onToggle: (id: string) => void
+  onClear: () => void
+}) {
+  const label =
+    selected.length === 0
+      ? 'All tags'
+      : selected.length === 1
+        ? (tags.find((t) => t.id === selected[0])?.name ?? '1 tag')
+        : `${selected.length} tags`
+
+  return (
+    <details className="relative">
+      <summary className="field flex w-48 cursor-pointer list-none items-center justify-between">
+        <span className="truncate">{label}</span>
+        <span className="ml-2 text-mist-500">▾</span>
+      </summary>
+      <div className="absolute z-30 mt-1 max-h-72 w-60 overflow-auto rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+        <button
+          className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+          onClick={onClear}
+        >
+          All tags
+        </button>
+        {tags.map((t) => (
+          <label
+            key={t.id}
+            className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(t.id)}
+              onChange={() => onToggle(t.id)}
+            />
+            <span className="truncate">{t.name}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 /** Groups accounts by institution for the filter dropdown's optgroups. */
 function groupByInstitution(accounts: Account[]): [string, Account[]][] {
   const groups = new Map<string, Account[]>()
@@ -584,6 +689,22 @@ function TransactionRow({
           {t.account_name}
           {t.institution_name && ` · ${t.institution_name}`}
         </p>
+
+        {/* Read-only chips on their own line. Editing them lives in the ⋯ menu
+            with the row's other actions, so a ledger of fifty rows still reads
+            as a ledger rather than as fifty tag pickers. */}
+        {t.tags.length > 0 && (
+          <p className="mt-1 flex flex-wrap items-center gap-1.5">
+            {t.tags.map((tag) => (
+              <span
+                key={tag.id}
+                className="rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] text-rune-200"
+              >
+                {tag.name}
+              </span>
+            ))}
+          </p>
+        )}
 
         {t.possible_duplicate && (
           <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ember-400">
@@ -731,8 +852,10 @@ function RowMenu({
   const canEditName =
     Boolean(t.merchant_key) && t.source !== 'manual' && t.source !== 'scheduled'
   // Which popover this row is showing, if any — the menu itself or one of the
-  // two it opens.
-  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | null>(null)
+  // three it opens.
+  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | 'tags' | null>(
+    null,
+  )
   const open = panel !== null
   const close = () => setPanel(null)
 
@@ -787,6 +910,8 @@ function RowMenu({
         <AttachPanel target={{ kind: 'transaction', id: t.id }} onClose={close} />
       )}
 
+      {panel === 'tags' && <TagPanel transaction={t} onClose={close} />}
+
       {panel === 'menu' && (
         <>
           <div
@@ -825,6 +950,27 @@ function RowMenu({
                 <div className="my-1 border-t border-white/10" role="none" />
               </>
             )}
+
+            {/* What this charge was FOR, as opposed to what kind of spending it
+                is. Offered on every row including synced ones: a hotel charge
+                from Plaid is exactly what "Summer Vacation" has to land on. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={!online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
+              onClick={() => setPanel('tags')}
+            >
+              <span className="block font-medium text-mist-100">
+                {t.tags.length > 0 ? `Tags (${t.tags.length})` : 'Add tags…'}
+              </span>
+              <span className="block text-mist-500">
+                {t.tags.length > 0
+                  ? 'Change what this charge was for.'
+                  : 'Label it — a trip, a project, a person.'}
+              </span>
+            </button>
 
             {/* Whose share this charge was. An attribution overlay — it never
                 changes what the household spent. */}
@@ -962,6 +1108,125 @@ function RowMenu({
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+// TagPanel is the row's tag editor: a checkbox per household tag, confirmed as
+// a set. It writes the whole set rather than deltas, which is what the UI
+// actually is — the user ticks boxes and presses Save.
+//
+// "All from this merchant" ADDS these tags to every charge from the same
+// merchant. It deliberately does NOT mirror the category version's replace: a
+// category is single-valued so applying one to a merchant necessarily
+// overwrites, while replacing a tag set across a merchant would silently strip
+// labels somebody put there for unrelated reasons ("Reimbursable" wiped by
+// "Groceries 2026"). Adding is the only version that cannot destroy work, and
+// the checkbox says so.
+function TagPanel({
+  transaction: t,
+  onClose,
+}: {
+  transaction: Transaction
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const tags = useQuery({ queryKey: ['tags'], queryFn: api.tags })
+  const [selected, setSelected] = useState<string[]>(t.tags.map((tag) => tag.id))
+  const [applyToMerchant, setApplyToMerchant] = useState(false)
+  // Gate on merchant_key (what the server matches on), not the display name —
+  // many synced rows have a key derived from the name with no merchant_name.
+  const hasMerchant = Boolean(t.merchant_key)
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.setTransactionTags(t.id, selected, applyToMerchant && hasMerchant),
+    onSuccess: () => {
+      // Tag totals feed the Tags page and the by-tag breakdown, and applying to
+      // a merchant changes rows other than this one — so the whole list
+      // refetches rather than patching this row in place.
+      for (const key of ['transactions', 'tags', 'by-tag', 'tag-detail']) {
+        qc.invalidateQueries({ queryKey: [key] })
+      }
+      onClose()
+    },
+  })
+
+  const toggle = (id: string) =>
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+
+  const rows = tags.data ?? []
+
+  return (
+    <div className="absolute right-0 z-40 mt-1 w-64 rounded-xl border border-white/10 bg-ink-950/95 p-4 shadow-xl backdrop-blur-xl">
+      <p className="mb-1 text-xs font-medium text-mist-100">What was this for?</p>
+      <p className="mb-3 text-[11px] text-mist-500">
+        Tags sit alongside the category, never instead of it.
+      </p>
+
+      {tags.isPending ? (
+        <p className="text-xs text-mist-500">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-xs text-mist-500">
+          No tags yet. Create one on the{' '}
+          <Link to="/tags" className="text-rune-300 hover:text-rune-100">
+            Tags page
+          </Link>
+          .
+        </p>
+      ) : (
+        <div className="max-h-48 space-y-1 overflow-auto">
+          {rows.map((tag) => (
+            <label
+              key={tag.id}
+              className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-white/5"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(tag.id)}
+                onChange={() => toggle(tag.id)}
+              />
+              <span className="truncate">{tag.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {rows.length > 0 && hasMerchant && (
+        <label
+          className="mt-3 flex items-start gap-2 text-[11px] text-mist-400"
+          title="Adds these tags to every charge from this merchant. It never removes tags already there."
+        >
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={applyToMerchant}
+            onChange={(e) => setApplyToMerchant(e.target.checked)}
+          />
+          <span>Also add to all from {t.merchant}</span>
+        </label>
+      )}
+
+      {save.isError && (
+        <p role="alert" className="mt-2 text-[11px] text-ember-400">
+          {save.error.message}
+        </p>
+      )}
+
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <button className="btn-ghost px-2 py-1 text-xs text-mist-300" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn-ghost px-2 py-1 text-xs"
+          disabled={save.isPending || rows.length === 0}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+      </div>
     </div>
   )
 }

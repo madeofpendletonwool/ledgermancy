@@ -134,6 +134,10 @@ type transactionResponse struct {
 	// toggle. See transactionFlagsRequest for what each one means.
 	ExcludedFromReports bool `json:"excluded_from_reports"`
 	IsOneTime           bool `json:"is_one_time"`
+	// Tags are the free-form labels on this row, orthogonal to CategoryID above:
+	// a transaction has one category and any number of tags. Always present,
+	// empty when nothing is labelled, so the row never has to handle null.
+	Tags []transactionTag `json:"tags"`
 }
 
 // defaultTransactionWindow is used when the caller does not supply dates: a
@@ -194,6 +198,21 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		includeExcluded = &t
 	}
 
+	// Optional tag filter, as a comma-separated `tags` list. Malformed ids are
+	// dropped exactly as in the account filter, which reads as "all"; the query
+	// re-checks each id against the household, so a foreign tag matches nothing
+	// rather than leaking another household's labelling.
+	tagIDs := parseUUIDList(q.Get("tags"))
+
+	// Optional "only rows nobody has labelled yet" — the tag counterpart of the
+	// uncategorised filter, and how a household finds the charges that still
+	// belong to a trip or a project.
+	var untagged *bool
+	if q.Get("untagged") == "true" {
+		t := true
+		untagged = &t
+	}
+
 	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
 		HouseholdID:     identity.HouseholdID,
 		UserID:          identity.UserID,
@@ -207,9 +226,24 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		Search:          search,
 		Uncategorised:   uncategorised,
 		IncludeExcluded: includeExcluded,
+		TagIds:          tagIDs,
+		Untagged:        untagged,
 	})
 	if err != nil {
 		s.internalError(w, "list transactions", err)
+		return
+	}
+
+	// Labels for the whole page in ONE query rather than one per row. The ids
+	// come from the list above, which was already read under the visibility
+	// predicate, so this cannot widen what the caller sees.
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, t := range rows {
+		ids = append(ids, t.ID)
+	}
+	tagsByTransaction, err := s.tagsForTransactions(r.Context(), identity, ids)
+	if err != nil {
+		s.internalError(w, "list transaction tags", err)
 		return
 	}
 
@@ -237,6 +271,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 			PossibleDuplicate:   t.IsPossibleDuplicate != nil && *t.IsPossibleDuplicate,
 			ExcludedFromReports: t.ExcludedFromReports,
 			IsOneTime:           t.IsOneTime,
+			Tags:                tagsByTransaction[t.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Summary } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
@@ -232,6 +232,8 @@ export function Spending() {
         )}
       </section>
 
+      <ByTagSection range={range} label={month.label} />
+
       <section className="glass p-6">
         <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
           <h2 className="text-lg font-medium">Income vs spending</h2>
@@ -393,6 +395,94 @@ export function Spending() {
         </div>
       </section>
     </div>
+  )
+}
+
+/**
+ * The by-tag breakdown — the third axis beside "by category" and the merchant
+ * views.
+ *
+ * THE THING THIS SECTION MUST NOT LET A USER BELIEVE: these bars do not add up
+ * to the month. A transaction can carry several tags (so its amount appears
+ * under each) or none (so it appears under none), which is the whole point of a
+ * second axis and exactly what a reader would otherwise assume is a rounding
+ * bug. The note under the heading says so in words.
+ *
+ * The money rules ARE the same as the category panel above — excluded and
+ * pending rows out, transfers out — so a figure here means what a figure there
+ * means. Every total is server-computed; nothing is summed in this file.
+ *
+ * The section renders nothing at all when the household has no tagged spending
+ * in the window, rather than an empty panel: an axis nobody uses should not
+ * take up the page.
+ */
+function ByTagSection({
+  range,
+  label,
+}: {
+  range: { from: string; to: string }
+  label: string
+}) {
+  const byTag = useQuery({
+    queryKey: ['by-tag', range.from, range.to],
+    queryFn: () => api.byTag(range),
+  })
+  const rows = byTag.data ?? []
+  if (byTag.isPending || rows.length === 0) return null
+
+  // Bar widths only — a display ratio between two server-exact figures, never a
+  // number the user reads. Scaled against the largest tag so the panel fills its
+  // width whatever the amounts are.
+  const max = Math.max(...rows.map((t) => Number(t.total)))
+
+  return (
+    <section className="glass p-6">
+      <h2 className="mb-1 text-lg font-medium">By tag</h2>
+      <p className="mb-5 text-sm text-mist-300">
+        {label} — what the money was <em>for</em>, across categories. These
+        don&rsquo;t add up to the month&rsquo;s spending: a charge can carry
+        several tags, or none.
+      </p>
+      <div className="space-y-3">
+        {rows.map((t) => {
+          const total = Number(t.total)
+          const expected = t.expected_amount ? Number(t.expected_amount) : 0
+          const over = expected > 0 && total > expected
+          return (
+            <div key={t.tag_id}>
+              <div className="flex items-baseline justify-between gap-3 text-sm">
+                <Link
+                  to="/tags"
+                  className="truncate text-mist-100 transition-colors hover:text-rune-200"
+                >
+                  {t.name}
+                </Link>
+                <span className="tabular shrink-0 text-mist-300">
+                  {formatMoney(t.total)}
+                  {t.expected_amount && (
+                    <span
+                      className="ml-1.5 text-xs"
+                      style={{ color: over ? STATUS.critical : CHART.textMuted }}
+                    >
+                      of {formatMoney(t.expected_amount)}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/5">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${max > 0 ? (total / max) * 100 : 0}%`,
+                    backgroundColor: over ? STATUS.critical : '#9085e9',
+                  }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

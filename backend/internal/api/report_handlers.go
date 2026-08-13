@@ -206,6 +206,53 @@ func (s *Server) handleSpendingByCategory(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
+type tagSpendResponse struct {
+	TagID string `json:"tag_id"`
+	Name  string `json:"name"`
+	// ExpectedAmount is the tag's envelope target, carried here so the panel can
+	// render "1,840 of 3,000" without a second request. Null when none is set.
+	ExpectedAmount   *string         `json:"expected_amount"`
+	Total            decimal.Decimal `json:"total"`
+	TransactionCount int64           `json:"transaction_count"`
+}
+
+// handleSpendingByTag is the third breakdown axis, beside by-category and
+// by-merchant. It obeys the same money rules as those two, so a figure here
+// means what a figure there means — but the three panels do NOT sum to the same
+// period total, and that is correct rather than a defect: a transaction can
+// carry several tags or none. See GetSpendingByTag in queries/reports.sql.
+func (s *Server) handleSpendingByTag(w http.ResponseWriter, r *http.Request) {
+	identity := auth.MustFromContext(r.Context())
+	from, to := period(r)
+
+	rows, err := s.Queries.GetSpendingByTag(r.Context(), dbgen.GetSpendingByTagParams{
+		HouseholdID: identity.HouseholdID,
+		UserID:      identity.UserID,
+		Date:        from,
+		Date_2:      to,
+	})
+	if err != nil {
+		s.internalError(w, "spending by tag", err)
+		return
+	}
+
+	out := make([]tagSpendResponse, 0, len(rows))
+	for _, t := range rows {
+		row := tagSpendResponse{
+			TagID:            t.TagID.String(),
+			Name:             t.TagName,
+			Total:            t.Total,
+			TransactionCount: t.TransactionCount,
+		}
+		if t.ExpectedAmount.Valid {
+			expected := t.ExpectedAmount.Decimal.StringFixed(2)
+			row.ExpectedAmount = &expected
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 type daySpendResponse struct {
 	// Day is a calendar date, "YYYY-MM-DD".
 	Day      string          `json:"day"`
