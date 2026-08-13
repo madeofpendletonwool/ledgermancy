@@ -523,6 +523,9 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Get("/", s.handleListTransactions)
 				r.Post("/", s.handleCreateManualTransaction)
 				r.Post("/import", s.handleImportTransactions)
+				// The vocabulary the `q` grammar accepts, for the search bar's
+				// autocomplete. Static for a given binary; see search_handlers.go.
+				r.Get("/search-operators", s.handleSearchOperators)
 				r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
 				// How a row COUNTS, as opposed to what it says — so this accepts
 				// Plaid-synced rows, unlike the manual-only editors below.
