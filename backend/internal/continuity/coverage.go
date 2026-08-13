@@ -274,6 +274,14 @@ var tableCoverage = map[string]Coverage{
 	// --- Credentials: dump only, never a plain-JSON file ------------------
 	"plaid_items":         DumpOnly, // access tokens, sealed with ENCRYPTION_KEY
 	"user_recovery_codes": DumpOnly,
+	// Personal API tokens. DumpOnly rather than InExport because every row is a
+	// credential digest, and the export is a plain-JSON file meant to outlive
+	// this app — a hash belongs in neither. DumpOnly rather than Ephemeral,
+	// which is where `sessions` sits, because a token is not a browser's: the
+	// user minted it deliberately, it survives every sign-out on purpose, and a
+	// restore that silently broke every integration they had wired up is not
+	// what anyone means by restoring their data.
+	"api_tokens": DumpOnly,
 
 	// --- Operational bookkeeping ------------------------------------------
 	"auth_events":       DumpOnly, // audit log, swept at 180 days

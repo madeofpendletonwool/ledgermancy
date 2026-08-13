@@ -178,6 +178,17 @@ type AnomalyOverride struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+type ApiToken struct {
+	ID         uuid.UUID     `json:"id"`
+	UserID     uuid.UUID     `json:"user_id"`
+	Name       string        `json:"name"`
+	TokenHash  string        `json:"token_hash"`
+	Scopes     []string      `json:"scopes"`
+	LastUsedAt *stdtime.Time `json:"last_used_at"`
+	ExpiresAt  *stdtime.Time `json:"expires_at"`
+	CreatedAt  stdtime.Time  `json:"created_at"`
+}
+
 type AssetDetail struct {
 	ID            uuid.UUID           `json:"id"`
 	ManualAssetID uuid.UUID           `json:"manual_asset_id"`
