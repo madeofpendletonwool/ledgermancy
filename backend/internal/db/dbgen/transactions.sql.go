@@ -713,6 +713,12 @@ WHERE v.household_id = $1
   -- resolved (canonical) merchant name the UI now displays, the raw name the bank
   -- sent, and the descriptor key. Both name forms are matched so a renamed
   -- merchant is findable by what it shows now AND by the bank's original wording.
+  --
+  -- These three columns are the DEFINITION of free-text matching in this app.
+  -- GET /api/transactions no longer passes this narg — ` + "`" + `q` + "`" + ` is now a composable
+  -- query and its bare words go through internal/search — but that package
+  -- matches this same list on purpose, so ` + "`" + `q=coffee` + "`" + ` returns what it always did.
+  -- Change one and change the other.
   AND (
     $11::text IS NULL
     OR t.merchant_key ILIKE '%' || $11::text || '%'
@@ -726,6 +732,25 @@ WHERE v.household_id = $1
     $12::bool IS NOT TRUE
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
+  )
+  -- Optional restriction to an explicit set of ids, which is how the composable
+  -- search bar gets its rows (see internal/search and transaction_search.go).
+  --
+  -- A query with ` + "`" + `key:value` + "`" + ` operators cannot be expressed as a fixed set of
+  -- nargs, so that path builds its own predicate and resolves it to an ordered,
+  -- paged list of ids. Handing those ids back here means the row PROJECTION —
+  -- every column above, the resolved merchant key, the duplicate check — has
+  -- exactly one definition, and the household/viewer scoping at the top of this
+  -- WHERE is applied a second time to the search's answer rather than replaced
+  -- by it. A search can therefore only ever narrow what this query would have
+  -- returned; it can never widen it.
+  --
+  -- The search path already applied the window, the chips and the excluded rule
+  -- when it chose those ids, and passes the remaining filters wide open. A NULL
+  -- narg (every other caller) passes everything, as usual.
+  AND (
+    $13::uuid[] IS NULL
+    OR t.id = ANY($13::uuid[])
   )
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6
@@ -744,6 +769,7 @@ type ListVisibleTransactionsParams struct {
 	MerchantKey     *string      `json:"merchant_key"`
 	Search          *string      `json:"search"`
 	Uncategorised   *bool        `json:"uncategorised"`
+	TransactionIds  []uuid.UUID  `json:"transaction_ids"`
 }
 
 type ListVisibleTransactionsRow struct {
@@ -796,6 +822,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.MerchantKey,
 		arg.Search,
 		arg.Uncategorised,
+		arg.TransactionIds,
 	)
 	if err != nil {
 		return nil, err

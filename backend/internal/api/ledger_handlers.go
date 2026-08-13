@@ -16,6 +16,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/search"
 )
 
 type accountResponse struct {
@@ -182,9 +183,6 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	// than an error: a stale link should read as "no charges", not as a failure.
 	merchantKey := trimmedParam(q.Get("merchant"))
 
-	// Optional free-text merchant/description search.
-	search := trimmedParam(q.Get("q"))
-
 	// Optional "show the rows I've excluded from reports". Off by default so the
 	// ledger reads like the reports it feeds; on, it is the only way to find an
 	// excluded row again and clear the flag.
@@ -194,7 +192,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		includeExcluded = &t
 	}
 
-	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
+	params := dbgen.ListVisibleTransactionsParams{
 		HouseholdID:     identity.HouseholdID,
 		UserID:          identity.UserID,
 		Date:            from,
@@ -204,10 +202,75 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		AccountIds:      accountIDs,
 		CategoryID:      categoryID,
 		MerchantKey:     merchantKey,
-		Search:          search,
 		Uncategorised:   uncategorised,
 		IncludeExcluded: includeExcluded,
-	})
+	}
+
+	// `q` is a search query in the grammar internal/search parses: bare words are
+	// free text (which is all it used to be, so old links keep working) and
+	// `key:value` terms narrow further. Anything with operators in it cannot be
+	// expressed as nargs, so that path resolves the query to an ordered page of
+	// ids and lets this query project them — see transaction_search.go.
+	if raw := strings.TrimSpace(q.Get("q")); raw != "" {
+		parsed := search.Parse(raw)
+		ids, err := s.searchTransactionIDs(r.Context(), transactionSearchParams{
+			householdID: identity.HouseholdID,
+			userID:      identity.UserID,
+			query:       parsed,
+			from:        from,
+			to:          to,
+			// A query that names its own dates owns the window. The page always
+			// sends a from/to (a rolling year by default), so ANDing that with
+			// `since:2019-01-01` would clip the search to the last year and answer
+			// "nothing found" for a query that was perfectly good. Every other
+			// kind of term still intersects with the window.
+			applyWindow:   !parsed.HasDateTerm(),
+			accountIDs:    accountIDs,
+			categoryID:    categoryID,
+			merchantKey:   merchantKey,
+			uncategorised: uncategorised != nil && *uncategorised,
+			// Excluded rows are hidden unless asked for, so a query that names
+			// them has to turn that default off — otherwise `is_excluded` is a
+			// term that can only ever match nothing.
+			includeExcluded: (includeExcluded != nil && *includeExcluded) ||
+				parsed.MentionsField("is_excluded"),
+			limit:  limit,
+			offset: offset,
+			now:    time.Now(),
+		})
+		var invalid invalidSearchError
+		switch {
+		case errors.As(err, &invalid):
+			// A value the user can fix (`over:banana`). Its own message is the
+			// most useful thing to say.
+			writeError(w, http.StatusBadRequest, invalid.Error())
+			return
+		case err != nil:
+			s.internalError(w, "search transactions", err)
+			return
+		}
+		if len(ids) == 0 {
+			// Nothing matched. Answer with an empty list rather than passing an
+			// empty id array down, where a NULL/empty narg would read as "no
+			// filter" and return the whole page unfiltered.
+			writeJSON(w, http.StatusOK, []transactionResponse{})
+			return
+		}
+
+		// The ids ARE the filter now: the search already applied the window, the
+		// chips and the excluded rule while it decided which rows and in what
+		// order. Everything else is opened up so the fetch re-applies visibility
+		// and the projection and nothing else.
+		params.TransactionIds = ids
+		params.Date, params.Date_2 = searchWindowMin, searchWindowMax
+		params.Limit, params.Offset = int32(len(ids)), 0
+		params.AccountIds, params.CategoryID, params.MerchantKey = nil, nil, nil
+		params.Uncategorised = nil
+		yes := true
+		params.IncludeExcluded = &yes
+	}
+
+	rows, err := s.Queries.ListVisibleTransactions(r.Context(), params)
 	if err != nil {
 		s.internalError(w, "list transactions", err)
 		return

@@ -51,7 +51,8 @@ the **CSRF token** echoed in an `X-CSRF-Token` header.
 | Method | Path | Auth | Notes |
 | ------ | ---- | ---- | ----- |
 | GET | `/api/accounts` | ✓ | Visible accounts with balances |
-| GET | `/api/transactions` | ✓ | `from`, `to`, `limit`, `offset`; defaults to a rolling year |
+| GET | `/api/transactions` | ✓ | `from`, `to`, `limit`, `offset`; defaults to a rolling year. `q` is a [composable search query](features/transactions.md#search) |
+| GET | `/api/transactions/search-operators` | ✓ | The operator vocabulary `q` accepts, for autocomplete |
 | GET | `/api/export/transactions.csv` | ✓ | Financial Summary transactions export |
 | GET | `/api/export/categories.csv` | ✓ | Category summary export |
 | GET | `/api/export/net-worth.csv` | ✓ | Net-worth history export |

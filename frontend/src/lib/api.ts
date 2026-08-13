@@ -571,7 +571,17 @@ export interface TransactionQuery {
    * page passes.
    */
   merchant?: string
-  /** Free-text search over the merchant name, raw name and descriptor key. */
+  /**
+   * A composable search query. Bare words are free text over the merchant name,
+   * raw name and descriptor key — which is all `q` used to be, so existing links
+   * keep working. `key:value` terms narrow further (`over:10`, `since:-30d`,
+   * `has_no_category`), a leading `-` negates one, and everything is ANDed. See
+   * the backend's `internal/search` for the vocabulary, or api.searchOperators().
+   *
+   * A query that names its own dates owns the date window: `from`/`to` are
+   * ignored for it, so `since:2019-01-01` is not silently clipped to the page's
+   * rolling year.
+   */
   q?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
@@ -581,6 +591,19 @@ export interface TransactionQuery {
    * is no way back from excluding a row.
    */
   include_excluded?: boolean
+}
+
+/**
+ * One operator the `q` grammar accepts. The list comes from the parser via
+ * api.searchOperators() rather than being written out here, so the search bar
+ * can never suggest something the server would treat as free text.
+ */
+export interface SearchOperator {
+  /** The operator as typed, without the trailing colon. */
+  name: string
+  /** False for flags (`has_no_category`), which are written bare. */
+  takes_value: boolean
+  help: string
 }
 
 export interface Category {
@@ -4025,6 +4048,15 @@ export const api = {
 
   transactions: (params: TransactionQuery = {}) =>
     request<Transaction[]>('GET', withQuery('/api/transactions', params)),
+
+  /**
+   * The operator vocabulary the `q` grammar accepts, for the search bar's
+   * autocomplete. Generated from the parser, so the suggestions cannot drift
+   * from what the server will actually accept.
+   */
+  searchOperators: () =>
+    request<SearchOperator[]>('GET', '/api/transactions/search-operators'),
+
 
   recategorise: (
     transactionID: string,

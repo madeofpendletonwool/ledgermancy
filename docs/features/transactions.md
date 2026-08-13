@@ -18,10 +18,95 @@ restores it. There is no separate local filter state to keep in sync.
 | **Accounts** | Multi-select, grouped by institution. Empty = all accounts. |
 | **Category** | Single-select, includes all categories |
 | **Needs a category** | Show only uncategorised rows — handy for a cleanup pass |
+| **Search** | A composable query — see [Search](#search) below |
 
 Changing any filter (except an explicit page move) resets to page 0, so a new
 filter never lands you past the end of a now-shorter result set. Paging keeps
 the previous page on screen while the next loads.
+
+## Search
+
+The search box takes a **composable query**: type a word to search, or add
+`key:value` terms to narrow it. Every term is ANDed, and a leading `-` excludes.
+
+```
+starbucks over:10 since:-30d
+has_no_category -account:Checking
+merchant_starts:AMZN under:25 is_expense
+category:groceries since:start-of-this-month
+```
+
+A bare word searches the merchant name and description, which is all this box
+used to do — old links and bookmarks keep working. The filter chips still apply
+on top, so nobody has to learn the grammar to use the page. Start typing and the
+box suggests the operators the word could become; **what can I type?** lists
+worked examples you can click to run.
+
+### Text operators
+
+Each of these has four varieties: `merchant:x` (contains, the default),
+`merchant_is:x`, `merchant_starts:x` and `merchant_ends:x`.
+
+| Operator | Matches |
+| --- | --- |
+| `merchant` (`payee`) | The canonical merchant name, the name the bank sent, and the descriptor key |
+| `description` (`desc`) | The raw description on the row |
+| `notes` | Notes you have written |
+| `account` | Account name |
+| `institution` (`bank`) | Institution the account belongs to |
+| `category` (`cat`) | Category name or slug |
+| `currency`, `source` | Exact by default — `source:manual`, `currency:USD` |
+
+Quote a value with spaces: `account:"Joint Checking"`.
+
+### Dates
+
+`since:` (`after`, `from`), `before:` (`until`, `to`) and `on:` (`date`). Both
+bounds are **inclusive**, so `since:X before:Y` is the closed range it looks
+like. Values take three shapes:
+
+| Shape | Examples |
+| --- | --- |
+| Keyword | `today`, `yesterday`, `start-of-this-month`, `end-of-last-year`, `start-of-this-week` |
+| Relative | `-30d`, `-6m`, `-1y`, `+7d` — no sign means the past |
+| Absolute | `2026-01-01` |
+
+Keywords also accept spaces (`since:"start of this month"`) or underscores.
+
+!!! info "A date term overrides the From / To pickers"
+    The page always sends a date window, so ANDing it with `since:2019-01-01`
+    would silently clip the search to the last year and answer "nothing found"
+    for a perfectly good query. Naming a date in the query hands it the whole
+    window instead. Every other kind of term still narrows within From / To.
+
+### Amounts
+
+`amount:10`, `over:10` (`amount_more`) and `under:10` (`amount_less`). These
+compare the **magnitude**, ignoring sign — a $2,500 paycheck and $2,500 of rent
+are both `over:2000`. Pair with `is_expense` or `is_income` for direction.
+
+### Flags
+
+Written on their own, with no value. Each has a negative spelling, and a leading
+`-` works too.
+
+| Flag | Negative |
+| --- | --- |
+| `has_category` | `has_no_category` |
+| `has_notes` | `has_no_notes` |
+| `has_attachment` | `has_no_attachment` |
+| `has_split` | `has_no_split` |
+| `is_pending` | `is_posted` |
+| `is_recurring`, `is_manual`, `is_one_time` | `is_not_recurring`, … |
+| `is_expense`, `is_income`, `is_transfer` | `is_not_expense`, … |
+| `is_excluded` | `is_not_excluded` |
+
+`is_excluded` turns off the "hide rows excluded from reports" default on its own,
+since otherwise it could never match anything.
+
+An operator the parser does not know is treated as free text rather than an
+error, so a pasted descriptor like `AMZN:MKTP` still finds its charge. A value it
+cannot resolve (`over:banana`) is reported next to the box.
 
 ## Recategorising inline
 
