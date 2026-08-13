@@ -239,6 +239,55 @@ func (q *Queries) ListPersonAssetTotals(ctx context.Context, householdID uuid.UU
 	return items, nil
 }
 
+const listPlaidAccountBalancesForHousehold = `-- name: ListPlaidAccountBalancesForHousehold :many
+SELECT a.id, a.current_balance
+FROM accounts a
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND a.source = 'plaid'
+  AND a.is_active
+  AND a.current_balance IS NOT NULL
+`
+
+type ListPlaidAccountBalancesForHouseholdRow struct {
+	ID             uuid.UUID           `json:"id"`
+	CurrentBalance decimal.NullDecimal `json:"current_balance"`
+}
+
+// Every active Plaid account in a household with a known balance, for the
+// per-account balance snapshot (MAD-119). This is the per-account analog of
+// ComputeNetWorth's visible_accounts CTE: household-scoped only, with no
+// (user_id OR is_shared) clause, because a balance snapshot is background
+// bookkeeping like net_worth_snapshots rather than a member-facing read. The
+// read endpoint (ListAccountBalanceHistory) is what enforces per-member
+// visibility; this is what writes the points it draws.
+//
+// source = 'plaid' on purpose: manual accounts already carry a history row on
+// every user balance write, and snapshotting their current_balance daily would
+// interleave app-written repeats of a figure the user owns, burying the
+// entries that actually explain a move. A Plaid account's balance, by contrast,
+// is only ever the institution's current figure — the whole trend has to be
+// written down as it goes.
+func (q *Queries) ListPlaidAccountBalancesForHousehold(ctx context.Context, householdID uuid.UUID) ([]ListPlaidAccountBalancesForHouseholdRow, error) {
+	rows, err := q.db.Query(ctx, listPlaidAccountBalancesForHousehold, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPlaidAccountBalancesForHouseholdRow{}
+	for rows.Next() {
+		var i ListPlaidAccountBalancesForHouseholdRow
+		if err := rows.Scan(&i.ID, &i.CurrentBalance); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleAccounts = `-- name: ListVisibleAccounts :many
 SELECT
     a.id,

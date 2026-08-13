@@ -586,19 +586,37 @@ JOIN account_access v ON v.account_id = h.account_id
 WHERE h.account_id = $1
   AND v.household_id = $2
   AND (v.user_id = $3 OR v.is_shared)
+  AND ($4::date IS NULL OR h.as_of >= $4)
+  AND ($5::date IS NULL OR h.as_of <= $5)
 ORDER BY h.as_of
 `
 
 type ListAccountBalanceHistoryParams struct {
-	AccountID   uuid.UUID `json:"account_id"`
-	HouseholdID uuid.UUID `json:"household_id"`
-	UserID      uuid.UUID `json:"user_id"`
+	AccountID   uuid.UUID     `json:"account_id"`
+	HouseholdID uuid.UUID     `json:"household_id"`
+	UserID      uuid.UUID     `json:"user_id"`
+	From        *stdtime.Time `json:"from"`
+	To          *stdtime.Time `json:"to"`
 }
 
 // The trend behind one account's current balance. Ascending, because it is
-// drawn as a line.
+// drawn as a line. Source-agnostic by design: a manual account's rows are the
+// user's writes, a Plaid account's are the snapshot path's (MAD-119), and the
+// account_access join resolves either — a manual account reaches its owner
+// through accounts.user_id and a Plaid one through its item.
+//
+// from / to are OPTIONAL range bounds. Left NULL they return the whole trail
+// (the manual balance editor's existing behaviour, which shows every entry); a
+// caller drawing a chart passes a window so a year of daily Plaid snapshots
+// does not pull the full history every time.
 func (q *Queries) ListAccountBalanceHistory(ctx context.Context, arg ListAccountBalanceHistoryParams) ([]AccountBalanceHistory, error) {
-	rows, err := q.db.Query(ctx, listAccountBalanceHistory, arg.AccountID, arg.HouseholdID, arg.UserID)
+	rows, err := q.db.Query(ctx, listAccountBalanceHistory,
+		arg.AccountID,
+		arg.HouseholdID,
+		arg.UserID,
+		arg.From,
+		arg.To,
+	)
 	if err != nil {
 		return nil, err
 	}

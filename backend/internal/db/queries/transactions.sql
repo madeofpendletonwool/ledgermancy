@@ -188,6 +188,34 @@ WHERE v.household_id = $1
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
   )
+  -- Optional tag filter: rows carrying ANY of the listed tags. OR rather than
+  -- AND, matching how the account filter above reads — picking two tags widens
+  -- the view to "the trip or the remodel", which is the question a household
+  -- actually asks. The tags are re-checked against the household here so a
+  -- foreign tag id narrows to nothing rather than matching by id alone. EXISTS
+  -- rather than a join, so a row with three matching tags stays one row.
+  AND (
+    sqlc.narg('tag_ids')::uuid[] IS NULL
+    OR cardinality(sqlc.narg('tag_ids')::uuid[]) = 0
+    OR EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id
+        AND tg.household_id = $1
+        AND tt.tag_id = ANY(sqlc.narg('tag_ids')::uuid[])
+    )
+  )
+  -- Optional "only rows nobody has labelled yet", the tag counterpart of the
+  -- uncategorised filter above and the way a household drains the backlog of
+  -- charges that belong to a trip or a project. NULL/false passes everything.
+  AND (
+    sqlc.narg('untagged')::bool IS NOT TRUE
+    OR NOT EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id AND tg.household_id = $1
+    )
+  )
   -- Optional restriction to an explicit set of ids, which is how the composable
   -- search bar gets its rows (see internal/search and transaction_search.go).
   --

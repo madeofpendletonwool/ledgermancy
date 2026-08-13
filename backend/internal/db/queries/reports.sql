@@ -142,6 +142,55 @@ WHERE v.household_id = $1
 GROUP BY c.id, c.name, c.slug, c.color
 ORDER BY total DESC;
 
+-- name: GetSpendingByTag :many
+-- Spending broken down by TAG for one period, largest first — the third axis
+-- beside GetSpendingByCategory and GetTopMerchants.
+--
+-- The money rules are the ones every spending report here uses — excluded and
+-- pending rows dropped, income and transfer categories dropped, direction from
+-- is_spend — so a figure in this panel means the same thing as a figure in the
+-- one beside it. What the panels will NOT do is sum to the same total, and that
+-- is correct rather than a defect: a transaction can carry several tags (so its
+-- amount appears under each) and can carry none (so it appears under none). A
+-- tag breakdown is a set of overlapping answers to "what was this for?", not a
+-- partition of the month.
+--
+-- categories is joined LEFT, matching GetTopMerchants rather than
+-- GetSpendingByCategory. That query can join INNER because a row with no
+-- category has no category row to appear under; here it does have a tag, and an
+-- uncategorised charge on the trip is still money the trip cost. Dropping it
+-- would make the envelope under-report exactly the rows the user has not got
+-- round to filing.
+--
+-- The structural difference from the category query: categories join one-to-one
+-- and tags join one-to-many, so the JOIN through transaction_tags is what fans a
+-- row out across its tags. That fan-out is the feature.
+SELECT
+    tg.id                       AS tag_id,
+    tg.name                     AS tag_name,
+    tg.expected_amount,
+    SUM(ABS(t.amount))::numeric AS total,
+    COUNT(*)::bigint            AS transaction_count
+FROM transactions t
+JOIN accounts a          ON a.id = t.account_id
+JOIN account_access v    ON v.account_id = a.id
+JOIN transaction_tags tt ON tt.transaction_id = t.id
+JOIN tags tg             ON tg.id = tt.tag_id
+LEFT JOIN categories c   ON c.id = t.category_id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
+  AND tg.household_id = $1
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND is_spend(t.amount, a.type)
+GROUP BY tg.id, tg.name, tg.expected_amount
+ORDER BY total DESC;
+
 -- name: GetMonthlyTrend :many
 -- Income, spending, leftover AND the fixed/discretionary split per calendar
 -- month across a range. Drives the rolling-twelve chart, the month-over-month

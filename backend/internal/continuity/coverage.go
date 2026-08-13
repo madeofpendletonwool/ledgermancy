@@ -110,6 +110,14 @@ var tableCoverage = map[string]Coverage{
 	// no history behind it.
 	"piggy_banks":       InExport,
 	"piggy_bank_events": InExport,
+	// Free-form labels and what they are stuck to. Every row is a household
+	// judgement about what a charge was FOR, which no bank holds and no re-sync
+	// can re-derive: the trip that "Summer Vacation" names exists nowhere
+	// outside this table. transaction_tags is the half that carries the meaning
+	// — without it the tags restore as a list of names attached to nothing, and
+	// every envelope total reads as zero.
+	"tags":             InExport,
+	"transaction_tags": InExport,
 	// The per-object change log: who edited a transaction/budget/goal and how.
 	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
 	// recomputation can ever reconstruct — so losing it loses the audit trail

@@ -518,15 +518,22 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
 				r.Get("/idle-cash", s.handleIdleCash)
 
-				// Manual accounts (doc 30). Every one of these refuses a
-				// source='plaid' id — a linked account's identity and balance
-				// belong to the institution, and an edit here would survive only
-				// until the next sync silently reverted it.
-				r.Post("/", s.handleCreateManualAccount)
-				r.Put("/{accountID}", s.handleUpdateManualAccount)
-				r.Delete("/{accountID}", s.handleDeleteManualAccount)
-				r.Put("/{accountID}/balance", s.handleSetManualBalance)
-				r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+			// Manual accounts (doc 30). Every mutation below refuses a
+			// source='plaid' id — a linked account's identity and balance
+			// belong to the institution, and an edit here would survive only
+			// until the next sync silently reverted it.
+			//
+			// The read at the bottom is the exception: balance-history serves
+			// BOTH sources. A manual account's rows are the user's writes; a
+			// Plaid account's are the snapshot path's (MAD-119), recorded after
+			// each sync and on the daily sweep because Plaid keeps no balance
+			// history of its own. The list query scopes through account_access
+			// for either, so the same endpoint draws both trends.
+			r.Post("/", s.handleCreateManualAccount)
+			r.Put("/{accountID}", s.handleUpdateManualAccount)
+			r.Delete("/{accountID}", s.handleDeleteManualAccount)
+			r.Put("/{accountID}/balance", s.handleSetManualBalance)
+			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
 				r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
 				r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
 				// Piggy banks drawing from one account, and the unassigned
@@ -564,6 +571,12 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// How a row COUNTS, as opposed to what it says — so this accepts
 				// Plaid-synced rows, unlike the manual-only editors below.
 				r.Patch("/{transactionID}/flags", s.handleSetTransactionFlags)
+				// What a row is FOR, as opposed to what kind of spending it is.
+				// Accepts Plaid-synced rows for the same reason /flags does: a
+				// synced hotel charge is exactly what "Summer Vacation" has to
+				// land on. Replaces the row's whole tag set — see
+				// setTransactionTagsRequest.
+				r.Put("/{transactionID}/tags", s.handleSetTransactionTags)
 				r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 				r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 			})
@@ -664,6 +677,23 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// merchant descriptor cannot, which is why that one takes a query
 				// parameter instead.
 				r.Get("/{categoryID}/detail", s.handleCategoryDetail)
+			})
+
+			// Tags: the second axis over a transaction, orthogonal to its
+			// category. Household-scoped like categories — but note the split
+			// enforced in queries/tags.sql: the TAG is household data, while the
+			// TAGGED TRANSACTIONS behind its counts and totals stay under the
+			// per-member visibility predicate, so labelling a charge on a private
+			// account never makes that charge readable by the other member.
+			r.Route("/tags", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListTags)
+				r.Post("/", s.handleCreateTag)
+				r.Put("/{tagID}", s.handleUpdateTag)
+				r.Delete("/{tagID}", s.handleDeleteTag)
+				// The envelope's contents: the tag, its derived total, and the
+				// charges behind it in one round trip.
+				r.Get("/{tagID}/transactions", s.handleListTagTransactions)
 			})
 
 			r.Route("/budgets", func(r chi.Router) {
@@ -949,6 +979,10 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Use(authenticate, auth.RequireAdult)
 				r.Get("/summary", s.handleSummary)
 				r.Get("/by-category", s.handleSpendingByCategory)
+				// The third breakdown axis. Same money rules as by-category and
+				// /merchants, but the panels do not sum to the same total: a
+				// transaction can carry several tags, or none.
+				r.Get("/by-tag", s.handleSpendingByTag)
 				r.Get("/by-day", s.handleSpendingByDay)
 				r.Get("/trend", s.handleTrend)
 				r.Get("/averages", s.handleCategoryAverages)

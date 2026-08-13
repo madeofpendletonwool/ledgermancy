@@ -111,6 +111,53 @@ func SnapshotAll(ctx context.Context, q *dbgen.Queries) (int, error) {
 		if _, err := Snapshot(ctx, q, id, nil); err != nil {
 			return count, err
 		}
+		// The per-account balance points are recorded alongside the household
+		// total so a quiet Plaid account still gets a point on its own trend on
+		// the same schedule — the same reason this loop runs at all when a
+		// household's institutions have nothing to sync.
+		if _, err := SnapshotAccountBalances(ctx, q, id); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+// SnapshotAccountBalances records each Plaid account's current balance for
+// today — the per-account analog of Snapshot above. A Plaid account's balance
+// carries no history (Plaid reports only the current figure), so a per-account
+// trend can only be built by writing the figure down as it goes, exactly as
+// Snapshot does for the household total. Manual accounts are skipped: their
+// history is the user's own writes, and snapshotting their current_balance
+// daily would interleave app-written repeats of a figure the user owns.
+//
+// Re-running on the same day replaces that day's row per account rather than
+// adding a second one (UNIQUE account_id, as_of), so a sync and the daily sweep
+// landing on the same household compose to one point per account per day — the
+// same idempotency rule UpsertNetWorthSnapshot carries.
+//
+// Called from the daily snapshot sweep (SnapshotAll) and from the post-sync
+// path (plaid.Syncer.SyncItem), mirroring the two triggers Snapshot itself has.
+func SnapshotAccountBalances(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID) (int, error) {
+	rows, err := q.ListPlaidAccountBalancesForHousehold(ctx, householdID)
+	if err != nil {
+		return 0, fmt.Errorf("list plaid accounts: %w", err)
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	count := 0
+	for _, a := range rows {
+		if !a.CurrentBalance.Valid {
+			continue
+		}
+		if _, err := q.InsertAccountBalanceHistory(ctx, dbgen.InsertAccountBalanceHistoryParams{
+			AccountID: a.ID,
+			AsOf:      today,
+			Balance:   a.CurrentBalance.Decimal,
+			Reason:    "snapshot",
+		}); err != nil {
+			return count, fmt.Errorf("snapshot account balance %s: %w", a.ID, err)
+		}
 		count++
 	}
 	return count, nil

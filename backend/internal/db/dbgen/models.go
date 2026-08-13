@@ -825,6 +825,16 @@ type Session struct {
 	ClientIp   *string      `json:"client_ip"`
 }
 
+type Tag struct {
+	ID             uuid.UUID           `json:"id"`
+	HouseholdID    uuid.UUID           `json:"household_id"`
+	Name           string              `json:"name"`
+	Description    *string             `json:"description"`
+	ExpectedAmount decimal.NullDecimal `json:"expected_amount"`
+	CreatedAt      stdtime.Time        `json:"created_at"`
+	UpdatedAt      stdtime.Time        `json:"updated_at"`
+}
+
 type Transaction struct {
 	ID                   uuid.UUID       `json:"id"`
 	AccountID            uuid.UUID       `json:"account_id"`
@@ -871,6 +881,12 @@ type TransactionSplit struct {
 	Amount        decimal.Decimal `json:"amount"`
 	SettledAt     *stdtime.Time   `json:"settled_at"`
 	CreatedAt     stdtime.Time    `json:"created_at"`
+}
+
+type TransactionTag struct {
+	TransactionID uuid.UUID    `json:"transaction_id"`
+	TagID         uuid.UUID    `json:"tag_id"`
+	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
 type User struct {

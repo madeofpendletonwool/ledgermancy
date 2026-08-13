@@ -363,9 +363,27 @@ func (s *Server) handleListBalanceHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Optional range bounds, matching /api/networth/history. Absent means
+	// unbounded, which is what the manual balance editor wants (every entry it
+	// recorded); a chart caller passes a window so a year of daily Plaid
+	// snapshots is not pulled in full every render.
+	var from, to *time.Time
+	q := r.URL.Query()
+	if raw := q.Get("from"); raw != "" {
+		if v, err := time.Parse(time.DateOnly, raw); err == nil {
+			from = &v
+		}
+	}
+	if raw := q.Get("to"); raw != "" {
+		if v, err := time.Parse(time.DateOnly, raw); err == nil {
+			to = &v
+		}
+	}
+
 	rows, err := s.Queries.ListAccountBalanceHistory(r.Context(),
 		dbgen.ListAccountBalanceHistoryParams{
 			AccountID: accountID, HouseholdID: identity.HouseholdID, UserID: identity.UserID,
+			From: from, To: to,
 		})
 	if err != nil {
 		s.internalError(w, "list balance history", err)

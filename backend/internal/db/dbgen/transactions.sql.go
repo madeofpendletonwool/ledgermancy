@@ -733,6 +733,34 @@ WHERE v.household_id = $1
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
   )
+  -- Optional tag filter: rows carrying ANY of the listed tags. OR rather than
+  -- AND, matching how the account filter above reads — picking two tags widens
+  -- the view to "the trip or the remodel", which is the question a household
+  -- actually asks. The tags are re-checked against the household here so a
+  -- foreign tag id narrows to nothing rather than matching by id alone. EXISTS
+  -- rather than a join, so a row with three matching tags stays one row.
+  AND (
+    $13::uuid[] IS NULL
+    OR cardinality($13::uuid[]) = 0
+    OR EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id
+        AND tg.household_id = $1
+        AND tt.tag_id = ANY($13::uuid[])
+    )
+  )
+  -- Optional "only rows nobody has labelled yet", the tag counterpart of the
+  -- uncategorised filter above and the way a household drains the backlog of
+  -- charges that belong to a trip or a project. NULL/false passes everything.
+  AND (
+    $14::bool IS NOT TRUE
+    OR NOT EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id AND tg.household_id = $1
+    )
+  )
   -- Optional restriction to an explicit set of ids, which is how the composable
   -- search bar gets its rows (see internal/search and transaction_search.go).
   --
@@ -749,8 +777,8 @@ WHERE v.household_id = $1
   -- when it chose those ids, and passes the remaining filters wide open. A NULL
   -- narg (every other caller) passes everything, as usual.
   AND (
-    $13::uuid[] IS NULL
-    OR t.id = ANY($13::uuid[])
+    $15::uuid[] IS NULL
+    OR t.id = ANY($15::uuid[])
   )
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6
@@ -769,6 +797,8 @@ type ListVisibleTransactionsParams struct {
 	MerchantKey     *string      `json:"merchant_key"`
 	Search          *string      `json:"search"`
 	Uncategorised   *bool        `json:"uncategorised"`
+	TagIds          []uuid.UUID  `json:"tag_ids"`
+	Untagged        *bool        `json:"untagged"`
 	TransactionIds  []uuid.UUID  `json:"transaction_ids"`
 }
 
@@ -822,6 +852,8 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.MerchantKey,
 		arg.Search,
 		arg.Uncategorised,
+		arg.TagIds,
+		arg.Untagged,
 		arg.TransactionIds,
 	)
 	if err != nil {
