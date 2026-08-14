@@ -13,6 +13,56 @@ import (
 	stdtime "time"
 )
 
+const addTagToTransactions = `-- name: AddTagToTransactions :execrows
+INSERT INTO transaction_tags (transaction_id, tag_id)
+SELECT DISTINCT tr.id, tg.id
+FROM transactions tr
+JOIN accounts a       ON a.id = tr.account_id
+JOIN account_access v ON v.account_id = a.id
+JOIN tags tg          ON tg.id = $1
+WHERE tr.id = ANY($2::uuid[])
+  AND v.household_id = $3
+  AND (v.user_id = $4 OR v.is_shared)
+  AND tg.household_id = $3
+ON CONFLICT DO NOTHING
+`
+
+type AddTagToTransactionsParams struct {
+	TagID          uuid.UUID   `json:"tag_id"`
+	TransactionIds []uuid.UUID `json:"transaction_ids"`
+	HouseholdID    uuid.UUID   `json:"household_id"`
+	UserID         uuid.UUID   `json:"user_id"`
+}
+
+// Adds one tag to an explicit set of transactions — the multi-select answer to
+// ApplyTagToMerchant's "everything from this merchant".
+//
+// ADDS, never replaces, and the reasoning is ApplyTagToMerchant's verbatim: the
+// single-row editor can replace a tag set because it IS the confirmed set the
+// user just ticked, but a selection of fifty rows carries fifty different sets,
+// and replacing across them would silently strip labels put there for unrelated
+// reasons. RemoveTagFromTransactions below is the explicit undo.
+//
+// Scoped both ways exactly like AddTransactionTag: only the caller's own
+// household's tag, only transactions the caller can see. An id from outside
+// either boundary inserts nothing rather than erroring, so a stale selection
+// degrades to "fewer rows changed" instead of failing the whole request.
+//
+// ON CONFLICT DO NOTHING makes re-tagging an already-tagged row a no-op, which
+// is what lets the same action be applied twice without thinking about it.
+func (q *Queries) AddTagToTransactions(ctx context.Context, arg AddTagToTransactionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addTagToTransactions,
+		arg.TagID,
+		arg.TransactionIds,
+		arg.HouseholdID,
+		arg.UserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const addTransactionTag = `-- name: AddTransactionTag :execrows
 INSERT INTO transaction_tags (transaction_id, tag_id)
 SELECT tr.id, tg.id
@@ -128,6 +178,32 @@ type ClearTransactionTagsParams struct {
 func (q *Queries) ClearTransactionTags(ctx context.Context, arg ClearTransactionTagsParams) error {
 	_, err := q.db.Exec(ctx, clearTransactionTags, arg.TransactionID, arg.HouseholdID, arg.UserID)
 	return err
+}
+
+const countHouseholdTags = `-- name: CountHouseholdTags :one
+SELECT count(DISTINCT id) FROM tags
+WHERE id = ANY($1::uuid[])
+  AND household_id = $2
+`
+
+type CountHouseholdTagsParams struct {
+	TagIds      []uuid.UUID `json:"tag_ids"`
+	HouseholdID uuid.UUID   `json:"household_id"`
+}
+
+// How many of these tag ids are this household's. The bulk tag endpoint compares
+// the answer against the number it was given, so an id from another household
+// fails the request outright.
+//
+// It cannot infer that from rows-written the way the single-row handler does: an
+// add that writes nothing is ambiguous between "no such tag" and "already
+// tagged", and treating the second as an error would make replaying an action
+// fail. Asking directly is the only version that is right both times.
+func (q *Queries) CountHouseholdTags(ctx context.Context, arg CountHouseholdTagsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countHouseholdTags, arg.TagIds, arg.HouseholdID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createTag = `-- name: CreateTag :one
@@ -444,6 +520,45 @@ func (q *Queries) ListTagsForTransactions(ctx context.Context, arg ListTagsForTr
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeTagFromTransactions = `-- name: RemoveTagFromTransactions :execrows
+DELETE FROM transaction_tags tt
+USING transactions tr, accounts a, account_access v
+WHERE tt.tag_id = $1
+  AND tt.transaction_id = ANY($2::uuid[])
+  AND tr.id = tt.transaction_id
+  AND a.id = tr.account_id
+  AND v.account_id = a.id
+  AND v.household_id = $3
+  AND (v.user_id = $4 OR v.is_shared)
+`
+
+type RemoveTagFromTransactionsParams struct {
+	TagID          uuid.UUID   `json:"tag_id"`
+	TransactionIds []uuid.UUID `json:"transaction_ids"`
+	HouseholdID    uuid.UUID   `json:"household_id"`
+	UserID         uuid.UUID   `json:"user_id"`
+}
+
+// Strips one tag from an explicit set of transactions, and only that tag —
+// every other label on those rows survives. This is the undo for
+// AddTagToTransactions, and the reason the bulk action can be additive without
+// being a one-way door.
+//
+// Visibility is re-checked here rather than trusted from an earlier read, the
+// same way ClearTransactionTags does it, so the statement is safe on its own.
+func (q *Queries) RemoveTagFromTransactions(ctx context.Context, arg RemoveTagFromTransactionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeTagFromTransactions,
+		arg.TagID,
+		arg.TransactionIds,
+		arg.HouseholdID,
+		arg.UserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateTag = `-- name: UpdateTag :one

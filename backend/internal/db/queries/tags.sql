@@ -191,6 +191,66 @@ WHERE tr.merchant_key = sqlc.arg('merchant_key')
   AND tg.household_id = sqlc.arg('household_id')
 ON CONFLICT DO NOTHING;
 
+-- name: CountHouseholdTags :one
+-- How many of these tag ids are this household's. The bulk tag endpoint compares
+-- the answer against the number it was given, so an id from another household
+-- fails the request outright.
+--
+-- It cannot infer that from rows-written the way the single-row handler does: an
+-- add that writes nothing is ambiguous between "no such tag" and "already
+-- tagged", and treating the second as an error would make replaying an action
+-- fail. Asking directly is the only version that is right both times.
+SELECT count(DISTINCT id) FROM tags
+WHERE id = ANY(sqlc.arg('tag_ids')::uuid[])
+  AND household_id = sqlc.arg('household_id');
+
+-- name: AddTagToTransactions :execrows
+-- Adds one tag to an explicit set of transactions — the multi-select answer to
+-- ApplyTagToMerchant's "everything from this merchant".
+--
+-- ADDS, never replaces, and the reasoning is ApplyTagToMerchant's verbatim: the
+-- single-row editor can replace a tag set because it IS the confirmed set the
+-- user just ticked, but a selection of fifty rows carries fifty different sets,
+-- and replacing across them would silently strip labels put there for unrelated
+-- reasons. RemoveTagFromTransactions below is the explicit undo.
+--
+-- Scoped both ways exactly like AddTransactionTag: only the caller's own
+-- household's tag, only transactions the caller can see. An id from outside
+-- either boundary inserts nothing rather than erroring, so a stale selection
+-- degrades to "fewer rows changed" instead of failing the whole request.
+--
+-- ON CONFLICT DO NOTHING makes re-tagging an already-tagged row a no-op, which
+-- is what lets the same action be applied twice without thinking about it.
+INSERT INTO transaction_tags (transaction_id, tag_id)
+SELECT DISTINCT tr.id, tg.id
+FROM transactions tr
+JOIN accounts a       ON a.id = tr.account_id
+JOIN account_access v ON v.account_id = a.id
+JOIN tags tg          ON tg.id = sqlc.arg('tag_id')
+WHERE tr.id = ANY(sqlc.arg('transaction_ids')::uuid[])
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared)
+  AND tg.household_id = sqlc.arg('household_id')
+ON CONFLICT DO NOTHING;
+
+-- name: RemoveTagFromTransactions :execrows
+-- Strips one tag from an explicit set of transactions, and only that tag —
+-- every other label on those rows survives. This is the undo for
+-- AddTagToTransactions, and the reason the bulk action can be additive without
+-- being a one-way door.
+--
+-- Visibility is re-checked here rather than trusted from an earlier read, the
+-- same way ClearTransactionTags does it, so the statement is safe on its own.
+DELETE FROM transaction_tags tt
+USING transactions tr, accounts a, account_access v
+WHERE tt.tag_id = sqlc.arg('tag_id')
+  AND tt.transaction_id = ANY(sqlc.arg('transaction_ids')::uuid[])
+  AND tr.id = tt.transaction_id
+  AND a.id = tr.account_id
+  AND v.account_id = a.id
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.arg('user_id') OR v.is_shared);
+
 -- name: ListTagTransactions :many
 -- Every visible transaction carrying one tag, newest first — the tag detail
 -- list, and the "show me the trip" drill-down.

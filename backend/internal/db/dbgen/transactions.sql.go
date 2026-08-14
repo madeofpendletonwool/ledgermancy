@@ -377,6 +377,75 @@ func (q *Queries) GetVisibleTransaction(ctx context.Context, arg GetVisibleTrans
 	return i, err
 }
 
+const getVisibleTransactions = `-- name: GetVisibleTransactions :many
+SELECT DISTINCT ON (t.id) t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = ANY($1::uuid[])
+  AND v.household_id = $2
+  AND (v.user_id = $3::uuid OR v.is_shared)
+`
+
+type GetVisibleTransactionsParams struct {
+	TransactionIds []uuid.UUID `json:"transaction_ids"`
+	HouseholdID    uuid.UUID   `json:"household_id"`
+	ViewerUserID   *uuid.UUID  `json:"viewer_user_id"`
+}
+
+// GetVisibleTransaction for a set of ids, in one round trip. Same scoping to the
+// letter, which is what makes it usable as the authorisation step for a bulk
+// write: the ids it hands back ARE the subset the caller was allowed to touch,
+// so a selection carrying a foreign or stale id narrows rather than fails.
+//
+// DISTINCT because a shared account can match more than one account_access row
+// and a before-state must appear exactly once.
+func (q *Queries) GetVisibleTransactions(ctx context.Context, arg GetVisibleTransactionsParams) ([]Transaction, error) {
+	rows, err := q.db.Query(ctx, getVisibleTransactions, arg.TransactionIds, arg.HouseholdID, arg.ViewerUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transaction{}
+	for rows.Next() {
+		var i Transaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.PlaidTransactionID,
+			&i.Amount,
+			&i.Currency,
+			&i.Date,
+			&i.AuthorizedDate,
+			&i.Name,
+			&i.MerchantName,
+			&i.MerchantKey,
+			&i.Pending,
+			&i.PendingTransactionID,
+			&i.PlaidPfcPrimary,
+			&i.PlaidPfcDetailed,
+			&i.CategoryID,
+			&i.CategorySource,
+			&i.IsRecurring,
+			&i.ExcludedFromReports,
+			&i.Notes,
+			&i.Source,
+			&i.Raw,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IsOneTime,
+			&i.ObligationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertImportedTransactionIfNew = `-- name: InsertImportedTransactionIfNew :one
 INSERT INTO transactions (
     account_id, amount, currency, date, name, merchant_name, merchant_key,
@@ -970,6 +1039,45 @@ func (q *Queries) SetTransactionFlags(ctx context.Context, arg SetTransactionFla
 		&i.ObligationID,
 	)
 	return i, err
+}
+
+const setTransactionsFlags = `-- name: SetTransactionsFlags :execrows
+UPDATE transactions t
+SET excluded_from_reports = COALESCE($1::bool, t.excluded_from_reports),
+    is_one_time           = COALESCE($2::bool, t.is_one_time),
+    updated_at            = now()
+FROM accounts a, account_access v
+WHERE t.id = ANY($3::uuid[])
+  AND v.account_id = a.id
+  AND a.id = t.account_id
+  AND v.household_id = $4
+`
+
+type SetTransactionsFlagsParams struct {
+	ExcludedFromReports *bool       `json:"excluded_from_reports"`
+	IsOneTime           *bool       `json:"is_one_time"`
+	TransactionIds      []uuid.UUID `json:"transaction_ids"`
+	HouseholdID         uuid.UUID   `json:"household_id"`
+}
+
+// The bulk form of SetTransactionFlags, for a multi-select. Same nargs, same
+// absence of a source='manual' guard, same household authorisation — the only
+// difference is that it takes a set of ids and reports how many rows it reached
+// instead of returning the one row it changed.
+//
+// The caller has already narrowed transaction_ids to rows it could see, exactly
+// as the single-row handler does before writing.
+func (q *Queries) SetTransactionsFlags(ctx context.Context, arg SetTransactionsFlagsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTransactionsFlags,
+		arg.ExcludedFromReports,
+		arg.IsOneTime,
+		arg.TransactionIds,
+		arg.HouseholdID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const sumFilteredTransactions = `-- name: SumFilteredTransactions :one

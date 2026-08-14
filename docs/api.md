@@ -96,10 +96,36 @@ is refused on those routes. Everything else marked ✓ accepts either.
 | GET | `/api/accounts` | ✓ | Visible accounts with balances |
 | GET | `/api/transactions` | ✓ | `from`, `to`, `limit`, `offset`; defaults to a rolling year. `q` is a [composable search query](features/transactions.md#search) |
 | GET | `/api/transactions/search-operators` | ✓ | The operator vocabulary `q` accepts, for autocomplete |
+| POST | `/api/transactions/bulk/tags` | ✓ | `transaction_ids`, `tag_ids`, `action: "add"\|"remove"` |
+| POST | `/api/transactions/bulk/category` | ✓ | `transaction_ids`, `category_id` |
+| POST | `/api/transactions/bulk/flags` | ✓ | `transaction_ids`, plus `is_one_time` and/or `excluded_from_reports` |
 | GET | `/api/export/transactions.csv` | ✓ | Financial Summary transactions export |
 | GET | `/api/export/categories.csv` | ✓ | Category summary export |
 | GET | `/api/export/net-worth.csv` | ✓ | Net-worth history export |
 | GET | `/api/export/holdings.csv` | ✓ | Investment holdings export |
+
+### Bulk actions
+
+The three `POST /api/transactions/bulk/*` endpoints apply one action to the set
+of rows ticked on the transactions list. Each takes at most **500**
+`transaction_ids` — the largest page the list endpoint will serve — and applies
+the whole selection in one database transaction.
+
+Each resolves the id list against the caller's own visibility **before** writing,
+so an id from another household or from a private account simply drops out of the
+set. They therefore reply `{"changed": n}` rather than a success flag: `n` can be
+smaller than the number of ids sent, both because rows dropped out and because
+re-applying an add changes nothing. `404` means *none* of the ids resolved.
+
+Tagging is **add/remove, never replace** — unlike the single-row
+`PUT /api/transactions/{id}/tags`, whose replace is safe only because the set it
+writes is exactly the one the user just ticked. A tag id from another household
+fails the whole request with `400`, matching the single-row endpoint.
+
+`bulk/category` writes one change-history entry per row, as the per-row
+recategorise does. It takes no `apply_to_merchant`: that switch is a durable
+statement about one merchant, and a selection spans many. `bulk/flags` writes no
+history, also matching its per-row twin.
 
 Plus reporting endpoints consumed by the frontend (summary, by-category,
 by-day, trend, averages, merchants, recurring, net-worth + history + projection,

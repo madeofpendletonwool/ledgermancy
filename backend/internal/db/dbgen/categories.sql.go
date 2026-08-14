@@ -725,6 +725,77 @@ func (q *Queries) SetTransactionCategory(ctx context.Context, arg SetTransaction
 	return i, err
 }
 
+const setTransactionsCategory = `-- name: SetTransactionsCategory :many
+UPDATE transactions t
+SET category_id = $1, category_source = 'manual'
+FROM accounts a, account_access v
+WHERE t.id = ANY($2::uuid[])
+  AND v.account_id = a.id
+  AND a.id = t.account_id
+  AND v.household_id = $3
+RETURNING t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
+`
+
+type SetTransactionsCategoryParams struct {
+	CategoryID     *uuid.UUID  `json:"category_id"`
+	TransactionIds []uuid.UUID `json:"transaction_ids"`
+	HouseholdID    uuid.UUID   `json:"household_id"`
+}
+
+// The bulk form of SetTransactionCategory, for "categorise everything I ticked".
+// Identical semantics per row, including the sticky category_source = 'manual':
+// picking rows out of a list is no less a manual decision than picking one.
+//
+// The caller has already narrowed transaction_ids to rows it could see (the
+// handler resolves them through ListVisibleTransactions first, exactly as the
+// single-row path resolves one through GetVisibleTransaction). The household
+// guard here is the same second line of defence the single-row UPDATE keeps.
+func (q *Queries) SetTransactionsCategory(ctx context.Context, arg SetTransactionsCategoryParams) ([]Transaction, error) {
+	rows, err := q.db.Query(ctx, setTransactionsCategory, arg.CategoryID, arg.TransactionIds, arg.HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transaction{}
+	for rows.Next() {
+		var i Transaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.PlaidTransactionID,
+			&i.Amount,
+			&i.Currency,
+			&i.Date,
+			&i.AuthorizedDate,
+			&i.Name,
+			&i.MerchantName,
+			&i.MerchantKey,
+			&i.Pending,
+			&i.PendingTransactionID,
+			&i.PlaidPfcPrimary,
+			&i.PlaidPfcDetailed,
+			&i.CategoryID,
+			&i.CategorySource,
+			&i.IsRecurring,
+			&i.ExcludedFromReports,
+			&i.Notes,
+			&i.Source,
+			&i.Raw,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IsOneTime,
+			&i.ObligationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateCategory = `-- name: UpdateCategory :one
 UPDATE categories
 SET name = $3, color = $4, is_fixed = $5, is_income = $6, is_transfer = $7, updated_at = now()

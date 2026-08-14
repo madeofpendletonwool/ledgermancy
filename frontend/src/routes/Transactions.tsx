@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
@@ -11,7 +11,9 @@ import {
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
+import { AnchoredPopover } from '../components/AnchoredPopover'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
+import { BulkActionBar } from '../components/BulkActionBar'
 import { HistoryPanel } from '../components/HistoryPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
@@ -23,7 +25,12 @@ import { enterProps } from '../lib/motion'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
 import { motion } from 'motion/react'
 
-const PAGE_SIZE = 50
+// How many rows a page may hold. 500 is the ceiling the list endpoint clamps to
+// (see parseInt in ledger_handlers.go), so nothing here can ask for more than
+// the server will give. 50 stays the default: it is what the page has always
+// shown, and it is the size that loads instantly on a phone.
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500]
+const DEFAULT_PAGE_SIZE = 50
 
 /**
  * Trails a fast-changing value, so a filter can update the URL on every keystroke
@@ -75,6 +82,12 @@ export function Transactions() {
   const tagIDs = (searchParams.get('tags') || '').split(',').filter(Boolean)
   const onlyUntagged = searchParams.get('untagged') === '1'
   const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
+  // Whitelisted rather than clamped, so a hand-edited `?size=9999` falls back to
+  // the default instead of quietly becoming some other number.
+  const requestedSize = Number(searchParams.get('size'))
+  const pageSize = PAGE_SIZE_OPTIONS.includes(requestedSize)
+    ? requestedSize
+    : DEFAULT_PAGE_SIZE
 
   const [modal, setModal] = useState<ModalState>(null)
   const [importing, setImporting] = useState(false)
@@ -85,6 +98,15 @@ export function Transactions() {
   const [editingName, setEditingName] = useState<Transaction | null>(null)
   // The list itself reads fine from cache offline; adding and importing do not.
   const online = useOnline()
+
+  // Multi-select is opt-in. A ledger of fifty rows is something you read far
+  // more often than something you act on in bulk, so the checkbox column only
+  // exists once you have asked for it — the default row keeps every pixel for
+  // the merchant name.
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIDs, setSelectedIDs] = useState<string[]>([])
+  // Anchor for shift-click ranges: the last row toggled on its own.
+  const lastPicked = useRef<number | null>(null)
 
   // patchParams writes filter changes back to the URL. Any change other than an
   // explicit page move resets to page 0, so a new filter never lands you past
@@ -151,6 +173,7 @@ export function Transactions() {
       tagIDs.join(','),
       onlyUntagged,
       page,
+      pageSize,
     ],
     queryFn: () =>
       api.transactions({
@@ -164,8 +187,8 @@ export function Transactions() {
         include_excluded: showExcluded || undefined,
         tags: tagIDs,
         untagged: onlyUntagged || undefined,
-        limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
+        limit: pageSize,
+        offset: page * pageSize,
       }),
     // Keeps the previous page on screen while the next loads, so paging does
     // not flash an empty table.
@@ -177,7 +200,7 @@ export function Transactions() {
   })
 
   const rows = transactions.data ?? []
-  const isLastPage = rows.length < PAGE_SIZE
+  const isLastPage = rows.length < pageSize
   // The one error worth putting in front of the user rather than logging: their
   // query said something the parser could not resolve, and the message names it.
   const searchError =
@@ -196,6 +219,75 @@ export function Transactions() {
   })
   const countFor = (id: string) => documentCounts.data?.[id] ?? 0
 
+  // --- Selection ----------------------------------------------------------
+  //
+  // Everything below is scoped to the rows currently on screen. A bulk action
+  // must never reach something the user cannot see, so the selection is dropped
+  // whenever the result set itself changes — a different filter, page or page
+  // size. A refetch does not change any of those, which is what lets a selection
+  // survive an action and be acted on again ("tag these, now categorise them").
+  const selectedSet = new Set(selectedIDs)
+  const pageIDs = rows.map((t) => t.id)
+  const selectedOnPage = pageIDs.filter((id) => selectedSet.has(id))
+  const allSelected = rows.length > 0 && selectedOnPage.length === rows.length
+
+  const filterKey = [
+    from,
+    to,
+    accountIDs.join(','),
+    categoryFilter,
+    merchantFilter,
+    debouncedSearch,
+    String(onlyUncat),
+    String(showExcluded),
+    tagIDs.join(','),
+    String(onlyUntagged),
+    String(page),
+    String(pageSize),
+  ].join('|')
+  useEffect(() => {
+    setSelectedIDs([])
+    lastPicked.current = null
+  }, [filterKey])
+
+  // Shift-click extends from the last row picked on its own, matching how every
+  // other list on a desktop behaves. The anchor's own state decides the whole
+  // range's, so dragging back over a range clears it rather than flipping each
+  // row individually.
+  const toggleSelected = (index: number, shiftKey: boolean) => {
+    const anchor = lastPicked.current
+    setSelectedIDs((prev) => {
+      const next = new Set(prev)
+      if (shiftKey && anchor !== null && anchor !== index) {
+        const [lo, hi] = anchor < index ? [anchor, index] : [index, anchor]
+        const turningOn = !next.has(rows[index].id)
+        for (let i = lo; i <= hi; i++) {
+          const id = rows[i]?.id
+          if (!id) continue
+          if (turningOn) next.add(id)
+          else next.delete(id)
+        }
+      } else {
+        const id = rows[index].id
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+      }
+      return [...next]
+    })
+    if (!shiftKey) lastPicked.current = index
+  }
+
+  const toggleSelectAll = () => {
+    setSelectedIDs(allSelected ? [] : pageIDs)
+    lastPicked.current = null
+  }
+
+  const leaveSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIDs([])
+    lastPicked.current = null
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -206,6 +298,22 @@ export function Transactions() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* The switch that reveals the checkbox column. Off by default and
+              off again the moment you leave, so a row that is only being read
+              carries nothing it does not need. */}
+          <button
+            className="btn-ghost px-4 py-2 text-sm"
+            disabled={!online}
+            title={
+              online
+                ? 'Tick rows to tag, categorise or reclassify them together'
+                : OFFLINE_WRITE_HINT
+            }
+            aria-pressed={selectMode}
+            onClick={() => (selectMode ? leaveSelectMode() : setSelectMode(true))}
+          >
+            {selectMode ? 'Done' : 'Select'}
+          </button>
           <button
             className="btn-ghost px-4 py-2 text-sm"
             disabled={!online}
@@ -380,20 +488,42 @@ export function Transactions() {
               : 'No transactions in this range. Connect an account or add one by hand.'}
           </p>
         ) : (
-          <ul className="divide-y divide-white/5">
-            {rows.map((t, i) => (
-              <TransactionRow
-                key={t.id}
-                transaction={t}
-                index={i}
-                categoryById={categoryById}
-                spendCats={spendCats}
-                documentCount={countFor(t.id)}
-                onEdit={() => setModal({ mode: 'edit', transaction: t })}
-                onEditName={() => setEditingName(t)}
-              />
-            ))}
-          </ul>
+          <>
+            {/* Only in select mode, so the list gains a header row exactly when
+                there is something for it to say. */}
+            {selectMode && (
+              <div className="flex items-center gap-3 border-b border-white/10 px-4 py-2.5 text-xs text-mist-400 sm:gap-4 sm:px-6">
+                <SelectAllCheckbox
+                  checked={allSelected}
+                  partial={selectedOnPage.length > 0 && !allSelected}
+                  onChange={toggleSelectAll}
+                />
+                <span>
+                  {selectedOnPage.length} of {rows.length} selected
+                </span>
+                <span className="ml-auto hidden text-mist-500 sm:inline">
+                  Shift-click to pick a range
+                </span>
+              </div>
+            )}
+            <ul className="divide-y divide-white/5">
+              {rows.map((t, i) => (
+                <TransactionRow
+                  key={t.id}
+                  transaction={t}
+                  index={i}
+                  categoryById={categoryById}
+                  spendCats={spendCats}
+                  documentCount={countFor(t.id)}
+                  selectMode={selectMode}
+                  selected={selectedSet.has(t.id)}
+                  onToggleSelect={toggleSelected}
+                  onEdit={() => setModal({ mode: 'edit', transaction: t })}
+                  onEditName={() => setEditingName(t)}
+                />
+              ))}
+            </ul>
+          </>
         )}
       </section>
 
@@ -405,7 +535,35 @@ export function Transactions() {
         >
           ← Previous
         </button>
-        <span className="text-sm text-mist-500">Page {page + 1}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-mist-500">Page {page + 1}</span>
+          {/* Changing the size goes through patchParams without keepPage, so it
+              lands you back on page 1 — page 7 of fifties is not page 7 of
+              five-hundreds, and staying put would scroll you somewhere you did
+              not ask to be. */}
+          <label className="flex items-center gap-2 text-sm text-mist-500">
+            <span className="sr-only sm:not-sr-only">Per page</span>
+            <select
+              className="field py-1 text-sm"
+              value={pageSize}
+              aria-label="Transactions per page"
+              onChange={(e) =>
+                patchParams({
+                  size:
+                    Number(e.target.value) === DEFAULT_PAGE_SIZE
+                      ? null
+                      : e.target.value,
+                })
+              }
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button
           className="btn-ghost text-sm"
           disabled={isLastPage}
@@ -437,7 +595,49 @@ export function Transactions() {
           onClose={() => setEditingName(null)}
         />
       )}
+
+      {selectMode && selectedIDs.length > 0 && (
+        <BulkActionBar
+          selectedIDs={selectedIDs}
+          spendCats={spendCats}
+          onClear={() => {
+            setSelectedIDs([])
+            lastPicked.current = null
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * "Select every row on this page", with the third state a plain checkbox has no
+ * attribute for: `indeterminate` is DOM-only, so it has to be written through a
+ * ref rather than passed as a prop.
+ */
+function SelectAllCheckbox({
+  checked,
+  partial,
+  onChange,
+}: {
+  checked: boolean
+  partial: boolean
+  onChange: () => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = partial
+  }, [partial])
+
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      className="shrink-0"
+      checked={checked}
+      onChange={onChange}
+      aria-label="Select every transaction on this page"
+    />
   )
 }
 
@@ -576,6 +776,9 @@ function TransactionRow({
   categoryById,
   spendCats,
   documentCount,
+  selectMode,
+  selected,
+  onToggleSelect,
   onEdit,
   onEditName,
 }: {
@@ -584,6 +787,10 @@ function TransactionRow({
   categoryById: Map<string, Category>
   spendCats: Category[]
   documentCount: number
+  /** Whether the checkbox column exists at all. Off, the row is untouched. */
+  selectMode: boolean
+  selected: boolean
+  onToggleSelect: (index: number, shiftKey: boolean) => void
   onEdit: () => void
   onEditName: () => void
 }) {
@@ -610,6 +817,21 @@ function TransactionRow({
       {...enterProps(index)}
       className="flex items-center gap-3 px-4 py-3.5 sm:gap-4 sm:px-6"
     >
+      {/* The checkbox exists only in select mode — no reserved gutter, no
+          hidden column. The click is read off the input rather than the row so
+          the merchant link, the category pill and the ⋯ menu all keep working
+          exactly as they do outside select mode. */}
+      {selectMode && (
+        <input
+          type="checkbox"
+          className="shrink-0"
+          checked={selected}
+          aria-label={`Select ${t.merchant}`}
+          onChange={() => undefined}
+          onClick={(e) => onToggleSelect(index, e.shiftKey)}
+        />
+      )}
+
       {/* Desktop-only date column. On a phone the date moves into the
           subtitle line below the merchant — a w-24 column here is ~110px
           the merchant name cannot spare on a 360px viewport, and keeping it
@@ -860,6 +1082,9 @@ function RowMenu({
 }) {
   const qc = useQueryClient()
   const online = useOnline()
+  // The ⋯ button's wrapper. Every panel is portalled to <body> and positioned
+  // against this rect, so nothing the row is nested in can clip it.
+  const anchorRef = useRef<HTMLDivElement>(null)
   // The rename path needs a descriptor to re-point. Manual rows already have a
   // full editor; scheduled rows are owned by the obligation that posts them.
   const canEditName =
@@ -895,7 +1120,7 @@ function RowMenu({
   })
 
   return (
-    <div className="relative shrink-0">
+    <div ref={anchorRef} className="relative shrink-0">
       <button
         type="button"
         className="btn-ghost px-2 py-1 text-xs text-mist-400"
@@ -908,192 +1133,43 @@ function RowMenu({
         ⋯
       </button>
 
+      {/* Every panel goes through one anchor, portalled to <body>. The row list
+          is a `.glass overflow-hidden` card, which both clips an absolutely
+          positioned panel (a menu on the last row was cut off) and — because
+          backdrop-filter makes it the containing block for fixed children —
+          shrank the old click-away layer down to the card, so clicking the
+          sidebar or the header never dismissed anything. See AnchoredPopover.
+          The children keep their own `absolute right-0` classes: the anchor
+          reproduces this button's rect, so they land exactly where they did. */}
       {open && (
-        /* Click-away layer. Sits under the menu and both popovers but over
-           everything else, so the next click anywhere closes rather than
-           acting on the page. */
-        <div className="fixed inset-0 z-30" onClick={close} aria-hidden />
-      )}
+        <AnchoredPopover anchorRef={anchorRef} onClose={close}>
+          {panel === 'split' && (
+            <SplitPanel transactionId={t.id} amount={t.amount} onClose={close} />
+          )}
 
-      {panel === 'split' && (
-        <SplitPanel transactionId={t.id} amount={t.amount} onClose={close} />
-      )}
+          {panel === 'documents' && (
+            <AttachPanel target={{ kind: 'transaction', id: t.id }} onClose={close} />
+          )}
 
-      {panel === 'documents' && (
-        <AttachPanel target={{ kind: 'transaction', id: t.id }} onClose={close} />
-      )}
+          {panel === 'tags' && <TagPanel transaction={t} onClose={close} />}
 
-      {panel === 'tags' && <TagPanel transaction={t} onClose={close} />}
+          {panel === 'links' && <LinkPanel transactionId={t.id} onClose={close} />}
 
-      {panel === 'links' && <LinkPanel transactionId={t.id} onClose={close} />}
-
-      {panel === 'menu' && (
-        <>
-          <div
-            role="menu"
-            className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
-          >
-            {/* Fix a wrong merchant name. Plaid occasionally hands back a
-                descriptor that is just noise (a row of asterisks, a processor
-                code) for a real business; this re-points the descriptor at the
-                right canonical merchant so the name is correct here and on
-                every report, and stays fixed across future syncs. Offered for
-                any row with a descriptor that is not already fully editable
-                (manual rows have their own editor). Scheduled rows are posted
-                by the obligation worker, so their identity is changed there. */}
-            {canEditName && onEditName && (
-              <>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-                  disabled={!online}
-                  title={online ? undefined : OFFLINE_WRITE_HINT}
-                  onClick={() => {
-                    close()
-                    onEditName()
-                  }}
-                >
-                  <span className="block font-medium text-mist-100">
-                    Edit name…
-                  </span>
-                  <span className="block text-mist-500">
-                    Correct this merchant's real name.
-                  </span>
-                </button>
-
-                <div className="my-1 border-t border-white/10" role="none" />
-              </>
-            )}
-
-            {/* What this charge was FOR, as opposed to what kind of spending it
-                is. Offered on every row including synced ones: a hotel charge
-                from Plaid is exactly what "Summer Vacation" has to land on. */}
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={!online}
-              title={online ? undefined : OFFLINE_WRITE_HINT}
-              onClick={() => setPanel('tags')}
+          {panel === 'menu' && (
+            <div
+              role="menu"
+              className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
             >
-              <span className="block font-medium text-mist-100">
-                {t.tags.length > 0 ? `Tags (${t.tags.length})` : 'Add tags…'}
-              </span>
-              <span className="block text-mist-500">
-                {t.tags.length > 0
-                  ? 'Change what this charge was for.'
-                  : 'Label it — a trip, a project, a person.'}
-              </span>
-            </button>
-
-            {/* Whose share this charge was. An attribution overlay — it never
-                changes what the household spent. */}
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={!online}
-              title={online ? undefined : OFFLINE_WRITE_HINT}
-              onClick={() => setPanel('split')}
-            >
-              <span className="block font-medium text-mist-100">Split…</span>
-              <span className="block text-mist-500">
-                Record whose share this was.
-              </span>
-            </button>
-
-            {/* Receipts, invoices and warranties belong next to the charge they
-                explain, so the vault is reachable from the row rather than only
-                from the Documents page. */}
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5"
-              onClick={() => setPanel('documents')}
-            >
-              <span className="block font-medium text-mist-100">
-                {documentCount > 0 ? `Documents (${documentCount})` : 'Attach a receipt…'}
-              </span>
-              <span className="block text-mist-500">
-                {documentCount > 0
-                  ? 'See or change what is attached.'
-                  : 'Keep the paperwork with the charge.'}
-              </span>
-            </button>
-
-            {/* How this charge relates to ANOTHER charge — the refund that
-                cancelled it, the duplicate it turned out to be, the dinner it
-                paid for. Sits beside the documents action because it is the
-                same kind of thing: something attached to the row that leaves
-                the row itself untouched. Offered on every row including synced
-                ones, for the same reason tags are. */}
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={!online}
-              title={online ? undefined : OFFLINE_WRITE_HINT}
-              onClick={() => setPanel('links')}
-            >
-              <span className="block font-medium text-mist-100">
-                Link to another transaction…
-              </span>
-              <span className="block text-mist-500">
-                A refund, a duplicate, something it paid for.
-              </span>
-            </button>
-
-            <div className="my-1 border-t border-white/10" role="none" />
-
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={set.isPending || !online}
-              title={online ? undefined : OFFLINE_WRITE_HINT}
-              onClick={() => set.mutate({ is_one_time: !t.is_one_time })}
-            >
-              <span className="block font-medium text-mist-100">
-                {t.is_one_time ? 'Treat as usual spending' : 'Mark as one-time'}
-              </span>
-              <span className="block text-mist-500">
-                {t.is_one_time
-                  ? 'Let this count towards typical-month averages again.'
-                  : 'Keep it in this month, but out of future estimates.'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-              disabled={set.isPending || !online}
-              title={online ? undefined : OFFLINE_WRITE_HINT}
-              onClick={() =>
-                set.mutate({ excluded_from_reports: !t.excluded_from_reports })
-              }
-            >
-              <span className="block font-medium text-mist-100">
-                {t.excluded_from_reports
-                  ? 'Include in reports'
-                  : 'Exclude from reports'}
-              </span>
-              <span className="block text-mist-500">
-                {t.excluded_from_reports
-                  ? 'Count this everywhere again.'
-                  : 'Hide it everywhere, as if it never happened.'}
-              </span>
-            </button>
-
-            {/* Edit/delete for hand-entered rows. On desktop these are also
-                inline buttons at the row's end; here they are the mobile path,
-                and the only way to delete a manual transaction on a phone. */}
-            {canEdit && (onEdit || onDelete) && (
-              <>
-                <div className="my-1 border-t border-white/10" role="none" />
-
-                {onEdit && (
+              {/* Fix a wrong merchant name. Plaid occasionally hands back a
+                  descriptor that is just noise (a row of asterisks, a processor
+                  code) for a real business; this re-points the descriptor at the
+                  right canonical merchant so the name is correct here and on
+                  every report, and stays fixed across future syncs. Offered for
+                  any row with a descriptor that is not already fully editable
+                  (manual rows have their own editor). Scheduled rows are posted
+                  by the obligation worker, so their identity is changed there. */}
+              {canEditName && onEditName && (
+                <>
                   <button
                     type="button"
                     role="menuitem"
@@ -1102,48 +1178,200 @@ function RowMenu({
                     title={online ? undefined : OFFLINE_WRITE_HINT}
                     onClick={() => {
                       close()
-                      onEdit()
+                      onEditName()
                     }}
                   >
                     <span className="block font-medium text-mist-100">
-                      Edit…
+                      Edit name…
                     </span>
                     <span className="block text-mist-500">
-                      Change the amount, date, or merchant.
+                      Correct this merchant's real name.
                     </span>
                   </button>
-                )}
 
-                {onDelete && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
-                    disabled={deletePending || !online}
-                    title={online ? undefined : OFFLINE_WRITE_HINT}
-                    onClick={() => {
-                      close()
-                      onDelete()
-                    }}
-                  >
-                    <span className="block font-medium text-ember-400">
-                      Delete…
-                    </span>
-                    <span className="block text-mist-500">
-                      Remove this transaction for good.
-                    </span>
-                  </button>
-                )}
-              </>
-            )}
+                  <div className="my-1 border-t border-white/10" role="none" />
+                </>
+              )}
 
-            {set.isError && (
-              <p className="px-2 py-1 text-ember-400">
-                Could not save that. Try again.
-              </p>
-            )}
-          </div>
-        </>
+              {/* What this charge was FOR, as opposed to what kind of spending it
+                  is. Offered on every row including synced ones: a hotel charge
+                  from Plaid is exactly what "Summer Vacation" has to land on. */}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                disabled={!online}
+                title={online ? undefined : OFFLINE_WRITE_HINT}
+                onClick={() => setPanel('tags')}
+              >
+                <span className="block font-medium text-mist-100">
+                  {t.tags.length > 0 ? `Tags (${t.tags.length})` : 'Add tags…'}
+                </span>
+                <span className="block text-mist-500">
+                  {t.tags.length > 0
+                    ? 'Change what this charge was for.'
+                    : 'Label it — a trip, a project, a person.'}
+                </span>
+              </button>
+
+              {/* Whose share this charge was. An attribution overlay — it never
+                  changes what the household spent. */}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                disabled={!online}
+                title={online ? undefined : OFFLINE_WRITE_HINT}
+                onClick={() => setPanel('split')}
+              >
+                <span className="block font-medium text-mist-100">Split…</span>
+                <span className="block text-mist-500">
+                  Record whose share this was.
+                </span>
+              </button>
+
+              {/* Receipts, invoices and warranties belong next to the charge they
+                  explain, so the vault is reachable from the row rather than only
+                  from the Documents page. */}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5"
+                onClick={() => setPanel('documents')}
+              >
+                <span className="block font-medium text-mist-100">
+                  {documentCount > 0 ? `Documents (${documentCount})` : 'Attach a receipt…'}
+                </span>
+                <span className="block text-mist-500">
+                  {documentCount > 0
+                    ? 'See or change what is attached.'
+                    : 'Keep the paperwork with the charge.'}
+                </span>
+              </button>
+
+              {/* How this charge relates to ANOTHER charge — the refund that
+                  cancelled it, the duplicate it turned out to be, the dinner it
+                  paid for. Sits beside the documents action because it is the
+                  same kind of thing: something attached to the row that leaves
+                  the row itself untouched. Offered on every row including synced
+                  ones, for the same reason tags are. */}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                disabled={!online}
+                title={online ? undefined : OFFLINE_WRITE_HINT}
+                onClick={() => setPanel('links')}
+              >
+                <span className="block font-medium text-mist-100">
+                  Link to another transaction…
+                </span>
+                <span className="block text-mist-500">
+                  A refund, a duplicate, something it paid for.
+                </span>
+              </button>
+
+              <div className="my-1 border-t border-white/10" role="none" />
+
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                disabled={set.isPending || !online}
+                title={online ? undefined : OFFLINE_WRITE_HINT}
+                onClick={() => set.mutate({ is_one_time: !t.is_one_time })}
+              >
+                <span className="block font-medium text-mist-100">
+                  {t.is_one_time ? 'Treat as usual spending' : 'Mark as one-time'}
+                </span>
+                <span className="block text-mist-500">
+                  {t.is_one_time
+                    ? 'Let this count towards typical-month averages again.'
+                    : 'Keep it in this month, but out of future estimates.'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                disabled={set.isPending || !online}
+                title={online ? undefined : OFFLINE_WRITE_HINT}
+                onClick={() =>
+                  set.mutate({ excluded_from_reports: !t.excluded_from_reports })
+                }
+              >
+                <span className="block font-medium text-mist-100">
+                  {t.excluded_from_reports
+                    ? 'Include in reports'
+                    : 'Exclude from reports'}
+                </span>
+                <span className="block text-mist-500">
+                  {t.excluded_from_reports
+                    ? 'Count this everywhere again.'
+                    : 'Hide it everywhere, as if it never happened.'}
+                </span>
+              </button>
+
+              {/* Edit/delete for hand-entered rows. On desktop these are also
+                  inline buttons at the row's end; here they are the mobile path,
+                  and the only way to delete a manual transaction on a phone. */}
+              {canEdit && (onEdit || onDelete) && (
+                <>
+                  <div className="my-1 border-t border-white/10" role="none" />
+
+                  {onEdit && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                      disabled={!online}
+                      title={online ? undefined : OFFLINE_WRITE_HINT}
+                      onClick={() => {
+                        close()
+                        onEdit()
+                      }}
+                    >
+                      <span className="block font-medium text-mist-100">
+                        Edit…
+                      </span>
+                      <span className="block text-mist-500">
+                        Change the amount, date, or merchant.
+                      </span>
+                    </button>
+                  )}
+
+                  {onDelete && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                      disabled={deletePending || !online}
+                      title={online ? undefined : OFFLINE_WRITE_HINT}
+                      onClick={() => {
+                        close()
+                        onDelete()
+                      }}
+                    >
+                      <span className="block font-medium text-ember-400">
+                        Delete…
+                      </span>
+                      <span className="block text-mist-500">
+                        Remove this transaction for good.
+                      </span>
+                    </button>
+                  )}
+                </>
+              )}
+
+              {set.isError && (
+                <p className="px-2 py-1 text-ember-400">
+                  Could not save that. Try again.
+                </p>
+              )}
+            </div>
+          )}
+        </AnchoredPopover>
       )}
     </div>
   )

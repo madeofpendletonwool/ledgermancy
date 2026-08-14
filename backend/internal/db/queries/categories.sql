@@ -91,6 +91,24 @@ WHERE t.id = $1
   AND v.household_id = $2
 RETURNING t.*;
 
+-- name: SetTransactionsCategory :many
+-- The bulk form of SetTransactionCategory, for "categorise everything I ticked".
+-- Identical semantics per row, including the sticky category_source = 'manual':
+-- picking rows out of a list is no less a manual decision than picking one.
+--
+-- The caller has already narrowed transaction_ids to rows it could see (the
+-- handler resolves them through ListVisibleTransactions first, exactly as the
+-- single-row path resolves one through GetVisibleTransaction). The household
+-- guard here is the same second line of defence the single-row UPDATE keeps.
+UPDATE transactions t
+SET category_id = sqlc.arg('category_id'), category_source = 'manual'
+FROM accounts a, account_access v
+WHERE t.id = ANY(sqlc.arg('transaction_ids')::uuid[])
+  AND v.account_id = a.id
+  AND a.id = t.account_id
+  AND v.household_id = sqlc.arg('household_id')
+RETURNING t.*;
+
 -- name: ListUncategorisedTransactions :many
 -- Transactions still needing a category, scoped to one household. merchant_name
 -- and name are selected because household rules (match step 2) match against

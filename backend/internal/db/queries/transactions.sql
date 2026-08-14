@@ -532,6 +532,24 @@ WHERE t.id = sqlc.arg('id')
   AND v.household_id = sqlc.arg('household_id')
 RETURNING t.*;
 
+-- name: SetTransactionsFlags :execrows
+-- The bulk form of SetTransactionFlags, for a multi-select. Same nargs, same
+-- absence of a source='manual' guard, same household authorisation — the only
+-- difference is that it takes a set of ids and reports how many rows it reached
+-- instead of returning the one row it changed.
+--
+-- The caller has already narrowed transaction_ids to rows it could see, exactly
+-- as the single-row handler does before writing.
+UPDATE transactions t
+SET excluded_from_reports = COALESCE(sqlc.narg('excluded_from_reports')::bool, t.excluded_from_reports),
+    is_one_time           = COALESCE(sqlc.narg('is_one_time')::bool, t.is_one_time),
+    updated_at            = now()
+FROM accounts a, account_access v
+WHERE t.id = ANY(sqlc.arg('transaction_ids')::uuid[])
+  AND v.account_id = a.id
+  AND a.id = t.account_id
+  AND v.household_id = sqlc.arg('household_id');
+
 -- name: GetVisibleTransaction :one
 -- A single transaction scoped exactly like the list: own items ∪ shared. Used
 -- inside the audit transaction to read a row's before-state before a mutation,
@@ -543,6 +561,22 @@ FROM transactions t
 JOIN accounts a    ON a.id = t.account_id
 JOIN account_access v ON v.account_id = a.id
 WHERE t.id = sqlc.arg('id')
+  AND v.household_id = sqlc.arg('household_id')
+  AND (v.user_id = sqlc.narg('viewer_user_id')::uuid OR v.is_shared);
+
+-- name: GetVisibleTransactions :many
+-- GetVisibleTransaction for a set of ids, in one round trip. Same scoping to the
+-- letter, which is what makes it usable as the authorisation step for a bulk
+-- write: the ids it hands back ARE the subset the caller was allowed to touch,
+-- so a selection carrying a foreign or stale id narrows rather than fails.
+--
+-- DISTINCT because a shared account can match more than one account_access row
+-- and a before-state must appear exactly once.
+SELECT DISTINCT ON (t.id) t.*
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = ANY(sqlc.arg('transaction_ids')::uuid[])
   AND v.household_id = sqlc.arg('household_id')
   AND (v.user_id = sqlc.narg('viewer_user_id')::uuid OR v.is_shared);
 

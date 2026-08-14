@@ -631,6 +631,17 @@ export interface TransactionTag {
 }
 
 /**
+ * What a bulk action reports back: how many rows it actually reached.
+ *
+ * Not a success flag, because "fewer than I selected" is a normal answer — rows
+ * outside the caller's visibility drop out, and re-applying an add changes
+ * nothing.
+ */
+export interface BulkResult {
+  changed: number
+}
+
+/**
  * A relationship two transactions can stand in — "refunds", "relates to",
  * "paid for", or one the household invented.
  *
@@ -4640,6 +4651,54 @@ export const api = {
       { tag_ids: tagIDs, apply_to_merchant: applyToMerchant },
     ),
 
+  // --- Bulk actions ---------------------------------------------------------
+  // One action over the set of rows ticked on the transactions list. Each is a
+  // single request so the whole selection lands or none of it does — five
+  // hundred separate calls would be five hundred chances to half-apply it.
+  //
+  // `changed` can be smaller than the number of ids sent: rows the caller cannot
+  // see drop out, and an add that was already applied moves nothing. Both are
+  // normal, which is why the server counts rather than reporting success.
+
+  /**
+   * Adds or removes tags across a selection.
+   *
+   * There is deliberately no "set". The single-row editor replaces a row's whole
+   * tag set because that set is exactly what the user just ticked; a selection
+   * carries a different set per row, and replacing across them would strip
+   * labels put there for unrelated reasons.
+   */
+  bulkTransactionTags: (
+    transactionIDs: string[],
+    tagIDs: string[],
+    action: 'add' | 'remove',
+  ) =>
+    request<BulkResult>('POST', '/api/transactions/bulk/tags', {
+      transaction_ids: transactionIDs,
+      tag_ids: tagIDs,
+      action,
+    }),
+
+  /**
+   * Recategorises a selection. No apply-to-merchant: that switch is a statement
+   * about one merchant, and a selection spans many.
+   */
+  bulkTransactionCategory: (transactionIDs: string[], categoryID: string) =>
+    request<BulkResult>('POST', '/api/transactions/bulk/category', {
+      transaction_ids: transactionIDs,
+      category_id: categoryID,
+    }),
+
+  /** Sets how a selection COUNTS. Omitted flags are left alone, as per row. */
+  bulkTransactionFlags: (
+    transactionIDs: string[],
+    flags: { is_one_time?: boolean; excluded_from_reports?: boolean },
+  ) =>
+    request<BulkResult>('POST', '/api/transactions/bulk/flags', {
+      transaction_ids: transactionIDs,
+      ...flags,
+    }),
+
   // --- Transaction links --------------------------------------------------
   // How one transaction relates to another. Links are annotations: nothing here
   // changes either transaction's amount, date or category. The only figure a
@@ -5513,15 +5572,10 @@ export const api = {
 
   /**
    * Attachment counts for a page of transactions, keyed by transaction id.
-   * One request per page rather than one per row.
+   * A handful of requests per page rather than one per row.
    */
   documentCounts: (transactionIds: string[]) =>
-    request<Record<string, number>>(
-      'GET',
-      `/api/documents/counts?${transactionIds
-        .map((id) => `transaction_id=${encodeURIComponent(id)}`)
-        .join('&')}`,
-    ),
+    documentCountsBatched(transactionIds),
 
   uploadDocument: (input: DocumentUpload) => uploadDocument(input),
 
@@ -5785,6 +5839,40 @@ async function documentObjectURL(
 
 function targetQuery(target: DocumentTarget): Record<string, string> {
   return { [`${target.kind}_id`]: target.id }
+}
+
+/**
+ * How many transaction ids go into one attachment-count request.
+ *
+ * The counts endpoint takes one `transaction_id=<uuid>` param per row, ~51 bytes
+ * each, so the id list lands in the request LINE rather than a body. Two ceilings
+ * bound it: nginx's default `large_client_header_buffers` is 8k (a 200-row page
+ * would be ~10k and 414), and the server truncates the list at 200 ids without
+ * saying so. 100 clears both with room to spare, and it is only a request or two
+ * even on the largest page the size picker offers.
+ */
+const DOCUMENT_COUNT_BATCH = 100
+
+async function documentCountsBatched(
+  transactionIds: string[],
+): Promise<Record<string, number>> {
+  const batches: string[][] = []
+  for (let i = 0; i < transactionIds.length; i += DOCUMENT_COUNT_BATCH) {
+    batches.push(transactionIds.slice(i, i + DOCUMENT_COUNT_BATCH))
+  }
+
+  const results = await Promise.all(
+    batches.map((ids) =>
+      request<Record<string, number>>(
+        'GET',
+        `/api/documents/counts?${ids
+          .map((id) => `transaction_id=${encodeURIComponent(id)}`)
+          .join('&')}`,
+      ),
+    ),
+  )
+
+  return Object.assign({}, ...results) as Record<string, number>
 }
 
 // streamChat POSTs the transcript and reads the SSE body, invoking onDelta for

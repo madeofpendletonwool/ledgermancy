@@ -24,6 +24,38 @@ Changing any filter (except an explicit page move) resets to page 0, so a new
 filter never lands you past the end of a now-shorter result set. Paging keeps
 the previous page on screen while the next loads.
 
+**Per page** sits beside the pager and offers 50, 100, 200 or 500 rows. It lives
+in the URL like every other filter, and changing it takes you back to page 1 —
+page 7 of fifties is not page 7 of five-hundreds.
+
+## Acting on several rows at once
+
+**Select** (top right) reveals a checkbox on every row. It is off by default, and
+off again the moment you press **Done**: a ledger is something you read far more
+often than something you act on in bulk, so the default row keeps every pixel for
+the merchant name.
+
+Tick rows individually, shift-click to take a range, or use the checkbox in the
+header strip to take the whole page. A bar appears at the bottom with the actions
+that make sense over a set:
+
+| Action | Notes |
+| --- | --- |
+| **Tags** | Tick tags, then **Add** or **Remove**. Adding never strips labels already on a row. |
+| **Category** | One category for everything selected. Recorded in each row's history, as a single recategorise is. |
+| **How it counts** | Mark as one-time / treat as usual, and exclude from / include in reports. |
+
+There is no bulk delete. The actions offered are the ones that are reversible or
+safely re-appliable; deleting is neither, so it stays a one-row decision in the
+row's own ⋯ menu.
+
+The selection covers **the rows currently on screen** and is dropped whenever the
+result set changes — a different filter, page or page size. It deliberately
+survives an action, so "tag these, now categorise the same ones" is two clicks
+rather than two selections. Each action reports how many rows it actually
+changed, which can be fewer than you selected: re-applying a tag that is already
+there changes nothing.
+
 ## Search
 
 The search box takes a **composable query**: type a word to search, or add

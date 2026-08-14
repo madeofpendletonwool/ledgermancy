@@ -592,6 +592,15 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// The vocabulary the `q` grammar accepts, for the search bar's
 				// autocomplete. Static for a given binary; see search_handlers.go.
 				r.Get("/search-operators", s.handleSearchOperators)
+				// One action over the set of rows a user ticked on the list.
+				// Static segments, so they can never be mistaken for the
+				// {transactionID} routes below. Each resolves its id list
+				// through the caller's own visibility before writing, and
+				// applies the whole selection in one database transaction —
+				// see bulk_transaction_handlers.go.
+				r.Post("/bulk/tags", s.handleBulkTransactionTags)
+				r.Post("/bulk/category", s.handleBulkTransactionCategory)
+				r.Post("/bulk/flags", s.handleBulkTransactionFlags)
 				r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
 				// How a row COUNTS, as opposed to what it says — so this accepts
 				// Plaid-synced rows, unlike the manual-only editors below.
