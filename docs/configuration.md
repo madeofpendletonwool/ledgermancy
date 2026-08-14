@@ -163,6 +163,40 @@ the live example, lost to that year's lapse in appropriations — and a figure
 dated in such a month is reported as undeflatable rather than being deflated
 against an interpolated guess.
 
+## Outgoing webhooks
+
+**Off by default**, and this is the switch on this page that deserves the most
+thought.
+
+Every other outbound switch adds **one** host that *we* chose — Stooq, BLS,
+Logo.dev — receiving a ticker or a merchant name. This one lets members of the
+household choose the host, and what it receives is their own financial events: an
+alert with an amount and a merchant, a newly-raised insight, a goal contribution.
+That is a capability rather than a data source, so it is a decision rather than a
+default.
+
+With it off there is **no delivery worker registered**, every `/api/webhooks`
+route answers `503`, and no producer writes a webhook row. An instance that never
+sets this cannot make an outbound webhook request even by accident, and carries
+no webhook rows to appear in a backup.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `WEBHOOKS_ENABLED` | `false` | Set `true` to let households configure outgoing webhooks |
+
+There is no credential of ours here. Each subscription mints its **own** signing
+secret, shown to its creator once and stored sealed with `ENCRYPTION_KEY` — so a
+leaked database does not yield a key anybody can forge deliveries with.
+
+`http://` destinations are accepted alongside `https://`, deliberately: the
+flagship receiver for a self-hosted finance app is a Home Assistant or a script
+on the same LAN. The signature makes an unencrypted delivery **tamper-evident,
+not private**; over the public internet, use TLS. Redirects are never followed,
+so a receiver cannot forward a signed payload somewhere else.
+
+See [Webhooks](features/webhooks.md) for the payload, the signature recipe and
+the retry policy.
+
 ## Merchant logos
 
 **Off by default.** This is the second of the two switches that add a host which

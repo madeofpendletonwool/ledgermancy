@@ -88,13 +88,25 @@ func (s *Server) handleSatisfyObligation(w http.ResponseWriter, r *http.Request)
 	// see the reminder a moment longer than necessary. Best-effort: a failure
 	// here leaves the row to age out at the next generation pass, which is
 	// acceptable, so it is not propagated as an error.
-	if _, err := s.Queries.DismissInsightByDedupe(r.Context(), dbgen.DismissInsightByDedupeParams{
-		HouseholdID: identity.HouseholdID,
-		DedupeKey:   insights.OverdueBillDedupeKey(obligationID, due),
-	}); err != nil {
-		// Logged by internalError's caller path only on real need; here a miss
-		// is benign, so swallow.
-		_ = err
+	//
+	// Both bill reminders for this occurrence are cleared. Only one of them can
+	// have been raised — the overdue matcher and the range matcher partition the
+	// occurrence between them — but the handler does not know which, and marking
+	// paid settles the occurrence either way: "yes, that charge was the payment"
+	// is the same answer to "we can't find it" and to "that was more than you
+	// expected".
+	for _, key := range []string{
+		insights.OverdueBillDedupeKey(obligationID, due),
+		insights.BillOutOfRangeDedupeKey(obligationID, due),
+	} {
+		if _, err := s.Queries.DismissInsightByDedupe(r.Context(), dbgen.DismissInsightByDedupeParams{
+			HouseholdID: identity.HouseholdID,
+			DedupeKey:   key,
+		}); err != nil {
+			// Logged by internalError's caller path only on real need; here a miss
+			// is benign, so swallow.
+			_ = err
+		}
 	}
 
 	writeJSON(w, http.StatusOK, satisfactionResponse{

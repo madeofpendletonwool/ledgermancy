@@ -127,18 +127,54 @@ func MonthlyEstimate(amount decimal.Decimal, c Cadence) decimal.Decimal {
 	return amount.Mul(daysPerMonth).Div(days).Round(2)
 }
 
+// AmountRange is what a household said to expect a bill to cost (MAD-120). It is
+// a tolerance around an obligation's Amount, not a replacement for it: the
+// projection and the monthly estimate still work from Amount, and a bill with no
+// range stated is the ordinary case.
+//
+// Both bounds are always present — the column CHECK enforces both-or-neither —
+// so a non-nil *AmountRange is always a complete, usable range.
+type AmountRange struct {
+	Min decimal.Decimal
+	Max decimal.Decimal
+}
+
+// Contains reports whether a charge is the amount the household expected.
+func (r AmountRange) Contains(d decimal.Decimal) bool {
+	return !d.LessThan(r.Min) && !d.GreaterThan(r.Max)
+}
+
+// Label renders a range the way every surface says it, so the wording is decided
+// once rather than in each page that shows a bill.
+func (r AmountRange) Label() string {
+	return fmt.Sprintf("%s–%s", r.Min.StringFixed(2), r.Max.StringFixed(2))
+}
+
+// rangeFrom rebuilds an AmountRange from the nullable column pair, returning nil
+// when no range was stated. A half-populated pair cannot reach here (the table's
+// CHECK rejects it), so a single bound present is treated as no range rather
+// than guessed at.
+func rangeFrom(min, max decimal.NullDecimal) *AmountRange {
+	if !min.Valid || !max.Valid {
+		return nil
+	}
+	return &AmountRange{Min: min.Decimal, Max: max.Decimal}
+}
+
 // Occurrence is one obligation falling due on one date. Several occurrences can
 // share an ObligationID — that is the point of expansion.
 type Occurrence struct {
 	ObligationID uuid.UUID
 	Label        string
 	Amount       decimal.Decimal
-	CategoryID   *uuid.UUID
-	AccountID    *uuid.UUID
-	Source       string
-	MerchantKey  *string
-	Cadence      Cadence
-	DueDate      time.Time
+	// Range is the stated expected range, nil when the member stated none.
+	Range       *AmountRange
+	CategoryID  *uuid.UUID
+	AccountID   *uuid.UUID
+	Source      string
+	MerchantKey *string
+	Cadence     Cadence
+	DueDate     time.Time
 }
 
 // ListUpcoming expands every obligation visible to userID into its occurrences
@@ -170,6 +206,7 @@ func ListUpcoming(
 			ObligationID: r.ObligationID,
 			Label:        r.Label,
 			Amount:       r.Amount,
+			Range:        rangeFrom(r.AmountMin, r.AmountMax),
 			CategoryID:   r.CategoryID,
 			AccountID:    r.AccountID,
 			Source:       r.Source,

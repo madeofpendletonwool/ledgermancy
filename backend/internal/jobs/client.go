@@ -135,6 +135,17 @@ const bondRevalueInterval = 24 * time.Hour
 // month a no-op.
 const cpiRefreshInterval = 24 * time.Hour
 
+// webhookSweepInterval is how often stranded outgoing-webhook messages are
+// re-enqueued and old delivery history collected.
+//
+// Half-hourly, and it is a backstop rather than the delivery path: a message is
+// normally queued the moment it is written, and the sweep only sees the ones
+// whose job never made it (a process killed between the row and the enqueue).
+// It is cheap when there is nothing to do — the pending index is partial, so a
+// healthy instance reads an empty index — which is what lets the interval be
+// short enough that "stranded" means minutes rather than a day.
+const webhookSweepInterval = 30 * time.Minute
+
 // authEventRetention is how long the auth audit log is kept. Long enough to
 // investigate something noticed weeks later; short enough that a household
 // deployment never accumulates a table worth worrying about.
@@ -164,11 +175,15 @@ func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 // folds in the AI dependency, so nothing here re-derives it.
 // cpi is the opt-in CPI-U refresh; with it off the worker is not registered and
 // the seeded series simply stops gaining months, which the UI says out loud.
-func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, cpi config.CPIConfig, backup BackupDeps) (*river.Client[pgx.Tx], error) {
+// webhook carries the opt-in outgoing-webhook bus and the cipher its signing
+// secrets are sealed with; with it off no delivery worker exists, so a message
+// row that somehow got written can never turn into an outbound request.
+func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Client, notifier notify.Notifier, mail mailer.Sender, appURL string, benchmarks config.BenchmarkConfig, merchantLogos config.MerchantLogosConfig, cpi config.CPIConfig, webhook WebhookDeps, backup BackupDeps) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	queries := dbgen.New(pool)
 	aiEnabled := aiClient != nil && aiClient.Enabled()
 	logosEnabled := merchantLogos.Enabled && merchantLogos.Token != "" && aiEnabled
+	webhooksEnabled := webhook.Cfg.Enabled && webhook.Cipher != nil
 
 	// The net-worth snapshot does not depend on Plaid, so it is registered
 	// whether or not credentials are configured — manual assets alone are
@@ -258,6 +273,19 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 			Fetcher: logos.NewFetcher(merchantLogos.Token, merchantLogos.Size, merchantLogos.MaxBytes),
 		}); err != nil {
 			return nil, fmt.Errorf("register merchant logo worker: %w", err)
+		}
+	}
+
+	// Outgoing webhook delivery. Not registered at all when the feature is off,
+	// which is the strongest form of the guarantee: this is the only code path
+	// that can POST a household's events to a user-supplied host, and with the
+	// switch off it does not exist in the worker. The sweep enqueues jobs, so it
+	// needs the client and is registered after construction.
+	if webhooksEnabled {
+		if err := river.AddWorkerSafely(workers, &DeliverWebhookWorker{
+			Queries: queries, Cipher: webhook.Cipher,
+		}); err != nil {
+			return nil, fmt.Errorf("register webhook delivery worker: %w", err)
 		}
 	}
 
@@ -444,6 +472,22 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		))
 	}
 
+	// The webhook sweep. RunOnStart, and safely so: it only picks up messages
+	// older than webhookSweepMinAge, and a duplicate delivery job for a message
+	// already queued is collapsed by DeliverWebhookArgs' uniqueness — so a
+	// restart loop cannot turn into a burst of outbound requests. What it buys is
+	// that a worker which died mid-delivery drains its backlog on the way back up
+	// rather than half an hour later.
+	if webhooksEnabled {
+		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
+			river.PeriodicInterval(webhookSweepInterval),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return DeliverWebhooksSweepArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+
 	if syncer != nil {
 		config.PeriodicJobs = append(config.PeriodicJobs, river.NewPeriodicJob(
 			river.PeriodicInterval(SyncInterval),
@@ -506,7 +550,7 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	// The per-household evaluation worker enqueues notify jobs on the client, so
 	// it is registered after construction like the sweeps.
 	if err := river.AddWorkerSafely(workers, &EvaluateAlertsWorker{
-		Queries: queries, Client: client, AppURL: appURL,
+		Queries: queries, Client: client, AppURL: appURL, Webhooks: webhooksEnabled,
 	}); err != nil {
 		return nil, fmt.Errorf("register alerts worker: %w", err)
 	}
@@ -525,6 +569,7 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 	// so it is registered after construction like the sweeps.
 	if err := river.AddWorkerSafely(workers, &GenerateInsightsWorker{
 		Queries: queries, AI: aiClient, Client: client, AppURL: appURL,
+		Webhooks: webhooksEnabled,
 	}); err != nil {
 		return nil, fmt.Errorf("register insights worker: %w", err)
 	}
@@ -551,6 +596,17 @@ func NewWorkerClient(pool *pgxpool.Pool, syncer *plaid.Syncer, aiClient *ai.Clie
 		Queries: queries, Client: client,
 	}); err != nil {
 		return nil, fmt.Errorf("register merchant suggestion sweep worker: %w", err)
+	}
+
+	// The webhook sweep re-enqueues stranded messages, so it needs the client.
+	// Registered and scheduled together, because a sweep with no periodic job is
+	// a backstop that never runs.
+	if webhooksEnabled {
+		if err := river.AddWorkerSafely(workers, &DeliverWebhooksSweepWorker{
+			Queries: queries, Client: client,
+		}); err != nil {
+			return nil, fmt.Errorf("register webhook sweep worker: %w", err)
+		}
 	}
 
 	// The logo sweep fans out per household, so it needs the client too.

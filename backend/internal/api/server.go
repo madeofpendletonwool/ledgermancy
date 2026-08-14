@@ -473,6 +473,31 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/{digestID}/read", s.handleMarkDigestRead)
 			})
 
+			// Outgoing webhooks: the household's own outbound event bus.
+			//
+			// Adult-only rather than owner-only, and the line is worth stating.
+			// Owner-only is for the INSTANCE (continuity, system status); this is
+			// the household's data going to a host the household chose, and every
+			// adult can already read every figure a webhook could carry. What
+			// keeps it from being a data-exfiltration route for anyone else is
+			// that it is off entirely unless the operator sets WEBHOOKS_ENABLED —
+			// every handler checks, so a switched-off instance answers 503 here
+			// rather than merely rendering no UI.
+			r.Route("/webhooks", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListWebhooks)
+				r.Post("/", s.handleCreateWebhook)
+				// Static before the parameterised routes below so the trigger
+				// vocabulary is never parsed as a webhook id.
+				r.Get("/triggers", s.handleListWebhookTriggers)
+				r.Put("/{webhookID}", s.handleUpdateWebhook)
+				r.Delete("/{webhookID}", s.handleDeleteWebhook)
+				r.Post("/{webhookID}/secret", s.handleRotateWebhookSecret)
+				r.Post("/{webhookID}/test", s.handleTestWebhook)
+				r.Get("/{webhookID}/messages", s.handleListWebhookMessages)
+				r.Get("/{webhookID}/messages/{messageID}/attempts", s.handleListWebhookAttempts)
+			})
+
 			// Operator surface. This is the instance's recovery posture, not a
 			// household's data: it names paths on the host, reports on the backup
 			// subsystem, and can trigger a full database dump. Owner-only,
@@ -577,8 +602,32 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// land on. Replaces the row's whole tag set — see
 				// setTransactionTagsRequest.
 				r.Put("/{transactionID}/tags", s.handleSetTransactionTags)
+				// How this row relates to ANOTHER row: a refund, a duplicate,
+				// something it paid for. Reads return both directions of every
+				// edge, phrased from this transaction's end. Accepts synced rows
+				// for the same reason /flags and /tags do — a refund from Plaid
+				// is exactly the row that has to point at the charge it cancels
+				// — and never writes to either transaction. See
+				// transaction_link_handlers.go.
+				r.Get("/{transactionID}/links", s.handleListTransactionLinks)
+				r.Post("/{transactionID}/links", s.handleCreateTransactionLink)
+				r.Delete("/{transactionID}/links/{linkID}", s.handleDeleteTransactionLink)
 				r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 				r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
+			})
+
+			// The vocabulary of relationships two transactions can stand in.
+			// Household-scoped like tags and categories, with the same
+			// household_id-NULL convention for the shipped rows: the three system
+			// types are readable by every household and writable by none, so
+			// `refund` — the type the netting view keys on — means one thing in
+			// every deployment. There is deliberately no admin CRUD over them.
+			r.Route("/link-types", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListLinkTypes)
+				r.Post("/", s.handleCreateLinkType)
+				r.Put("/{linkTypeID}", s.handleUpdateLinkType)
+				r.Delete("/{linkTypeID}", s.handleDeleteLinkType)
 			})
 
 			// Canonical merchants: the review queue for proposed merges, plus manual
@@ -694,6 +743,27 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// The envelope's contents: the tag, its derived total, and the
 				// charges behind it in one round trip.
 				r.Get("/{tagID}/transactions", s.handleListTagTransactions)
+			})
+
+			// Rules: user-editable IF-THEN over transactions. Household data
+			// like tags and categories, and with the same split — the RULE
+			// belongs to the household, while the transactions the two verbs
+			// below reach stay under the per-member visibility predicate, so a
+			// preview's match count can never describe a charge on the other
+			// member's private account.
+			r.Route("/rules", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListRules)
+				r.Post("/", s.handleCreateRule)
+				r.Put("/{ruleID}", s.handleUpdateRule)
+				r.Delete("/{ruleID}", s.handleDeleteRule)
+				// Dry run: what this rule would do to what is already stored.
+				// Writes nothing, and shares its planner with the run below, so
+				// it cannot promise something the run would not do.
+				r.Post("/{ruleID}/test", s.handleTestRule)
+				// The same walk, applied. Idempotent: pressing it a second time
+				// changes nothing.
+				r.Post("/{ruleID}/trigger", s.handleTriggerRule)
 			})
 
 			r.Route("/budgets", func(r chi.Router) {

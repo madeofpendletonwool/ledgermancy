@@ -77,6 +77,12 @@ func DefaultProducers() []Producer {
 		// and we can't find a payment". Registered beside it so the two halves
 		// of the bill reminder sit together.
 		overdueBillProducer{},
+		// Bills paid outside their stated amount range (billrange.go, MAD-120).
+		// The third answer beside upcoming_bill ("it's coming") and overdue_bill
+		// ("nothing paid it"): a payment landed, for the wrong amount. Registered
+		// here because it shares the overdue matcher's candidate predicate —
+		// exactly one of the two claims any given occurrence.
+		billOutOfRangeProducer{},
 		// Debt-payoff coaching (reminders.go, MAD-85). goalProducer above
 		// deliberately skips kind='debt_payoff'; this producer owns it, coaching
 		// a payoff goal whose current payment won't hit its target date.

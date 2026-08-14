@@ -299,7 +299,51 @@ func (q *Queries) GetBudgetProgress(ctx context.Context, arg GetBudgetProgressPa
 }
 
 const getCategoryAverages = `-- name: GetCategoryAverages :many
-WITH months AS (
+WITH visible AS (
+    SELECT
+        c.id    AS category_id,
+        c.name  AS category_name,
+        c.slug  AS category_slug,
+        c.color AS category_color,
+        c.is_fixed,
+        -- Identical to GetMonthlyTrend's spend_amount, guard for guard, so a
+        -- category's netted average reconciles with its netted months. See the
+        -- ` + "`" + `net_refunds` + "`" + ` section of the file header.
+        GREATEST(
+            ABS(t.amount) - CASE WHEN $5::bool THEN (
+                SELECT COALESCE(SUM(ABS(r.amount)), 0)
+                FROM transaction_links tl
+                JOIN link_types lt      ON lt.id = tl.link_type_id AND lt.nets_spend
+                JOIN transactions r     ON r.id = tl.source_transaction_id
+                JOIN accounts ra        ON ra.id = r.account_id
+                JOIN account_access rv  ON rv.account_id = ra.id
+                LEFT JOIN categories rc ON rc.id = r.category_id
+                WHERE tl.target_transaction_id = t.id
+                  AND rv.household_id = $1
+                  AND (rv.user_id = $2 OR rv.is_shared)
+                  AND ra.is_active
+                  AND NOT r.excluded_from_reports
+                  AND NOT r.pending
+                  AND NOT COALESCE(rc.is_income, FALSE)
+                  AND NOT COALESCE(rc.is_transfer, FALSE)
+                  AND NOT is_spend(r.amount, ra.type)
+            ) ELSE 0 END,
+            0
+        )::numeric AS spend_amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN account_access v ON v.account_id = a.id
+    JOIN categories c  ON c.id = t.category_id
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+      AND NOT c.is_income
+      AND NOT c.is_transfer
+      AND is_spend(t.amount, a.type)
+), months AS (
     SELECT GREATEST(
         1,
         EXTRACT(YEAR FROM age($4::date, $3::date)) * 12
@@ -307,28 +351,16 @@ WITH months AS (
     )::numeric AS n
 )
 SELECT
-    c.id    AS category_id,
-    c.name  AS category_name,
-    c.slug  AS category_slug,
-    c.color AS category_color,
-    c.is_fixed,
-    SUM(ABS(t.amount))::numeric                        AS total,
-    (SUM(ABS(t.amount)) / (SELECT n FROM months))::numeric AS monthly_average,
-    COUNT(*)::bigint                              AS transaction_count
-FROM transactions t
-JOIN accounts a    ON a.id = t.account_id
-JOIN account_access v ON v.account_id = a.id
-JOIN categories c  ON c.id = t.category_id
-WHERE v.household_id = $1
-  AND (v.user_id = $2 OR v.is_shared)
-  AND a.is_active
-  AND NOT t.excluded_from_reports
-  AND NOT t.pending
-  AND t.date >= $3 AND t.date <= $4
-  AND NOT c.is_income
-  AND NOT c.is_transfer
-  AND is_spend(t.amount, a.type)
-GROUP BY c.id, c.name, c.slug, c.color, c.is_fixed
+    category_id,
+    category_name,
+    category_slug,
+    category_color,
+    is_fixed,
+    SUM(spend_amount)::numeric                        AS total,
+    (SUM(spend_amount) / (SELECT n FROM months))::numeric AS monthly_average,
+    COUNT(*)::bigint                                  AS transaction_count
+FROM visible
+GROUP BY category_id, category_name, category_slug, category_color, is_fixed
 ORDER BY total DESC
 `
 
@@ -337,6 +369,7 @@ type GetCategoryAveragesParams struct {
 	UserID      uuid.UUID    `json:"user_id"`
 	Date        stdtime.Time `json:"date"`
 	Date_2      stdtime.Time `json:"date_2"`
+	NetRefunds  bool         `json:"net_refunds"`
 }
 
 type GetCategoryAveragesRow struct {
@@ -362,12 +395,31 @@ type GetCategoryAveragesRow struct {
 // right for a single month, but over a trailing year it yields 13 and
 // understates every average by about 8% — a $6,235 annual total came out as
 // $479.65/month instead of $519.63. Elapsed months is what "per month" means.
+//
+// `net_refunds` matters more here than anywhere else, and that is the reason
+// this query offers it. An average is a claim about a TYPICAL month, and a
+// charge that was refunded was never a typical month's cost — it was not a cost
+// at all. Left un-netted it raises the planning figure for a full trailing year
+// on the strength of money that came straight back.
+//
+// transaction_count deliberately does NOT change with netting. It counts
+// charges, and a refunded charge still happened; a count that fell when a
+// refund was linked would be answering a different question from the one its
+// name asks. The same split the tags page makes between a fact about the label
+// and a fact about the money.
+//
+// `visible` is declared BEFORE `months` for the code generator's benefit, and
+// the order is load-bearing: sqlc names a parameter after the first column it
+// sees compared to it, and inside `months` the dates are only ever arguments to
+// age(). Declaring that one first renames $3/$4 to Column3/Column4 in the
+// generated struct. The two CTEs are independent, so the order is free.
 func (q *Queries) GetCategoryAverages(ctx context.Context, arg GetCategoryAveragesParams) ([]GetCategoryAveragesRow, error) {
 	rows, err := q.db.Query(ctx, getCategoryAverages,
 		arg.HouseholdID,
 		arg.UserID,
 		arg.Date,
 		arg.Date_2,
+		arg.NetRefunds,
 	)
 	if err != nil {
 		return nil, err
@@ -1276,29 +1328,60 @@ func (q *Queries) GetMonthlyFixedSpendByCategory(ctx context.Context, arg GetMon
 }
 
 const getMonthlyTrend = `-- name: GetMonthlyTrend :many
+WITH visible AS (
+    SELECT
+        t.date,
+        t.amount,
+        a.type AS account_type,
+        c.is_income,
+        c.is_transfer,
+        c.is_fixed,
+        GREATEST(
+            ABS(t.amount) - CASE WHEN $5::bool THEN (
+                SELECT COALESCE(SUM(ABS(r.amount)), 0)
+                FROM transaction_links tl
+                JOIN link_types lt      ON lt.id = tl.link_type_id AND lt.nets_spend
+                JOIN transactions r     ON r.id = tl.source_transaction_id
+                JOIN accounts ra        ON ra.id = r.account_id
+                JOIN account_access rv  ON rv.account_id = ra.id
+                LEFT JOIN categories rc ON rc.id = r.category_id
+                WHERE tl.target_transaction_id = t.id
+                  AND rv.household_id = $1
+                  AND (rv.user_id = $2 OR rv.is_shared)
+                  AND ra.is_active
+                  AND NOT r.excluded_from_reports
+                  AND NOT r.pending
+                  AND NOT COALESCE(rc.is_income, FALSE)
+                  AND NOT COALESCE(rc.is_transfer, FALSE)
+                  AND NOT is_spend(r.amount, ra.type)
+            ) ELSE 0 END,
+            0
+        )::numeric AS spend_amount
+    FROM transactions t
+    JOIN accounts a    ON a.id = t.account_id
+    JOIN account_access v ON v.account_id = a.id
+    LEFT JOIN categories c ON c.id = t.category_id
+    WHERE v.household_id = $1
+      AND (v.user_id = $2 OR v.is_shared)
+      AND a.is_active
+      AND NOT t.excluded_from_reports
+      AND NOT ($6::bool AND t.is_one_time)
+      AND NOT t.pending
+      AND t.date >= $3 AND t.date <= $4
+)
 SELECT
-    date_trunc('month', t.date)::date AS month,
-    COALESCE(SUM(-t.amount) FILTER (WHERE c.is_income), 0)::numeric AS income,
-    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
-                                     AND NOT COALESCE(c.is_transfer, FALSE)
-                                     AND is_spend(t.amount, a.type)), 0)::numeric AS spending,
-    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE COALESCE(c.is_fixed, FALSE)
-                                     AND is_spend(t.amount, a.type)), 0)::numeric AS fixed_spending,
-    COALESCE(SUM(ABS(t.amount))  FILTER (WHERE NOT COALESCE(c.is_income, FALSE)
-                                     AND NOT COALESCE(c.is_transfer, FALSE)
-                                     AND NOT COALESCE(c.is_fixed, FALSE)
-                                     AND is_spend(t.amount, a.type)), 0)::numeric AS discretionary_spending
-FROM transactions t
-JOIN accounts a    ON a.id = t.account_id
-JOIN account_access v ON v.account_id = a.id
-LEFT JOIN categories c ON c.id = t.category_id
-WHERE v.household_id = $1
-  AND (v.user_id = $2 OR v.is_shared)
-  AND a.is_active
-  AND NOT t.excluded_from_reports
-  AND NOT ($5::bool AND t.is_one_time)
-  AND NOT t.pending
-  AND t.date >= $3 AND t.date <= $4
+    date_trunc('month', date)::date AS month,
+    COALESCE(SUM(-amount) FILTER (WHERE is_income), 0)::numeric AS income,
+    COALESCE(SUM(spend_amount)  FILTER (WHERE NOT COALESCE(is_income, FALSE)
+                                     AND NOT COALESCE(is_transfer, FALSE)
+                                     AND is_spend(amount, account_type)), 0)::numeric AS spending,
+    COALESCE(SUM(spend_amount)  FILTER (WHERE COALESCE(is_fixed, FALSE)
+                                     AND is_spend(amount, account_type)), 0)::numeric AS fixed_spending,
+    COALESCE(SUM(spend_amount)  FILTER (WHERE NOT COALESCE(is_income, FALSE)
+                                     AND NOT COALESCE(is_transfer, FALSE)
+                                     AND NOT COALESCE(is_fixed, FALSE)
+                                     AND is_spend(amount, account_type)), 0)::numeric AS discretionary_spending
+FROM visible
 GROUP BY 1
 ORDER BY 1
 `
@@ -1308,6 +1391,7 @@ type GetMonthlyTrendParams struct {
 	UserID         uuid.UUID    `json:"user_id"`
 	Date           stdtime.Time `json:"date"`
 	Date_2         stdtime.Time `json:"date_2"`
+	NetRefunds     bool         `json:"net_refunds"`
 	ExcludeOneTime bool         `json:"exclude_one_time"`
 }
 
@@ -1329,12 +1413,25 @@ type GetMonthlyTrendRow struct {
 // money. `is_fixed` deliberately omits the income/transfer guards the other
 // buckets carry because the API forces is_fixed = false for those categories
 // (isFixedFor in category_handlers.go), so the combination cannot arise.
+//
+// The CTE exists so `spend_amount` — the row's contribution to a spending
+// figure, net of any linked refunds — is defined ONCE and used by all three
+// spending buckets. Defining it three times is how the stacked bar stops
+// summing to the headline. Income is untouched by netting: neither a refund nor
+// the charge it cancels is income, and treating a credit as both income and a
+// deduction from spending would count it twice in the household's favour.
+//
+// With net_refunds false, spend_amount is exactly ABS(t.amount) and the
+// correlated subquery is never evaluated — the default path returns what this
+// query returned before links existed. See the `net_refunds` section of the
+// file header for what the subquery's guards are protecting.
 func (q *Queries) GetMonthlyTrend(ctx context.Context, arg GetMonthlyTrendParams) ([]GetMonthlyTrendRow, error) {
 	rows, err := q.db.Query(ctx, getMonthlyTrend,
 		arg.HouseholdID,
 		arg.UserID,
 		arg.Date,
 		arg.Date_2,
+		arg.NetRefunds,
 		arg.ExcludeOneTime,
 	)
 	if err != nil {
@@ -2039,10 +2136,56 @@ type GetSpendingSummaryRow struct {
 // It passes exclude_one_time through, untouched, to GetMonthlyTrend and
 // GetCategoryMonthMatrix — the same two real-period queries, asked the
 // trailing-baseline question on the reader's say-so and flipped back the
-// moment they untick it. The toggle owns the only reader-driven path; there
-// is still no third thing a query hardcodes, and a new caller that is NOT
-// that toggle still has to pick real-period-or-trailing-baseline and hardcode
-// it.
+// moment they untick it. There is still no third thing a query hardcodes, and
+// a new caller that is NOT a reader toggle still has to pick
+// real-period-or-trailing-baseline and hardcode it.
+//
+// `net_refunds` is the SECOND reader-driven toggle, added with transaction
+// links (MAD-122). Same shape: off by default, off in every existing caller,
+// flipped only by a reader asking a different question of the same data.
+//
+// What it does, and why it is a toggle rather than the truth:
+//
+//	A refund is a credit, so is_spend() is false for it and it counts in no
+//	spending figure at all. The charge it cancels, meanwhile, counts in full,
+//	in the month it landed. That is faithful to the calendar — the money did
+//	leave in June and come back in July — and it OVERSTATES what the household
+//	actually spent on the thing. Both readings are true, they answer different
+//	questions, and neither can be the only one available.
+//
+//	Netting subtracts a linked refund from the ORIGINAL CHARGE, in the charge's
+//	own month and own category. It does NOT push a negative into the refund's
+//	month: that would trade one confusing reading ("Food cost $80 in June, and
+//	nothing gave it back") for a worse one ("Food was -$80 in July").
+//
+// The rules the netted expression obeys, in every query that offers it:
+//
+//   - Only links whose TYPE has nets_spend. Today that is the seeded `refund`
+//     type and nothing else; a household cannot create a type that nets. See
+//     migration 00067.
+//   - Only refunds the VIEWER can see, under the same account_access predicate
+//     as the charge itself. Netting must not let a credit on a private account
+//     move a figure on a shared charge — that leaks the private row's amount
+//     by subtraction.
+//   - Only refunds that are genuinely INFLOWS (NOT is_spend) and are neither
+//     income nor transfers. A credit already counted as income would otherwise
+//     be subtracted from spending as well and help the household twice; a
+//     charge mislinked as a "refund" would subtract spending from spending.
+//   - Excluded and pending refunds are dropped, exactly as they are everywhere.
+//   - The result is clamped at zero PER CHARGE. A charge cannot net below
+//     nothing, so an over-refund reads as a fully-cancelled charge rather than
+//     as negative spending.
+//
+// The one shape that over-nets: a single refund linked as the refund of
+// SEVERAL charges each larger than it. Its full amount comes off each of them.
+// That is a false statement the user made — a credit refunds one charge, or it
+// partially refunds several and the amounts say so — and the app takes it at
+// face value, the same way it takes "exclude this from reports" at face value.
+// The per-charge clamp guarantees the failure mode is a category that reads too
+// low, never one that reads negative. Splitting a refund proportionally across
+// its targets was the alternative and was rejected: it introduces a division,
+// and therefore a rounding drift, into money that is otherwise exact — to make
+// an assertion nobody meant to make come out tidier.
 // Headline figures for one period: what came in, what went out, and what was
 // left to invest.
 func (q *Queries) GetSpendingSummary(ctx context.Context, arg GetSpendingSummaryParams) (GetSpendingSummaryRow, error) {

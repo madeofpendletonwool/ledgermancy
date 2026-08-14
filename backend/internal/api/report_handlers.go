@@ -43,6 +43,21 @@ func excludeOneTimeRequested(r *http.Request) bool {
 	return v == "1" || v == "true"
 }
 
+// netRefundsRequested reads the opt-in flag that subtracts a linked refund from
+// the charge it refunds. Same two spellings as the two flags above, and the same
+// default: off, because "what left the account in each month" is the reading
+// every figure in this app has always meant, and a link is a statement a user
+// made rather than a correction to the bank's record.
+//
+// The second reader-driven toggle, after exclude_one_time — see the header of
+// reports.sql for what netting does, which links it acts on (only a type with
+// nets_spend, which today means only `refund`), and the one shape that
+// over-nets.
+func netRefundsRequested(r *http.Request) bool {
+	v := r.URL.Query().Get("net_refunds")
+	return v == "1" || v == "true"
+}
+
 // monthInProgress reports whether `month` is the calendar month `now` falls in —
 // the month that has started but not finished, so every figure computed over it
 // is a month-to-date figure and not a month's total.
@@ -343,9 +358,15 @@ type trendPoint struct {
 // ExcludeOneTime is true when `is_one_time` rows were dropped per the reader's
 // "Hide one-time charges" toggle. False is the byte-identical default — the same
 // series every consumer received before the toggle existed.
+//
+// NetRefunds is the same contract for the "Net linked refunds" toggle: true
+// means every spending figure in the series has had its linked refunds
+// subtracted from the charge they refund, in the charge's own month. False is
+// again the byte-identical default. Income is unaffected either way.
 type trendResponse struct {
 	Points         []trendPoint `json:"points"`
 	ExcludeOneTime bool         `json:"exclude_one_time"`
+	NetRefunds     bool         `json:"net_refunds"`
 }
 
 // handleTrend returns income/spending/leftover per month. Defaults to the
@@ -367,6 +388,7 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 	from, to := parseDate(q.Get("from"), start), parseDate(q.Get("to"), end)
 
 	exclude := excludeOneTimeRequested(r)
+	net := netRefundsRequested(r)
 
 	rows, err := s.Queries.GetMonthlyTrend(r.Context(), dbgen.GetMonthlyTrendParams{
 		HouseholdID:    identity.HouseholdID,
@@ -374,6 +396,7 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 		Date:           from,
 		Date_2:         to,
 		ExcludeOneTime: exclude,
+		NetRefunds:     net,
 	})
 	if err != nil {
 		s.internalError(w, "monthly trend", err)
@@ -415,7 +438,7 @@ func (s *Server) handleTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, point)
 	}
-	writeJSON(w, http.StatusOK, trendResponse{Points: out, ExcludeOneTime: exclude})
+	writeJSON(w, http.StatusOK, trendResponse{Points: out, ExcludeOneTime: exclude, NetRefunds: net})
 }
 
 type categoryAverageResponse struct {
@@ -431,6 +454,17 @@ type categoryAverageResponse struct {
 
 // handleCategoryAverages defaults to the trailing twelve months, giving the
 // "typical month" figures used for planning.
+//
+// `net_refunds=1` subtracts linked refunds from the charges they refund. This is
+// the endpoint where netting matters most: an average claims to describe a
+// typical month, and a charge that came straight back was never a typical
+// month's cost.
+//
+// The response stays a bare array rather than gaining an envelope to echo the
+// flag back in, which is the one place this endpoint differs from /trend. Every
+// existing consumer would have to be changed to read an echo that nothing
+// renders; the cache key on the client carries the flag instead, which is what
+// actually stops a netted figure appearing under an un-netted label.
 func (s *Server) handleCategoryAverages(w http.ResponseWriter, r *http.Request) {
 	identity := auth.MustFromContext(r.Context())
 
@@ -446,6 +480,7 @@ func (s *Server) handleCategoryAverages(w http.ResponseWriter, r *http.Request) 
 		UserID:      identity.UserID,
 		Date:        from,
 		Date_2:      to,
+		NetRefunds:  netRefundsRequested(r),
 	})
 	if err != nil {
 		s.internalError(w, "category averages", err)

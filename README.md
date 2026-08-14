@@ -75,7 +75,9 @@ you do all the math. Ledgermancy is neither.
   cached locally (`MERCHANT_LOGOS_ENABLED` — your browser never talks to the
   logo host), a daily CPI-U refresh from the BLS public API
   (`CPI_FETCH_ENABLED` — the price series ships bundled, so this only ever adds
-  the newest month), and an S3 bucket you nominate for document storage. All six
+  the newest month), an S3 bucket you nominate for document storage, and
+  outgoing webhooks to URLs *you* configure (`WEBHOOKS_ENABLED` — the only
+  switch here where the destination is your choice rather than ours). All seven
   are off by default.
 
 ## Features
