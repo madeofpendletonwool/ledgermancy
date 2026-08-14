@@ -13,7 +13,8 @@ backend/
     config/       environment configuration
     auth/         argon2id hashing, sessions, middleware
     db/           pgx pool, sqlc output, migrations, queries
-    plaid/        Plaid client, sync modules, webhooks
+    plaid/        Plaid client, sync modules, incoming webhooks
+    webhooks/     outgoing event bus: triggers, signing, delivery
     categorize/   rules engine, merchant cache, LLM fallback
     reporting/    spending, savings rate, net worth, projections
     ai/           Anthropic-compatible client

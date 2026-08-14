@@ -35,6 +35,7 @@ through each page — what it shows, how to use it, and the gotchas worth knowin
 - **Watch**
 
     - [:material-bell-outline: Alerts](alerts.md) — rules with optional push
+    - [:material-webhook: Webhooks](webhooks.md) — push events to your own URLs *(opt-in)*
 
 - **Settings**
 

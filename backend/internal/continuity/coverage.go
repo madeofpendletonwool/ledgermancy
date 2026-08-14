@@ -301,6 +301,13 @@ var tableCoverage = map[string]Coverage{
 	// restore that silently broke every integration they had wired up is not
 	// what anyone means by restoring their data.
 	"api_tokens": DumpOnly,
+	// Outgoing webhook subscriptions. Every row holds a sealed signing secret, so
+	// it cannot go into a plain-JSON file meant to outlive this app — and like
+	// api_tokens directly above, it is emphatically not Ephemeral: the household
+	// configured these deliberately, and a restore that silently stopped feeding
+	// every automation they had wired up is not what anybody means by restoring
+	// their data.
+	"webhooks": DumpOnly,
 
 	// --- Operational bookkeeping ------------------------------------------
 	"auth_events":       DumpOnly, // audit log, swept at 180 days
@@ -344,6 +351,16 @@ var tableCoverage = map[string]Coverage{
 	// --- Ephemeral --------------------------------------------------------
 	"sessions":       Ephemeral, // restoring these would resurrect logins
 	"mfa_challenges": Ephemeral, // seconds-lived by design
+	// Outgoing webhook delivery history. Ephemeral rather than DumpOnly, and the
+	// distinction from `webhooks` above is worth being explicit about: the
+	// SUBSCRIPTION is configuration and must come back, but these are a record of
+	// requests that already happened, collected on a thirty-day retention.
+	// Restoring a week-old `pending` row would hand the sweep a backlog of events
+	// the household has long since seen in the app and re-deliver them to a live
+	// automation — a restore that sets off somebody's lights is a bug, not a
+	// recovery.
+	"webhook_messages": Ephemeral,
+	"webhook_attempts": Ephemeral,
 }
 
 // runtimeTablePrefixes covers tables no migration in this repo creates: River

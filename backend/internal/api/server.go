@@ -473,6 +473,31 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/{digestID}/read", s.handleMarkDigestRead)
 			})
 
+			// Outgoing webhooks: the household's own outbound event bus.
+			//
+			// Adult-only rather than owner-only, and the line is worth stating.
+			// Owner-only is for the INSTANCE (continuity, system status); this is
+			// the household's data going to a host the household chose, and every
+			// adult can already read every figure a webhook could carry. What
+			// keeps it from being a data-exfiltration route for anyone else is
+			// that it is off entirely unless the operator sets WEBHOOKS_ENABLED —
+			// every handler checks, so a switched-off instance answers 503 here
+			// rather than merely rendering no UI.
+			r.Route("/webhooks", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListWebhooks)
+				r.Post("/", s.handleCreateWebhook)
+				// Static before the parameterised routes below so the trigger
+				// vocabulary is never parsed as a webhook id.
+				r.Get("/triggers", s.handleListWebhookTriggers)
+				r.Put("/{webhookID}", s.handleUpdateWebhook)
+				r.Delete("/{webhookID}", s.handleDeleteWebhook)
+				r.Post("/{webhookID}/secret", s.handleRotateWebhookSecret)
+				r.Post("/{webhookID}/test", s.handleTestWebhook)
+				r.Get("/{webhookID}/messages", s.handleListWebhookMessages)
+				r.Get("/{webhookID}/messages/{messageID}/attempts", s.handleListWebhookAttempts)
+			})
+
 			// Operator surface. This is the instance's recovery posture, not a
 			// household's data: it names paths on the host, reports on the backup
 			// subsystem, and can trigger a full database dump. Owner-only,

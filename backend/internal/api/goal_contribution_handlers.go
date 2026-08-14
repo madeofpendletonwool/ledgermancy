@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/jobs"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/webhooks"
 )
 
 // Goal contributions: who funded what.
@@ -231,6 +235,8 @@ func (s *Server) handleCreateGoalContribution(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.emitGoalContributionWebhooks(ctx, identity.HouseholdID, g, c)
+
 	writeJSON(w, http.StatusCreated, contributionResponse{
 		ID:         c.ID,
 		GoalID:     c.GoalID,
@@ -240,6 +246,53 @@ func (s *Server) handleCreateGoalContribution(w http.ResponseWriter, r *http.Req
 		Note:       c.Note,
 		CreatedAt:  c.CreatedAt.UTC().Format(time.RFC3339),
 	})
+}
+
+// emitGoalContributionWebhooks fans a recorded contribution out to whichever
+// webhooks asked for goal.contribution.recorded.
+//
+// This is the one producer that runs in a request rather than a job, so two
+// things about it are deliberate. It is called AFTER the contribution row
+// commits, because a webhook must never announce something that then fails to
+// save. And every failure is logged rather than surfaced: the contribution
+// happened, the user is looking at the result of saving it, and refusing to show
+// it because an integration could not be queued would be the wrong trade.
+//
+// The context is detached for the same reason the audit log detaches: a client
+// that has already navigated away would otherwise cancel the enqueue, losing the
+// event that had just been recorded.
+func (s *Server) emitGoalContributionWebhooks(
+	ctx context.Context,
+	householdID uuid.UUID,
+	goal dbgen.Goal,
+	c dbgen.GoalContribution,
+) {
+	if !s.Config.Webhooks.Enabled {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+
+	note := ""
+	if c.Note != nil {
+		note = *c.Note
+	}
+	ids, err := webhooks.Emit(ctx, s.Queries, householdID,
+		webhooks.TriggerGoalContribution, c.ID.String(), c.CreatedAt, webhooks.GoalContributionData{
+			ContributionID: c.ID.String(),
+			GoalID:         goal.ID.String(),
+			GoalName:       goal.Name,
+			PersonID:       c.PersonID.String(),
+			// A fixed-2 decimal STRING, exactly as it goes to the browser. Money
+			// never leaves this app as a JSON number.
+			Amount:     c.Amount.StringFixed(2),
+			OccurredOn: c.OccurredOn.Format(time.DateOnly),
+			Note:       note,
+		})
+	if err != nil {
+		slog.Error("enqueue goal contribution webhooks", "error", err, "contribution_id", c.ID)
+		return
+	}
+	jobs.EnqueueWebhookDeliveries(ctx, s.Jobs, ids)
 }
 
 func (s *Server) handleDeleteGoalContribution(w http.ResponseWriter, r *http.Request) {

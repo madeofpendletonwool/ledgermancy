@@ -35,6 +35,14 @@ const (
 	// minting and revoking one belong in the same log as a password change.
 	eventAPITokenCreated = "api_token_created"
 	eventAPITokenRevoked = "api_token_revoked"
+	// An outgoing webhook is a standing instruction to send this household's
+	// events to a host somebody chose. Creating one, pointing it somewhere else,
+	// or rotating its secret all change where the household's data goes, which
+	// puts them in the same log as minting a token.
+	eventWebhookCreated       = "webhook_created"
+	eventWebhookUpdated       = "webhook_updated"
+	eventWebhookDeleted       = "webhook_deleted"
+	eventWebhookSecretRotated = "webhook_secret_rotated"
 )
 
 // audit records a security-relevant event.

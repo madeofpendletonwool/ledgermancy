@@ -7,6 +7,7 @@ import { useSession } from '../lib/session'
 import { Security } from './Security'
 import { Household } from './Household'
 import { Continuity } from './Continuity'
+import { Webhooks } from './Webhooks'
 import { SystemStatus } from './SystemStatus'
 import { SkeletonRows } from '../components/Skeleton'
 
@@ -19,6 +20,7 @@ type Tab =
   | 'advisor'
   | 'appearance'
   | 'household'
+  | 'webhooks'
   | 'continuity'
   | 'system'
 
@@ -35,6 +37,10 @@ const TABS: { id: Tab; label: string; adultOnly?: boolean; ownerOnly?: boolean }
   // Household-wide imagery, so adult-only like the other household settings.
   { id: 'appearance', label: 'Appearance', adultOnly: true },
   { id: 'household', label: 'Household', adultOnly: true },
+  // Where this household's events go when they leave the app. Adult-only like
+  // the other household settings — a child login has no business wiring the
+  // family's finances to an address of its choosing — and enforced server-side.
+  { id: 'webhooks', label: 'Webhooks', adultOnly: true },
   // Operator surface: the instance's recovery posture, not the household's
   // data. Owner-only, and enforced server-side by auth.RequireOwner.
   { id: 'continuity', label: 'Continuity', adultOnly: true, ownerOnly: true },
@@ -94,6 +100,7 @@ export function Settings() {
       {activeTab === 'advisor' && <AdvisorSection />}
       {activeTab === 'appearance' && <AppearanceSection />}
       {activeTab === 'household' && <Household />}
+      {activeTab === 'webhooks' && <Webhooks />}
       {activeTab === 'continuity' && <Continuity />}
       {activeTab === 'system' && <SystemStatus />}
     </div>

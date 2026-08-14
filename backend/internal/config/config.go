@@ -47,6 +47,7 @@ type Config struct {
 	Backup        BackupConfig
 	MerchantLogos MerchantLogosConfig
 	CPI           CPIConfig
+	Webhooks      WebhooksConfig
 }
 
 // SMTPConfig points at a mail server for the optional emailed digest.
@@ -266,6 +267,28 @@ type CPIConfig struct {
 	Enabled bool
 }
 
+// WebhooksConfig controls the opt-in outgoing-webhook bus.
+//
+// Off by default, like every other switch that adds an outbound host — but this
+// one is a stronger case than the rest, and the difference is worth stating. The
+// benchmark, logo and CPI fetchers add ONE host each, chosen by us, receiving a
+// ticker or a merchant name. This adds a host chosen by the USER, receiving the
+// household's own financial events. That is exactly the capability the app's
+// privacy stance exists to keep switched off until somebody asks for it, so it
+// stays off until somebody does, and the settings page says so on the page
+// rather than only in the docs.
+//
+// With it off the API routes answer 503, no delivery worker is registered, and
+// no producer writes a message row — so an instance that never turns this on
+// cannot make an outbound webhook request even by accident, and carries no
+// webhook rows to leak in a backup.
+//
+// No credential of ours: each subscription carries its own signing secret,
+// minted by the app and sealed with ENCRYPTION_KEY.
+type WebhooksConfig struct {
+	Enabled bool
+}
+
 // MerchantLogosConfig controls the opt-in merchant logo fetcher.
 //
 // Off by default, for the same reason as BenchmarkConfig and one more besides.
@@ -406,6 +429,9 @@ func Load() (Config, error) {
 		},
 		CPI: CPIConfig{
 			Enabled: envBool("CPI_FETCH_ENABLED", false),
+		},
+		Webhooks: WebhooksConfig{
+			Enabled: envBool("WEBHOOKS_ENABLED", false),
 		},
 		MerchantLogos: MerchantLogosConfig{
 			Enabled: envBool("MERCHANT_LOGOS_ENABLED", false),

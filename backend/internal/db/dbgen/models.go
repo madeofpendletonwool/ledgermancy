@@ -949,3 +949,43 @@ type UserRecoveryCode struct {
 	UsedAt    *stdtime.Time `json:"used_at"`
 	CreatedAt stdtime.Time  `json:"created_at"`
 }
+
+type Webhook struct {
+	ID              uuid.UUID    `json:"id"`
+	HouseholdID     uuid.UUID    `json:"household_id"`
+	UserID          uuid.UUID    `json:"user_id"`
+	Name            string       `json:"name"`
+	Url             string       `json:"url"`
+	SecretEncrypted []byte       `json:"secret_encrypted"`
+	Active          bool         `json:"active"`
+	Triggers        []string     `json:"triggers"`
+	CreatedAt       stdtime.Time `json:"created_at"`
+	UpdatedAt       stdtime.Time `json:"updated_at"`
+}
+
+type WebhookAttempt struct {
+	ID              uuid.UUID    `json:"id"`
+	MessageID       uuid.UUID    `json:"message_id"`
+	Attempt         int32        `json:"attempt"`
+	RequestHeaders  []byte       `json:"request_headers"`
+	RequestBody     string       `json:"request_body"`
+	ResponseStatus  *int32       `json:"response_status"`
+	ResponseHeaders []byte       `json:"response_headers"`
+	ResponseBody    *string      `json:"response_body"`
+	Error           *string      `json:"error"`
+	DurationMs      int32        `json:"duration_ms"`
+	CreatedAt       stdtime.Time `json:"created_at"`
+}
+
+type WebhookMessage struct {
+	ID          uuid.UUID     `json:"id"`
+	WebhookID   uuid.UUID     `json:"webhook_id"`
+	TriggerType string        `json:"trigger_type"`
+	Payload     []byte        `json:"payload"`
+	Status      string        `json:"status"`
+	Attempts    int32         `json:"attempts"`
+	DeliveredAt *stdtime.Time `json:"delivered_at"`
+	LastError   *string       `json:"last_error"`
+	DedupeKey   string        `json:"dedupe_key"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
+}

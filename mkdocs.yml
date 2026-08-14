@@ -104,6 +104,7 @@ nav:
       - Paystubs: features/paystubs.md
       - Accounts & Plaid: features/accounts.md
       - Alerts: features/alerts.md
+      - Webhooks: features/webhooks.md
       - Advisor: features/advisor.md
       - Households: features/households.md
       - Continuity & backups: features/continuity.md
