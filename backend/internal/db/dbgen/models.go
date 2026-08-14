@@ -519,6 +519,19 @@ type Liability struct {
 	UpdatedAt              stdtime.Time        `json:"updated_at"`
 }
 
+type LinkType struct {
+	ID          uuid.UUID  `json:"id"`
+	HouseholdID *uuid.UUID `json:"household_id"`
+	Slug        string     `json:"slug"`
+	Name        string     `json:"name"`
+	Outward     string     `json:"outward"`
+	Inward      string     `json:"inward"`
+	// Reporting only: a link of this type lets the source inflow cancel the target spend when the reader asks for netting. Never settable by a household.
+	NetsSpend bool         `json:"nets_spend"`
+	CreatedAt stdtime.Time `json:"created_at"`
+	UpdatedAt stdtime.Time `json:"updated_at"`
+}
+
 type ManualAsset struct {
 	ID          uuid.UUID  `json:"id"`
 	HouseholdID uuid.UUID  `json:"household_id"`
@@ -898,6 +911,14 @@ type Transaction struct {
 	// User state: a real but non-repeating event (loan payoff, tax bill, car purchase). Counted in the month it fell; skipped by trailing-average and recurring-detection queries that pass exclude_one_time. Preserved across Plaid sync, like excluded_from_reports and notes.
 	IsOneTime    bool       `json:"is_one_time"`
 	ObligationID *uuid.UUID `json:"obligation_id"`
+}
+
+type TransactionLink struct {
+	ID                  uuid.UUID    `json:"id"`
+	SourceTransactionID uuid.UUID    `json:"source_transaction_id"`
+	TargetTransactionID uuid.UUID    `json:"target_transaction_id"`
+	LinkTypeID          uuid.UUID    `json:"link_type_id"`
+	CreatedAt           stdtime.Time `json:"created_at"`
 }
 
 // Two legs of one internal transfer (a debit on one of the household's accounts matched to an equal credit on another). Structural: matched by amount and date, not by payee name, so it catches transfers the name heuristics and Plaid miss. Each transaction is in at most one pair.

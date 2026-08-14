@@ -631,6 +631,79 @@ export interface TransactionTag {
 }
 
 /**
+ * A relationship two transactions can stand in — "refunds", "relates to",
+ * "paid for", or one the household invented.
+ *
+ * A link type is DIRECTED, and the two phrasings are the whole reason it is an
+ * object rather than a string: `outward` is how the source end reads, `inward`
+ * is how the target end reads, and one stored link serves both. A symmetric
+ * relationship simply has the same string twice.
+ */
+export interface LinkType {
+  id: string
+  slug: string
+  name: string
+  /** How the SOURCE end reads: "refunds". */
+  outward: string
+  /** How the TARGET end reads: "is refunded by". */
+  inward: string
+  /**
+   * Whether a link of this type is one the "Net linked refunds" view acts on.
+   * Read-only and true only for the built-in Refund type — a household-defined
+   * relationship never moves a reported figure. Sending it is rejected.
+   */
+  nets_spend: boolean
+  /** One of the three shipped types, which cannot be renamed or deleted. */
+  is_system: boolean
+  created_at: string
+}
+
+/** Body for creating or editing one of the household's own link types. */
+export interface LinkTypeInput {
+  name: string
+  outward: string
+  inward: string
+}
+
+/**
+ * The far end of a link, as a panel renders it. A trimmed ledger row — enough to
+ * recognise the charge and open it, deliberately not the full {@link
+ * Transaction}.
+ */
+export interface LinkedTransaction {
+  id: string
+  date: string
+  name: string
+  merchant: string
+  amount: string
+  currency: string
+  category_id: string | null
+  account_name: string
+}
+
+/**
+ * One link, already oriented FROM the transaction it was read through.
+ *
+ * The same stored row yields a different `direction` and a different `relation`
+ * depending on which end asked, which is why neither is derived here: the server
+ * picks the verb, and the two readings of one edge cannot drift.
+ */
+export interface TransactionLink {
+  id: string
+  link_type_id: string
+  link_type_slug: string
+  link_type_name: string
+  /** "outward" when the transaction you read through is the link's source. */
+  direction: 'outward' | 'inward'
+  /** The verb as this end reads it — already the outward or inward phrase. */
+  relation: string
+  /** True when this link is one the netting view acts on. */
+  nets_spend: boolean
+  transaction: LinkedTransaction
+  created_at: string
+}
+
+/**
  * Body for creating or editing a manual transaction. Amount is a decimal string
  * already signed by the caller (positive = money out, negative = a refund), so
  * it never passes through a JS float.
@@ -881,6 +954,13 @@ export interface TrendPoint {
 export interface TrendResponse {
   points: TrendPoint[]
   exclude_one_time: boolean
+  /**
+   * True when every spending figure in the series has had its linked refunds
+   * subtracted from the charge they refund, in the charge's own month. Income is
+   * unaffected either way. Echoed back for the same reason `exclude_one_time`
+   * is: a chart must never render netted figures under an un-netted label.
+   */
+  net_refunds: boolean
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -1448,6 +1528,24 @@ export interface RealQuery {
  */
 export interface OneTimeQuery {
   exclude_one_time?: boolean
+}
+
+/**
+ * Opt into netting linked refunds against the charges they refund.
+ *
+ * The third member of the `RealQuery`/`OneTimeQuery` family and the same
+ * contract: omitting it, or sending `net_refunds: false`, returns the figures
+ * the endpoint has always returned. Off is the default because "what left the
+ * account in each month" is what every figure in this app has meant, and a link
+ * is a statement a user made rather than a correction to the bank's record.
+ *
+ * When on, a refund's amount comes off the ORIGINAL CHARGE, in the charge's own
+ * month and category — never as a negative in the refund's month. Only links
+ * whose type nets (today, only the built-in Refund) do anything; income is
+ * untouched. See the backend's `queries/reports.sql` for the full rules.
+ */
+export interface NetRefundsQuery {
+  net_refunds?: boolean
 }
 
 /**
@@ -4535,6 +4633,55 @@ export const api = {
       { tag_ids: tagIDs, apply_to_merchant: applyToMerchant },
     ),
 
+  // --- Transaction links --------------------------------------------------
+  // How one transaction relates to another. Links are annotations: nothing here
+  // changes either transaction's amount, date or category. The only figure a
+  // link can move is one a reader has explicitly asked to net — see
+  // NetRefundsQuery.
+  linkTypes: () => request<LinkType[]>('GET', '/api/link-types'),
+
+  createLinkType: (input: LinkTypeInput) =>
+    request<LinkType>('POST', '/api/link-types', input),
+
+  updateLinkType: (id: string, input: LinkTypeInput) =>
+    request<LinkType>('PUT', `/api/link-types/${id}`, input),
+
+  /** Deleting a type removes its links; both transactions are left untouched.
+   *  The three built-in types cannot be deleted (404). */
+  deleteLinkType: (id: string) =>
+    request<void>('DELETE', `/api/link-types/${id}`),
+
+  /** Every link on this transaction, from BOTH ends, phrased from its point of
+   *  view. A link whose far end you cannot see is absent rather than redacted. */
+  transactionLinks: (transactionID: string) =>
+    request<TransactionLink[]>('GET', `/api/transactions/${transactionID}/links`),
+
+  /**
+   * Connect this transaction to another, and get the resulting link list back.
+   *
+   * `direction` is stated, not inferred: "outward" (the default) means the
+   * transaction in the path is the SOURCE — "this refunds that". Getting it
+   * backwards would make the netting view subtract the charge from the credit,
+   * so the picker should say which way round it is reading.
+   */
+  linkTransaction: (
+    transactionID: string,
+    input: {
+      transaction_id: string
+      link_type_id: string
+      direction?: 'outward' | 'inward'
+    },
+  ) =>
+    request<TransactionLink[]>(
+      'POST',
+      `/api/transactions/${transactionID}/links`,
+      input,
+    ),
+
+  /** Removes one link from either of its ends. Both transactions survive. */
+  unlinkTransaction: (transactionID: string, linkID: string) =>
+    request<void>('DELETE', `/api/transactions/${transactionID}/links/${linkID}`),
+
   // --- Rules --------------------------------------------------------------
   // User-editable IF-THEN over transactions. Rules fire when a transaction
   // arrives and can be re-run over history. They run AFTER the app's own
@@ -4655,7 +4802,7 @@ export const api = {
       withQuery('/api/reports/merchant-explorer', params),
     ),
 
-  trend: (params: PeriodQuery & RealQuery & OneTimeQuery = {}) =>
+  trend: (params: PeriodQuery & RealQuery & OneTimeQuery & NetRefundsQuery = {}) =>
     request<TrendResponse>('GET', withQuery('/api/reports/trend', params)),
 
   /**
@@ -4678,7 +4825,14 @@ export const api = {
   cashFlow: (params: PeriodQuery = {}) =>
     request<CashFlow>('GET', withQuery('/api/reports/cash-flow', params)),
 
-  averages: (params: PeriodQuery = {}) =>
+  /**
+   * Per-category monthly average and annual total — the planning figures.
+   *
+   * The response stays a bare array when `net_refunds` is on, unlike /trend
+   * which echoes the flag back. Keep the flag in the react-query key: that is
+   * what stops a netted average rendering under an un-netted label here.
+   */
+  averages: (params: PeriodQuery & NetRefundsQuery = {}) =>
     request<CategoryAverage[]>('GET', withQuery('/api/reports/averages', params)),
 
   // --- Budgets ------------------------------------------------------------
