@@ -22,18 +22,25 @@ import { SkeletonRows } from '../components/Skeleton'
 // internal/insights raise; kept here rather than server-side so a reminder kind
 // can be added without a new endpoint, and so the general /insights feed and
 // this view share one data source.
-const ACTION_KINDS = new Set(['overdue_bill', 'payoff_progress'])
+const ACTION_KINDS = new Set(['overdue_bill', 'bill_out_of_range', 'payoff_progress'])
 const COMING_UP_KINDS = new Set(['upcoming_bill', 'document_expiry'])
 const REMINDER_KINDS = new Set([
   'overdue_bill',
+  'bill_out_of_range',
   'payoff_progress',
   'upcoming_bill',
   'document_expiry',
   'goal',
 ])
 
+// Kinds whose action is "yes, that was the payment" — both settle one occurrence
+// through the same satisfy endpoint. They ask different questions ("did anything
+// pay this?" vs "was that the right amount?") but take the same answer.
+const SATISFIABLE_KINDS = new Set(['overdue_bill', 'bill_out_of_range'])
+
 const KIND_LABELS: Record<string, string> = {
   overdue_bill: 'Overdue',
+  bill_out_of_range: 'Off expected',
   payoff_progress: 'Payoff behind',
   upcoming_bill: 'Due soon',
   document_expiry: 'Expires',
@@ -101,7 +108,7 @@ export function Reminders() {
                   insight={i}
                   onDismiss={() => dismiss.mutate(i.id)}
                   onSatisfy={
-                    i.kind === 'overdue_bill'
+                    SATISFIABLE_KINDS.has(i.kind)
                       ? () => satisfy.mutate(i)
                       : undefined
                   }
@@ -200,9 +207,13 @@ function ReminderRow({
                 className="whitespace-nowrap rounded-md border border-verdant-400/30 bg-verdant-400/10 px-2.5 py-1 text-xs font-medium text-verdant-400 transition hover:bg-verdant-400/20 disabled:opacity-50"
                 onClick={onSatisfy}
                 disabled={busy}
-                title="Mark this occurrence paid"
+                title={
+                  insight.kind === 'bill_out_of_range'
+                    ? 'Accept this charge as the payment for this cycle'
+                    : 'Mark this occurrence paid'
+                }
               >
-                Mark paid
+                {insight.kind === 'bill_out_of_range' ? 'Accept charge' : 'Mark paid'}
               </button>
             )}
             <button
@@ -222,7 +233,7 @@ function ReminderRow({
 // A priority- and kind-scaled chip tone: an overdue bill reads as a warning, a
 // payoff gap as accent, everything else as muted.
 function toneClasses(priority: number, kind: string): string {
-  if (kind === 'overdue_bill' || priority >= 5)
+  if (kind === 'overdue_bill' || kind === 'bill_out_of_range' || priority >= 5)
     return 'border-ember-400/30 bg-ember-400/10 text-ember-400'
   if (kind === 'payoff_progress' || priority >= 3)
     return 'border-rune-400/30 bg-rune-400/10 text-rune-300'

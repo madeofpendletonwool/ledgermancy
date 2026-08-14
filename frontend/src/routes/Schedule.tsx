@@ -514,7 +514,14 @@ function ObligationRow({
             )}
           </p>
           <p className="mt-0.5 text-sm text-mist-400">
-            {formatMoney(obligation.amount)} · {obligation.cadence}
+            {/* A ranged bill leads with the range: it is what the household
+                actually stated, and what the matcher measures a charge against.
+                `amount` is still the figure the projection carries, so it stays
+                visible beside it rather than being replaced. */}
+            {obligation.amount_min && obligation.amount_max
+              ? `${formatMoney(obligation.amount_min)}–${formatMoney(obligation.amount_max)} (about ${formatMoney(obligation.amount)})`
+              : formatMoney(obligation.amount)}{' '}
+            · {obligation.cadence}
             {obligation.next_due
               ? ` · next ${formatDate(obligation.next_due)}`
               : ' · no upcoming date'}
@@ -728,18 +735,24 @@ function ObligationForm({
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }))
 
+  const rangeProblem = rangeError(form.amountMin, form.amountMax)
+
   const canSave =
     form.label.trim() !== '' &&
     form.amount !== '' &&
     Number(form.amount) > 0 &&
     form.anchorDate !== '' &&
-    Number(form.intervalCount) > 0
+    Number(form.intervalCount) > 0 &&
+    rangeProblem === null
 
   const submit = () => {
     if (!canSave) return
     save.mutate({
       label: form.label.trim(),
       amount: form.amount,
+      // Empty strings are meaningful here: they clear a range that was set.
+      amount_min: form.amountMin,
+      amount_max: form.amountMax,
       category_id: form.categoryID || null,
       account_id: form.accountID || null,
       interval_count: Number(form.intervalCount),
@@ -790,6 +803,37 @@ function ObligationForm({
             value={form.amount}
             onChange={(e) => set('amount', e.target.value)}
           />
+        </div>
+
+        <div className="sm:col-span-2">
+          <span className="label">Expected range (optional)</span>
+          <div className="flex items-center gap-2">
+            <input
+              className="field w-full"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="40.00"
+              aria-label="Lowest expected amount"
+              value={form.amountMin}
+              onChange={(e) => set('amountMin', e.target.value)}
+            />
+            <span className="text-mist-500">to</span>
+            <input
+              className="field w-full"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="60.00"
+              aria-label="Highest expected amount"
+              value={form.amountMax}
+              onChange={(e) => set('amountMax', e.target.value)}
+            />
+          </div>
+          <p className={`mt-1 text-xs ${rangeProblem ? 'text-ember-400' : 'text-mist-500'}`}>
+            {rangeProblem ??
+              'A bill that varies — phone, power, water. A charge outside the range still counts as the payment, but you get told about it instead of it slipping by.'}
+          </p>
         </div>
 
         <div>
@@ -949,6 +993,8 @@ function blankForm() {
   return {
     label: '',
     amount: '',
+    amountMin: '',
+    amountMax: '',
     categoryID: '',
     accountID: '',
     intervalCount: '1',
@@ -964,6 +1010,8 @@ function formFrom(o: Obligation) {
   return {
     label: o.label,
     amount: o.amount,
+    amountMin: o.amount_min ?? '',
+    amountMax: o.amount_max ?? '',
     categoryID: o.category_id ?? '',
     accountID: o.account_id ?? '',
     intervalCount: String(o.interval_count),
@@ -973,6 +1021,19 @@ function formFrom(o: Obligation) {
     personal: o.is_personal,
     isActive: o.is_active,
   }
+}
+
+/**
+ * Whether the typed range is usable: both bounds or neither, low not above high.
+ * Mirrors validateAmountRange on the server and the column CHECK under it — the
+ * form just says so before the round trip.
+ */
+function rangeError(min: string, max: string): string | null {
+  if (min === '' && max === '') return null
+  if (min === '' || max === '') return 'Give both a low and a high amount, or neither.'
+  if (Number(min) <= 0) return 'The low amount must be more than zero.'
+  if (Number(min) > Number(max)) return 'The low amount must not be above the high one.'
+  return null
 }
 
 // Every schedule view is derived from the same rows, so a write invalidates all

@@ -27,10 +27,16 @@ import (
 // storing a next-due date is a cache that goes stale the moment the calendar
 // rolls over.
 type obligationResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	Label         string     `json:"label"`
-	Amount        string     `json:"amount"`
-	CategoryID    *uuid.UUID `json:"category_id"`
+	ID     uuid.UUID `json:"id"`
+	Label  string    `json:"label"`
+	Amount string    `json:"amount"`
+	// AmountMin/AmountMax are the stated expected range (MAD-120), both null when
+	// none was stated. Amount stays the expected figure regardless — the range is
+	// a tolerance around it, not a replacement, and every projection still reads
+	// Amount.
+	AmountMin  *string    `json:"amount_min"`
+	AmountMax  *string    `json:"amount_max"`
+	CategoryID *uuid.UUID `json:"category_id"`
 	AccountID     *uuid.UUID `json:"account_id"`
 	IntervalCount int32      `json:"interval_count"`
 	IntervalUnit  string     `json:"interval_unit"`
@@ -115,6 +121,11 @@ func buildObligationResponse(o dbgen.RecurringObligation, nextDue time.Time, now
 		PostingAccountID: o.PostingAccountID,
 		Remind:           o.Remind,
 	}
+	if o.AmountMin.Valid && o.AmountMax.Valid {
+		lo := o.AmountMin.Decimal.StringFixed(2)
+		hi := o.AmountMax.Decimal.StringFixed(2)
+		resp.AmountMin, resp.AmountMax = &lo, &hi
+	}
 	if o.LastPostedDate != nil {
 		d := o.LastPostedDate.Format(time.DateOnly)
 		resp.LastPostedDate = &d
@@ -150,6 +161,11 @@ type upsertObligationRequest struct {
 	IntervalUnit  string     `json:"interval_unit"`
 	AnchorDate    string     `json:"anchor_date"`
 	EndDate       string     `json:"end_date"`
+	// AmountMin/AmountMax are the optional expected range. Empty strings mean "no
+	// range", which is also how a member clears one they previously set. Both
+	// must be given together — see validateObligationBody.
+	AmountMin string `json:"amount_min"`
+	AmountMax string `json:"amount_max"`
 	// Personal keeps an obligation out of the household view — the same
 	// per-item visibility choice institutions and goals already offer.
 	Personal bool  `json:"personal"`
@@ -157,10 +173,12 @@ type upsertObligationRequest struct {
 }
 
 type validatedObligation struct {
-	amount   decimal.Decimal
-	anchor   time.Time
-	endDate  *time.Time
-	isActive bool
+	amount    decimal.Decimal
+	amountMin decimal.NullDecimal
+	amountMax decimal.NullDecimal
+	anchor    time.Time
+	endDate   *time.Time
+	isActive  bool
 }
 
 func validateObligationBody(req upsertObligationRequest) (validatedObligation, error) {
@@ -203,7 +221,41 @@ func validateObligationBody(req upsertObligationRequest) (validatedObligation, e
 		}
 		v.endDate = &end
 	}
+	if err := validateAmountRange(req, &v); err != nil {
+		return v, err
+	}
 	return v, nil
+}
+
+// validateAmountRange parses the optional expected range (MAD-120). Every failure
+// here is a sentence the form can show beside a field rather than a 500 from the
+// table's CHECK, which enforces the same rules one layer down.
+func validateAmountRange(req upsertObligationRequest, v *validatedObligation) error {
+	if req.AmountMin == "" && req.AmountMax == "" {
+		return nil
+	}
+	// Both-or-neither, matching the column constraint. A lone bound is far more
+	// likely a half-filled form than an intent the app should guess at.
+	if req.AmountMin == "" || req.AmountMax == "" {
+		return errors.New("an expected range needs both a low and a high amount")
+	}
+	low, err := decimal.NewFromString(req.AmountMin)
+	if err != nil {
+		return errors.New("amount_min must be a decimal number, e.g. \"40.00\"")
+	}
+	high, err := decimal.NewFromString(req.AmountMax)
+	if err != nil {
+		return errors.New("amount_max must be a decimal number, e.g. \"60.00\"")
+	}
+	if !low.IsPositive() {
+		return errors.New("amount_min must be greater than zero")
+	}
+	if low.GreaterThan(high) {
+		return errors.New("amount_min must not be greater than amount_max")
+	}
+	v.amountMin = decimal.NullDecimal{Decimal: low, Valid: true}
+	v.amountMax = decimal.NullDecimal{Decimal: high, Valid: true}
+	return nil
 }
 
 func (s *Server) handleCreateObligation(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +284,8 @@ func (s *Server) handleCreateObligation(w http.ResponseWriter, r *http.Request) 
 		IntervalUnit:  req.IntervalUnit,
 		AnchorDate:    v.anchor,
 		EndDate:       v.endDate,
+		AmountMin:     v.amountMin,
+		AmountMax:     v.amountMax,
 	})
 	if err != nil {
 		s.internalError(w, "create obligation", err)
@@ -282,6 +336,8 @@ func (s *Server) handleUpdateObligation(w http.ResponseWriter, r *http.Request) 
 		EndDate:       v.endDate,
 		IsShared:      !req.Personal,
 		IsActive:      v.isActive,
+		AmountMin:     v.amountMin,
+		AmountMax:     v.amountMax,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "obligation not found")
@@ -350,10 +406,15 @@ func (s *Server) handleDeleteObligation(w http.ResponseWriter, r *http.Request) 
 // upcomingObligationResponse is one occurrence — an obligation on one date.
 // Several rows can share obligation_id; that is what expansion produces.
 type upcomingObligationResponse struct {
-	ObligationID uuid.UUID  `json:"obligation_id"`
-	Label        string     `json:"label"`
-	Amount       string     `json:"amount"`
-	CategoryID   *uuid.UUID `json:"category_id"`
+	ObligationID uuid.UUID `json:"obligation_id"`
+	Label        string    `json:"label"`
+	Amount       string    `json:"amount"`
+	// The stated expected range, null when none. The total below still sums
+	// Amount: a range is a tolerance, and adding up its bounds would produce a
+	// "you owe between X and Y" figure the projection has no way to honour.
+	AmountMin  *string    `json:"amount_min"`
+	AmountMax  *string    `json:"amount_max"`
+	CategoryID *uuid.UUID `json:"category_id"`
 	AccountID    *uuid.UUID `json:"account_id"`
 	Cadence      string     `json:"cadence"`
 	Source       string     `json:"source"`
@@ -386,7 +447,7 @@ func (s *Server) handleUpcomingObligations(w http.ResponseWriter, r *http.Reques
 	out := make([]upcomingObligationResponse, 0, len(items))
 	for _, o := range items {
 		total = total.Add(o.Amount)
-		out = append(out, upcomingObligationResponse{
+		item := upcomingObligationResponse{
 			ObligationID: o.ObligationID,
 			Label:        o.Label,
 			Amount:       o.Amount.StringFixed(2),
@@ -396,7 +457,13 @@ func (s *Server) handleUpcomingObligations(w http.ResponseWriter, r *http.Reques
 			Source:       o.Source,
 			DueDate:      o.DueDate.Format(time.DateOnly),
 			DaysUntilDue: int(o.DueDate.Sub(today).Hours() / 24),
-		})
+		}
+		if o.Range != nil {
+			lo := o.Range.Min.StringFixed(2)
+			hi := o.Range.Max.StringFixed(2)
+			item.AmountMin, item.AmountMax = &lo, &hi
+		}
+		out = append(out, item)
 	}
 
 	writeJSON(w, http.StatusOK, upcomingResponse{

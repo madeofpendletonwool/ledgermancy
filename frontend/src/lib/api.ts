@@ -1216,6 +1216,12 @@ export interface Obligation {
   id: string
   label: string
   amount: string
+  /** The stated expected range (MAD-120), both null when none was stated.
+   *  `amount` stays the expected figure the projection uses either way — the
+   *  range is a tolerance around it, and a charge outside it raises the
+   *  bill_out_of_range insight instead of quietly marking the bill paid. */
+  amount_min: string | null
+  amount_max: string | null
   category_id: string | null
   account_id: string | null
   interval_count: number
@@ -1258,6 +1264,10 @@ export type ObligationUnit = 'day' | 'week' | 'month' | 'year'
 export interface ObligationInput {
   label: string
   amount: string
+  /** Optional expected range. Send both or neither; empty strings clear a range
+   *  that was previously set. */
+  amount_min?: string
+  amount_max?: string
   category_id?: string | null
   account_id?: string | null
   interval_count: number
@@ -1273,6 +1283,10 @@ export interface UpcomingObligation {
   obligation_id: string
   label: string
   amount: string
+  /** The stated expected range, both null when none. The list `total` still sums
+   *  `amount`: a range is a tolerance, not a second figure to add up. */
+  amount_min: string | null
+  amount_max: string | null
   category_id: string | null
   account_id: string | null
   cadence: string
