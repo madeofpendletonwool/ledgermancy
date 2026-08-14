@@ -776,6 +776,10 @@ type RecurringObligation struct {
 	LastPostedDate   *stdtime.Time   `json:"last_posted_date"`
 	PostingAccountID *uuid.UUID      `json:"posting_account_id"`
 	Remind           bool            `json:"remind"`
+	// Low end of the amount the household expects this bill to land at. NULL together with amount_max means no range was stated and the matcher falls back to its +/-25% band around amount.
+	AmountMin decimal.NullDecimal `json:"amount_min"`
+	// High end of the expected amount. A charge inside the payment window but outside [amount_min, amount_max] does not mark the occurrence paid; it raises the bill_out_of_range insight instead.
+	AmountMax decimal.NullDecimal `json:"amount_max"`
 }
 
 type RecurringOverride struct {

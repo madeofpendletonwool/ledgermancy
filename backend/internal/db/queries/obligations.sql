@@ -13,10 +13,14 @@
 --     rows, and other members' rows only when shared.
 
 -- name: CreateObligation :one
+-- amount_min/amount_max are the stated expected range (MAD-120), both NULL when
+-- the member did not state one. amount stays the expected figure the projection
+-- uses either way.
 INSERT INTO recurring_obligations (
     household_id, user_id, is_shared, label, amount, category_id, account_id,
-    interval_count, interval_unit, anchor_date, end_date, source, merchant_key
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'manual', NULL)
+    interval_count, interval_unit, anchor_date, end_date, amount_min, amount_max,
+    source, merchant_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'manual', NULL)
 RETURNING *;
 
 -- name: ListObligations :many
@@ -56,6 +60,8 @@ SET label          = $4,
     end_date       = $11,
     is_shared      = $12,
     is_active      = $13,
+    amount_min     = $14,
+    amount_max     = $15,
     user_edited    = TRUE,
     updated_at     = now()
 WHERE id = $1 AND household_id = $2
@@ -134,6 +140,8 @@ SELECT
     b.id           AS obligation_id,
     b.label,
     b.amount,
+    b.amount_min,
+    b.amount_max,
     b.category_id,
     b.account_id,
     b.interval_count,
@@ -453,10 +461,23 @@ RETURNING *;
 --       due date — the credit-card-payment case, where the payment is a transfer
 --       and the pair links the legs even when the two payee names disagree.
 --
--- The category branch is amount-gated (within 25%) so two same-category bills
--- of different sizes don't suppress each other; the merchant branch is not,
--- because merchant_key is specific enough on its own. Every check is household-
--- scoped through account_access, matching the rest of the bill-calendar reads.
+-- The category branch is amount-gated so two same-category bills of different
+-- sizes don't suppress each other; the merchant branch is not, because
+-- merchant_key is specific enough on its own. Every check is household-scoped
+-- through account_access, matching the rest of the bill-calendar reads.
+--
+-- What the category gate is depends on whether the member stated a range
+-- (MAD-120). Without one it stays the ±25% band around amount — the app's own
+-- guess at "near enough". With one it widens to the CANDIDATE band, half the low
+-- bound to double the high one, and that widening is deliberate: guard (T) asks
+-- "is this plausibly the payment", not "was it the amount you expected". A phone
+-- bill stated at $40–$60 that lands at $90 IS the payment, so it must suppress
+-- the overdue reminder — and ListBillRangeExceptions below, which shares this
+-- exact candidate predicate, raises it as a surprise instead. Splitting the two
+-- questions this way is what stops one out-of-range charge producing both an
+-- "we can't find a payment" and a "that was more than expected" insight.
+
+
 --
 -- Suppression is the safer direction to overdo here: a hidden reminder for a
 -- bill that was genuinely paid is a minor nuisance, while nagging about one that
@@ -543,7 +564,11 @@ WHERE d.due_date >= $3::date
             (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
             OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
                 AND t.amount > 0
-                AND ABS(t.amount - b.amount) <= b.amount * 0.25)
+                AND CASE
+                        WHEN b.amount_min IS NOT NULL
+                            THEN t.amount BETWEEN b.amount_min * 0.5 AND b.amount_max * 2
+                        ELSE ABS(t.amount - b.amount) <= b.amount * 0.25
+                    END)
         )
   )
   -- (P) a structural transfer pair touched the obligation's account within the
@@ -565,6 +590,125 @@ WHERE d.due_date >= $3::date
             AND tl.account_id = b.account_id
             AND tl.date BETWEEN d.due_date - 5 AND d.due_date + 10
       )
+  )
+ORDER BY d.due_date, b.label;
+
+-- name: ListBillRangeExceptions :many
+-- Occurrences whose payment landed, but not for the amount the household said to
+-- expect — what the bill_out_of_range insight raises (MAD-120).
+--
+-- This is the inverse of the query above and deliberately its mirror image. That
+-- one asks "did nothing plausibly pay this?"; this one asks "something plausibly
+-- paid it, was it inside the stated range?". The candidate predicate is
+-- IDENTICAL in both — merchant match, or category match inside the half-to-double
+-- band — so every occurrence with a range falls into exactly one of the three
+-- outcomes and never into two:
+--
+--   nothing in the candidate band ....... overdue_bill (the query above)
+--   candidate inside [min, max] ......... paid, silence
+--   candidate outside [min, max] ........ bill_out_of_range (this query)
+--
+-- Editing the candidate predicate in one place and not the other opens a gap
+-- where a real charge is reported as both missing and surprising, or as neither.
+--
+-- Only obligations that state a range are considered: without one there is no
+-- expectation to have missed, and the ±25% heuristic is the app's guess rather
+-- than the member's statement — not a thing to raise an alarm about. remind
+-- gates this the same way it gates the overdue reminder, so one opt-out silences
+-- both halves of a bill's coaching.
+--
+-- One row per occurrence: the LATERAL picks the single closest candidate by
+-- amount, so a month with two charges under the same merchant reports the one
+-- most likely to be the bill rather than one insight per charge.
+WITH visible AS (
+    SELECT *
+    FROM recurring_obligations
+    WHERE household_id = $1
+      AND (recurring_obligations.user_id IS NULL
+           OR recurring_obligations.user_id = $2
+           OR recurring_obligations.is_shared)
+      AND is_active
+      AND remind
+      AND amount_min IS NOT NULL
+),
+bounded AS (
+    SELECT
+        visible.*,
+        CASE interval_unit
+            WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
+            WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
+            WHEN 'month' THEN (12 * (EXTRACT(YEAR  FROM $4::date)::int - EXTRACT(YEAR  FROM anchor_date)::int)
+                                  + (EXTRACT(MONTH FROM $4::date)::int - EXTRACT(MONTH FROM anchor_date)::int))
+                              / interval_count
+            WHEN 'year'  THEN (EXTRACT(YEAR FROM $4::date)::int - EXTRACT(YEAR FROM anchor_date)::int)
+                              / interval_count
+        END AS n_max
+    FROM visible
+)
+SELECT
+    b.id           AS obligation_id,
+    b.label,
+    b.amount,
+    b.amount_min,
+    b.amount_max,
+    b.interval_count,
+    b.interval_unit,
+    b.source,
+    d.due_date::date AS due_date,
+    m.id           AS transaction_id,
+    m.amount       AS charged_amount,
+    m.date::date   AS charged_date,
+    m.name         AS charged_name
+FROM bounded b
+CROSS JOIN LATERAL generate_series(0, GREATEST(b.n_max, 0)) AS g(n)
+CROSS JOIN LATERAL (
+    -- Cast to date for the same reason as the query above: d.due_date is used in
+    -- date arithmetic below and make_interval yields a timestamp.
+    SELECT (b.anchor_date + make_interval(
+        days   => CASE b.interval_unit
+                      WHEN 'day'  THEN g.n * b.interval_count
+                      WHEN 'week' THEN g.n * b.interval_count * 7
+                      ELSE 0 END,
+        months => CASE b.interval_unit WHEN 'month' THEN g.n * b.interval_count ELSE 0 END,
+        years  => CASE b.interval_unit WHEN 'year'  THEN g.n * b.interval_count ELSE 0 END
+    ))::date AS due_date
+) d
+JOIN LATERAL (
+    SELECT t.id, t.amount, t.date, t.name
+    FROM transactions t
+    JOIN accounts a       ON a.id = t.account_id
+    JOIN account_access v ON v.account_id = a.id
+    WHERE v.household_id = $1
+      AND t.date BETWEEN d.due_date - 5 AND d.due_date + 10
+      AND NOT t.excluded_from_reports
+      AND NOT t.pending
+      AND t.amount > 0
+      -- Candidate: plausibly this bill's payment. Mirrors guard (T) above.
+      AND (
+          (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
+          OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
+              AND t.amount BETWEEN b.amount_min * 0.5 AND b.amount_max * 2)
+      )
+      -- ...but outside what the member said to expect. This is the whole point.
+      AND (t.amount < b.amount_min OR t.amount > b.amount_max)
+    ORDER BY ABS(t.amount - b.amount), t.date
+    LIMIT 1
+) m ON TRUE
+WHERE d.due_date >= $3::date
+  AND d.due_date <= $4::date
+  AND (b.end_date IS NULL OR d.due_date <= b.end_date)
+  -- Already dealt with: a member who marked this occurrence paid has accepted
+  -- the charge, whatever it was, so there is no surprise left to report.
+  AND NOT EXISTS (
+      SELECT 1 FROM obligation_satisfaction os
+      WHERE os.obligation_id = b.id AND os.due_date = d.due_date
+  )
+  -- Auto-posted: the app wrote this transaction itself from the obligation's own
+  -- amount, so it cannot be a surprise about what the biller charged.
+  AND NOT EXISTS (
+      SELECT 1 FROM transactions t
+      WHERE t.obligation_id = b.id
+        AND t.date BETWEEN d.due_date - 3 AND d.due_date + 3
   )
 ORDER BY d.due_date, b.label;
 
