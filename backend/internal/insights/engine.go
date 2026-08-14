@@ -108,6 +108,23 @@ func Generate(
 				Inserted:  row.Inserted,
 			})
 		}
+
+		// Retraction, for the producers that opt in by implementing Retractor.
+		//
+		// Runs AFTER the upserts above, and only on the success path: the
+		// `continue` on a Detect error above is what keeps a transient query
+		// failure from being read as "nothing is true any more" and wiping the
+		// kind's whole feed. An empty LiveKeys from a SUCCESSFUL detection means
+		// exactly that, though, and retracting everything is the right answer.
+		if r, ok := p.(Retractor); ok {
+			if err := retract(ctx, q, r, p.Kind(), householdID, now); err != nil {
+				// The feed is already written and correct except for the stale
+				// rows; failing the pass here would re-run every producer to fix
+				// a cleanup step. Log and move on, as with the AI fallbacks.
+				slog.Warn("insight retraction failed",
+					"kind", p.Kind(), "household_id", householdID, "error", err)
+			}
+		}
 	}
 
 	// High-priority push: the engine only stores and reports results. The jobs
@@ -118,6 +135,45 @@ func Generate(
 	// this package keeps no dependency on the queue or the Notifier.
 
 	return results, nil
+}
+
+// retract closes every live insight of one kind whose fact the producer no
+// longer detects. Split out of Generate so the "ask, then withdraw" pair reads
+// as one step and the nil-key case is handled in exactly one place.
+func retract(
+	ctx context.Context,
+	q *dbgen.Queries,
+	r Retractor,
+	kind string,
+	householdID uuid.UUID,
+	now time.Time,
+) error {
+	keys, err := r.LiveKeys(ctx, q, householdID, now)
+	if err != nil {
+		return fmt.Errorf("live keys: %w", err)
+	}
+	// A nil slice would reach Postgres as NULL, and `x = ANY(NULL)` is NULL —
+	// never true, but also never false, so the NOT filters out every row and the
+	// statement silently retracts nothing. An empty non-nil slice is a real empty
+	// array and retracts the kind wholesale, which is what "detected nothing"
+	// must mean.
+	if keys == nil {
+		keys = []string{}
+	}
+
+	n, err := q.RetractStaleInsights(ctx, dbgen.RetractStaleInsightsParams{
+		HouseholdID: householdID,
+		Kind:        kind,
+		LiveKeys:    keys,
+	})
+	if err != nil {
+		return fmt.Errorf("retract stale: %w", err)
+	}
+	if n > 0 {
+		slog.Info("insights retracted",
+			"kind", kind, "household_id", householdID, "count", n, "live", len(keys))
+	}
+	return nil
 }
 
 // phrase turns a candidate's deterministic facts into an AI phrasing request.

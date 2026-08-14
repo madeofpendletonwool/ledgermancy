@@ -57,7 +57,13 @@ type billOutOfRangeProducer struct{}
 
 func (billOutOfRangeProducer) Kind() string { return "bill_out_of_range" }
 
-func (billOutOfRangeProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+// occurrences is this producer's whole detection: every occurrence whose
+// payment landed outside the stated range. Detect truncates it to the few worth
+// a feed row; LiveKeys maps all of it, matching the overdue matcher it shares a
+// candidate predicate with.
+func (billOutOfRangeProducer) occurrences(
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time,
+) ([]dbgen.ListBillRangeExceptionsRow, error) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	from := today.AddDate(0, 0, -(billRangeLookbackDays - 1))
 	// Occurrences up to today inclusive: unlike an overdue reminder, a surprise
@@ -68,12 +74,39 @@ func (billOutOfRangeProducer) Detect(ctx context.Context, q *dbgen.Queries, hous
 	// sharedUser (uuid.Nil) collapses the visibility OR to shared-only, matching
 	// every other household feed producer: a member's private bill must not
 	// surface in the shared feed.
-	rows, err := q.ListBillRangeExceptions(ctx, dbgen.ListBillRangeExceptionsParams{
+	return q.ListBillRangeExceptions(ctx, dbgen.ListBillRangeExceptionsParams{
 		HouseholdID: householdID,
 		UserID:      &sharedUser,
 		Column3:     from,
 		Column4:     to,
 	})
+}
+
+// LiveKeys implements Retractor. This one is less obvious than its two
+// siblings, because "you were charged $90 against a stated $40–$60" reads like a
+// historical fact — but the range it compares against is something a member
+// TYPES, and the insight's own body invites them to change it ("if it's the new
+// normal, widen the range"). Taking that advice has to clear the row; before
+// retraction it left the surprise standing against a range that no longer
+// considered it surprising, which made the suggestion actively misleading.
+//
+// The same lookback caveat as overdue_bill applies: an exception ages out of
+// billRangeLookbackDays and is retracted. The history view (include_dismissed)
+// still holds it.
+func (p billOutOfRangeProducer) LiveKeys(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]string, error) {
+	rows, err := p.occurrences(ctx, q, householdID, now)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(rows))
+	for _, r := range rows {
+		keys = append(keys, BillOutOfRangeDedupeKey(r.ObligationID, r.DueDate))
+	}
+	return keys, nil
+}
+
+func (p billOutOfRangeProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+	rows, err := p.occurrences(ctx, q, householdID, now)
 	if err != nil {
 		return nil, err
 	}

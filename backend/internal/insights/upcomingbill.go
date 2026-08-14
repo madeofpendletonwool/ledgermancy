@@ -44,7 +44,13 @@ type upcomingBillProducer struct{}
 
 func (upcomingBillProducer) Kind() string { return "upcoming_bill" }
 
-func (upcomingBillProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+// occurrences is this producer's whole detection: every shared obligation
+// falling due inside the horizon, largest first. Detect truncates it to the few
+// worth a feed row; LiveKeys maps all of it. Sharing one helper is what stops
+// the two from drifting on what counts as "due".
+func (upcomingBillProducer) occurrences(
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time,
+) ([]obligations.Occurrence, time.Time, error) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	horizon := today.AddDate(0, 0, upcomingBillHorizonDays)
 
@@ -52,10 +58,7 @@ func (upcomingBillProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 	// obligation must not appear in it.
 	due, err := obligations.ListUpcoming(ctx, q, householdID, sharedUser, today, horizon)
 	if err != nil {
-		return nil, err
-	}
-	if len(due) == 0 {
-		return nil, nil
+		return nil, today, err
 	}
 
 	// Largest first, so the cap keeps the bills that matter rather than the ones
@@ -63,6 +66,42 @@ func (upcomingBillProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 	sort.SliceStable(due, func(i, j int) bool {
 		return due[j].Amount.LessThan(due[i].Amount)
 	})
+	return due, today, nil
+}
+
+// LiveKeys implements Retractor: a bill that has been paid, cancelled, or simply
+// slipped past its horizon stops being "due soon", and its row should leave the
+// feed rather than claim a payment is coming that already came. Every
+// occurrence is reported, including those past maxUpcomingBillCandidates — a
+// bill the cap hid is still due, and retracting it would be wrong.
+func (p upcomingBillProducer) LiveKeys(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]string, error) {
+	due, _, err := p.occurrences(ctx, q, householdID, now)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(due))
+	for _, o := range due {
+		keys = append(keys, UpcomingBillDedupeKey(o.ObligationID, o.DueDate))
+	}
+	return keys, nil
+}
+
+// UpcomingBillDedupeKey is the stable identity of one upcoming-bill insight.
+// Shared between Detect and LiveKeys so a raise and its retraction can never
+// disagree about the key's shape — the failure mode that would leave a row
+// permanently unretractable.
+func UpcomingBillDedupeKey(obligationID uuid.UUID, dueDate time.Time) string {
+	return fmt.Sprintf("upcoming_bill:%s:%s", obligationID, dueDate.Format(time.DateOnly))
+}
+
+func (p upcomingBillProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+	due, today, err := p.occurrences(ctx, q, householdID, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(due) == 0 {
+		return nil, nil
+	}
 
 	total := decimal.Zero
 	for _, o := range due {
@@ -116,8 +155,7 @@ func (upcomingBillProducer) Detect(ctx context.Context, q *dbgen.Queries, househ
 			},
 			// The due date is part of the identity: next month's instance of the
 			// same bill is a different insight, and must be able to push again.
-			DedupeKey: fmt.Sprintf("upcoming_bill:%s:%s",
-				o.ObligationID, o.DueDate.Format(time.DateOnly)),
+			DedupeKey: UpcomingBillDedupeKey(o.ObligationID, o.DueDate),
 		})
 	}
 	return out, nil

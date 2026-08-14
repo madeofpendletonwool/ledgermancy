@@ -51,6 +51,33 @@ type Classifier interface {
 	Classify(ctx context.Context, client *ai.Client, candidates []Candidate) error
 }
 
+// Retractor is an optional capability a Producer may implement to declare that
+// its insights are RE-DERIVABLE: the claim they make can stop being true, and
+// when it does the feed row must be withdrawn rather than left standing.
+//
+// The engine only upserts, which means "no longer detected" and "never
+// detected" are indistinguishable to storage. That is correct for most
+// producers — large_transaction reports that a $2,400 charge happened on the
+// 3rd, and no later event makes that false — but wrong for the bill matcher,
+// where "we can't find a payment for this" is a statement about the present that
+// a sync can falsify an hour later. Without retraction an overdue_bill raised at
+// 6am outlives the payment landing at noon and sits in the feed until somebody
+// dismisses it by hand.
+//
+// LiveKeys returns every dedupe key the producer still considers true, and the
+// engine retracts every live insight of that Kind whose key is absent.
+//
+// It must return the producer's FULL detection, not the candidate slice Detect
+// returned. Producers cap how many rows are worth a feed entry
+// (overdueMaxCandidates and friends); an occurrence dropped by that cap is still
+// true, and reporting only the survivors would retract it on the very next pass.
+// Implementations share one detection helper with Detect so the two cannot
+// drift — at the cost of running the detection query twice per pass, which is a
+// cheap indexed read against a job that runs hourly.
+type Retractor interface {
+	LiveKeys(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]string, error)
+}
+
 // DefaultProducers is the registry the generation job iterates. Keeping
 // registration in one place means a new producer is a one-line append.
 func DefaultProducers() []Producer {

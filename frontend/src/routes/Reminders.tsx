@@ -177,11 +177,15 @@ function ReminderRow({
   onSatisfy?: () => void
   busy: boolean
 }) {
-  const dismissed = insight.dismissed_at != null
+  // Closed either way — a member dismissed it, or the app retracted it once the
+  // payment landed. Both drop the action buttons; only the second earns the
+  // "Resolved" tag, since nothing was asked of the member.
+  const retracted = insight.retracted_at != null
+  const closed = insight.dismissed_at != null || retracted
   return (
     <li
       className={`rounded-xl border p-4 transition ${
-        dismissed ? 'border-white/5 bg-transparent opacity-60' : 'border-white/10 bg-white/[0.03]'
+        closed ? 'border-white/5 bg-transparent opacity-60' : 'border-white/10 bg-white/[0.03]'
       }`}
     >
       <div className="flex items-start gap-3">
@@ -195,12 +199,20 @@ function ReminderRow({
             >
               {KIND_LABELS[insight.kind] ?? insight.kind}
             </span>
+            {retracted && (
+              <span
+                className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-mist-500"
+                title="This stopped being true — the bill was paid, or the amount came back into range"
+              >
+                Resolved
+              </span>
+            )}
           </div>
           <p className="mt-2 font-medium text-mist-100">{insight.title}</p>
           <p className="mt-1 text-sm text-mist-300">{insight.body}</p>
           <p className="mt-1.5 text-xs text-mist-500">{formatRelative(insight.created_at)}</p>
         </div>
-        {!dismissed && (
+        {!closed && (
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             {onSatisfy && (
               <button

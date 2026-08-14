@@ -14,7 +14,13 @@ import (
 
 // insightResponse is one feed row. data is passed through as raw JSON so the
 // deterministic facts (money as decimal strings) reach the client as an object,
-// not a base64 []byte. period/read_at/dismissed_at are nullable.
+// not a base64 []byte. period/read_at/dismissed_at/retracted_at are nullable.
+//
+// dismissed_at and retracted_at both mean "not in the current feed" but say
+// different things about why, and only the history view (state=all) ever sees
+// either: dismissed is "you closed this", retracted is "we withdrew it — the
+// bill got paid, the range was widened". Worth telling apart in the UI, since
+// the second is the app admitting it was briefly wrong.
 type insightResponse struct {
 	ID          uuid.UUID       `json:"id"`
 	Kind        string          `json:"kind"`
@@ -26,6 +32,7 @@ type insightResponse struct {
 	CreatedAt   string          `json:"created_at"`
 	ReadAt      *string         `json:"read_at"`
 	DismissedAt *string         `json:"dismissed_at"`
+	RetractedAt *string         `json:"retracted_at"`
 }
 
 func toInsightResponse(i dbgen.Insight) insightResponse {
@@ -49,6 +56,10 @@ func toInsightResponse(i dbgen.Insight) insightResponse {
 	if i.DismissedAt != nil {
 		s := i.DismissedAt.UTC().Format(time.RFC3339)
 		resp.DismissedAt = &s
+	}
+	if i.RetractedAt != nil {
+		s := i.RetractedAt.UTC().Format(time.RFC3339)
+		resp.RetractedAt = &s
 	}
 	return resp
 }

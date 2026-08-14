@@ -297,8 +297,11 @@ func (q *Queries) ListDigestEntries(ctx context.Context, arg ListDigestEntriesPa
 }
 
 const listUnreadInsightsForDigest = `-- name: ListUnreadInsightsForDigest :many
-SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at FROM insights
-WHERE household_id = $1 AND dismissed_at IS NULL AND read_at IS NULL
+SELECT id, household_id, kind, priority, title, body, data, period, dedupe_key, created_at, read_at, dismissed_at, retracted_at FROM insights
+WHERE household_id = $1
+  AND dismissed_at IS NULL
+  AND retracted_at IS NULL
+  AND read_at IS NULL
 ORDER BY priority DESC, created_at DESC
 LIMIT $2
 `
@@ -310,6 +313,12 @@ type ListUnreadInsightsForDigestParams struct {
 
 // The top unread, non-dismissed insights for a household, in feed order, capped
 // for the digest body.
+//
+// Retracted rows are excluded alongside dismissed ones, and this surface is the
+// one where it matters most: a digest is a mail nobody can take back. Sending
+// "your Sprout Childcare payment is overdue" hours after the payment posted —
+// which is precisely what an unretracted insight would do here, since a
+// withdrawn claim is unread by definition — is worse than saying nothing.
 func (q *Queries) ListUnreadInsightsForDigest(ctx context.Context, arg ListUnreadInsightsForDigestParams) ([]Insight, error) {
 	rows, err := q.db.Query(ctx, listUnreadInsightsForDigest, arg.HouseholdID, arg.Limit)
 	if err != nil {
@@ -332,6 +341,7 @@ func (q *Queries) ListUnreadInsightsForDigest(ctx context.Context, arg ListUnrea
 			&i.CreatedAt,
 			&i.ReadAt,
 			&i.DismissedAt,
+			&i.RetractedAt,
 		); err != nil {
 			return nil, err
 		}

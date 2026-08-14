@@ -2999,6 +2999,12 @@ export interface DigestList {
  * One proactive-feed insight. `data` is the deterministic facts the narrative
  * was built from — money as decimal strings, never summed here. Higher
  * `priority` sorts first. `read_at`/`dismissed_at` are null until acted on.
+ *
+ * `retracted_at` is set when the app withdrew the insight because its fact
+ * stopped being true — the overdue bill got paid, the surprise charge was
+ * brought inside a widened range. Both it and `dismissed_at` keep a row out of
+ * the default feed and only appear under `state=all`, but they are not
+ * interchangeable: dismissed is the member's decision, retracted is ours.
  */
 export interface Insight {
   id: string
@@ -3011,6 +3017,7 @@ export interface Insight {
   created_at: string
   read_at: string | null
   dismissed_at: string | null
+  retracted_at: string | null
 }
 
 /**

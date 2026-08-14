@@ -12,18 +12,27 @@
 -- read_at is cleared on refresh (fresh facts are worth seeing again), but
 -- dismissed_at is deliberately preserved: once a user dismisses an insight it
 -- stays gone even as the detector keeps re-detecting the same fact.
+--
+-- retracted_at is cleared, and the asymmetry with dismissed_at is the point. A
+-- dismissal is a member's judgement and outlives any amount of re-detection; a
+-- retraction is the app withdrawing its own claim, and re-detecting the fact is
+-- exactly the event that should undo it. Reaching this upsert at all means the
+-- producer detected the fact again — if a previously-retracted row kept its
+-- marker here, an overdue bill that came back (the matching transaction deleted,
+-- a merchant merge undone) would refresh silently and never reappear in the feed.
 INSERT INTO insights (
     household_id, kind, priority, title, body, data, period, dedupe_key
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (household_id, dedupe_key) DO UPDATE SET
-    kind       = EXCLUDED.kind,
-    priority   = EXCLUDED.priority,
-    title      = EXCLUDED.title,
-    body       = EXCLUDED.body,
-    data       = EXCLUDED.data,
-    period     = EXCLUDED.period,
-    created_at = now(),
-    read_at    = NULL
+    kind         = EXCLUDED.kind,
+    priority     = EXCLUDED.priority,
+    title        = EXCLUDED.title,
+    body         = EXCLUDED.body,
+    data         = EXCLUDED.data,
+    period       = EXCLUDED.period,
+    created_at   = now(),
+    read_at      = NULL,
+    retracted_at = NULL
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: ListInsights :many
@@ -42,12 +51,18 @@ RETURNING *, (xmax = 0) AS inserted;
 -- read to one instant. A real-time now() here diverged from a pinned detection
 -- now and hid a just-raised insight once the calendar month rolled over — the
 -- TestGenerateDetectsAndDedupes flake.
+--
+-- retracted_at hides a row from the default feed the same way dismissed_at
+-- does — an insight the app has withdrawn is no more current than one a member
+-- waved away — and include_dismissed reveals both, since the history view's job
+-- is to show what the feed used to say.
 SELECT * FROM insights
 WHERE household_id = $1
   AND (
     @include_dismissed::bool
     OR (
       dismissed_at IS NULL
+      AND retracted_at IS NULL
       AND (period IS NULL OR period >= date_trunc('month', sqlc.arg('as_of')::timestamptz)::date)
     )
   )
@@ -71,6 +86,43 @@ WHERE id = $1 AND household_id = $2 AND read_at IS NULL;
 UPDATE insights
 SET dismissed_at = now()
 WHERE id = $1 AND household_id = $2;
+
+-- name: RetractStaleInsights :execrows
+-- Close every live insight of one kind whose fact has stopped being true.
+--
+-- The engine only ever upserts, so without this an insight outlives its cause:
+-- an overdue_bill raised at 6am survives the payment landing at noon, because
+-- "no longer detected" and "never detected" look identical to an upsert. The
+-- generation pass hands in the FULL set of dedupe keys the producer still
+-- considers true and everything else of that kind is retracted.
+--
+-- Only producers that implement insights.Retractor reach this query, and that
+-- opt-in is the whole design: a re-derivable claim ("this bill is unpaid") must
+-- be withdrawn when it stops holding, while a historical one ("you were charged
+-- $400 on the 3rd") is still true forever and must not be.
+--
+-- Marked with retracted_at, NOT dismissed_at, and that distinction is the whole
+-- reason the column exists: a dismissal is a member's judgement and survives any
+-- amount of re-detection, while a retraction must evaporate the moment the fact
+-- comes back. UpsertInsight clears retracted_at and preserves dismissed_at,
+-- which is what makes both of those true. Soft either way, so the history view
+-- still tells the story.
+--
+-- dismissed_at IS NULL is respected here: re-marking an already-dismissed row
+-- would rewrite a member's decision as the app's, and the history view would
+-- lose the fact that a person, not a detector, closed it.
+--
+-- An empty live_keys array retracts every live insight of the kind, which is the
+-- correct reading of "the producer detected nothing this pass". Callers must
+-- therefore never invoke this after a FAILED detection — the engine skips the
+-- whole producer on error for exactly that reason.
+UPDATE insights
+SET retracted_at = now()
+WHERE household_id = $1
+  AND kind = $2
+  AND dismissed_at IS NULL
+  AND retracted_at IS NULL
+  AND NOT (dedupe_key = ANY(@live_keys::text[]));
 
 -- name: DismissInsightByDedupe :execrows
 -- Soft-dismiss every current insight matching one dedupe key. Used by the

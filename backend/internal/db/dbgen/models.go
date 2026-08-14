@@ -468,6 +468,8 @@ type Insight struct {
 	CreatedAt   stdtime.Time  `json:"created_at"`
 	ReadAt      *stdtime.Time `json:"read_at"`
 	DismissedAt *stdtime.Time `json:"dismissed_at"`
+	// Set when the producer stopped detecting this insight's fact, withdrawing the claim. Cleared on re-raise, unlike dismissed_at, which records a member's own decision and is preserved across upserts.
+	RetractedAt *stdtime.Time `json:"retracted_at"`
 }
 
 type InvestmentSnapshot struct {

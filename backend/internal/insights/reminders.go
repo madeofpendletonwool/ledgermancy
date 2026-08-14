@@ -61,7 +61,13 @@ type overdueBillProducer struct{}
 
 func (overdueBillProducer) Kind() string { return "overdue_bill" }
 
-func (overdueBillProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+// occurrences is this producer's whole detection: every past-due occurrence the
+// matcher still believes is unpaid. Detect truncates it to the few worth a feed
+// row; LiveKeys maps all of it. One helper, so the raise and the retraction can
+// never disagree about what "still unpaid" means.
+func (overdueBillProducer) occurrences(
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time,
+) ([]dbgen.ListOverdueUnsatisfiedObligationsRow, time.Time, error) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	from := today.AddDate(0, 0, -(overdueLookbackDays - 1))
 	// Strictly past: upcoming_bill owns today forward, so the two producers
@@ -77,6 +83,34 @@ func (overdueBillProducer) Detect(ctx context.Context, q *dbgen.Queries, househo
 		Column3:     from,
 		Column4:     to,
 	})
+	return rows, today, err
+}
+
+// LiveKeys implements Retractor, and this producer is the reason the interface
+// exists. "We can't find a payment for this" is a claim about the present that
+// the next sync routinely falsifies: the transaction lands, the four
+// satisfaction guards start matching, detection goes quiet — and before
+// retraction the feed row simply stayed, nagging about a bill that was paid.
+//
+// Two ways an occurrence legitimately drops out here, both of which should clear
+// the row: it got paid, or it aged past overdueLookbackDays. The second is what
+// that constant was always meant to do ("a long-ago bill someone chose not to
+// chase doesn't sit in the feed forever") and never did, because nothing ever
+// removed what the shrinking window stopped detecting.
+func (p overdueBillProducer) LiveKeys(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]string, error) {
+	rows, _, err := p.occurrences(ctx, q, householdID, now)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(rows))
+	for _, o := range rows {
+		keys = append(keys, OverdueBillDedupeKey(o.ObligationID, o.DueDate))
+	}
+	return keys, nil
+}
+
+func (p overdueBillProducer) Detect(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time) ([]Candidate, error) {
+	rows, today, err := p.occurrences(ctx, q, householdID, now)
 	if err != nil {
 		return nil, err
 	}

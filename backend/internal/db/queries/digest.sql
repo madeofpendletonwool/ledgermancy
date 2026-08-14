@@ -70,8 +70,17 @@ ON CONFLICT (user_id, period_key) DO NOTHING;
 -- name: ListUnreadInsightsForDigest :many
 -- The top unread, non-dismissed insights for a household, in feed order, capped
 -- for the digest body.
+--
+-- Retracted rows are excluded alongside dismissed ones, and this surface is the
+-- one where it matters most: a digest is a mail nobody can take back. Sending
+-- "your Sprout Childcare payment is overdue" hours after the payment posted —
+-- which is precisely what an unretracted insight would do here, since a
+-- withdrawn claim is unread by definition — is worse than saying nothing.
 SELECT * FROM insights
-WHERE household_id = $1 AND dismissed_at IS NULL AND read_at IS NULL
+WHERE household_id = $1
+  AND dismissed_at IS NULL
+  AND retracted_at IS NULL
+  AND read_at IS NULL
 ORDER BY priority DESC, created_at DESC
 LIMIT $2;
 

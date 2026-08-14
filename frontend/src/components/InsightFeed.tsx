@@ -115,8 +115,14 @@ function InsightRow({
   onMarkNormal: () => void
   busy: boolean
 }) {
-  const dismissed = insight.dismissed_at != null
-  const unread = insight.read_at == null && !dismissed
+  // Retracted rows are closed the same way dismissed ones are — no actions, not
+  // "unread" — but only ever appear in the history view. The label below is the
+  // one place the difference shows: "we withdrew this" is a different statement
+  // from "you closed this", and a member scanning history for a bill they
+  // remember being nagged about deserves to see which happened.
+  const retracted = insight.retracted_at != null
+  const closed = insight.dismissed_at != null || retracted
+  const unread = insight.read_at == null && !closed
   const anomaly = ANOMALY_KINDS.has(insight.kind)
   return (
     <li
@@ -137,13 +143,21 @@ function InsightRow({
             {unread && (
               <span className="h-1.5 w-1.5 rounded-full bg-arcane-500" aria-label="Unread" />
             )}
+            {retracted && (
+              <span
+                className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-mist-500"
+                title="This stopped being true — the bill was paid, or the amount came back into range"
+              >
+                Resolved
+              </span>
+            )}
           </div>
           <p className="mt-2 font-medium text-mist-100">{insight.title}</p>
           <p className="mt-1 text-sm text-mist-300">{insight.body}</p>
           <AnomalyDetail insight={insight} />
           <p className="mt-1.5 text-xs text-mist-500">{formatRelative(insight.created_at)}</p>
         </div>
-        {!dismissed && (
+        {!closed && (
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             {unread && (
               <button

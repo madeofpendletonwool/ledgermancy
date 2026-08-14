@@ -411,19 +411,30 @@ func (q *Queries) InsertScheduledTransaction(ctx context.Context, arg InsertSche
 
 const listBillRangeExceptions = `-- name: ListBillRangeExceptions :many
 WITH visible AS (
-    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind, amount_min, amount_max
+    SELECT
+        recurring_obligations.id, recurring_obligations.household_id, recurring_obligations.user_id, recurring_obligations.is_shared, recurring_obligations.label, recurring_obligations.amount, recurring_obligations.category_id, recurring_obligations.account_id, recurring_obligations.interval_count, recurring_obligations.interval_unit, recurring_obligations.anchor_date, recurring_obligations.end_date, recurring_obligations.source, recurring_obligations.merchant_key, recurring_obligations.user_edited, recurring_obligations.is_active, recurring_obligations.created_at, recurring_obligations.updated_at, recurring_obligations.auto_post, recurring_obligations.last_posted_date, recurring_obligations.posting_account_id, recurring_obligations.remind, recurring_obligations.amount_min, recurring_obligations.amount_max,
+        -- Resolved merchant identity, identical to the overdue matcher's CTE.
+        -- The candidate predicate is shared between the two queries, so the
+        -- resolution has to be shared too — see that CTE for why.
+        COALESCE(oma.entity_id::text, recurring_obligations.merchant_key) AS resolved_merchant_key
     FROM recurring_obligations
-    WHERE household_id = $1
+    LEFT JOIN merchant_aliases oma
+           ON oma.household_id = $1
+          AND oma.merchant_key = recurring_obligations.merchant_key
+          AND oma.source <> 'suggested'
+    -- Qualified: merchant_aliases carries household_id/merchant_key/source too,
+    -- so the bare references this CTE used before the join are now ambiguous.
+    WHERE recurring_obligations.household_id = $1
       AND (recurring_obligations.user_id IS NULL
            OR recurring_obligations.user_id = $2
            OR recurring_obligations.is_shared)
-      AND is_active
-      AND remind
-      AND amount_min IS NOT NULL
+      AND recurring_obligations.is_active
+      AND recurring_obligations.remind
+      AND recurring_obligations.amount_min IS NOT NULL
 ),
 bounded AS (
     SELECT
-        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind, visible.amount_min, visible.amount_max,
+        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind, visible.amount_min, visible.amount_max, visible.resolved_merchant_key,
         CASE interval_unit
             WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
             WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
@@ -468,6 +479,11 @@ JOIN LATERAL (
     FROM transactions t
     JOIN accounts a       ON a.id = t.account_id
     JOIN account_access v ON v.account_id = a.id
+    -- Resolve the transaction's merchant, mirroring guard (T) above.
+    LEFT JOIN merchant_aliases tma
+           ON tma.household_id = $1
+          AND tma.merchant_key = t.merchant_key
+          AND tma.source <> 'suggested'
     WHERE v.household_id = $1
       AND t.date BETWEEN d.due_date - 5 AND d.due_date + 10
       AND NOT t.excluded_from_reports
@@ -475,7 +491,8 @@ JOIN LATERAL (
       AND t.amount > 0
       -- Candidate: plausibly this bill's payment. Mirrors guard (T) above.
       AND (
-          (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
+          (b.resolved_merchant_key IS NOT NULL
+           AND COALESCE(tma.entity_id::text, t.merchant_key) = b.resolved_merchant_key)
           OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
               AND t.amount BETWEEN b.amount_min * 0.5 AND b.amount_max * 2)
       )
@@ -787,18 +804,39 @@ const listOverdueUnsatisfiedObligations = `-- name: ListOverdueUnsatisfiedObliga
 
 
 WITH visible AS (
-    SELECT id, household_id, user_id, is_shared, label, amount, category_id, account_id, interval_count, interval_unit, anchor_date, end_date, source, merchant_key, user_edited, is_active, created_at, updated_at, auto_post, last_posted_date, posting_account_id, remind, amount_min, amount_max
+    SELECT
+        recurring_obligations.id, recurring_obligations.household_id, recurring_obligations.user_id, recurring_obligations.is_shared, recurring_obligations.label, recurring_obligations.amount, recurring_obligations.category_id, recurring_obligations.account_id, recurring_obligations.interval_count, recurring_obligations.interval_unit, recurring_obligations.anchor_date, recurring_obligations.end_date, recurring_obligations.source, recurring_obligations.merchant_key, recurring_obligations.user_edited, recurring_obligations.is_active, recurring_obligations.created_at, recurring_obligations.updated_at, recurring_obligations.auto_post, recurring_obligations.last_posted_date, recurring_obligations.posting_account_id, recurring_obligations.remind, recurring_obligations.amount_min, recurring_obligations.amount_max,
+        -- The obligation's merchant identity, RESOLVED through the alias table
+        -- exactly as queries/merchants.sql prescribes. Both sides of every
+        -- merchant comparison below are resolved, and that symmetry is the whole
+        -- point: a promoted obligation may hold either a raw key (written before
+        -- a merge) or an entity UUID (written after one), and the transactions
+        -- it should match against always hold the raw key. Comparing a stored
+        -- resolved key to a raw one matches nothing, which silently killed the
+        -- merchant branch of guard (T) for every merged merchant and left those
+        -- bills leaning entirely on the category+amount fallback.
+        --
+        -- Resolution is idempotent (no alias is ever keyed by a UUID), so
+        -- resolving an already-resolved key is a no-op and this is safe to apply
+        -- to every row regardless of which shape it stored.
+        COALESCE(oma.entity_id::text, recurring_obligations.merchant_key) AS resolved_merchant_key
     FROM recurring_obligations
-    WHERE household_id = $1
+    LEFT JOIN merchant_aliases oma
+           ON oma.household_id = $1
+          AND oma.merchant_key = recurring_obligations.merchant_key
+          AND oma.source <> 'suggested'
+    -- Qualified: merchant_aliases carries household_id/merchant_key/source too,
+    -- so the bare references this CTE used before the join are now ambiguous.
+    WHERE recurring_obligations.household_id = $1
       AND (recurring_obligations.user_id IS NULL
            OR recurring_obligations.user_id = $2
            OR recurring_obligations.is_shared)
-      AND is_active
-      AND remind
+      AND recurring_obligations.is_active
+      AND recurring_obligations.remind
 ),
 bounded AS (
     SELECT
-        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind, visible.amount_min, visible.amount_max,
+        visible.id, visible.household_id, visible.user_id, visible.is_shared, visible.label, visible.amount, visible.category_id, visible.account_id, visible.interval_count, visible.interval_unit, visible.anchor_date, visible.end_date, visible.source, visible.merchant_key, visible.user_edited, visible.is_active, visible.created_at, visible.updated_at, visible.auto_post, visible.last_posted_date, visible.posting_account_id, visible.remind, visible.amount_min, visible.amount_max, visible.resolved_merchant_key,
         CASE interval_unit
             WHEN 'day'   THEN ($4::date - anchor_date) / interval_count
             WHEN 'week'  THEN ($4::date - anchor_date) / (7 * interval_count)
@@ -858,12 +896,19 @@ WHERE d.due_date >= $3::date
       FROM transactions t
       JOIN accounts a   ON a.id = t.account_id
       JOIN account_access v ON v.account_id = a.id
+      -- Resolve the transaction's merchant the same way the obligation's was,
+      -- so the comparison below is resolved-to-resolved. See the visible CTE.
+      LEFT JOIN merchant_aliases tma
+             ON tma.household_id = $1
+            AND tma.merchant_key = t.merchant_key
+            AND tma.source <> 'suggested'
       WHERE v.household_id = $1
         AND t.date BETWEEN d.due_date - 5 AND d.due_date + 10
         AND NOT t.excluded_from_reports
         AND NOT t.pending
         AND (
-            (b.merchant_key IS NOT NULL AND t.merchant_key = b.merchant_key)
+            (b.resolved_merchant_key IS NOT NULL
+             AND COALESCE(tma.entity_id::text, t.merchant_key) = b.resolved_merchant_key)
             OR (b.category_id IS NOT NULL AND t.category_id = b.category_id
                 AND t.amount > 0
                 AND CASE
@@ -942,6 +987,12 @@ type ListOverdueUnsatisfiedObligationsRow struct {
 // sizes don't suppress each other; the merchant branch is not, because
 // merchant_key is specific enough on its own. Every check is household-scoped
 // through account_access, matching the rest of the bill-calendar reads.
+//
+// Both sides of the merchant comparison go through the alias resolution in the
+// visible CTE below. Comparing a stored key to a raw transaction key directly
+// looks right and is wrong: a promoted obligation whose merchant was later
+// merged holds an entity UUID, no transaction ever holds one, and the branch
+// quietly matches nothing.
 //
 // What the category gate is depends on whether the member stated a range
 // (MAD-120). Without one it stays the ±25% band around amount — the app's own
