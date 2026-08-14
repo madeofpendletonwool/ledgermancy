@@ -3,7 +3,7 @@
 # the compose network, so the api needs no host port of its own.
 
 # --- build ------------------------------------------------------------------
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build   # tsc -b && vite build -> /app/dist
 
 # --- serve ------------------------------------------------------------------
-FROM nginx:1.27-alpine AS serve
+FROM nginx:1.31-alpine AS serve
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
