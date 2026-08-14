@@ -11,8 +11,10 @@ import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
 import { RealBasis, RealToggle } from '../components/RealToggle'
 import { OneTimeToggle } from '../components/OneTimeToggle'
+import { NetRefundsToggle } from '../components/NetRefundsToggle'
 import { useInflation, useRealPreference } from '../lib/inflation'
 import { useHideOneTimePreference } from '../lib/oneTime'
+import { useNetRefundsPreference } from '../lib/netRefunds'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
 
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
@@ -98,9 +100,17 @@ export function Spending() {
   // serve a stale cached series.
   const { enabled: hideOneTime, setEnabled: setHideOneTime } =
     useHideOneTimePreference()
+  // The "Net linked refunds" lens governs the trend chart and the typical-month
+  // table below — the two views that state what spending COST, as opposed to
+  // what moved. It changes nothing about the transactions or the links; it only
+  // decides whether these two queries are asked to subtract a linked refund
+  // from the charge it refunds.
+  const { enabled: netRefunds, setEnabled: setNetRefunds } =
+    useNetRefundsPreference()
   const trend = useQuery({
-    queryKey: ['trend', real, hideOneTime],
-    queryFn: () => api.trend({ real, exclude_one_time: hideOneTime }),
+    queryKey: ['trend', real, hideOneTime, netRefunds],
+    queryFn: () =>
+      api.trend({ real, exclude_one_time: hideOneTime, net_refunds: netRefunds }),
   })
   // The category × month matrix is the trailing twelve months the trend chart
   // uses, fetched once and rendered two ways (heatmap + small multiples).
@@ -108,7 +118,13 @@ export function Spending() {
     queryKey: ['heatmap', hideOneTime],
     queryFn: () => api.spendingHeatmap({ exclude_one_time: hideOneTime }),
   })
-  const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
+  // The flag is in the key rather than only in the request: /averages returns a
+  // bare array with no echo to check, so the cache key is the only thing
+  // stopping netted figures being served under the un-netted heading.
+  const averages = useQuery({
+    queryKey: ['averages', netRefunds],
+    queryFn: () => api.averages({ net_refunds: netRefunds }),
+  })
   const capabilities = useQuery({
     queryKey: ['capabilities'],
     queryFn: api.capabilities,
@@ -239,11 +255,17 @@ export function Spending() {
           <h2 className="text-lg font-medium">Income vs spending</h2>
           <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center">
             {/*
-              Two reader-driven lenses over the trailing views, side by side.
+              Three reader-driven lenses over the trailing views, side by side.
               RealToggle is nominal-vs-real on this chart; OneTimeToggle governs
               every trailing chart on the page (the three trend-fed ones and the
               two heatmap-fed ones further down), because they all answer the
-              same trailing-twelve question.
+              same trailing-twelve question. NetRefundsToggle governs this chart
+              and the typical-month table at the bottom — the two views that
+              claim to say what spending COST rather than what moved.
+
+              None of the three writes anything. Each re-asks the same queries
+              with one more flag, so any combination is reversible and the
+              default combination is the figures this page has always shown.
             */}
             <RealToggle
               enabled={real}
@@ -251,6 +273,7 @@ export function Spending() {
               inflation={inflation.data}
             />
             <OneTimeToggle enabled={hideOneTime} onChange={setHideOneTime} />
+            <NetRefundsToggle enabled={netRefunds} onChange={setNetRefunds} />
           </div>
         </div>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
@@ -336,6 +359,7 @@ export function Spending() {
           <p className="mt-1 mb-5 text-sm text-mist-300">
             Average monthly spend and annual total per category, over the last
             year — the figures that matter for planning.
+            {netRefunds && ' Linked refunds are netted against the charges they refund.'}
           </p>
         </div>
 

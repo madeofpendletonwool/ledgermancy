@@ -577,8 +577,32 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				// land on. Replaces the row's whole tag set — see
 				// setTransactionTagsRequest.
 				r.Put("/{transactionID}/tags", s.handleSetTransactionTags)
+				// How this row relates to ANOTHER row: a refund, a duplicate,
+				// something it paid for. Reads return both directions of every
+				// edge, phrased from this transaction's end. Accepts synced rows
+				// for the same reason /flags and /tags do — a refund from Plaid
+				// is exactly the row that has to point at the charge it cancels
+				// — and never writes to either transaction. See
+				// transaction_link_handlers.go.
+				r.Get("/{transactionID}/links", s.handleListTransactionLinks)
+				r.Post("/{transactionID}/links", s.handleCreateTransactionLink)
+				r.Delete("/{transactionID}/links/{linkID}", s.handleDeleteTransactionLink)
 				r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 				r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
+			})
+
+			// The vocabulary of relationships two transactions can stand in.
+			// Household-scoped like tags and categories, with the same
+			// household_id-NULL convention for the shipped rows: the three system
+			// types are readable by every household and writable by none, so
+			// `refund` — the type the netting view keys on — means one thing in
+			// every deployment. There is deliberately no admin CRUD over them.
+			r.Route("/link-types", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListLinkTypes)
+				r.Post("/", s.handleCreateLinkType)
+				r.Put("/{linkTypeID}", s.handleUpdateLinkType)
+				r.Delete("/{linkTypeID}", s.handleDeleteLinkType)
 			})
 
 			// Canonical merchants: the review queue for proposed merges, plus manual

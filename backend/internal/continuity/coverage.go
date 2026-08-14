@@ -118,6 +118,16 @@ var tableCoverage = map[string]Coverage{
 	// every envelope total reads as zero.
 	"tags":             InExport,
 	"transaction_tags": InExport,
+	// Typed connections between two transactions, and the vocabulary of
+	// relationships they are drawn from. Every link is a household judgement
+	// ("this credit refunds that charge") that no bank records and no re-sync
+	// could reconstruct — the two rows come back from Plaid as unrelated
+	// forever. link_types is InExport rather than DumpOnly for the same reason
+	// `categories` is: it holds the seeded rows AND whatever the household
+	// invented on top, and exporting only half of it would restore links whose
+	// relationship has no name.
+	"link_types":        InExport,
+	"transaction_links": InExport,
 	// The per-object change log: who edited a transaction/budget/goal and how.
 	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
 	// recomputation can ever reconstruct — so losing it loses the audit trail

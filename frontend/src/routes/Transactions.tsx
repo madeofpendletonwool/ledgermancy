@@ -16,6 +16,7 @@ import { HistoryPanel } from '../components/HistoryPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
+import { LinkPanel } from '../components/LinkTransactions'
 import { TransactionSearchBar } from '../components/TransactionSearchBar'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
@@ -865,9 +866,9 @@ function RowMenu({
     Boolean(t.merchant_key) && t.source !== 'manual' && t.source !== 'scheduled'
   // Which popover this row is showing, if any — the menu itself or one of the
   // three it opens.
-  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | 'tags' | null>(
-    null,
-  )
+  const [panel, setPanel] = useState<
+    'menu' | 'split' | 'documents' | 'tags' | 'links' | null
+  >(null)
   const open = panel !== null
   const close = () => setPanel(null)
 
@@ -923,6 +924,8 @@ function RowMenu({
       )}
 
       {panel === 'tags' && <TagPanel transaction={t} onClose={close} />}
+
+      {panel === 'links' && <LinkPanel transactionId={t.id} onClose={close} />}
 
       {panel === 'menu' && (
         <>
@@ -1016,6 +1019,28 @@ function RowMenu({
                 {documentCount > 0
                   ? 'See or change what is attached.'
                   : 'Keep the paperwork with the charge.'}
+              </span>
+            </button>
+
+            {/* How this charge relates to ANOTHER charge — the refund that
+                cancelled it, the duplicate it turned out to be, the dinner it
+                paid for. Sits beside the documents action because it is the
+                same kind of thing: something attached to the row that leaves
+                the row itself untouched. Offered on every row including synced
+                ones, for the same reason tags are. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={!online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
+              onClick={() => setPanel('links')}
+            >
+              <span className="block font-medium text-mist-100">
+                Link to another transaction…
+              </span>
+              <span className="block text-mist-500">
+                A refund, a duplicate, something it paid for.
               </span>
             </button>
 
