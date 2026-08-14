@@ -63,6 +63,7 @@ const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Re
 const Retirement = lazy(() =>
   import('./routes/Retirement').then((m) => ({ default: m.Retirement })),
 )
+const Rules = lazy(() => import('./routes/Rules').then((m) => ({ default: m.Rules })))
 const Schedule = lazy(() => import('./routes/Schedule').then((m) => ({ default: m.Schedule })))
 const Settings = lazy(() => import('./routes/Settings').then((m) => ({ default: m.Settings })))
 const Shared = lazy(() => import('./routes/Shared').then((m) => ({ default: m.Shared })))
@@ -132,6 +133,10 @@ export default function App() {
               path. Registered after /categories so the literal wins. */}
           <Route path="/categories/:categoryId" element={<CategoryDetail />} />
           <Route path="/tags" element={<Tags />} />
+          {/* The automation behind both of the axes above: a rule files a
+              charge's category and sticks tags on it without anyone touching a
+              row. Sits beside them for that reason. */}
+          <Route path="/rules" element={<Rules />} />
           <Route path="/merchants" element={<Merchants />} />
           {/* Drill-down target; reached from any merchant name, not the nav.
               The merchant travels as ?key= rather than a path segment because a

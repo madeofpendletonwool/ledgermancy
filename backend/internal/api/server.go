@@ -696,6 +696,27 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Get("/{tagID}/transactions", s.handleListTagTransactions)
 			})
 
+			// Rules: user-editable IF-THEN over transactions. Household data
+			// like tags and categories, and with the same split — the RULE
+			// belongs to the household, while the transactions the two verbs
+			// below reach stay under the per-member visibility predicate, so a
+			// preview's match count can never describe a charge on the other
+			// member's private account.
+			r.Route("/rules", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListRules)
+				r.Post("/", s.handleCreateRule)
+				r.Put("/{ruleID}", s.handleUpdateRule)
+				r.Delete("/{ruleID}", s.handleDeleteRule)
+				// Dry run: what this rule would do to what is already stored.
+				// Writes nothing, and shares its planner with the run below, so
+				// it cannot promise something the run would not do.
+				r.Post("/{ruleID}/test", s.handleTestRule)
+				// The same walk, applied. Idempotent: pressing it a second time
+				// changes nothing.
+				r.Post("/{ruleID}/trigger", s.handleTriggerRule)
+			})
+
 			r.Route("/budgets", func(r chi.Router) {
 				r.Use(authenticate, auth.RequireAdult)
 				r.Get("/", s.handleBudgetProgress)

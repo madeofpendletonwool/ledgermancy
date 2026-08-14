@@ -2364,6 +2364,147 @@ export interface TagSpend {
 }
 
 /**
+ * A rule's condition kind. The server holds the authoritative list and validates
+ * every write against it.
+ *
+ * Note that `description_*` reads the raw text on the charge, NOT the merchant.
+ * `merchant_is` is a separate condition, because Plaid's two differ constantly
+ * ("SQ *BLUE BOTTLE 0421" vs "Blue Bottle Coffee") and a user who wants one is
+ * rarely served by the other.
+ */
+export type RuleTriggerType =
+  | 'description_contains'
+  | 'description_starts'
+  | 'description_ends'
+  | 'description_is'
+  | 'amount_more'
+  | 'amount_less'
+  | 'amount_exactly'
+  | 'merchant_is'
+  | 'category_is'
+  | 'has_no_category'
+  | 'account_is'
+  | 'has_attachments'
+
+/** A rule's action kind. */
+export type RuleActionType = 'set_category' | 'add_tag' | 'set_notes' | 'append_notes'
+
+/** One condition. Every condition on a rule must hold — the join is AND. */
+export interface RuleTrigger {
+  id: string
+  type: RuleTriggerType
+  /**
+   * The operand as stored: a text fragment, a decimal STRING, or a UUID. Never a
+   * number — an amount that round-tripped through a JSON float would be a
+   * different rule than the one the user wrote.
+   */
+  value: string
+  /** NOT. Flips this one condition. */
+  invert: boolean
+}
+
+/** One thing the rule does. Actions run in the order they appear. */
+export interface RuleAction {
+  id: string
+  type: RuleActionType
+  value: string
+  /**
+   * When this action is REFUSED (the category was set by hand, the thing it
+   * names is gone), abandon the rest of this rule for that transaction. An
+   * action that was already satisfied is a success and stops nothing.
+   */
+  stop_on_fail: boolean
+}
+
+/**
+ * A user-editable IF-THEN rule over transactions.
+ *
+ * Household-scoped like a tag or a category. Which TRANSACTIONS it reaches is
+ * still per-member: a rule you run never touches, or even counts, a charge on
+ * another member's private account.
+ */
+export interface Rule {
+  id: string
+  name: string
+  description: string | null
+  /** An inactive rule is kept, not deleted — switching automation off to see
+   *  whether it caused something is how you debug it. */
+  active: boolean
+  /** Higher runs first, and the order is load-bearing: a later rule sees what an
+   *  earlier one did, so "set category to Coffee" can be observed by a rule
+   *  triggering on "category is Coffee". */
+  priority: number
+  triggers: RuleTrigger[]
+  actions: RuleAction[]
+  created_at: string
+}
+
+/** Fields to create or update a rule. An update REPLACES the condition and
+ *  action lists rather than merging them. */
+export interface RuleInput {
+  name: string
+  description?: string | null
+  active?: boolean
+  priority?: number
+  triggers: { type: RuleTriggerType; value: string; invert: boolean }[]
+  actions: { type: RuleActionType; value: string; stop_on_fail: boolean }[]
+}
+
+/**
+ * What one action did, or would do.
+ *
+ * `unchanged` is a SUCCESS — the tag was already there, the note already said
+ * that — and it is what makes running a rule twice a no-op. `refused` is the
+ * failure `stop_on_fail` reacts to.
+ */
+export type RuleOutcome = 'applied' | 'unchanged' | 'refused' | 'skipped'
+
+export interface RuleChange {
+  action: RuleActionType
+  value: string
+  outcome: RuleOutcome
+  /** Why, for anything other than "applied". An outcome with no explanation is
+   *  what makes people distrust automation. */
+  reason: string
+}
+
+/** One transaction a dry run fired on, trimmed to what identifies the charge. */
+export interface RuleTestMatch {
+  transaction_id: string
+  date: string
+  name: string
+  merchant: string
+  amount: string
+  currency: string
+  account_name: string
+  changes: RuleChange[]
+}
+
+/**
+ * The dry run. The counts describe every transaction you can see; the list is
+ * capped at a screenful. A truncated list beside an exact count is honest — a
+ * truncated count would understate what you are about to do.
+ */
+export interface RuleTestResult {
+  scanned: number
+  matched: number
+  would_change: number
+  truncated: boolean
+  matches: RuleTestMatch[]
+}
+
+/**
+ * What running a rule over existing transactions did. `matched` staying high
+ * while `changed` falls to zero on a second run is idempotence working, not the
+ * rule breaking.
+ */
+export interface RuleRunResult {
+  scanned: number
+  matched: number
+  changed: number
+}
+
+/**
  * A piggy bank: a lightweight savings envelope ("Car Repair Fund") sitting on
  * an asset account. `current_amount` is DERIVED server-side from the
  * append-only event log (deposits − withdrawals, summed in SQL) — never stored,
@@ -4285,6 +4426,33 @@ export const api = {
       `/api/transactions/${transactionID}/tags`,
       { tag_ids: tagIDs, apply_to_merchant: applyToMerchant },
     ),
+
+  // --- Rules --------------------------------------------------------------
+  // User-editable IF-THEN over transactions. Rules fire when a transaction
+  // arrives and can be re-run over history. They run AFTER the app's own
+  // category resolution, and never overwrite a category you set by hand.
+  rules: () => request<Rule[]>('GET', '/api/rules'),
+
+  createRule: (input: RuleInput) => request<Rule>('POST', '/api/rules', input),
+
+  /** Replaces the whole rule, conditions and actions included — the editor is a
+   *  set of rows you confirm, not a stream of deltas. */
+  updateRule: (id: string, input: RuleInput) =>
+    request<Rule>('PUT', `/api/rules/${id}`, input),
+
+  /** Deleting a rule does NOT undo what it already did: the categories it set
+   *  and the tags it added are your data now, exactly as if you had set them by
+   *  hand. */
+  deleteRule: (id: string) => request<void>('DELETE', `/api/rules/${id}`),
+
+  /** Dry run: what this rule would do to what is already stored. Writes
+   *  nothing, and shares its planner with `runRule`, so it cannot promise
+   *  something the run would not do. */
+  testRule: (id: string) => request<RuleTestResult>('POST', `/api/rules/${id}/test`),
+
+  /** The same walk, applied. Idempotent: running it a second time changes
+   *  nothing. */
+  runRule: (id: string) => request<RuleRunResult>('POST', `/api/rules/${id}/trigger`),
 
   // --- Merchants ----------------------------------------------------------
   // Canonical merchants and the review queue for proposed merges. Everything
