@@ -14,6 +14,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/crypto"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/rules"
 )
 
 // maxBackfillPages bounds a single backfill run. Plaid offers up to ~24 months
@@ -38,6 +39,11 @@ type SyncResult struct {
 	Removed          int
 	AccountsUpserted int
 	Categorised      int
+	// RulesChanged is how many transactions the household's own IF-THEN rules
+	// moved. Counted separately from Categorised because they answer different
+	// questions and a user debugging "why did this get tagged?" needs to know
+	// which of the two did it.
+	RulesChanged int
 	Holdings         int
 	Securities       int
 	InvestmentTxns   int
@@ -181,6 +187,34 @@ func (s *Syncer) SyncItem(ctx context.Context, itemID uuid.UUID) (SyncResult, er
 		slog.Error("pair transfers after sync", "error", err, "item_id", item.ID)
 	} else if paired > 0 {
 		result.Categorised += paired
+	}
+
+	// The household's own IF-THEN rules, LAST.
+	//
+	// The order is the contract between the two systems, and is stated in
+	// internal/rules' package doc as well as here. categorize answers one
+	// question — "which category?" — from a fixed precedence; the rule engine
+	// answers the broader "what else should be true of this row?" on top of
+	// whatever category came out of that. Running it earlier would mean a
+	// rule's set-category was immediately overwritten by the resolver, which is
+	// the exact bug this ordering exists to prevent. A manual category still
+	// beats both: the engine refuses to touch category_source='manual'.
+	//
+	// A nil viewer means the whole household is in scope. There is nobody on
+	// the other end of a sync to scope to, exactly as CategoriseHousehold above
+	// already works, and nothing here is returned to a user.
+	if hid, err := s.Queries.GetHouseholdForItem(ctx, item.ID); err != nil {
+		slog.Warn("could not resolve household for rules", "error", err, "item_id", item.ID)
+	} else if engine, err := rules.Load(ctx, s.Queries, hid); err != nil {
+		slog.Error("load rules after sync", "error", err, "item_id", item.ID)
+	} else if len(engine.Rules()) > 0 {
+		// Rules failing does not invalidate the sync: the rows are stored, and
+		// the user can re-run a rule over history at any time.
+		if summary, err := engine.RunHousehold(ctx, s.Queries, hid, nil); err != nil {
+			slog.Error("run rules after sync", "error", err, "item_id", item.ID)
+		} else {
+			result.RulesChanged = summary.Changed
+		}
 	}
 
 	// Record today's net worth now that balances are fresh. Balances carry no

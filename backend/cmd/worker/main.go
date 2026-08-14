@@ -113,7 +113,18 @@ func run() error {
 			"BLS public API. The series ships seeded, so this only adds new months.")
 	}
 
-	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, mail, cfg.FrontendOrigin, cfg.Benchmarks, cfg.MerchantLogos, cfg.CPI, backupDeps)
+	// Unlike the switches above, this one does not name the host it will talk to
+	// — the households do, one webhook at a time. Which is exactly why it earns a
+	// line in the boot output: an operator reading the log should know the
+	// instance is now willing to make outbound requests to addresses it was given
+	// rather than ones we chose.
+	if cfg.Webhooks.Enabled {
+		slog.Info("outgoing webhooks enabled; household events are delivered to " +
+			"user-configured URLs, signed with each webhook's own secret")
+	}
+
+	riverClient, err := jobs.NewWorkerClient(pool, syncer, aiClient, notifier, mail, cfg.FrontendOrigin, cfg.Benchmarks, cfg.MerchantLogos, cfg.CPI,
+		jobs.WebhookDeps{Cfg: cfg.Webhooks, Cipher: cipher}, backupDeps)
 	if err != nil {
 		return err
 	}

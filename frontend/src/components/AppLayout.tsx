@@ -77,6 +77,9 @@ const NAV_GROUPS: NavGroup[] = [
       // transaction and the difference reads best side by side: exactly one
       // category per charge, any number of tags.
       { to: '/tags', label: 'Tags' },
+      // The automation over both axes above: a rule is what files a charge's
+      // category and sticks its tags on without anyone opening a row.
+      { to: '/rules', label: 'Rules' },
       { to: '/merchants', label: 'Merchants' },
       { to: '/documents', label: 'Documents' },
       // Under Accounts rather than Analyze: a paystub is a record the household

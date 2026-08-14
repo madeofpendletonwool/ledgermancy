@@ -303,7 +303,7 @@ Every state-changing request needs the CSRF token echoed in an `X-CSRF-Token`
 header. The token is issued by `GET /api/auth/csrf` (which also sets the cookie)
 and rotated on a successful login.
 
-## Webhooks
+## Incoming webhooks (Plaid)
 
 | Method | Path | Auth | Notes |
 | ------ | ---- | ---- | ----- |
@@ -315,6 +315,30 @@ purely as a hint: the only action it can trigger is "re-sync this item", and the
 sync re-reads everything from Plaid using our own stored access token. **A forged
 webhook can cause a wasted sync, never a data change.** See
 [Deployment → Webhooks](deployment.md#webhooks).
+
+## Outgoing webhooks
+
+Every route answers `503` unless the instance sets `WEBHOOKS_ENABLED=true`, and
+every one is adult-only and scoped to the caller's household. See
+[Webhooks](features/webhooks.md) for the payload shape, the signature and the
+retry policy.
+
+| Method | Path | Auth | Notes |
+| ------ | ---- | ---- | ----- |
+| GET | `/api/webhooks/` | ✓ | This household's subscriptions. Never carries the signing secret |
+| POST | `/api/webhooks/` | ✓ | `{name, url, triggers[], active?}`. The **only** response that carries the secret |
+| GET | `/api/webhooks/triggers` | ✓ | The trigger vocabulary the backend understands |
+| PUT | `/api/webhooks/{id}` | ✓ | Same body as create. The secret is not editable here, and the owning member never changes |
+| DELETE | `/api/webhooks/{id}` | ✓ | Takes the delivery history with it |
+| POST | `/api/webhooks/{id}/secret` | ✓ | Rotates. Returns the new secret once; every receiver on the old one starts failing immediately |
+| POST | `/api/webhooks/{id}/test` | ✓ | Queues a real test delivery and returns `{message_id}`. Does **not** wait for the receiver — poll the messages list |
+| GET | `/api/webhooks/{id}/messages` | ✓ | Recent messages with status, attempt count and the exact body sent |
+| GET | `/api/webhooks/{id}/messages/{mid}/attempts` | ✓ | Every HTTP request made for one message, with the response or the reason nothing answered |
+
+A webhook is anchored to the member who created it, and **alert deliveries are
+filtered by that member's visibility** — the same
+`(i.user_id = $2 OR i.is_shared)` rule as everything below. A webhook is
+therefore not a way around the scoping; it inherits it.
 
 ## Visibility scoping
 

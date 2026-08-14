@@ -133,6 +133,65 @@ export interface AuthEvent {
   created_at: string
 }
 
+/** An outgoing webhook subscription. The signing secret is never in here. */
+export interface Webhook {
+  id: string
+  /**
+   * The member who created it. Load-bearing rather than decorative: alert
+   * deliveries are filtered by what this user can see, so a webhook created by
+   * one partner never carries the other's private-account alerts.
+   */
+  user_id: string
+  name: string
+  url: string
+  /** A paused subscription keeps its delivery history and stops receiving. */
+  active: boolean
+  triggers: string[]
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * The one response that carries the signing secret.
+ *
+ * Returned by a create or a rotate and never again — the server stores it
+ * sealed and only the delivery worker ever opens it. Held in component state
+ * to be shown and copied, exactly like {@link CreatedApiToken}.
+ */
+export interface CreatedWebhook extends Webhook {
+  secret: string
+}
+
+/** One event owed to one subscriber. */
+export interface WebhookMessage {
+  id: string
+  webhook_id: string
+  trigger: string
+  /** The exact body that was (or will be) sent and signed. */
+  payload: unknown
+  /** pending until delivered; sent on a 2xx; failed once the retries run out. */
+  status: 'pending' | 'sent' | 'failed'
+  attempts: number
+  delivered_at: string | null
+  last_error: string | null
+  created_at: string
+}
+
+/** One HTTP request and whatever came back — or why nothing did. */
+export interface WebhookAttempt {
+  id: string
+  attempt: number
+  request_headers: Record<string, string>
+  request_body: string
+  /** Null when the request never completed; `error` says why. */
+  response_status: number | null
+  response_headers: Record<string, string[]> | null
+  response_body: string | null
+  error: string | null
+  duration_ms: number
+  created_at: string
+}
+
 export interface Household {
   id: string
   name: string
@@ -1296,6 +1355,12 @@ export interface Obligation {
   id: string
   label: string
   amount: string
+  /** The stated expected range (MAD-120), both null when none was stated.
+   *  `amount` stays the expected figure the projection uses either way — the
+   *  range is a tolerance around it, and a charge outside it raises the
+   *  bill_out_of_range insight instead of quietly marking the bill paid. */
+  amount_min: string | null
+  amount_max: string | null
   category_id: string | null
   account_id: string | null
   interval_count: number
@@ -1338,6 +1403,10 @@ export type ObligationUnit = 'day' | 'week' | 'month' | 'year'
 export interface ObligationInput {
   label: string
   amount: string
+  /** Optional expected range. Send both or neither; empty strings clear a range
+   *  that was previously set. */
+  amount_min?: string
+  amount_max?: string
   category_id?: string | null
   account_id?: string | null
   interval_count: number
@@ -1353,6 +1422,10 @@ export interface UpcomingObligation {
   obligation_id: string
   label: string
   amount: string
+  /** The stated expected range, both null when none. The list `total` still sums
+   *  `amount`: a range is a tolerance, not a second figure to add up. */
+  amount_min: string | null
+  amount_max: string | null
   category_id: string | null
   account_id: string | null
   cadence: string
@@ -2459,6 +2532,147 @@ export interface TagSpend {
   expected_amount: string | null
   total: string
   transaction_count: number
+}
+
+/**
+ * A rule's condition kind. The server holds the authoritative list and validates
+ * every write against it.
+ *
+ * Note that `description_*` reads the raw text on the charge, NOT the merchant.
+ * `merchant_is` is a separate condition, because Plaid's two differ constantly
+ * ("SQ *BLUE BOTTLE 0421" vs "Blue Bottle Coffee") and a user who wants one is
+ * rarely served by the other.
+ */
+export type RuleTriggerType =
+  | 'description_contains'
+  | 'description_starts'
+  | 'description_ends'
+  | 'description_is'
+  | 'amount_more'
+  | 'amount_less'
+  | 'amount_exactly'
+  | 'merchant_is'
+  | 'category_is'
+  | 'has_no_category'
+  | 'account_is'
+  | 'has_attachments'
+
+/** A rule's action kind. */
+export type RuleActionType = 'set_category' | 'add_tag' | 'set_notes' | 'append_notes'
+
+/** One condition. Every condition on a rule must hold — the join is AND. */
+export interface RuleTrigger {
+  id: string
+  type: RuleTriggerType
+  /**
+   * The operand as stored: a text fragment, a decimal STRING, or a UUID. Never a
+   * number — an amount that round-tripped through a JSON float would be a
+   * different rule than the one the user wrote.
+   */
+  value: string
+  /** NOT. Flips this one condition. */
+  invert: boolean
+}
+
+/** One thing the rule does. Actions run in the order they appear. */
+export interface RuleAction {
+  id: string
+  type: RuleActionType
+  value: string
+  /**
+   * When this action is REFUSED (the category was set by hand, the thing it
+   * names is gone), abandon the rest of this rule for that transaction. An
+   * action that was already satisfied is a success and stops nothing.
+   */
+  stop_on_fail: boolean
+}
+
+/**
+ * A user-editable IF-THEN rule over transactions.
+ *
+ * Household-scoped like a tag or a category. Which TRANSACTIONS it reaches is
+ * still per-member: a rule you run never touches, or even counts, a charge on
+ * another member's private account.
+ */
+export interface Rule {
+  id: string
+  name: string
+  description: string | null
+  /** An inactive rule is kept, not deleted — switching automation off to see
+   *  whether it caused something is how you debug it. */
+  active: boolean
+  /** Higher runs first, and the order is load-bearing: a later rule sees what an
+   *  earlier one did, so "set category to Coffee" can be observed by a rule
+   *  triggering on "category is Coffee". */
+  priority: number
+  triggers: RuleTrigger[]
+  actions: RuleAction[]
+  created_at: string
+}
+
+/** Fields to create or update a rule. An update REPLACES the condition and
+ *  action lists rather than merging them. */
+export interface RuleInput {
+  name: string
+  description?: string | null
+  active?: boolean
+  priority?: number
+  triggers: { type: RuleTriggerType; value: string; invert: boolean }[]
+  actions: { type: RuleActionType; value: string; stop_on_fail: boolean }[]
+}
+
+/**
+ * What one action did, or would do.
+ *
+ * `unchanged` is a SUCCESS — the tag was already there, the note already said
+ * that — and it is what makes running a rule twice a no-op. `refused` is the
+ * failure `stop_on_fail` reacts to.
+ */
+export type RuleOutcome = 'applied' | 'unchanged' | 'refused' | 'skipped'
+
+export interface RuleChange {
+  action: RuleActionType
+  value: string
+  outcome: RuleOutcome
+  /** Why, for anything other than "applied". An outcome with no explanation is
+   *  what makes people distrust automation. */
+  reason: string
+}
+
+/** One transaction a dry run fired on, trimmed to what identifies the charge. */
+export interface RuleTestMatch {
+  transaction_id: string
+  date: string
+  name: string
+  merchant: string
+  amount: string
+  currency: string
+  account_name: string
+  changes: RuleChange[]
+}
+
+/**
+ * The dry run. The counts describe every transaction you can see; the list is
+ * capped at a screenful. A truncated list beside an exact count is honest — a
+ * truncated count would understate what you are about to do.
+ */
+export interface RuleTestResult {
+  scanned: number
+  matched: number
+  would_change: number
+  truncated: boolean
+  matches: RuleTestMatch[]
+}
+
+/**
+ * What running a rule over existing transactions did. `matched` staying high
+ * while `changed` falls to zero on a second run is idempotence working, not the
+ * rule breaking.
+ */
+export interface RuleRunResult {
+  scanned: number
+  matched: number
+  changed: number
 }
 
 /**
@@ -4108,6 +4322,41 @@ export const api = {
 
   revokeApiToken: (id: string) => request<void>('DELETE', `/api/auth/tokens/${id}`),
 
+  // Outgoing webhooks. Every one of these answers 503 when the instance has not
+  // set WEBHOOKS_ENABLED, which is what the settings section keys off — the
+  // feature is not merely hidden, it is genuinely absent.
+  webhooks: () => request<Webhook[]>('GET', '/api/webhooks/'),
+
+  /** The trigger vocabulary, read from the server so the UI cannot offer one it does not have. */
+  webhookTriggers: () => request<string[]>('GET', '/api/webhooks/triggers'),
+
+  createWebhook: (input: { name: string; url: string; triggers: string[]; active?: boolean }) =>
+    request<CreatedWebhook>('POST', '/api/webhooks/', input),
+
+  updateWebhook: (
+    id: string,
+    input: { name: string; url: string; triggers: string[]; active: boolean },
+  ) => request<Webhook>('PUT', `/api/webhooks/${id}`, input),
+
+  deleteWebhook: (id: string) => request<void>('DELETE', `/api/webhooks/${id}`),
+
+  /** Mints a new signing secret and returns it once. Every receiver holding the old one breaks. */
+  rotateWebhookSecret: (id: string) =>
+    request<{ secret: string }>('POST', `/api/webhooks/${id}/secret`),
+
+  /** Queues a test delivery. It does not wait for the receiver — poll the messages list. */
+  testWebhook: (id: string) =>
+    request<{ message_id: string }>('POST', `/api/webhooks/${id}/test`),
+
+  webhookMessages: (id: string) =>
+    request<WebhookMessage[]>('GET', `/api/webhooks/${id}/messages`),
+
+  webhookAttempts: (webhookId: string, messageId: string) =>
+    request<WebhookAttempt[]>(
+      'GET',
+      `/api/webhooks/${webhookId}/messages/${messageId}/attempts`,
+    ),
+
   household: () => request<Household>('GET', '/api/household/'),
 
   members: () => request<Member[]>('GET', '/api/household/members'),
@@ -4432,6 +4681,33 @@ export const api = {
   /** Removes one link from either of its ends. Both transactions survive. */
   unlinkTransaction: (transactionID: string, linkID: string) =>
     request<void>('DELETE', `/api/transactions/${transactionID}/links/${linkID}`),
+
+  // --- Rules --------------------------------------------------------------
+  // User-editable IF-THEN over transactions. Rules fire when a transaction
+  // arrives and can be re-run over history. They run AFTER the app's own
+  // category resolution, and never overwrite a category you set by hand.
+  rules: () => request<Rule[]>('GET', '/api/rules'),
+
+  createRule: (input: RuleInput) => request<Rule>('POST', '/api/rules', input),
+
+  /** Replaces the whole rule, conditions and actions included — the editor is a
+   *  set of rows you confirm, not a stream of deltas. */
+  updateRule: (id: string, input: RuleInput) =>
+    request<Rule>('PUT', `/api/rules/${id}`, input),
+
+  /** Deleting a rule does NOT undo what it already did: the categories it set
+   *  and the tags it added are your data now, exactly as if you had set them by
+   *  hand. */
+  deleteRule: (id: string) => request<void>('DELETE', `/api/rules/${id}`),
+
+  /** Dry run: what this rule would do to what is already stored. Writes
+   *  nothing, and shares its planner with `runRule`, so it cannot promise
+   *  something the run would not do. */
+  testRule: (id: string) => request<RuleTestResult>('POST', `/api/rules/${id}/test`),
+
+  /** The same walk, applied. Idempotent: running it a second time changes
+   *  nothing. */
+  runRule: (id: string) => request<RuleRunResult>('POST', `/api/rules/${id}/trigger`),
 
   // --- Merchants ----------------------------------------------------------
   // Canonical merchants and the review queue for proposed merges. Everything

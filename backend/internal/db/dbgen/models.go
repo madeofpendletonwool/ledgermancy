@@ -789,6 +789,10 @@ type RecurringObligation struct {
 	LastPostedDate   *stdtime.Time   `json:"last_posted_date"`
 	PostingAccountID *uuid.UUID      `json:"posting_account_id"`
 	Remind           bool            `json:"remind"`
+	// Low end of the amount the household expects this bill to land at. NULL together with amount_max means no range was stated and the matcher falls back to its +/-25% band around amount.
+	AmountMin decimal.NullDecimal `json:"amount_min"`
+	// High end of the expected amount. A charge inside the payment window but outside [amount_min, amount_max] does not mark the occurrence paid; it raises the bill_out_of_range insight instead.
+	AmountMax decimal.NullDecimal `json:"amount_max"`
 }
 
 type RecurringOverride struct {
@@ -797,6 +801,38 @@ type RecurringOverride struct {
 	MerchantKey   string       `json:"merchant_key"`
 	MerchantLabel string       `json:"merchant_label"`
 	CreatedAt     stdtime.Time `json:"created_at"`
+}
+
+// User-editable IF-THEN automation over transactions. Household-scoped. Runs AFTER internal/categorize has resolved a category, and never overwrites category_source = 'manual'.
+type Rule struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Name        string       `json:"name"`
+	Description *string      `json:"description"`
+	Active      bool         `json:"active"`
+	Priority    int32        `json:"priority"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
+type RuleAction struct {
+	ID         uuid.UUID    `json:"id"`
+	RuleID     uuid.UUID    `json:"rule_id"`
+	ActionType string       `json:"action_type"`
+	Value      string       `json:"value"`
+	StopOnFail bool         `json:"stop_on_fail"`
+	Position   int32        `json:"position"`
+	CreatedAt  stdtime.Time `json:"created_at"`
+}
+
+type RuleTrigger struct {
+	ID          uuid.UUID    `json:"id"`
+	RuleID      uuid.UUID    `json:"rule_id"`
+	TriggerType string       `json:"trigger_type"`
+	Value       string       `json:"value"`
+	Invert      bool         `json:"invert"`
+	Position    int32        `json:"position"`
+	CreatedAt   stdtime.Time `json:"created_at"`
 }
 
 type SavingsBondRate struct {
@@ -933,4 +969,44 @@ type UserRecoveryCode struct {
 	CodeHash  string        `json:"code_hash"`
 	UsedAt    *stdtime.Time `json:"used_at"`
 	CreatedAt stdtime.Time  `json:"created_at"`
+}
+
+type Webhook struct {
+	ID              uuid.UUID    `json:"id"`
+	HouseholdID     uuid.UUID    `json:"household_id"`
+	UserID          uuid.UUID    `json:"user_id"`
+	Name            string       `json:"name"`
+	Url             string       `json:"url"`
+	SecretEncrypted []byte       `json:"secret_encrypted"`
+	Active          bool         `json:"active"`
+	Triggers        []string     `json:"triggers"`
+	CreatedAt       stdtime.Time `json:"created_at"`
+	UpdatedAt       stdtime.Time `json:"updated_at"`
+}
+
+type WebhookAttempt struct {
+	ID              uuid.UUID    `json:"id"`
+	MessageID       uuid.UUID    `json:"message_id"`
+	Attempt         int32        `json:"attempt"`
+	RequestHeaders  []byte       `json:"request_headers"`
+	RequestBody     string       `json:"request_body"`
+	ResponseStatus  *int32       `json:"response_status"`
+	ResponseHeaders []byte       `json:"response_headers"`
+	ResponseBody    *string      `json:"response_body"`
+	Error           *string      `json:"error"`
+	DurationMs      int32        `json:"duration_ms"`
+	CreatedAt       stdtime.Time `json:"created_at"`
+}
+
+type WebhookMessage struct {
+	ID          uuid.UUID     `json:"id"`
+	WebhookID   uuid.UUID     `json:"webhook_id"`
+	TriggerType string        `json:"trigger_type"`
+	Payload     []byte        `json:"payload"`
+	Status      string        `json:"status"`
+	Attempts    int32         `json:"attempts"`
+	DeliveredAt *stdtime.Time `json:"delivered_at"`
+	LastError   *string       `json:"last_error"`
+	DedupeKey   string        `json:"dedupe_key"`
+	CreatedAt   stdtime.Time  `json:"created_at"`
 }

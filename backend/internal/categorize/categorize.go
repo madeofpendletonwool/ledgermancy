@@ -10,6 +10,28 @@
 //
 // Steps 1–4 are deterministic, cost nothing, and handle the overwhelming
 // majority of transactions — which is why the AI layer stays optional.
+//
+// # This package and internal/rules
+//
+// They are not the same thing and one does not replace the other. Read this
+// before plugging anything into either.
+//
+//	categorize (here)  answers ONE question — "which category?" — from the
+//	                   fixed precedence above. `rules` at step 2 means the OLD,
+//	                   narrow category_rules table (00001): a pattern and a
+//	                   category, nothing else.
+//
+//	internal/rules     answers a BROADER question — "what else should be true
+//	                   of this row?" — from user-written IF-THEN rules that can
+//	                   also add tags and write notes. It runs AFTER this
+//	                   package, on top of whatever category came out of here.
+//
+// The order is load-bearing: internal/plaid.Sync calls CategoriseHousehold,
+// then PairTransfers, then the rule engine. Reversed, a user rule's
+// set-category would be immediately overwritten by this resolver — which is
+// exactly the bug the ordering exists to prevent. Step 1 still beats both: a
+// manual category is sticky, and the rule engine refuses to overwrite it for
+// the same reason the merchant cache does.
 package categorize
 
 import (

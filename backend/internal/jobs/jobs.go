@@ -30,6 +30,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/notify"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/obligations"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/webhooks"
 )
 
 // QueueDefault is the single queue everything runs on. Volume for a household
@@ -373,6 +374,10 @@ type EvaluateAlertsWorker struct {
 	Client *river.Client[pgx.Tx]
 	// AppURL is the frontend origin used to build a deep link back to the app.
 	AppURL string
+	// Webhooks turns on the outgoing-webhook fan-out for the events this worker
+	// raises. False (the default, and what an instance with WEBHOOKS_ENABLED
+	// unset gets) means no message row is ever written for an alert.
+	Webhooks bool
 }
 
 func (w *EvaluateAlertsWorker) Work(ctx context.Context, job *river.Job[EvaluateAlertsArgs]) error {
@@ -415,6 +420,20 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 	}
 
 	for _, ev := range events {
+		var payload map[string]string
+		_ = json.Unmarshal(ev.Payload, &payload)
+
+		// Webhooks fan out BEFORE the push decision and regardless of it. The
+		// rule's `push` switch is a statement about phones — "do not buzz me for
+		// this one" — not about integrations, and an automation subscribed to
+		// alert.fired that silently missed every rule its owner had chosen not to
+		// be buzzed for would be a very confusing thing to debug.
+		//
+		// It also runs before the notified stamp below, so a crash between the
+		// two costs a repeat pass rather than a lost event; the message dedupe
+		// key makes that repeat free.
+		w.dispatchAlertWebhooks(ctx, householdID, ev.ID, ev.AlertType, payload)
+
 		// The rule decides whether its events go out externally at all. A rule
 		// left in-app only still fires and shows in the feed; we just stamp its
 		// event notified so this and later sweeps skip it without pushing.
@@ -425,8 +444,6 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 			continue
 		}
 
-		var payload map[string]string
-		_ = json.Unmarshal(ev.Payload, &payload)
 		n := alertNotification(ev.AlertType, payload, w.AppURL)
 
 		for _, m := range members {
@@ -452,6 +469,34 @@ func (w *EvaluateAlertsWorker) dispatchNotifications(ctx context.Context, househ
 		}
 	}
 	return nil
+}
+
+// dispatchAlertWebhooks writes an outgoing-webhook message per subscriber that
+// asked for alert.fired and may see this event, then queues the deliveries.
+//
+// Every failure here is logged rather than returned. The alert event itself is
+// already stored, and failing the evaluation over an integration would trade a
+// working feed for a broken one — the same trade the push dispatch declines to
+// make just below.
+func (w *EvaluateAlertsWorker) dispatchAlertWebhooks(
+	ctx context.Context,
+	householdID, eventID uuid.UUID,
+	alertType string,
+	payload map[string]string,
+) {
+	if !w.Webhooks {
+		return
+	}
+	ids, err := webhooks.EmitAlertEvent(ctx, w.Queries, householdID, eventID, time.Now(), webhooks.AlertData{
+		AlertEventID: eventID.String(),
+		AlertType:    alertType,
+		Fields:       payload,
+	})
+	if err != nil {
+		slog.Error("enqueue alert webhooks", "error", err, "event_id", eventID)
+		return
+	}
+	EnqueueWebhookDeliveries(ctx, w.Client, ids)
 }
 
 // hasChannel reports whether a user has a real delivery channel configured.
@@ -643,6 +688,9 @@ type GenerateInsightsWorker struct {
 	AI      *ai.Client
 	Client  *river.Client[pgx.Tx]
 	AppURL  string
+	// Webhooks turns on the outgoing-webhook fan-out for newly-raised insights.
+	// Off unless WEBHOOKS_ENABLED is set; see EvaluateAlertsWorker.Webhooks.
+	Webhooks bool
 }
 
 func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[GenerateInsightsArgs]) error {
@@ -676,7 +724,49 @@ func (w *GenerateInsightsWorker) Work(ctx context.Context, job *river.Job[Genera
 		// feed is already written. Log and move on.
 		slog.Warn("insight push dispatch", "error", err, "household_id", job.Args.HouseholdID)
 	}
+	w.dispatchInsightWebhooks(ctx, job.Args.HouseholdID, results, now)
 	return nil
+}
+
+// dispatchInsightWebhooks writes an outgoing-webhook message per subscriber that
+// asked for insight.created, for each NEWLY-CREATED insight.
+//
+// Only Inserted results, and that is the whole subtlety of this producer. The
+// engine upserts: an insight that is still true is refreshed on every pass, so
+// forwarding refreshes would announce the same finding to a Discord channel
+// every hour until it stopped being true. The push dispatch above filters the
+// same way, for the same reason.
+//
+// Unlike the push it does NOT filter on priority. A push interrupts somebody; a
+// webhook is read by a program, and deciding which insights matter is the
+// receiver's job, not ours.
+func (w *GenerateInsightsWorker) dispatchInsightWebhooks(
+	ctx context.Context,
+	householdID uuid.UUID,
+	results []insights.Result,
+	now time.Time,
+) {
+	if !w.Webhooks {
+		return
+	}
+	for _, r := range results {
+		if !r.Inserted {
+			continue
+		}
+		ids, err := webhooks.Emit(ctx, w.Queries, householdID,
+			webhooks.TriggerInsightCreated, r.ID.String(), now, webhooks.InsightData{
+				InsightID: r.ID.String(),
+				Kind:      r.Kind,
+				Priority:  r.Priority,
+				Title:     r.Title,
+				Body:      r.Body,
+			})
+		if err != nil {
+			slog.Error("enqueue insight webhooks", "error", err, "insight_id", r.ID)
+			continue
+		}
+		EnqueueWebhookDeliveries(ctx, w.Client, ids)
+	}
 }
 
 // dispatchInsightPushes enqueues one notify job per (newly-created high-priority

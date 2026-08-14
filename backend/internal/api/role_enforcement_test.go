@@ -205,6 +205,25 @@ var childRoutes = []struct{ method, path string }{
 	{"GET", "/api/alerts/"},
 	{"POST", "/api/alerts/"},
 	{"GET", "/api/alerts/events"},
+
+	// Outgoing webhooks: a standing instruction to send this household's events
+	// to an address somebody chose. A child login has no business wiring the
+	// family's finances to a destination of its own, and the delivery inspector
+	// is a verbatim record of what was sent — so the whole group is refused,
+	// reads included.
+	//
+	// A new TOP-LEVEL route group is exactly the case this test's header calls
+	// out as caught by nothing else, so every route is listed rather than one
+	// representative.
+	{"GET", "/api/webhooks/"},
+	{"POST", "/api/webhooks/"},
+	{"GET", "/api/webhooks/triggers"},
+	{"PUT", "/api/webhooks/" + uuid.Nil.String()},
+	{"DELETE", "/api/webhooks/" + uuid.Nil.String()},
+	{"POST", "/api/webhooks/" + uuid.Nil.String() + "/secret"},
+	{"POST", "/api/webhooks/" + uuid.Nil.String() + "/test"},
+	{"GET", "/api/webhooks/" + uuid.Nil.String() + "/messages"},
+	{"GET", "/api/webhooks/" + uuid.Nil.String() + "/messages/" + uuid.Nil.String() + "/attempts"},
 }
 
 // childAllowedRoutes is the complement: the surface a child login MUST reach.

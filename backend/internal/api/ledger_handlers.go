@@ -16,6 +16,7 @@ import (
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/rules"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/search"
 )
 
@@ -469,9 +470,32 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Fire the household's rules at the row that just landed, in the SAME
+	// transaction: a hand-entered charge is automated exactly like a synced one,
+	// and a rolled-back create leaves no tags or notes behind either.
+	//
+	// The sticky-manual invariant does the delicate part for free here. The
+	// insert above stamps category_source='manual' whenever the form carried a
+	// category, so a rule cannot re-file a charge the user just filed by hand —
+	// while a row left uncategorised is fair game, which is the case rules exist
+	// for.
+	final, err := rules.ApplyToTransaction(ctx, qtx, identity.HouseholdID, created.ID)
+	if err != nil {
+		s.internalError(w, "apply rules to new transaction", err)
+		return
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "create manual transaction", err)
 		return
+	}
+
+	// Echo the category the row ENDED UP with. Without this a rule that filed
+	// the charge would be invisible until the next refetch, and the user would
+	// watch their new transaction change category a beat after saving it.
+	categoryID := created.CategoryID
+	if final != nil {
+		categoryID = final.CategoryID
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -480,7 +504,7 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 		"date":        created.Date,
 		"amount":      created.Amount,
 		"name":        created.Name,
-		"category_id": created.CategoryID,
+		"category_id": categoryID,
 		"source":      created.Source,
 	})
 }

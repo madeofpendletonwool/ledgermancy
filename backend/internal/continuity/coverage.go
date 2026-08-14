@@ -128,6 +128,17 @@ var tableCoverage = map[string]Coverage{
 	// relationship has no name.
 	"link_types":        InExport,
 	"transaction_links": InExport,
+	// User-written IF-THEN automation, and the two child tables that ARE the
+	// rule. A rule is pure household judgement — "charges from this merchant
+	// over ten dollars are Coffee, and tag them" — that nothing outside this
+	// database has ever seen, so no re-sync and no recomputation brings one
+	// back. The children are not detail: a rules row on its own restores as a
+	// name with no conditions and no actions, and the engine reads a
+	// condition-less rule as matching NOTHING. Losing them turns every
+	// automation the household built into an inert list, silently.
+	"rules":         InExport,
+	"rule_triggers": InExport,
+	"rule_actions":  InExport,
 	// The per-object change log: who edited a transaction/budget/goal and how.
 	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
 	// recomputation can ever reconstruct — so losing it loses the audit trail
@@ -300,6 +311,13 @@ var tableCoverage = map[string]Coverage{
 	// restore that silently broke every integration they had wired up is not
 	// what anyone means by restoring their data.
 	"api_tokens": DumpOnly,
+	// Outgoing webhook subscriptions. Every row holds a sealed signing secret, so
+	// it cannot go into a plain-JSON file meant to outlive this app — and like
+	// api_tokens directly above, it is emphatically not Ephemeral: the household
+	// configured these deliberately, and a restore that silently stopped feeding
+	// every automation they had wired up is not what anybody means by restoring
+	// their data.
+	"webhooks": DumpOnly,
 
 	// --- Operational bookkeeping ------------------------------------------
 	"auth_events":       DumpOnly, // audit log, swept at 180 days
@@ -343,6 +361,16 @@ var tableCoverage = map[string]Coverage{
 	// --- Ephemeral --------------------------------------------------------
 	"sessions":       Ephemeral, // restoring these would resurrect logins
 	"mfa_challenges": Ephemeral, // seconds-lived by design
+	// Outgoing webhook delivery history. Ephemeral rather than DumpOnly, and the
+	// distinction from `webhooks` above is worth being explicit about: the
+	// SUBSCRIPTION is configuration and must come back, but these are a record of
+	// requests that already happened, collected on a thirty-day retention.
+	// Restoring a week-old `pending` row would hand the sweep a backlog of events
+	// the household has long since seen in the app and re-deliver them to a live
+	// automation — a restore that sets off somebody's lights is a bug, not a
+	// recovery.
+	"webhook_messages": Ephemeral,
+	"webhook_attempts": Ephemeral,
 }
 
 // runtimeTablePrefixes covers tables no migration in this repo creates: River
