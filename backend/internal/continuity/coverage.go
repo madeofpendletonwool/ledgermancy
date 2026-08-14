@@ -118,6 +118,17 @@ var tableCoverage = map[string]Coverage{
 	// every envelope total reads as zero.
 	"tags":             InExport,
 	"transaction_tags": InExport,
+	// User-written IF-THEN automation, and the two child tables that ARE the
+	// rule. A rule is pure household judgement — "charges from this merchant
+	// over ten dollars are Coffee, and tag them" — that nothing outside this
+	// database has ever seen, so no re-sync and no recomputation brings one
+	// back. The children are not detail: a rules row on its own restores as a
+	// name with no conditions and no actions, and the engine reads a
+	// condition-less rule as matching NOTHING. Losing them turns every
+	// automation the household built into an inert list, silently.
+	"rules":         InExport,
+	"rule_triggers": InExport,
+	"rule_actions":  InExport,
 	// The per-object change log: who edited a transaction/budget/goal and how.
 	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
 	// recomputation can ever reconstruct — so losing it loses the audit trail

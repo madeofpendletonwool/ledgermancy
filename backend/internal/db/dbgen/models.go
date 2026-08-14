@@ -790,6 +790,38 @@ type RecurringOverride struct {
 	CreatedAt     stdtime.Time `json:"created_at"`
 }
 
+// User-editable IF-THEN automation over transactions. Household-scoped. Runs AFTER internal/categorize has resolved a category, and never overwrites category_source = 'manual'.
+type Rule struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Name        string       `json:"name"`
+	Description *string      `json:"description"`
+	Active      bool         `json:"active"`
+	Priority    int32        `json:"priority"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
+}
+
+type RuleAction struct {
+	ID         uuid.UUID    `json:"id"`
+	RuleID     uuid.UUID    `json:"rule_id"`
+	ActionType string       `json:"action_type"`
+	Value      string       `json:"value"`
+	StopOnFail bool         `json:"stop_on_fail"`
+	Position   int32        `json:"position"`
+	CreatedAt  stdtime.Time `json:"created_at"`
+}
+
+type RuleTrigger struct {
+	ID          uuid.UUID    `json:"id"`
+	RuleID      uuid.UUID    `json:"rule_id"`
+	TriggerType string       `json:"trigger_type"`
+	Value       string       `json:"value"`
+	Invert      bool         `json:"invert"`
+	Position    int32        `json:"position"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+}
+
 type SavingsBondRate struct {
 	ID            uuid.UUID           `json:"id"`
 	Series        string              `json:"series"`
