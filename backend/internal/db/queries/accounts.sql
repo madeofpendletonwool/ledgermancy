@@ -71,6 +71,29 @@ WHERE v.household_id = $1
   AND a.is_active
 ORDER BY v.institution_name NULLS LAST, a.name;
 
+-- name: ListPlaidAccountBalancesForHousehold :many
+-- Every active Plaid account in a household with a known balance, for the
+-- per-account balance snapshot (MAD-119). This is the per-account analog of
+-- ComputeNetWorth's visible_accounts CTE: household-scoped only, with no
+-- (user_id OR is_shared) clause, because a balance snapshot is background
+-- bookkeeping like net_worth_snapshots rather than a member-facing read. The
+-- read endpoint (ListAccountBalanceHistory) is what enforces per-member
+-- visibility; this is what writes the points it draws.
+--
+-- source = 'plaid' on purpose: manual accounts already carry a history row on
+-- every user balance write, and snapshotting their current_balance daily would
+-- interleave app-written repeats of a figure the user owns, burying the
+-- entries that actually explain a move. A Plaid account's balance, by contrast,
+-- is only ever the institution's current figure — the whole trend has to be
+-- written down as it goes.
+SELECT a.id, a.current_balance
+FROM accounts a
+JOIN account_access v ON v.account_id = a.id
+WHERE v.household_id = $1
+  AND a.source = 'plaid'
+  AND a.is_active
+  AND a.current_balance IS NOT NULL;
+
 -- name: SetAccountActive :one
 UPDATE accounts SET is_active = $2 WHERE id = $1 RETURNING *;
 

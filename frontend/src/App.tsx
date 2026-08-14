@@ -54,6 +54,9 @@ const Merchants = lazy(() => import('./routes/Merchants').then((m) => ({ default
 const MyMoney = lazy(() => import('./routes/MyMoney').then((m) => ({ default: m.MyMoney })))
 const NetWorth = lazy(() => import('./routes/NetWorth').then((m) => ({ default: m.NetWorth })))
 const Paystubs = lazy(() => import('./routes/Paystubs').then((m) => ({ default: m.Paystubs })))
+const PiggyBanks = lazy(() =>
+  import('./routes/PiggyBanks').then((m) => ({ default: m.PiggyBanks })),
+)
 const Register = lazy(() => import('./routes/Register').then((m) => ({ default: m.Register })))
 const Reminders = lazy(() => import('./routes/Reminders').then((m) => ({ default: m.Reminders })))
 const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Report })))
@@ -64,6 +67,7 @@ const Schedule = lazy(() => import('./routes/Schedule').then((m) => ({ default: 
 const Settings = lazy(() => import('./routes/Settings').then((m) => ({ default: m.Settings })))
 const Shared = lazy(() => import('./routes/Shared').then((m) => ({ default: m.Shared })))
 const Spending = lazy(() => import('./routes/Spending').then((m) => ({ default: m.Spending })))
+const Tags = lazy(() => import('./routes/Tags').then((m) => ({ default: m.Tags })))
 const Transactions = lazy(() =>
   import('./routes/Transactions').then((m) => ({ default: m.Transactions })),
 )
@@ -115,6 +119,7 @@ export default function App() {
           <Route path="/schedule" element={<Schedule />} />
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/goals" element={<Goals />} />
+          <Route path="/piggy-banks" element={<PiggyBanks />} />
           <Route path="/shared" element={<Shared />} />
           <Route path="/net-worth" element={<NetWorth />} />
           <Route path="/investments" element={<Investments />} />
@@ -126,6 +131,7 @@ export default function App() {
               category id is a UUID, so unlike a merchant key it is safe in the
               path. Registered after /categories so the literal wins. */}
           <Route path="/categories/:categoryId" element={<CategoryDetail />} />
+          <Route path="/tags" element={<Tags />} />
           <Route path="/merchants" element={<Merchants />} />
           {/* Drill-down target; reached from any merchant name, not the nav.
               The merchant travels as ?key= rather than a path segment because a

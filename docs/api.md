@@ -1,7 +1,44 @@
 # API reference
 
-The backend is a Go HTTP server (chi router). Every state-changing request needs
-the **CSRF token** echoed in an `X-CSRF-Token` header.
+The backend is a Go HTTP server (chi router). Every state-changing request from a
+browser needs the **CSRF token** echoed in an `X-CSRF-Token` header.
+
+## Two ways to authenticate
+
+| | Session cookie | Personal API token |
+| --- | --- | --- |
+| Used by | the web app | third-party clients, scripts, agents |
+| Sent as | `ledgermancy_session` cookie | `Authorization: Bearer lgm_…` |
+| CSRF header | required | **not** required |
+| Expires | 30 days, or 7 days idle | never, unless you set an expiry |
+| Revoked from | Settings → Security → Signed-in devices | Settings → Security → API tokens |
+
+Both resolve to the **same identity**, so a token sees exactly what its owner
+sees. Every visibility rule is unchanged by which credential arrived.
+
+A request carrying an `Authorization` header is resolved *only* as a token and
+never falls back to the cookie — that is what makes the CSRF exemption safe.
+
+### Personal API tokens
+
+Create one under **Settings → Security → API tokens**. The value is shown once;
+only an HMAC of it is stored, so it cannot be recovered afterwards.
+
+```bash
+curl -H "Authorization: Bearer lgm_xxxxxxxx" \
+     https://ledgermancy.example.com/api/accounts/
+```
+
+Two scopes:
+
+- **`read`** — every token has it. Safe methods only.
+- **`write`** — additionally permits `POST`/`PUT`/`PATCH`/`DELETE`. Without it a
+  state-changing request is refused with **403** before it reaches a handler.
+
+Tokens cannot manage credentials: `/api/auth/tokens`, `/api/auth/password`,
+`/api/auth/mfa/*` and session revocation all require the session cookie, so a
+leaked token cannot mint replacements for itself or lock you out of your own
+account. Rate limits apply exactly as they do to a browser.
 
 ## Authentication
 
@@ -24,6 +61,12 @@ the **CSRF token** echoed in an `X-CSRF-Token` header.
 | DELETE | `/api/auth/sessions/{id}` | ✓ | Revoke one device |
 | POST | `/api/auth/sessions/revoke-others` | ✓ | Sign out everywhere but here |
 | GET | `/api/auth/events` | ✓ | Last 50 security events on the account |
+| GET | `/api/auth/tokens` | cookie | Personal API tokens, with scopes and last-used |
+| POST | `/api/auth/tokens` | cookie | `{name, scopes, expires_at?}`. Returns the token **once** |
+| DELETE | `/api/auth/tokens/{id}` | cookie | Revoke; effective on the next request |
+
+"cookie" in the Auth column means the session cookie specifically — an API token
+is refused on those routes. Everything else marked ✓ accepts either.
 
 ## Household
 
@@ -51,7 +94,8 @@ the **CSRF token** echoed in an `X-CSRF-Token` header.
 | Method | Path | Auth | Notes |
 | ------ | ---- | ---- | ----- |
 | GET | `/api/accounts` | ✓ | Visible accounts with balances |
-| GET | `/api/transactions` | ✓ | `from`, `to`, `limit`, `offset`; defaults to a rolling year |
+| GET | `/api/transactions` | ✓ | `from`, `to`, `limit`, `offset`; defaults to a rolling year. `q` is a [composable search query](features/transactions.md#search) |
+| GET | `/api/transactions/search-operators` | ✓ | The operator vocabulary `q` accepts, for autocomplete |
 | GET | `/api/export/transactions.csv` | ✓ | Financial Summary transactions export |
 | GET | `/api/export/categories.csv` | ✓ | Category summary export |
 | GET | `/api/export/net-worth.csv` | ✓ | Net-worth history export |

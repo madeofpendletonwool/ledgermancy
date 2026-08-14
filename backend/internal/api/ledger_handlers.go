@@ -12,9 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/audit"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/plaid"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/search"
 )
 
 type accountResponse struct {
@@ -93,6 +95,13 @@ type transactionResponse struct {
 	Date         time.Time `json:"date"`
 	Name         string    `json:"name"`
 	MerchantName *string   `json:"merchant_name"`
+	// Merchant is the name to DISPLAY for the row: the canonical merchant name
+	// when the descriptor has been grouped or renamed, otherwise the raw
+	// merchant_name/name the bank sent. This is the field the row and recent
+	// activity render — MerchantName/Name above stay raw so search and the manual
+	// editor keep working against the bank's own text. Mirrors the COALESCE every
+	// report reads, so a rename from the row menu is reflected here immediately.
+	Merchant string `json:"merchant"`
 	// MerchantKey is the normalized key the app caches categories by. Present
 	// even when MerchantName is null (it falls back to the raw name), and empty
 	// when the description carried too little signal to key on. The UI shows the
@@ -126,6 +135,10 @@ type transactionResponse struct {
 	// toggle. See transactionFlagsRequest for what each one means.
 	ExcludedFromReports bool `json:"excluded_from_reports"`
 	IsOneTime           bool `json:"is_one_time"`
+	// Tags are the free-form labels on this row, orthogonal to CategoryID above:
+	// a transaction has one category and any number of tags. Always present,
+	// empty when nothing is labelled, so the row never has to handle null.
+	Tags []transactionTag `json:"tags"`
 }
 
 // defaultTransactionWindow is used when the caller does not supply dates: a
@@ -174,9 +187,6 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	// than an error: a stale link should read as "no charges", not as a failure.
 	merchantKey := trimmedParam(q.Get("merchant"))
 
-	// Optional free-text merchant/description search.
-	search := trimmedParam(q.Get("q"))
-
 	// Optional "show the rows I've excluded from reports". Off by default so the
 	// ledger reads like the reports it feeds; on, it is the only way to find an
 	// excluded row again and clear the flag.
@@ -186,7 +196,22 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		includeExcluded = &t
 	}
 
-	rows, err := s.Queries.ListVisibleTransactions(r.Context(), dbgen.ListVisibleTransactionsParams{
+	// Optional tag filter, as a comma-separated `tags` list. Malformed ids are
+	// dropped exactly as in the account filter, which reads as "all"; the query
+	// re-checks each id against the household, so a foreign tag matches nothing
+	// rather than leaking another household's labelling.
+	tagIDs := parseUUIDList(q.Get("tags"))
+
+	// Optional "only rows nobody has labelled yet" — the tag counterpart of the
+	// uncategorised filter, and how a household finds the charges that still
+	// belong to a trip or a project.
+	var untagged *bool
+	if q.Get("untagged") == "true" {
+		t := true
+		untagged = &t
+	}
+
+	params := dbgen.ListVisibleTransactionsParams{
 		HouseholdID:     identity.HouseholdID,
 		UserID:          identity.UserID,
 		Date:            from,
@@ -196,12 +221,92 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		AccountIds:      accountIDs,
 		CategoryID:      categoryID,
 		MerchantKey:     merchantKey,
-		Search:          search,
 		Uncategorised:   uncategorised,
 		IncludeExcluded: includeExcluded,
-	})
+		TagIds:          tagIDs,
+		Untagged:        untagged,
+	}
+
+	// `q` is a search query in the grammar internal/search parses: bare words are
+	// free text (which is all it used to be, so old links keep working) and
+	// `key:value` terms narrow further. Anything with operators in it cannot be
+	// expressed as nargs, so that path resolves the query to an ordered page of
+	// ids and lets this query project them — see transaction_search.go.
+	if raw := strings.TrimSpace(q.Get("q")); raw != "" {
+		parsed := search.Parse(raw)
+		ids, err := s.searchTransactionIDs(r.Context(), transactionSearchParams{
+			householdID: identity.HouseholdID,
+			userID:      identity.UserID,
+			query:       parsed,
+			from:        from,
+			to:          to,
+			// A query that names its own dates owns the window. The page always
+			// sends a from/to (a rolling year by default), so ANDing that with
+			// `since:2019-01-01` would clip the search to the last year and answer
+			// "nothing found" for a query that was perfectly good. Every other
+			// kind of term still intersects with the window.
+			applyWindow:   !parsed.HasDateTerm(),
+			accountIDs:    accountIDs,
+			categoryID:    categoryID,
+			merchantKey:   merchantKey,
+			uncategorised: uncategorised != nil && *uncategorised,
+			// Excluded rows are hidden unless asked for, so a query that names
+			// them has to turn that default off — otherwise `is_excluded` is a
+			// term that can only ever match nothing.
+			includeExcluded: (includeExcluded != nil && *includeExcluded) ||
+				parsed.MentionsField("is_excluded"),
+			limit:  limit,
+			offset: offset,
+			now:    time.Now(),
+		})
+		var invalid invalidSearchError
+		switch {
+		case errors.As(err, &invalid):
+			// A value the user can fix (`over:banana`). Its own message is the
+			// most useful thing to say.
+			writeError(w, http.StatusBadRequest, invalid.Error())
+			return
+		case err != nil:
+			s.internalError(w, "search transactions", err)
+			return
+		}
+		if len(ids) == 0 {
+			// Nothing matched. Answer with an empty list rather than passing an
+			// empty id array down, where a NULL/empty narg would read as "no
+			// filter" and return the whole page unfiltered.
+			writeJSON(w, http.StatusOK, []transactionResponse{})
+			return
+		}
+
+		// The ids ARE the filter now: the search already applied the window, the
+		// chips and the excluded rule while it decided which rows and in what
+		// order. Everything else is opened up so the fetch re-applies visibility
+		// and the projection and nothing else.
+		params.TransactionIds = ids
+		params.Date, params.Date_2 = searchWindowMin, searchWindowMax
+		params.Limit, params.Offset = int32(len(ids)), 0
+		params.AccountIds, params.CategoryID, params.MerchantKey = nil, nil, nil
+		params.Uncategorised = nil
+		yes := true
+		params.IncludeExcluded = &yes
+	}
+
+	rows, err := s.Queries.ListVisibleTransactions(r.Context(), params)
 	if err != nil {
 		s.internalError(w, "list transactions", err)
+		return
+	}
+
+	// Labels for the whole page in ONE query rather than one per row. The ids
+	// come from the list above, which was already read under the visibility
+	// predicate, so this cannot widen what the caller sees.
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, t := range rows {
+		ids = append(ids, t.ID)
+	}
+	tagsByTransaction, err := s.tagsForTransactions(r.Context(), identity, ids)
+	if err != nil {
+		s.internalError(w, "list transaction tags", err)
 		return
 	}
 
@@ -212,6 +317,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 			Date:                t.Date,
 			Name:                t.Name,
 			MerchantName:        t.MerchantName,
+			Merchant:            t.Merchant,
 			MerchantKey:         t.MerchantKey,
 			MerchantKeyResolved: t.ResolvedMerchantKey,
 			Amount:              t.Amount,
@@ -228,6 +334,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 			PossibleDuplicate:   t.IsPossibleDuplicate != nil && *t.IsPossibleDuplicate,
 			ExcludedFromReports: t.ExcludedFromReports,
 			IsOneTime:           t.IsOneTime,
+			Tags:                tagsByTransaction[t.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -320,7 +427,16 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 
 	// Household scoping lives in the query's SELECT: a foreign or invisible
 	// account_id inserts nothing and comes back as ErrNoRows.
-	created, err := s.Queries.CreateManualTransaction(r.Context(), dbgen.CreateManualTransactionParams{
+	ctx := r.Context()
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "create manual transaction", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	created, err := qtx.CreateManualTransaction(ctx, dbgen.CreateManualTransactionParams{
 		AccountID:    req.AccountID,
 		HouseholdID:  identity.HouseholdID,
 		UserID:       identity.UserID,
@@ -337,6 +453,23 @@ func (s *Server) handleCreateManualTransaction(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, "account not found")
 			return
 		}
+		s.internalError(w, "create manual transaction", err)
+		return
+	}
+
+	// Attribute the create in the same tx — a hand-entered row is a state
+	// change too, and the History panel renders it as "created by X".
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindTransaction,
+		ObjectID:    created.ID,
+		ActorUserID: identity.UserID,
+	}, audit.Created()); err != nil {
+		s.internalError(w, "record transaction change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "create manual transaction", err)
 		return
 	}
@@ -372,9 +505,35 @@ func (s *Server) handleUpdateManualTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	ctx := r.Context()
+	// One transaction so the edit and its history row land together. The
+	// before-state read shares the tx, so the diff is computed against the row
+	// under the same lock and a rolled-back edit writes no history.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "update manual transaction", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	before, err := qtx.GetVisibleTransaction(ctx, dbgen.GetVisibleTransactionParams{
+		ID:           transactionID,
+		HouseholdID:  identity.HouseholdID,
+		ViewerUserID: &identity.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "manual transaction not found")
+			return
+		}
+		s.internalError(w, "load transaction", err)
+		return
+	}
+
 	// The source='manual' + household guard in the query means an id belonging
 	// to another household, or to a Plaid-synced row, matches nothing → 404.
-	updated, err := s.Queries.UpdateManualTransaction(r.Context(), dbgen.UpdateManualTransactionParams{
+	updated, err := qtx.UpdateManualTransaction(ctx, dbgen.UpdateManualTransactionParams{
 		ID:           transactionID,
 		HouseholdID:  identity.HouseholdID,
 		Amount:       p.amount,
@@ -390,6 +549,21 @@ func (s *Server) handleUpdateManualTransaction(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, "manual transaction not found")
 			return
 		}
+		s.internalError(w, "update manual transaction", err)
+		return
+	}
+
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindTransaction,
+		ObjectID:    transactionID,
+		ActorUserID: identity.UserID,
+	}, audit.TransactionDiff(before, updated)); err != nil {
+		s.internalError(w, "record transaction change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "update manual transaction", err)
 		return
 	}

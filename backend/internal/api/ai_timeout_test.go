@@ -75,4 +75,40 @@ func TestAIRouteTimeoutFitsToolLoop(t *testing.T) {
 			)
 		}
 	})
+
+	t.Run("http server write timeout does not undercut the chat route", func(t *testing.T) {
+		// net/http's http.Server.WriteTimeout is enforced BELOW the chi router,
+		// so a handler's context.WithTimeout can only shorten it, never widen
+		// it. If WriteTimeout is positive and smaller than aiRouteTimeout, the
+		// streaming chat route is torn down mid-stream no matter what the route
+		// budget says — the response writer's context cancels, the in-flight
+		// model stream read returns context.Canceled, and the browser is left
+		// with a half-finished HTTP/2 stream it reports as
+		// ERR_HTTP2_PROTOCOL_ERROR. That is the exact regression this constant
+		// exists to prevent, so this test fails loudly if anyone re-introduces
+		// a positive WriteTimeout below the route budget.
+		//
+		// Zero (disabled) is allowed and is the current value: the chat route
+		// is SSE and a server-level write deadline is the wrong layer for it.
+		// middleware.Timeout(aiRouteTimeout) on the route enforces the budget
+		// instead, and cooperates with the stream rather than cutting it.
+		if HTTPServerWriteTimeout < 0 {
+			t.Fatalf("HTTPServerWriteTimeout is negative: %s", HTTPServerWriteTimeout)
+		}
+		if HTTPServerWriteTimeout == 0 {
+			return
+		}
+		if HTTPServerWriteTimeout < aiRouteTimeout {
+			t.Fatalf(
+				"http.Server.WriteTimeout undercuts the chat route:\n"+
+					"  HTTPServerWriteTimeout = %s\n"+
+					"  aiRouteTimeout        = %s (short by %s)\n"+
+					"Raise HTTPServerWriteTimeout to at least aiRouteTimeout, or set it to 0 to\n"+
+					"disable it (the streaming chat route is bounded by middleware.Timeout\n"+
+					"on the route, not by the server). See the comment on\n"+
+					"HTTPServerWriteTimeout in server.go.",
+				HTTPServerWriteTimeout, aiRouteTimeout, aiRouteTimeout-HTTPServerWriteTimeout,
+			)
+		}
+	})
 }

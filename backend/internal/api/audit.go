@@ -31,6 +31,10 @@ const (
 	eventSessionRevoked  = "session_revoked"
 	eventInviteCreated   = "invite_created"
 	eventInviteAccepted  = "invite_accepted"
+	// A personal API token is a credential that outlives every session, so
+	// minting and revoking one belong in the same log as a password change.
+	eventAPITokenCreated = "api_token_created"
+	eventAPITokenRevoked = "api_token_revoked"
 )
 
 // audit records a security-relevant event.

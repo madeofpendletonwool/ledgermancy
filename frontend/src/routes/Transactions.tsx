@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   api,
+  ApiError,
   type Account,
   type Category,
   type ManualTransactionInput,
+  type Tag,
   type Transaction,
 } from '../lib/api'
 import { formatDate, formatTransactionAmount } from '../lib/money'
 import { AttachPanel, PaperclipIcon } from '../components/AttachDocuments'
+import { HistoryPanel } from '../components/HistoryPanel'
 import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { SplitPanel } from '../components/SplitTransaction'
+import { TransactionSearchBar } from '../components/TransactionSearchBar'
 import { ImportTransactionsModal } from '../components/ImportTransactionsModal'
 import { enterProps } from '../lib/motion'
 import { OFFLINE_WRITE_HINT, useOnline } from '../lib/offline'
@@ -64,10 +68,20 @@ export function Transactions() {
   // feeds. This is the only way to see them again — and therefore the only way
   // to un-exclude one.
   const showExcluded = searchParams.get('excluded') === '1'
+  // Tag filters. `tags` is OR-ed across the selected ids (the same shape as the
+  // account filter), and `untagged` is its opposite — the backlog of charges
+  // nobody has labelled. Both are ignored together when neither is set.
+  const tagIDs = (searchParams.get('tags') || '').split(',').filter(Boolean)
+  const onlyUntagged = searchParams.get('untagged') === '1'
   const page = Math.max(0, Number(searchParams.get('page') || '0') || 0)
 
   const [modal, setModal] = useState<ModalState>(null)
   const [importing, setImporting] = useState(false)
+  // The transaction whose merchant name is being fixed in the rename dialog.
+  // Separate from `modal` (the full add/edit form), because the rename path is
+  // the one a Plaid-synced row can take: it re-points the descriptor rather than
+  // editing columns the next sync would overwrite.
+  const [editingName, setEditingName] = useState<Transaction | null>(null)
   // The list itself reads fine from cache offline; adding and importing do not.
   const online = useOnline()
 
@@ -98,9 +112,19 @@ export function Transactions() {
     }
     patchParams({ accounts: [...set].join(',') || null })
   }
+  const toggleTag = (id: string) => {
+    const set = new Set(tagIDs)
+    if (set.has(id)) {
+      set.delete(id)
+    } else {
+      set.add(id)
+    }
+    patchParams({ tags: [...set].join(',') || null })
+  }
 
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: api.accounts })
   const categories = useQuery({ queryKey: ['categories'], queryFn: api.categories })
+  const tags = useQuery({ queryKey: ['tags'], queryFn: api.tags })
 
   // id → category, for showing each row's resolved (app) category, and the list
   // a user can pick from when recategorising.
@@ -123,6 +147,8 @@ export function Transactions() {
       debouncedSearch,
       onlyUncat,
       showExcluded,
+      tagIDs.join(','),
+      onlyUntagged,
       page,
     ],
     queryFn: () =>
@@ -135,16 +161,28 @@ export function Transactions() {
         q: debouncedSearch || undefined,
         uncategorised: onlyUncat || undefined,
         include_excluded: showExcluded || undefined,
+        tags: tagIDs,
+        untagged: onlyUntagged || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
     // Keeps the previous page on screen while the next loads, so paging does
     // not flash an empty table.
     placeholderData: keepPreviousData,
+    // A 400 is the search grammar rejecting a value (`over:banana`). Retrying it
+    // three times cannot change the answer and only delays telling the user.
+    retry: (attempt, error) =>
+      !(error instanceof ApiError && error.status === 400) && attempt < 2,
   })
 
   const rows = transactions.data ?? []
   const isLastPage = rows.length < PAGE_SIZE
+  // The one error worth putting in front of the user rather than logging: their
+  // query said something the parser could not resolve, and the message names it.
+  const searchError =
+    transactions.error instanceof ApiError && transactions.error.status === 400
+      ? transactions.error.message
+      : null
 
   // Attachment counts for the whole page in one request, so a paperclip badge
   // costs one round trip rather than fifty. A vault that is switched off
@@ -242,19 +280,30 @@ export function Transactions() {
           </select>
         </div>
 
-        <div className="min-w-40 flex-1">
-          <label className="label" htmlFor="search">
-            Search
-          </label>
-          <input
-            id="search"
-            type="search"
-            className="field"
-            placeholder="Merchant or description…"
-            value={search}
-            onChange={(e) => patchParams({ q: e.target.value || null })}
-          />
-        </div>
+        {/* A multi-select rather than the category dropdown's single choice,
+            because tags are multi-valued by nature: "the trip or the remodel"
+            is a question that has no shape in a <select>. Hidden entirely until
+            the household has a tag, so the bar does not carry a control that
+            can only say "none". */}
+        {(tags.data ?? []).length > 0 && (
+          <div>
+            <span className="label">Tags</span>
+            <TagMultiSelect
+              tags={tags.data ?? []}
+              selected={tagIDs}
+              onToggle={toggleTag}
+              onClear={() => patchParams({ tags: null })}
+            />
+          </div>
+        )}
+
+        {/* A bare word here still searches merchant and description, exactly as
+            this box always did. The chips above compose with whatever is typed,
+            so the grammar is an addition rather than a replacement. */}
+        <TransactionSearchBar
+          value={search}
+          onChange={(next) => patchParams({ q: next || null })}
+        />
 
         <label className="flex items-center gap-2 pb-2 text-sm text-mist-300">
           <input
@@ -264,6 +313,20 @@ export function Transactions() {
           />
           Needs a category
         </label>
+
+        {(tags.data ?? []).length > 0 && (
+          <label
+            className="flex items-center gap-2 pb-2 text-sm text-mist-300"
+            title="Charges nobody has labelled yet — the backlog for a trip or a project."
+          >
+            <input
+              type="checkbox"
+              checked={onlyUntagged}
+              onChange={(e) => patchParams({ untagged: e.target.checked ? '1' : null })}
+            />
+            Untagged
+          </label>
+        )}
 
         <label
           className="flex items-center gap-2 pb-2 text-sm text-mist-300"
@@ -282,6 +345,12 @@ export function Transactions() {
         </p>
       </div>
 
+      {searchError && (
+        <p className="text-sm text-amber-300/90" role="status">
+          {searchError}
+        </p>
+      )}
+
       {merchantFilter && (
         <div className="flex items-center gap-2 text-sm text-mist-300">
           <span>Showing only</span>
@@ -289,7 +358,7 @@ export function Transactions() {
               without a second request. With no rows there is nothing to name it
               after, and the key itself is the honest fallback. */}
           <span className="inline-flex items-center gap-1.5 rounded-full border border-rune-400/30 bg-rune-400/10 px-2.5 py-1 text-xs text-rune-200">
-            {rows[0]?.merchant_name ?? rows[0]?.name ?? merchantFilter}
+            {rows[0]?.merchant ?? merchantFilter}
             <button
               type="button"
               className="text-rune-300/70 transition-colors hover:text-rune-100"
@@ -320,6 +389,7 @@ export function Transactions() {
                 spendCats={spendCats}
                 documentCount={countFor(t.id)}
                 onEdit={() => setModal({ mode: 'edit', transaction: t })}
+                onEditName={() => setEditingName(t)}
               />
             ))}
           </ul>
@@ -357,6 +427,13 @@ export function Transactions() {
         <ImportTransactionsModal
           accounts={accounts.data ?? []}
           onClose={() => setImporting(false)}
+        />
+      )}
+
+      {editingName && (
+        <EditMerchantNameDialog
+          transaction={editingName}
+          onClose={() => setEditingName(null)}
         />
       )}
     </div>
@@ -426,6 +503,60 @@ function AccountMultiSelect({
   )
 }
 
+// TagMultiSelect is the tag filter: a checkbox dropdown, same <details> popover
+// as AccountMultiSelect. An empty selection means "every tag and none", i.e. no
+// filter, so the common case needs no clicks. Selecting several ORs them —
+// picking "Vacation" and "Remodel" shows both, which is what a household asks
+// for; an AND across tags would return the tiny set of charges that are both.
+function TagMultiSelect({
+  tags,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  tags: Tag[]
+  selected: string[]
+  onToggle: (id: string) => void
+  onClear: () => void
+}) {
+  const label =
+    selected.length === 0
+      ? 'All tags'
+      : selected.length === 1
+        ? (tags.find((t) => t.id === selected[0])?.name ?? '1 tag')
+        : `${selected.length} tags`
+
+  return (
+    <details className="relative">
+      <summary className="field flex w-48 cursor-pointer list-none items-center justify-between">
+        <span className="truncate">{label}</span>
+        <span className="ml-2 text-mist-500">▾</span>
+      </summary>
+      <div className="absolute z-30 mt-1 max-h-72 w-60 overflow-auto rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+        <button
+          className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+          onClick={onClear}
+        >
+          All tags
+        </button>
+        {tags.map((t) => (
+          <label
+            key={t.id}
+            className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/5"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(t.id)}
+              onChange={() => onToggle(t.id)}
+            />
+            <span className="truncate">{t.name}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 /** Groups accounts by institution for the filter dropdown's optgroups. */
 function groupByInstitution(accounts: Account[]): [string, Account[]][] {
   const groups = new Map<string, Account[]>()
@@ -445,6 +576,7 @@ function TransactionRow({
   spendCats,
   documentCount,
   onEdit,
+  onEditName,
 }: {
   transaction: Transaction
   index: number
@@ -452,6 +584,7 @@ function TransactionRow({
   spendCats: Category[]
   documentCount: number
   onEdit: () => void
+  onEditName: () => void
 }) {
   const qc = useQueryClient()
   const amount = formatTransactionAmount(t.amount, t.currency)
@@ -485,7 +618,7 @@ function TransactionRow({
       </div>
 
       <MerchantAvatar
-        name={t.merchant_name ?? t.name}
+        name={t.merchant}
         merchantKey={t.merchant_key_resolved}
       />
 
@@ -510,7 +643,7 @@ function TransactionRow({
                 merchant_key_resolved, never merchant_key — the raw descriptor
                 would strand every fragment of a grouped merchant but one. */}
             <MerchantLink
-              name={t.merchant_name ?? t.name}
+              name={t.merchant}
               merchantKey={t.merchant_key_resolved}
             />
             {isManual && (
@@ -568,6 +701,22 @@ function TransactionRow({
           {t.account_name}
           {t.institution_name && ` · ${t.institution_name}`}
         </p>
+
+        {/* Read-only chips on their own line. Editing them lives in the ⋯ menu
+            with the row's other actions, so a ledger of fifty rows still reads
+            as a ledger rather than as fifty tag pickers. */}
+        {t.tags.length > 0 && (
+          <p className="mt-1 flex flex-wrap items-center gap-1.5">
+            {t.tags.map((tag) => (
+              <span
+                key={tag.id}
+                className="rounded-full border border-rune-400/30 bg-rune-400/10 px-2 py-0.5 text-[10px] text-rune-200"
+              >
+                {tag.name}
+              </span>
+            ))}
+          </p>
+        )}
 
         {t.possible_duplicate && (
           <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ember-400">
@@ -635,6 +784,7 @@ function TransactionRow({
         documentCount={documentCount}
         canEdit={isManual}
         onEdit={onEdit}
+        onEditName={onEditName}
         onDelete={() => remove.mutate()}
         deletePending={remove.isPending}
       />
@@ -688,6 +838,7 @@ function RowMenu({
   documentCount,
   canEdit = false,
   onEdit,
+  onEditName,
   onDelete,
   deletePending = false,
 }: {
@@ -700,14 +851,23 @@ function RowMenu({
    */
   canEdit?: boolean
   onEdit?: () => void
+  /** Open the rename/re-map dialog. Offered for any row with a merchant_key
+   *  that does not already have a full row editor (manual rows do). */
+  onEditName?: () => void
   onDelete?: () => void
   deletePending?: boolean
 }) {
   const qc = useQueryClient()
   const online = useOnline()
+  // The rename path needs a descriptor to re-point. Manual rows already have a
+  // full editor; scheduled rows are owned by the obligation that posts them.
+  const canEditName =
+    Boolean(t.merchant_key) && t.source !== 'manual' && t.source !== 'scheduled'
   // Which popover this row is showing, if any — the menu itself or one of the
-  // two it opens.
-  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | null>(null)
+  // three it opens.
+  const [panel, setPanel] = useState<'menu' | 'split' | 'documents' | 'tags' | null>(
+    null,
+  )
   const open = panel !== null
   const close = () => setPanel(null)
 
@@ -762,12 +922,68 @@ function RowMenu({
         <AttachPanel target={{ kind: 'transaction', id: t.id }} onClose={close} />
       )}
 
+      {panel === 'tags' && <TagPanel transaction={t} onClose={close} />}
+
       {panel === 'menu' && (
         <>
           <div
             role="menu"
             className="glass absolute right-0 z-40 mt-1 w-64 space-y-1 p-2 text-left text-xs"
           >
+            {/* Fix a wrong merchant name. Plaid occasionally hands back a
+                descriptor that is just noise (a row of asterisks, a processor
+                code) for a real business; this re-points the descriptor at the
+                right canonical merchant so the name is correct here and on
+                every report, and stays fixed across future syncs. Offered for
+                any row with a descriptor that is not already fully editable
+                (manual rows have their own editor). Scheduled rows are posted
+                by the obligation worker, so their identity is changed there. */}
+            {canEditName && onEditName && (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+                  disabled={!online}
+                  title={online ? undefined : OFFLINE_WRITE_HINT}
+                  onClick={() => {
+                    close()
+                    onEditName()
+                  }}
+                >
+                  <span className="block font-medium text-mist-100">
+                    Edit name…
+                  </span>
+                  <span className="block text-mist-500">
+                    Correct this merchant's real name.
+                  </span>
+                </button>
+
+                <div className="my-1 border-t border-white/10" role="none" />
+              </>
+            )}
+
+            {/* What this charge was FOR, as opposed to what kind of spending it
+                is. Offered on every row including synced ones: a hotel charge
+                from Plaid is exactly what "Summer Vacation" has to land on. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full rounded px-2 py-1.5 text-left transition hover:bg-white/5 disabled:opacity-60"
+              disabled={!online}
+              title={online ? undefined : OFFLINE_WRITE_HINT}
+              onClick={() => setPanel('tags')}
+            >
+              <span className="block font-medium text-mist-100">
+                {t.tags.length > 0 ? `Tags (${t.tags.length})` : 'Add tags…'}
+              </span>
+              <span className="block text-mist-500">
+                {t.tags.length > 0
+                  ? 'Change what this charge was for.'
+                  : 'Label it — a trip, a project, a person.'}
+              </span>
+            </button>
+
             {/* Whose share this charge was. An attribution overlay — it never
                 changes what the household spent. */}
             <button
@@ -908,6 +1124,125 @@ function RowMenu({
   )
 }
 
+// TagPanel is the row's tag editor: a checkbox per household tag, confirmed as
+// a set. It writes the whole set rather than deltas, which is what the UI
+// actually is — the user ticks boxes and presses Save.
+//
+// "All from this merchant" ADDS these tags to every charge from the same
+// merchant. It deliberately does NOT mirror the category version's replace: a
+// category is single-valued so applying one to a merchant necessarily
+// overwrites, while replacing a tag set across a merchant would silently strip
+// labels somebody put there for unrelated reasons ("Reimbursable" wiped by
+// "Groceries 2026"). Adding is the only version that cannot destroy work, and
+// the checkbox says so.
+function TagPanel({
+  transaction: t,
+  onClose,
+}: {
+  transaction: Transaction
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const tags = useQuery({ queryKey: ['tags'], queryFn: api.tags })
+  const [selected, setSelected] = useState<string[]>(t.tags.map((tag) => tag.id))
+  const [applyToMerchant, setApplyToMerchant] = useState(false)
+  // Gate on merchant_key (what the server matches on), not the display name —
+  // many synced rows have a key derived from the name with no merchant_name.
+  const hasMerchant = Boolean(t.merchant_key)
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.setTransactionTags(t.id, selected, applyToMerchant && hasMerchant),
+    onSuccess: () => {
+      // Tag totals feed the Tags page and the by-tag breakdown, and applying to
+      // a merchant changes rows other than this one — so the whole list
+      // refetches rather than patching this row in place.
+      for (const key of ['transactions', 'tags', 'by-tag', 'tag-detail']) {
+        qc.invalidateQueries({ queryKey: [key] })
+      }
+      onClose()
+    },
+  })
+
+  const toggle = (id: string) =>
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+
+  const rows = tags.data ?? []
+
+  return (
+    <div className="absolute right-0 z-40 mt-1 w-64 rounded-xl border border-white/10 bg-ink-950/95 p-4 shadow-xl backdrop-blur-xl">
+      <p className="mb-1 text-xs font-medium text-mist-100">What was this for?</p>
+      <p className="mb-3 text-[11px] text-mist-500">
+        Tags sit alongside the category, never instead of it.
+      </p>
+
+      {tags.isPending ? (
+        <p className="text-xs text-mist-500">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-xs text-mist-500">
+          No tags yet. Create one on the{' '}
+          <Link to="/tags" className="text-rune-300 hover:text-rune-100">
+            Tags page
+          </Link>
+          .
+        </p>
+      ) : (
+        <div className="max-h-48 space-y-1 overflow-auto">
+          {rows.map((tag) => (
+            <label
+              key={tag.id}
+              className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-white/5"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(tag.id)}
+                onChange={() => toggle(tag.id)}
+              />
+              <span className="truncate">{tag.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {rows.length > 0 && hasMerchant && (
+        <label
+          className="mt-3 flex items-start gap-2 text-[11px] text-mist-400"
+          title="Adds these tags to every charge from this merchant. It never removes tags already there."
+        >
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={applyToMerchant}
+            onChange={(e) => setApplyToMerchant(e.target.checked)}
+          />
+          <span>Also add to all from {t.merchant}</span>
+        </label>
+      )}
+
+      {save.isError && (
+        <p role="alert" className="mt-2 text-[11px] text-ember-400">
+          {save.error.message}
+        </p>
+      )}
+
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <button className="btn-ghost px-2 py-1 text-xs text-mist-300" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn-ghost px-2 py-1 text-xs"
+          disabled={save.isPending || rows.length === 0}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // CategoryEditor is the inline recategorise control. It writes through the
 // existing recategorise endpoint; "apply to all from this merchant" both
 // remembers the choice for future syncs and retroactively fixes every existing
@@ -929,7 +1264,7 @@ function CategoryEditor({
   // Gate on merchant_key (what the server caches by), not merchant_name — many
   // Plaid rows have a key derived from the name with no merchant_name set.
   const hasMerchant = Boolean(t.merchant_key)
-  const merchantLabel = t.merchant_name ?? t.name
+  const merchantLabel = t.merchant
 
   const save = useMutation({
     mutationFn: () => api.recategorise(t.id, categoryID, applyToMerchant && hasMerchant),
@@ -1200,6 +1535,15 @@ function ManualTransactionModal({
           </div>
         </div>
 
+        {/* The change log is only meaningful on an existing row; a create has
+            no history yet, and showing the empty state in the add form is noise. */}
+        {editing && (
+          <details className="text-sm">
+            <summary className="cursor-pointer text-mist-300">History</summary>
+            <HistoryPanel kind="transaction" objectId={editing.id} />
+          </details>
+        )}
+
         <div className="flex items-center gap-3">
           <button
             className="btn-primary px-4 py-2 text-sm"
@@ -1221,6 +1565,211 @@ function ManualTransactionModal({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// EditMerchantNameDialog fixes a wrong merchant name on a synced/imported row.
+//
+// Plaid sometimes returns a descriptor that is just noise — a row of asterisks,
+// a processor code, "#******* QPS" — for a charge that is really a known
+// business. The name on the row can't simply be rewritten: the next sync's
+// upsert overwrites transactions.merchant_name and merchant_key (only a manual
+// category and the flags/notes are preserved). So the durable fix is to map the
+// bad descriptor at the merchant layer — the same place a manual merge from the
+// Merchants page lands. Re-pointing the descriptor:
+//
+//   * changes the name shown here and on every report (reports read the
+//     canonical name), for this charge AND every past and future charge Plaid
+//     sends with the same descriptor;
+//   * survives sync, because the merchant_aliases table is never touched by it;
+//   * lets the user "match the name to existing merchants" by folding the
+//     descriptor into an existing canonical merchant, picked from a typeahead.
+//
+// That is the same rename/merge flow MerchantDetail already uses; this dialog
+// just opens it from a transaction row.
+function EditMerchantNameDialog({
+  transaction: t,
+  onClose,
+}: {
+  transaction: Transaction
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  // The resolved name the row is currently showing — the canonical merchant
+  // name when the descriptor has been grouped/renamed, else the raw bank text.
+  // Reading the resolved name (not merchant_name ?? name) is what makes the
+  // dialog reopen showing the post-rename state instead of the stale raw text.
+  const currentDisplay = t.merchant
+  const [name, setName] = useState(currentDisplay)
+  // Set only by clicking a suggestion: saving then folds this descriptor into
+  // that existing merchant instead of creating a new one. Cleared the moment
+  // the text is hand-edited, so it never outlives the exact name it matched.
+  const [matchID, setMatchID] = useState<string | null>(null)
+
+  const merchantsList = useQuery({
+    queryKey: ['merchants'],
+    queryFn: api.merchantGroups,
+  })
+
+  const query = name.trim().toLowerCase()
+  const suggestions =
+    query.length >= 2 && merchantsList.data
+      ? merchantsList.data
+          .filter(
+            (m) =>
+              m.canonical_name.toLowerCase().includes(query) &&
+              // Exclude the merchant this descriptor already resolves to —
+              // merging into it would be a no-op. When the descriptor is not
+              // yet grouped, the resolved key is the raw descriptor (not an
+              // entity id) and matches nothing here.
+              m.id !== t.merchant_key_resolved,
+          )
+          .slice(0, 6)
+      : []
+
+  const trimmed = name.trim()
+  const changed =
+    trimmed.toLowerCase() !== currentDisplay.toLowerCase()
+  // There is something to save when the name changed OR a merge target was
+  // picked (folding the descriptor into an existing merchant even if its name
+  // happens to read the same as the current one).
+  const canSave = trimmed !== '' && (changed || matchID !== null)
+
+  const save = useMutation({
+    mutationFn: async () => {
+      // The RAW descriptor is what an alias attaches to. Sending the resolved
+      // key instead would strand every other fragment of a grouped merchant.
+      const key = t.merchant_key ?? ''
+      if (matchID) {
+        const result = await api.mergeMerchants({
+          merchant_keys: [key],
+          entity_id: matchID,
+        })
+        return result.entity_id
+      }
+      const result = await api.mergeMerchants({
+        merchant_keys: [key],
+        canonical_name: trimmed,
+      })
+      return result.entity_id
+    },
+    onSuccess: () => {
+      // The merchant name feeds the row, every report total keyed by it, and
+      // the merchant pages — refetch them all so nothing reads the old name.
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['merchants'] })
+      qc.invalidateQueries({ queryKey: ['merchant-keys'] })
+      qc.invalidateQueries({ queryKey: ['merchant-detail'] })
+      qc.invalidateQueries({ queryKey: ['top-merchants'] })
+      qc.invalidateQueries({ queryKey: ['by-category'] })
+      qc.invalidateQueries({ queryKey: ['summary'] })
+      qc.invalidateQueries({ queryKey: ['averages'] })
+      qc.invalidateQueries({ queryKey: ['recurring'] })
+      onClose()
+    },
+  })
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <form
+        className="glass w-full max-w-lg space-y-4 p-6"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (canSave && !save.isPending) save.mutate()
+        }}
+      >
+        <div>
+          <h2 className="text-lg font-medium">Edit merchant name</h2>
+          <p className="mt-1 text-sm text-mist-300">
+            Correct the real business behind this charge. The same descriptor
+            arrives on every charge from this source, so this fixes the name
+            here and on future ones too — not just this row.
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="emn-current">
+            Currently shows as
+          </label>
+          <input
+            id="emn-current"
+            className="field w-full opacity-70"
+            value={currentDisplay}
+            readOnly
+            tabIndex={-1}
+          />
+        </div>
+
+        <div className="relative">
+          <label className="label" htmlFor="emn-name">
+            Real merchant name
+          </label>
+          <input
+            id="emn-name"
+            className="field w-full"
+            maxLength={80}
+            autoFocus
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value)
+              setMatchID(null)
+            }}
+          />
+          {suggestions.length > 0 && (
+            <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-2xl border border-white/10 bg-ink-950/90 p-1.5 shadow-xl shadow-black/40 backdrop-blur-xl">
+              {suggestions.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm text-mist-300 hover:bg-white/5"
+                  onClick={() => {
+                    setName(m.canonical_name)
+                    setMatchID(m.id)
+                  }}
+                >
+                  {m.canonical_name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {matchID && (
+          <p className="text-xs text-arcane-300">
+            Saving folds this charge into the existing “{name.trim()}”, so its
+            history is counted with theirs.
+          </p>
+        )}
+
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            className="btn-primary px-4 py-2 text-sm"
+            disabled={!canSave || save.isPending}
+          >
+            {save.isPending ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost px-3 py-2 text-sm text-mist-300"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          {save.isError && (
+            <span role="alert" className="text-sm text-ember-400">
+              {save.error.message}
+            </span>
+          )}
+        </div>
+      </form>
     </div>
   )
 }

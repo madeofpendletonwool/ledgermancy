@@ -965,6 +965,40 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		})
 	}
 
+	// College goals with their standing. A nil age or horizon stays null rather
+	// than becoming a zero that reads as "enrolling now", and the funding
+	// figures are omitted outright for a goal that could not be projected:
+	// "0% funded" and "no 529 linked yet" are different answers, and the second
+	// one has a fix.
+	college := make([]map[string]any, 0, len(b.College))
+	for _, c := range b.College {
+		item := map[string]any{
+			"name":                c.Name,
+			"beneficiary_age":     c.BeneficiaryAge,
+			"years_to_enrollment": c.YearsToEnrollment,
+			"years_of_study":      c.YearsOfStudy,
+			"annual_cost_today":   c.AnnualCostToday.StringFixed(2),
+			"projectable":         c.Projectable,
+			"summary":             c.Summary,
+			"basis": "annual_cost_today is ONE year in today's dollars; total_cost is every year " +
+				"inflated separately and summed, which is what actually has to be funded. These " +
+				"figures come from the same college drawdown college_projection runs — quote them " +
+				"verbatim. Call that tool only when you need the per-year breakdown; it will not " +
+				"give you different numbers.",
+		}
+		if c.Note != "" {
+			item["note"] = c.Note
+		}
+		if c.Projectable {
+			item["total_cost"] = c.TotalCost.StringFixed(2)
+			item["total_shortfall"] = c.TotalShortfall.StringFixed(2)
+			item["funded_pct"] = c.FundedPct.String()
+			item["first_shortfall_year"] = c.FirstShortfallYear
+			item["monthly_needed"] = optionalMoneyString(c.MonthlyNeeded)
+		}
+		college = append(college, item)
+	}
+
 	out := map[string]any{
 		"net_worth":            b.NetWorth.StringFixed(2),
 		"assets":               b.Assets.StringFixed(2),
@@ -978,6 +1012,13 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		"debt_free":            debtFree,
 		"emergency_fund":       runway,
 		"attention":            attention,
+		// Without this the model had no way to know a college goal existed at
+		// all, and hedged — "worth considering if college costs are on the
+		// horizon" — about a one-year-old whose birthdate, 529 and named goal
+		// were all on file. The funding figures ride along because knowing the
+		// goal exists and not knowing whether it is on track produced the same
+		// hedge one step later; they are read off the drawdown, not recomputed.
+		"college": college,
 	}
 	// The household's OWN rates, quoted as percents. All four keys travel
 	// together: either the household has a projection_assumptions row — in which

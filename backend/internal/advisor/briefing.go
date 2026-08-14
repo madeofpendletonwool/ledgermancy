@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/allocation"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/goals"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/networth"
@@ -127,7 +128,73 @@ type Briefing struct {
 	// household was told its return was 6% when it had set 3%.
 	Assumptions Assumptions `json:"assumptions"`
 
+	// College is the household's college goals: who they are for, how far out
+	// enrollment is, and where the funding actually stands.
+	//
+	// It exists because the briefing is the tool a model calls FIRST for "what
+	// is my position", and without this it had no idea a college goal existed.
+	// Asked how to invest $2,000 a month, the advisor looked at a $98 balance in
+	// an account named "Individual 6601" and hedged — "the 529 is nearly empty,
+	// worth considering IF college costs are on the horizon" — for a household
+	// whose one-year-old has a birthdate on file, a linked 529 and a named goal
+	// seventeen years out. Every fact it needed was in the database and none of
+	// it was in the briefing.
+	//
+	// THE FUNDING FIGURES HERE ARE NOT A SECOND COPY. They are read off the same
+	// allocation.Run the college_projection tool calls — see fillCollege — so
+	// the two surfaces cannot report different numbers for the same goal, any
+	// more than two callers of the same function can. The first version of this
+	// field withheld them precisely to avoid a second copy, and that was the
+	// right instinct aimed at the wrong target: the danger was reimplementing
+	// the drawdown, not reporting its answer. Withholding it meant a model that
+	// knew a goal existed and still could not say whether it was on track
+	// without a second round-trip, which it did not always make.
+	//
+	// The one thing that must never appear here is a funding figure this package
+	// computed itself. If you find yourself dividing anything, stop.
+	College []CollegeBrief `json:"college"`
+
 	Attention []AttentionItem `json:"attention"`
+}
+
+// CollegeBrief is one college goal: its facts and its standing.
+type CollegeBrief struct {
+	Name string `json:"name"`
+	// BeneficiaryAge and YearsToEnrollment are nil when no birthdate or stored
+	// age resolves. A missing horizon is a state to report, not a zero to
+	// compute with — the same refusal ResolveAge exists for.
+	BeneficiaryAge    *int `json:"beneficiary_age"`
+	YearsToEnrollment *int `json:"years_to_enrollment"`
+	// YearsOfStudy is how many years the goal funds, and AnnualCostToday is ONE
+	// year in today's dollars — which is what target_amount means on a college
+	// goal, and is misread as the whole cost often enough to be worth naming.
+	YearsOfStudy    int             `json:"years_of_study"`
+	AnnualCostToday decimal.Decimal `json:"annual_cost_today"`
+
+	// Projectable is false when there is no linked account or no resolvable
+	// horizon, and Note says which. EVERY FIELD BELOW IT IS MEANINGLESS THEN —
+	// an unprojectable goal is not a 0%-funded goal, and rendering it as one
+	// would be a worse lie than the hedge this whole field replaced.
+	Projectable bool   `json:"projectable"`
+	Note        string `json:"note,omitempty"`
+
+	// TotalCost is all YearsOfStudy inflated separately and summed, in today's
+	// dollars — the number AnnualCostToday is one slice of, and the one a
+	// household actually has to fund.
+	TotalCost      decimal.Decimal `json:"total_cost"`
+	TotalShortfall decimal.Decimal `json:"total_shortfall"`
+	// FundedPct is a PERCENT. FirstShortfallYear is 1-based and zero when the
+	// money never runs out.
+	FundedPct          decimal.Decimal `json:"funded_pct"`
+	FirstShortfallYear int             `json:"first_shortfall_year"`
+	// MonthlyNeeded is the extra monthly contribution that would fund every
+	// year. Nil means either "already funded" or "no amount inside the search
+	// bound gets there" — FundedPct tells those apart, and neither is zero.
+	MonthlyNeeded *decimal.Decimal `json:"monthly_needed,omitempty"`
+	// Summary is the engine's own one-sentence rendering, carried verbatim so a
+	// model has a sentence it can quote without doing arithmetic over the
+	// fields above.
+	Summary string `json:"summary"`
 }
 
 // Assumptions is the household-level projection input. Rates are FRACTIONS
@@ -181,6 +248,10 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 	out.DebtFree = debtFreeDate(debts, now)
 
 	if err := fillRetirement(ctx, q, householdID, now, &out); err != nil {
+		return Briefing{}, err
+	}
+
+	if err := fillCollege(ctx, q, householdID, now, &out); err != nil {
 		return Briefing{}, err
 	}
 
@@ -258,6 +329,95 @@ func debtFreeDate(debts []debt, now time.Time) DebtFree {
 
 	out.TotalBalance = out.TotalBalance.Round(2)
 	return out
+}
+
+// collegeBriefHorizon is the projection horizon the college drawdown runs at,
+// and it is deliberately the SAME constant value the college_projection tool
+// uses: 25 years, long enough to reach any plausible enrollment year from a
+// newborn. A shorter horizon would clamp the balance read to the last projected
+// point and understate it silently.
+const collegeBriefHorizon = 25
+
+// fillCollege puts the household's college goals in the briefing, standing and
+// all, by calling the drawdown rather than reproducing it.
+//
+// It runs allocation.Run over an EMPTY request, which is exactly what the
+// college_projection tool does: a college projection is a plan with no money in
+// it, so the drawdown runs against what the 529 is already doing. Reading
+// result.College off that run is what makes the two surfaces incapable of
+// disagreeing — they are one call, not two implementations that happen to
+// match today.
+//
+// The first version of this stopped at the facts (name, age, horizon) and left
+// the funded percentage and the monthly figure to college_projection alone, to
+// avoid keeping a second copy of them. The copy was the right thing to fear and
+// the wrong thing to prevent by omission: a model holding a briefing that said
+// "college goal, seventeen years out" and nothing else still had to make a
+// second call to say anything useful, and when it skipped that call it went
+// back to guessing. Reporting the engine's own answer is not a copy of it.
+//
+// The list read comes first and short-circuits: a household with no college
+// goals — most of them — pays nothing for this, and the allocation baseline and
+// its two retirement projections are never assembled. Only a household that
+// actually has a goal pays for the answer to it.
+func fillCollege(
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, now time.Time, out *Briefing,
+) error {
+	rows, err := q.ListCollegeGoals(ctx, householdID)
+	if err != nil {
+		return err
+	}
+	out.College = []CollegeBrief{}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// uuid.Nil is sharedUser: the household-shared visibility scope every read
+	// in this package runs under. It also means AssembleBaseline finds no
+	// calling person and falls back to the household's STORED age, which is the
+	// behaviour fillRetirement documents wanting — the advisor runs for a
+	// household, from a job as often as from a request, so it has no member to
+	// prefer.
+	baseline, err := allocation.AssembleBaseline(ctx, q, householdID, sharedUser, now)
+	if err != nil {
+		return err
+	}
+	result, err := allocation.Run(baseline, allocation.Request{HorizonYears: collegeBriefHorizon})
+	if err != nil {
+		return err
+	}
+
+	out.College = make([]CollegeBrief, 0, len(result.College))
+	for _, c := range result.College {
+		brief := CollegeBrief{
+			Name:            c.Name,
+			BeneficiaryAge:  c.BeneficiaryAge,
+			YearsOfStudy:    c.Years,
+			AnnualCostToday: c.AnnualCostToday,
+			Projectable:     c.Projectable,
+			Note:            c.Note,
+			Summary:         c.CollegeSummaryLine(),
+		}
+		// The horizon travels with the age: both are known or neither is, and
+		// nil is what says so. A goal whose beneficiary has no age on file must
+		// not report "0 years to enrollment".
+		if c.BeneficiaryAge != nil {
+			years := c.YearsToEnrollment
+			brief.YearsToEnrollment = &years
+		}
+		// The funding figures only mean anything for a goal that projected.
+		// Leaving them at zero for one that did not would print "0% funded" for
+		// a goal whose 529 simply is not linked yet.
+		if c.Projectable {
+			brief.TotalCost = c.TotalCost
+			brief.TotalShortfall = c.TotalShortfall
+			brief.FundedPct = c.FundedPct
+			brief.FirstShortfallYear = c.FirstShortfallYear
+			brief.MonthlyNeeded = c.MonthlyNeeded
+		}
+		out.College = append(out.College, brief)
+	}
+	return nil
 }
 
 // fillRetirement runs the household's own retirement projection for the FI age.

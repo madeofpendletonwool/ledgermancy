@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { SpendingHeatmapCategory } from '../../lib/api'
-import { formatMoney } from '../../lib/money'
+import { formatDate, formatMoney } from '../../lib/money'
 import { CategoryIcon } from '../CategoryIcon'
 import { CHART, SINGLE_SERIES } from './tokens'
 import { ChartBoundary } from './ChartBoundary'
+import { PartialMonthTooltipNote } from './partialMonth'
 
 /**
  * The cap on real-category rows before the remainder folds into a synthetic
@@ -37,9 +38,14 @@ const PAD = { top: 8, right: 8, bottom: 8, left: 8 }
 function SpendingHeatmapUnguarded({
   months,
   categories,
+  inProgressMonth,
+  asOf,
 }: {
   months: string[]
   categories: SpendingHeatmapCategory[]
+  /** The one month in `months` that has not finished. */
+  inProgressMonth?: string
+  asOf?: string
 }) {
   const [hover, setHover] = useState<{ row: number; col: number } | null>(null)
 
@@ -53,17 +59,24 @@ function SpendingHeatmapUnguarded({
 
   const rows = foldToOther(categories, MAX_CATEGORIES)
 
-  // The intensity ramp's ceiling is the single largest cell across the rendered
-  // rows, so one big month does not flatten every other cell to the same tint.
-  // Computed in the browser ONLY to scale colour; the dollar a reader pulls off
-  // a cell comes straight from the server's decimal string.
-  let peak = 0
+  // The cells allowed to SET the ramp: whole months only. A part-month column is
+  // one artificially small cell in every row at once, and the ceiling below is a
+  // quantile — feeding it a whole column of small values drags it down and clips
+  // real months that should have fitted under it.
+  //
+  // Those cells are still DRAWN against the ramp, at their true values. They are
+  // excluded from setting the scale, not from the chart.
+  const scaleValues: number[] = []
   for (const r of rows) {
     for (const m of months) {
-      const v = Number(r.cells[m] ?? 0)
-      if (v > peak) peak = v
+      if (m === inProgressMonth) continue
+      scaleValues.push(Number(r.cells[m] ?? 0))
     }
   }
+
+  // The ramp's ceiling. Computed in the browser ONLY to scale colour; the dollar
+  // a reader pulls off a cell comes straight from the server's decimal string.
+  const { ceiling, peak, clipped } = rampCeiling(scaleValues)
 
   const innerW = LABEL_W + months.length * MONTH_W + VALUE_GUTTER
   const innerH = MONTH_LABEL_H + rows.length * ROW_H
@@ -102,8 +115,9 @@ function SpendingHeatmapUnguarded({
               textAnchor="middle"
               fontSize="10"
               fill={CHART.textMuted}
+              fontStyle={m === inProgressMonth ? 'italic' : undefined}
             >
-              {shortMonth(m)}
+              {m === inProgressMonth ? `${shortMonth(m)}*` : shortMonth(m)}
             </text>
           ))}
 
@@ -125,23 +139,37 @@ function SpendingHeatmapUnguarded({
 
               {months.map((m, col) => {
                 const value = Number(r.cells[m] ?? 0)
-                const ratio = peak > 0 ? value / peak : 0
+                const ratio = ceiling > 0 ? value / ceiling : 0
                 const dim =
                   hover !== null &&
                   (hover.row !== row || hover.col !== col)
                 return (
-                  <rect
-                    key={m}
-                    x={cellX(col) + 1}
-                    y={cellY(row) + 2}
-                    width={MONTH_W - 2}
-                    height={ROW_H - 4}
-                    rx={3}
-                    fill={intensityFill(ratio)}
-                    opacity={dim ? 0.55 : 1}
-                    style={{ cursor: 'pointer' }}
-                    onMouseEnter={() => setHover({ row, col })}
-                  />
+                  <g key={m}>
+                    <rect
+                      x={cellX(col) + 1}
+                      y={cellY(row) + 2}
+                      width={MONTH_W - 2}
+                      height={ROW_H - 4}
+                      rx={3}
+                      fill={intensityFill(ratio)}
+                      opacity={dim ? 0.55 : 1}
+                      style={{ cursor: 'pointer' }}
+                      onMouseEnter={() => setHover({ row, col })}
+                    />
+                    {/* A cell past the ceiling wears the darkest tint like any
+                        other saturated cell, so the corner notch is the only
+                        thing that distinguishes "at the top of the ramp" from
+                        "off the top of it". Without it the clipping would be
+                        invisible, which is the dishonest version of this fix. */}
+                    {value > ceiling && (
+                      <path
+                        d={offRampNotch(cellX(col) + 1, cellY(row) + 2, MONTH_W - 2)}
+                        fill={CHART.textPrimary}
+                        opacity={dim ? 0.4 : 0.75}
+                        pointerEvents="none"
+                      />
+                    )}
+                  </g>
                 )
               })}
 
@@ -181,6 +209,15 @@ function SpendingHeatmapUnguarded({
             <p className="tabular mt-1 text-mist-100">
               {Number(hoverValue) > 0 ? formatMoney(hoverValue) : 'No spend'}
             </p>
+            {hoverMonth === inProgressMonth && (
+              <PartialMonthTooltipNote asOf={asOf} />
+            )}
+            {Number(hoverValue) > ceiling && (
+              <p className="mt-1 border-t border-white/10 pt-1 text-[11px] text-mist-500">
+                Above the colour ramp&rsquo;s top — the tint is capped, the figure
+                is not.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -201,10 +238,92 @@ function SpendingHeatmapUnguarded({
           }}
         />
         <span>More</span>
-        <span className="ml-2">peak {formatMoney(String(peak))} / cell</span>
+        <span className="ml-2">
+          ramp tops out at {formatMoney(String(ceiling))} / cell
+        </span>
+        {clipped > 0 && (
+          <span>
+            · {clipped} cell{clipped === 1 ? '' : 's'} above it (marked), to{' '}
+            {formatMoney(String(peak))}
+          </span>
+        )}
+        {inProgressMonth && (
+          <span>
+            · *{shortMonth(inProgressMonth)} is still running
+            {asOf ? `, through ${formatDate(asOf)}` : ''}
+          </span>
+        )}
       </div>
     </div>
   )
+}
+
+/**
+ * The share of cells the ramp is allowed to reach its top on. Cells above the
+ * resulting ceiling are drawn saturated and marked rather than stretching it.
+ *
+ * 0.95 rather than something more aggressive because clipping is a cost, not a
+ * feature: every clipped cell is one the reader can no longer rank by eye. At
+ * 95% a twelve-by-ten grid clips about six cells — enough to absorb a genuine
+ * one-off, not enough to flatten a category that is simply expensive.
+ */
+const RAMP_QUANTILE = 0.95
+
+/**
+ * The intensity ramp's ceiling, winsorised.
+ *
+ * The ramp used to top out at the single largest cell in the grid. One
+ * knowingly-paid-off $18k loan then set the ceiling for everything, and a $514
+ * grocery month rendered at 3% intensity — indistinguishable from an empty cell.
+ * The chart's promise ("darker cells are bigger months; seasonality and creep
+ * show as a row darkening left to right") became unreadable for every row except
+ * the one containing the outlier (MAD-110).
+ *
+ * Taking the ceiling at a high quantile instead restores the ramp's resolution
+ * across the cells a reader actually compares, and it self-heals: no flag to
+ * set, no toggle to find. The outliers do not disappear — they saturate, get a
+ * corner notch, and are counted in the legend — so the chart still says "there
+ * is something bigger here than the ramp can show" rather than quietly clipping.
+ *
+ * Rejected alternatives, so this is not relitigated:
+ *
+ *   - Per-row normalisation. Matches the "row darkening left to right" reading
+ *     exactly, but breaks the cross-row one: a $50 cell in a small category
+ *     would render as dark as a $10k cell in a large one, and the grid stops
+ *     being one comparable surface.
+ *   - A log or sqrt ramp. Compresses the outlier without clipping anything, but
+ *     makes colour non-linear in dollars — which quietly falsifies the chart's
+ *     stated contract that colour carries magnitude. Wrong trade here.
+ *
+ * Returns the ceiling, the true peak (for the legend), and how many cells sit
+ * above the ceiling. An empty or all-zero grid yields a zero ceiling, which the
+ * caller already handles as "every cell at the base tint".
+ */
+function rampCeiling(values: number[]): {
+  ceiling: number
+  peak: number
+  clipped: number
+} {
+  const positive = values.filter((v) => v > 0).sort((a, b) => a - b)
+  if (positive.length === 0) return { ceiling: 0, peak: 0, clipped: 0 }
+
+  const peak = positive[positive.length - 1]
+  // Nearest-rank quantile: no interpolation, so the ceiling is always a real
+  // cell value and the legend quotes a figure that exists in the data.
+  const idx = Math.min(
+    positive.length - 1,
+    Math.max(0, Math.ceil(RAMP_QUANTILE * positive.length) - 1),
+  )
+  const ceiling = positive[idx]
+
+  return { ceiling, peak, clipped: positive.filter((v) => v > ceiling).length }
+}
+
+/** The corner wedge marking a cell whose value is past the ramp's ceiling. */
+function offRampNotch(x: number, y: number, w: number): string {
+  const size = 5
+  const right = x + w
+  return `M${right - size} ${y}H${right}V${y + size}Z`
 }
 
 /**

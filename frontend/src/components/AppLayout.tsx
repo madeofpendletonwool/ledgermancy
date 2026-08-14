@@ -60,6 +60,9 @@ const NAV_GROUPS: NavGroup[] = [
       // is due, and what is already overdue.
       { to: '/reminders', label: 'Reminders' },
       { to: '/goals', label: 'Goals' },
+      // Casual savings envelopes on an account — the no-target, no-projection
+      // counterpart of Goals. Beside it because the two are read together.
+      { to: '/piggy-banks', label: 'Piggy banks' },
       { to: '/shared', label: 'Shared expenses' },
       { to: '/retirement', label: 'Retirement' },
     ],
@@ -70,6 +73,10 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/accounts', label: 'Accounts' },
       { to: '/transactions', label: 'Transactions' },
       { to: '/categories', label: 'Categories' },
+      // Beside Categories, because they are the two axes over the same
+      // transaction and the difference reads best side by side: exactly one
+      // category per charge, any number of tags.
+      { to: '/tags', label: 'Tags' },
       { to: '/merchants', label: 'Merchants' },
       { to: '/documents', label: 'Documents' },
       // Under Accounts rather than Analyze: a paystub is a record the household

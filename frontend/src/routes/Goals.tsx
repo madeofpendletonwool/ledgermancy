@@ -13,6 +13,7 @@ import type {
 } from '../lib/api'
 import { formatDate, formatMoney, isAmortizingDebt, isLiability } from '../lib/money'
 import { AttachDocuments } from '../components/AttachDocuments'
+import { HistoryPanel } from '../components/HistoryPanel'
 import { PayoffScheduleChart } from '../components/charts/PayoffScheduleChart'
 import { AnimatedNumber } from '../components/motion'
 import { SkeletonRows, Reveal } from '../components/Skeleton'
@@ -96,6 +97,7 @@ function statusChip(goal: Goal): { label: string; tone: 'good' | 'critical' | 'm
 function GoalCard({ goal }: { goal: Goal }) {
   const qc = useQueryClient()
   const [showFunding, setShowFunding] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const archive = useMutation({
     mutationFn: () => api.archiveGoal(goal.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['goals'] }),
@@ -171,6 +173,12 @@ function GoalCard({ goal }: { goal: Goal }) {
               {showFunding ? 'Hide funding' : 'Who funded it'}
             </button>
           )}
+          <button
+            className="btn-ghost px-2.5 py-1 text-xs"
+            onClick={() => setShowHistory((v) => !v)}
+          >
+            {showHistory ? 'Hide history' : 'History'}
+          </button>
           {/* A quote, a contract or a policy behind the goal it justifies. */}
           <AttachDocuments target={{ kind: 'goal', id: goal.id }} />
           <RemindGoalToggle goal={goal} />
@@ -201,6 +209,8 @@ function GoalCard({ goal }: { goal: Goal }) {
       {goal.payoff && !goal.achieved && <PayoffDetail payoff={goal.payoff} />}
 
       {showFunding && <GoalFunding goal={goal} />}
+
+      {showHistory && <HistoryPanel kind="goal" objectId={goal.id} />}
     </div>
   )
 }

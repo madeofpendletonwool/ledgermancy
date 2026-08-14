@@ -207,9 +207,12 @@ func collegeToolResult(r allocation.Result) map[string]any {
 	items := make([]map[string]any, 0, len(r.College))
 	for _, c := range r.College {
 		items = append(items, map[string]any{
-			"goal":                  c.Name,
-			"projectable":           c.Projectable,
-			"note":                  c.Note,
+			"goal":        c.Name,
+			"projectable": c.Projectable,
+			"note":        c.Note,
+			// Echoed so this tool and advisor_briefing describe the beneficiary
+			// with the same fact set, not just the same figures.
+			"beneficiary_age":       c.BeneficiaryAge,
 			"years_to_enrollment":   c.YearsToEnrollment,
 			"years_of_study":        c.Years,
 			"annual_cost_today":     c.AnnualCostToday.StringFixed(2),

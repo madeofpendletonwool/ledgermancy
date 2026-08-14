@@ -102,7 +102,28 @@ var tableCoverage = map[string]Coverage{
 	"budgets":               InExport,
 	"goals":                 InExport,
 	"goal_contributions":    InExport,
-	"preferences":           InExport,
+	// Savings jars and their append-only deposit/withdraw log. The jar is an
+	// annotation the household invented over part of an account balance — no
+	// bank knows it exists, so nothing outside this table could name it or say
+	// how much of the account it claims. piggy_bank_events is the only record of
+	// how a jar reached its balance; without it a restored jar is a number with
+	// no history behind it.
+	"piggy_banks":       InExport,
+	"piggy_bank_events": InExport,
+	// Free-form labels and what they are stuck to. Every row is a household
+	// judgement about what a charge was FOR, which no bank holds and no re-sync
+	// can re-derive: the trip that "Summer Vacation" names exists nowhere
+	// outside this table. transaction_tags is the half that carries the meaning
+	// — without it the tags restore as a list of names attached to nothing, and
+	// every envelope total reads as zero.
+	"tags":             InExport,
+	"transaction_tags": InExport,
+	// The per-object change log: who edited a transaction/budget/goal and how.
+	// Every row is a hand-edit the household made — nothing a Plaid re-sync or a
+	// recomputation can ever reconstruct — so losing it loses the audit trail
+	// behind every correction in the ledger.
+	"object_changes": InExport,
+	"preferences":    InExport,
 
 	// --- Merchants --------------------------------------------------------
 	// merchant_merge_rejections is user work, not bookkeeping: it is the record
@@ -261,6 +282,14 @@ var tableCoverage = map[string]Coverage{
 	// --- Credentials: dump only, never a plain-JSON file ------------------
 	"plaid_items":         DumpOnly, // access tokens, sealed with ENCRYPTION_KEY
 	"user_recovery_codes": DumpOnly,
+	// Personal API tokens. DumpOnly rather than InExport because every row is a
+	// credential digest, and the export is a plain-JSON file meant to outlive
+	// this app — a hash belongs in neither. DumpOnly rather than Ephemeral,
+	// which is where `sessions` sits, because a token is not a browser's: the
+	// user minted it deliberately, it survives every sign-out on purpose, and a
+	// restore that silently broke every integration they had wired up is not
+	// what anyone means by restoring their data.
+	"api_tokens": DumpOnly,
 
 	// --- Operational bookkeeping ------------------------------------------
 	"auth_events":       DumpOnly, // audit log, swept at 180 days

@@ -145,6 +145,35 @@ const (
 	// is a local database read, so a minute across all nine is slack, not an
 	// estimate.
 	aiToolBudget = 60 * time.Second
+
+	// HTTPServerWriteTimeout is the value main.go assigns to net/http's
+	// http.Server.WriteTimeout. It is exported only so the timeout test can pin
+	// it next to the budgets below.
+	//
+	// It is zero — DISABLED — and that is not a relaxation. WriteTimeout is a
+	// hard ceiling the net/http server enforces BELOW the chi router, so a
+	// handler's own context.WithTimeout cannot widen it: whichever fires first
+	// wins, and WriteTimeout always wins against a longer route budget. That is
+	// the exact bug this constant exists to prevent.
+	//
+	// The streaming chat route (POST /api/chat) writes its answer as Server-Sent
+	// Events for the full duration of the model↔tool loop, which aiRouteTimeout
+	// budgets at up to 660s. A server-level WriteTimeout of anything less than
+	// that — the previous 60s, for example — tears the SSE connection down
+	// mid-stream the moment it elapses, the response writer's context cancels,
+	// the in-flight GLM stream read returns context.Canceled, and the browser is
+	// left holding a half-finished HTTP/2 stream it can only report as
+	// ERR_HTTP2_PROTOCOL_ERROR. The route's middleware.Timeout(aiRouteTimeout)
+	// already cancels the handler's context on the same budget, which is the
+	// correct layer to enforce it because it cooperates with the stream instead
+	// of cutting it from underneath.
+	//
+	// Non-streaming routes keep their defence: defaultRouteTimeout via
+	// middleware.Timeout cancels their context, and a handler that respects ctx
+	// stops writing. Slowloris-style read attacks are bounded by
+	// ReadHeaderTimeout, not WriteTimeout, so disabling this one does not weaken
+	// that protection either.
+	HTTPServerWriteTimeout time.Duration = 0
 )
 
 // NewServer builds a Server from an open connection pool. The AI client is
@@ -291,22 +320,56 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Get("/me", s.handleMe)
 
 					r.Get("/sessions", s.handleListSessions)
-					r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
-					r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
 					r.Get("/events", s.handleListAuthEvents)
 
 					r.Get("/mfa", s.handleMFAStatus)
 
-					// Changing a password or a second factor is account takeover
-					// if guessed, so these carry their own budget on top of the
-					// password/code each one already demands.
+					// ── Credential management ─────────────────────────────
+					//
+					// Everything that mints or destroys a way IN to this
+					// account, and the one group a personal API token may not
+					// reach — auth.RequireSession, which demands the session
+					// cookie.
+					//
+					// The reason is that a token which can manage credentials
+					// is not one credential but a factory: a leaked read-write
+					// token could mint replacements for itself and revoke the
+					// ones the user would have used to lock it out. Requiring
+					// the cookie means taking the account back always comes down
+					// to the password.
+					//
+					// It is also a correctness fence, not only a policy one.
+					// handleRevokeOtherSessions keys on Identity.TokenHash,
+					// which names a session row and is empty for a token —
+					// letting a token in would sign the user out everywhere.
 					r.Group(func(r chi.Router) {
-						r.Use(s.accountLimiter.Middleware)
-						r.Post("/password", s.handleChangePassword)
-						r.Post("/mfa/setup", s.handleMFASetup)
-						r.Post("/mfa/activate", s.handleMFAActivate)
-						r.Post("/mfa/disable", s.handleMFADisable)
-						r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+						r.Use(auth.RequireSession)
+
+						r.Delete("/sessions/{sessionID}", s.handleRevokeSession)
+						r.Post("/sessions/revoke-others", s.handleRevokeOtherSessions)
+
+						// Personal API tokens: the credential a third-party
+						// client authenticates with. Only POST carries
+						// accountLimiter — minting one belongs in the same
+						// budget as a password change, while listing and
+						// revoking are the recovery path and must not be
+						// throttled alongside it.
+						r.Get("/tokens", s.handleListAPITokens)
+						r.With(s.accountLimiter.Middleware).
+							Post("/tokens", s.handleCreateAPIToken)
+						r.Delete("/tokens/{tokenID}", s.handleRevokeAPIToken)
+
+						// Changing a password or a second factor is account
+						// takeover if guessed, so these carry their own budget
+						// on top of the password/code each one already demands.
+						r.Group(func(r chi.Router) {
+							r.Use(s.accountLimiter.Middleware)
+							r.Post("/password", s.handleChangePassword)
+							r.Post("/mfa/setup", s.handleMFASetup)
+							r.Post("/mfa/activate", s.handleMFAActivate)
+							r.Post("/mfa/disable", s.handleMFADisable)
+							r.Post("/mfa/recovery-codes", s.handleMFARecoveryCodes)
+						})
 					})
 				})
 			})
@@ -455,17 +518,30 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Put("/{accountID}/deposit-apy", s.handleSetDepositAPY)
 				r.Get("/idle-cash", s.handleIdleCash)
 
-				// Manual accounts (doc 30). Every one of these refuses a
-				// source='plaid' id — a linked account's identity and balance
-				// belong to the institution, and an edit here would survive only
-				// until the next sync silently reverted it.
-				r.Post("/", s.handleCreateManualAccount)
-				r.Put("/{accountID}", s.handleUpdateManualAccount)
-				r.Delete("/{accountID}", s.handleDeleteManualAccount)
-				r.Put("/{accountID}/balance", s.handleSetManualBalance)
-				r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
+			// Manual accounts (doc 30). Every mutation below refuses a
+			// source='plaid' id — a linked account's identity and balance
+			// belong to the institution, and an edit here would survive only
+			// until the next sync silently reverted it.
+			//
+			// The read at the bottom is the exception: balance-history serves
+			// BOTH sources. A manual account's rows are the user's writes; a
+			// Plaid account's are the snapshot path's (MAD-119), recorded after
+			// each sync and on the daily sweep because Plaid keeps no balance
+			// history of its own. The list query scopes through account_access
+			// for either, so the same endpoint draws both trends.
+			r.Post("/", s.handleCreateManualAccount)
+			r.Put("/{accountID}", s.handleUpdateManualAccount)
+			r.Delete("/{accountID}", s.handleDeleteManualAccount)
+			r.Put("/{accountID}/balance", s.handleSetManualBalance)
+			r.Get("/{accountID}/balance-history", s.handleListBalanceHistory)
 				r.Post("/{accountID}/holdings", s.handleUpsertManualHolding)
 				r.Get("/{accountID}/investment-transactions", s.handleListAccountInvestmentTx)
+				// Piggy banks drawing from one account, and the unassigned
+				// balance left on it (account balance − every piggy bank's
+				// derived balance). The latter is what stops a household
+				// earmarking the same dollars across jars twice.
+				r.Get("/{accountID}/piggy-banks", s.handleListAccountPiggyBanks)
+				r.Get("/{accountID}/available-for-piggy", s.handleAccountAvailableForPiggy)
 			})
 
 			// Securities are reference data, not household data: a row states what
@@ -488,10 +564,19 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Get("/", s.handleListTransactions)
 				r.Post("/", s.handleCreateManualTransaction)
 				r.Post("/import", s.handleImportTransactions)
+				// The vocabulary the `q` grammar accepts, for the search bar's
+				// autocomplete. Static for a given binary; see search_handlers.go.
+				r.Get("/search-operators", s.handleSearchOperators)
 				r.Patch("/{transactionID}/category", s.handleRecategoriseTransaction)
 				// How a row COUNTS, as opposed to what it says — so this accepts
 				// Plaid-synced rows, unlike the manual-only editors below.
 				r.Patch("/{transactionID}/flags", s.handleSetTransactionFlags)
+				// What a row is FOR, as opposed to what kind of spending it is.
+				// Accepts Plaid-synced rows for the same reason /flags does: a
+				// synced hotel charge is exactly what "Summer Vacation" has to
+				// land on. Replaces the row's whole tag set — see
+				// setTransactionTagsRequest.
+				r.Put("/{transactionID}/tags", s.handleSetTransactionTags)
 				r.Put("/{transactionID}", s.handleUpdateManualTransaction)    // manual only
 				r.Delete("/{transactionID}", s.handleDeleteManualTransaction) // manual only
 			})
@@ -594,6 +679,23 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Get("/{categoryID}/detail", s.handleCategoryDetail)
 			})
 
+			// Tags: the second axis over a transaction, orthogonal to its
+			// category. Household-scoped like categories — but note the split
+			// enforced in queries/tags.sql: the TAG is household data, while the
+			// TAGGED TRANSACTIONS behind its counts and totals stay under the
+			// per-member visibility predicate, so labelling a charge on a private
+			// account never makes that charge readable by the other member.
+			r.Route("/tags", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleListTags)
+				r.Post("/", s.handleCreateTag)
+				r.Put("/{tagID}", s.handleUpdateTag)
+				r.Delete("/{tagID}", s.handleDeleteTag)
+				// The envelope's contents: the tag, its derived total, and the
+				// charges behind it in one round trip.
+				r.Get("/{tagID}/transactions", s.handleListTagTransactions)
+			})
+
 			r.Route("/budgets", func(r chi.Router) {
 				r.Use(authenticate, auth.RequireAdult)
 				r.Get("/", s.handleBudgetProgress)
@@ -601,6 +703,14 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/", s.handleCreateBudget)
 				r.Post("/suggest", s.handleSuggestBudgets)
 				r.Delete("/{budgetID}", s.handleDeleteBudget)
+			})
+
+			// Per-object change history. Read-only and visibility-scoped in SQL,
+			// so a single authenticated endpoint serves every object kind; the
+			// handler dispatches on object_kind to the right scoping query.
+			r.Route("/audit", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleListObjectChanges)
 			})
 
 			// The bill calendar. /upcoming expands cadences into occurrences and
@@ -612,16 +722,16 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Post("/", s.handleCreateObligation)
 				r.Get("/upcoming", s.handleUpcomingObligations)
 				r.Get("/projection", s.handleObligationProjection)
-			r.Put("/{obligationID}", s.handleUpdateObligation)
-			r.Delete("/{obligationID}", s.handleDeleteObligation)
-			r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
-			// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
-			// The Reminders view itself reads /api/insights, so there is no list
-			// handler — only the write that records a member's confirmation.
-			r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
-			r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
-			r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
-		})
+				r.Put("/{obligationID}", s.handleUpdateObligation)
+				r.Delete("/{obligationID}", s.handleDeleteObligation)
+				r.Put("/{obligationID}/auto-post", s.handleSetObligationAutoPost)
+				// Reminders (MAD-85): mark one occurrence paid, or clear that mark.
+				// The Reminders view itself reads /api/insights, so there is no list
+				// handler — only the write that records a member's confirmation.
+				r.Post("/{obligationID}/satisfy", s.handleSatisfyObligation)
+				r.Delete("/{obligationID}/satisfy", s.handleClearObligationSatisfied)
+				r.Put("/{obligationID}/remind", s.handleSetObligationRemind)
+			})
 
 			// Goals are the one mixed group. Reads are visibility-scoped in SQL
 			// (ListGoals takes all_person_goals, set from the caller's role), so a
@@ -636,12 +746,32 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 					r.Use(auth.RequireAdult)
 					r.Post("/", s.handleCreateGoal)
 					r.Post("/parse", s.handleParseGoal)
-				r.Put("/{goalID}", s.handleUpdateGoal)
-				r.Delete("/{goalID}", s.handleArchiveGoal)
-				// Reminders opt-out toggle (MAD-85).
-				r.Put("/{goalID}/remind", s.handleSetGoalRemind)
-				r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
+					r.Put("/{goalID}", s.handleUpdateGoal)
+					r.Delete("/{goalID}", s.handleArchiveGoal)
+					// Reminders opt-out toggle (MAD-85).
+					r.Put("/{goalID}/remind", s.handleSetGoalRemind)
+					r.Post("/{goalID}/contributions", s.handleCreateGoalContribution)
 					r.Delete("/contributions/{contributionID}", s.handleDeleteGoalContribution)
+				})
+			})
+
+			// Piggy banks: lightweight savings jars on an asset account. Reads
+			// are household-scoped in SQL; writes are adult-only, matching every
+			// other earmarking of household money (goals, budgets). A deposit or
+			// withdraw only annotates part of the account balance — it never
+			// moves real money — so the whole group stays read-mostly.
+			r.Route("/piggy-banks", func(r chi.Router) {
+				r.Use(authenticate)
+				r.Get("/", s.handleListPiggyBanks)
+				r.Get("/{piggyBankID}/events", s.handleListPiggyBankEvents)
+
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireAdult)
+					r.Post("/", s.handleCreatePiggyBank)
+					r.Put("/{piggyBankID}", s.handleUpdatePiggyBank)
+					r.Delete("/{piggyBankID}", s.handleDeletePiggyBank)
+					r.Post("/{piggyBankID}/deposit", s.handleDepositPiggyBank)
+					r.Post("/{piggyBankID}/withdraw", s.handleWithdrawPiggyBank)
 				})
 			})
 
@@ -849,6 +979,10 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Use(authenticate, auth.RequireAdult)
 				r.Get("/summary", s.handleSummary)
 				r.Get("/by-category", s.handleSpendingByCategory)
+				// The third breakdown axis. Same money rules as by-category and
+				// /merchants, but the panels do not sum to the same total: a
+				// transaction can carry several tags, or none.
+				r.Get("/by-tag", s.handleSpendingByTag)
 				r.Get("/by-day", s.handleSpendingByDay)
 				r.Get("/trend", s.handleTrend)
 				r.Get("/averages", s.handleCategoryAverages)

@@ -158,7 +158,7 @@ export function Report() {
                 </tr>
               </thead>
               <tbody>
-                {(trend.data ?? []).map((m) => (
+                {(trend.data?.points ?? []).map((m) => (
                   <tr key={m.month}>
                     <td>{m.month}</td>
                     <td className="num">{formatMoney(m.income)}</td>

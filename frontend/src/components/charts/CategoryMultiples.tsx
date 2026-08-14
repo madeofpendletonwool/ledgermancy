@@ -28,9 +28,17 @@ const MAX_PANELS = 8
 function CategoryMultiplesUnguarded({
   months,
   categories,
+  inProgressMonth,
 }: {
   months: string[]
   categories: SpendingHeatmapCategory[]
+  /**
+   * The one month in `months` that has not finished. Every panel's line hooks
+   * downward at that point for the same reason — the month is a third over, not
+   * a third as cheap — so the column is shaded in each panel rather than left to
+   * read as eight simultaneous drops in spending (MAD-110).
+   */
+  inProgressMonth?: string
 }) {
   const [hover, setHover] = useState<{ panel: number; month: number } | null>(null)
 
@@ -60,6 +68,7 @@ function CategoryMultiplesUnguarded({
           panelIndex={panel}
           hover={hover}
           setHover={setHover}
+          inProgressMonth={inProgressMonth}
         />
       ))}
     </div>
@@ -78,12 +87,14 @@ function MultiplesPanel({
   panelIndex,
   hover,
   setHover,
+  inProgressMonth,
 }: {
   category: SpendingHeatmapCategory
   months: string[]
   panelIndex: number
   hover: { panel: number; month: number } | null
   setHover: (h: { panel: number; month: number } | null) => void
+  inProgressMonth?: string
 }) {
   // Per-panel y-axis: each line scales to its own peak, which is the whole
   // point of small multiples. Tallied in the client only to fit the line into
@@ -118,6 +129,8 @@ function MultiplesPanel({
   const hoverPoint =
     hover && hover.panel === panelIndex ? category.cells[months[hover.month]] ?? '0' : null
 
+  const runningIndex = inProgressMonth ? months.indexOf(inProgressMonth) : -1
+
   return (
     <div
       className="rounded-xl border border-white/5 p-3"
@@ -148,6 +161,19 @@ function MultiplesPanel({
           aria-label={`${category.name} spend over time`}
           onMouseLeave={() => setHover(null)}
         >
+          {/* The month in flight, shaded, so its lower point reads as an
+              unfinished month rather than as a fall in spending. */}
+          {runningIndex >= 0 && (
+            <rect
+              x={x(runningIndex) - PLOT_W / Math.max(months.length, 1) / 2}
+              y={PANEL_PAD.top}
+              width={PLOT_W / Math.max(months.length, 1)}
+              height={PLOT_H}
+              fill={CHART.grid}
+              opacity={0.6}
+            />
+          )}
+
           {/* A recessive baseline at zero so the panel's floor is visible even
               when a line rides high above it. */}
           <line

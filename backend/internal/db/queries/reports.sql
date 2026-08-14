@@ -31,7 +31,21 @@
 -- Every query that reports on a REAL PERIOD passes exclude_one_time = false —
 -- which is also the zero value, so an existing caller keeps its meaning. Only
 -- a query feeding a TRAILING BASELINE passes true. If you add a caller, ask
--- which of those two things it is; there is no third answer.
+-- which of those two things it is.
+--
+-- That rule governs what a QUERY HARDCODES — the answer the app has decided a
+-- report is, on the reader's behalf, once and for all. It does not bind a
+-- reader-driven toggle, which is a different thing: not the app deciding what
+-- kind of report this is, but the reader stating which question they are
+-- asking of the same data, per view, reversibly. The "Hide one-time charges"
+-- toggle on the Spending page's trailing-twelve charts is that one exception.
+-- It passes exclude_one_time through, untouched, to GetMonthlyTrend and
+-- GetCategoryMonthMatrix — the same two real-period queries, asked the
+-- trailing-baseline question on the reader's say-so and flipped back the
+-- moment they untick it. The toggle owns the only reader-driven path; there
+-- is still no third thing a query hardcodes, and a new caller that is NOT
+-- that toggle still has to pick real-period-or-trailing-baseline and hardcode
+-- it.
 
 -- name: GetSpendingSummary :one
 -- Headline figures for one period: what came in, what went out, and what was
@@ -128,6 +142,55 @@ WHERE v.household_id = $1
 GROUP BY c.id, c.name, c.slug, c.color
 ORDER BY total DESC;
 
+-- name: GetSpendingByTag :many
+-- Spending broken down by TAG for one period, largest first — the third axis
+-- beside GetSpendingByCategory and GetTopMerchants.
+--
+-- The money rules are the ones every spending report here uses — excluded and
+-- pending rows dropped, income and transfer categories dropped, direction from
+-- is_spend — so a figure in this panel means the same thing as a figure in the
+-- one beside it. What the panels will NOT do is sum to the same total, and that
+-- is correct rather than a defect: a transaction can carry several tags (so its
+-- amount appears under each) and can carry none (so it appears under none). A
+-- tag breakdown is a set of overlapping answers to "what was this for?", not a
+-- partition of the month.
+--
+-- categories is joined LEFT, matching GetTopMerchants rather than
+-- GetSpendingByCategory. That query can join INNER because a row with no
+-- category has no category row to appear under; here it does have a tag, and an
+-- uncategorised charge on the trip is still money the trip cost. Dropping it
+-- would make the envelope under-report exactly the rows the user has not got
+-- round to filing.
+--
+-- The structural difference from the category query: categories join one-to-one
+-- and tags join one-to-many, so the JOIN through transaction_tags is what fans a
+-- row out across its tags. That fan-out is the feature.
+SELECT
+    tg.id                       AS tag_id,
+    tg.name                     AS tag_name,
+    tg.expected_amount,
+    SUM(ABS(t.amount))::numeric AS total,
+    COUNT(*)::bigint            AS transaction_count
+FROM transactions t
+JOIN accounts a          ON a.id = t.account_id
+JOIN account_access v    ON v.account_id = a.id
+JOIN transaction_tags tt ON tt.transaction_id = t.id
+JOIN tags tg             ON tg.id = tt.tag_id
+LEFT JOIN categories c   ON c.id = t.category_id
+WHERE v.household_id = $1
+  AND (v.user_id = $2 OR v.is_shared)
+  AND tg.household_id = $1
+  AND a.is_active
+  AND NOT t.excluded_from_reports
+  AND NOT (sqlc.arg('exclude_one_time')::bool AND t.is_one_time)
+  AND NOT t.pending
+  AND t.date >= $3 AND t.date <= $4
+  AND NOT COALESCE(c.is_income, FALSE)
+  AND NOT COALESCE(c.is_transfer, FALSE)
+  AND is_spend(t.amount, a.type)
+GROUP BY tg.id, tg.name, tg.expected_amount
+ORDER BY total DESC;
+
 -- name: GetMonthlyTrend :many
 -- Income, spending, leftover AND the fixed/discretionary split per calendar
 -- month across a range. Drives the rolling-twelve chart, the month-over-month
@@ -215,10 +278,13 @@ ORDER BY c.id, 2;
 --
 -- Same spending definition and visibility scoping as every other report:
 -- money out (is_spend), no income, no transfers, active accounts, not excluded,
--- not pending. exclude_one_time is False here on purpose: this is a REAL PERIOD
--- report ("what actually happened each month"), and a one-time charge — a loan
--- payoff, an annual true-up — is spend in the month it landed. Only queries
--- feeding a TRAILING BASELINE pass true; this is not one of them.
+-- not pending. The caller passes exclude_one_time = false on purpose: this is a
+-- REAL PERIOD report ("what actually happened each month"), and a one-time
+-- charge — a loan payoff, an annual true-up — is spend in the month it landed.
+-- The Spending page's "Hide one-time charges" toggle is the one reader-driven
+-- exception named in the file header: it threads true through here so the
+-- reader can ask the trailing-baseline question of this same matrix, per view,
+-- reversibly. The query itself stays hardcoded to its default caller.
 --
 -- Ordered by category id then month only so the rows are stable; the handler
 -- re-sorts by total to rank categories and builds the month axis itself, so the
@@ -996,6 +1062,15 @@ FROM budgets b
 JOIN categories c ON c.id = b.category_id
 WHERE b.household_id = @household_id
 ORDER BY c.sort_order, c.name;
+
+-- name: GetHouseholdBudgetByCategory :one
+-- The household-scoped budget for one category, read for audit before-state
+-- ahead of the upsert. No row means the upsert is a create rather than an edit,
+-- so the audit diff records every field as new.
+SELECT * FROM budgets
+WHERE household_id = sqlc.arg('household_id')
+  AND category_id = sqlc.arg('category_id')
+  AND owner_scope = 'household';
 
 -- name: UpsertBudget :one
 -- One household budget per category; setting it again updates its amount,

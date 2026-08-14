@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type Summary } from '../lib/api'
 import { formatDate, formatMoney } from '../lib/money'
 import { categoryDetailPath } from '../lib/categories'
 import { CategoryBars } from '../components/charts/CategoryBars'
@@ -10,8 +10,11 @@ import { MerchantLink } from '../components/MerchantLink'
 import { MerchantAvatar } from '../components/MerchantAvatar'
 import { TrendChart } from '../components/charts/TrendChart'
 import { RealBasis, RealToggle } from '../components/RealToggle'
+import { OneTimeToggle } from '../components/OneTimeToggle'
 import { useInflation, useRealPreference } from '../lib/inflation'
+import { useHideOneTimePreference } from '../lib/oneTime'
 import { SavingsRateChart } from '../components/charts/SavingsRateChart'
+
 import { FixedDiscretionaryChart } from '../components/charts/FixedDiscretionaryChart'
 import { SpendingHeatmap } from '../components/charts/SpendingHeatmap'
 import { CategoryMultiples } from '../components/charts/CategoryMultiples'
@@ -21,6 +24,21 @@ import { SkeletonChart, SkeletonRows, SkeletonText, Reveal } from '../components
 import { enterProps } from '../lib/motion'
 import { motion } from 'motion/react'
 import { CHART, STATUS } from '../components/charts/tokens'
+
+/**
+ * What sits under the savings-rate tile. Three states, and the middle one is the
+ * point: "not yet" and "never for this period" are different facts and a reader
+ * who sees a dash deserves to know which one they are looking at.
+ */
+function savingsRateHint(s: Summary | undefined): string | undefined {
+  if (!s) return undefined
+  if (s.in_progress) {
+    return s.as_of
+      ? `Through ${formatDate(s.as_of)} — the rate needs the month's full income`
+      : "Month in progress — the rate needs the month's full income"
+  }
+  return s.savings_rate == null ? 'No income recorded this period' : undefined
+}
 
 /** Month options: the current month plus the previous eleven. */
 function recentMonths(count = 12) {
@@ -72,15 +90,23 @@ export function Spending() {
   // rate and fixed/discretionary charts below are untouched by the toggle.
   const inflation = useInflation()
   const { enabled: real, setEnabled: setReal } = useRealPreference()
+  // The "Hide one-time charges" lens is one toggle for every trailing view on
+  // this page — the three trend-fed charts and the two heatmap-fed ones. It
+  // re-asks the same real-period queries with exclude_one_time, so the reader
+  // can look at the trailing year without the charges they have flagged as not
+  // repeating, and flip back. Both keys carry the flag, or the toggle would
+  // serve a stale cached series.
+  const { enabled: hideOneTime, setEnabled: setHideOneTime } =
+    useHideOneTimePreference()
   const trend = useQuery({
-    queryKey: ['trend', real],
-    queryFn: () => api.trend({ real }),
+    queryKey: ['trend', real, hideOneTime],
+    queryFn: () => api.trend({ real, exclude_one_time: hideOneTime }),
   })
   // The category × month matrix is the trailing twelve months the trend chart
   // uses, fetched once and rendered two ways (heatmap + small multiples).
   const heatmap = useQuery({
-    queryKey: ['heatmap'],
-    queryFn: () => api.spendingHeatmap(),
+    queryKey: ['heatmap', hideOneTime],
+    queryFn: () => api.spendingHeatmap({ exclude_one_time: hideOneTime }),
   })
   const averages = useQuery({ queryKey: ['averages'], queryFn: () => api.averages() })
   const capabilities = useQuery({
@@ -129,13 +155,20 @@ export function Spending() {
           value={s ? s.leftover : null}
           tone={s && Number(s.leftover) < 0 ? 'critical' : 'good'}
         />
+        {/*
+          The three tiles above are measurements and stand on their own in a
+          month still running: the money in, out and left over so far is exactly
+          what it says. The fourth is a RATIO of two of them, and in an
+          unfinished month it divides a whole month's spending by however much
+          of the month's income has landed. Paid twice a month, on the 12th,
+          after a trip, that read -53,702% (MAD-110). It is withheld rather than
+          shown, because there is no value it could show that would be true.
+        */}
         <Tile
           label="Savings rate"
-          value={s?.savings_rate ?? null}
+          value={s?.in_progress ? null : s?.savings_rate ?? null}
           format={(n) => `${(n * 100).toFixed(1)}%`}
-          hint={
-            s?.savings_rate == null ? 'No income recorded this period' : undefined
-          }
+          hint={savingsRateHint(s)}
         />
       </div>
 
@@ -199,19 +232,31 @@ export function Spending() {
         )}
       </section>
 
+      <ByTagSection range={range} label={month.label} />
+
       <section className="glass p-6">
         <div className="mb-1 flex flex-wrap items-start justify-between gap-3">
           <h2 className="text-lg font-medium">Income vs spending</h2>
-          <RealToggle
-            enabled={real}
-            onChange={setReal}
-            inflation={inflation.data}
-          />
+          <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center">
+            {/*
+              Two reader-driven lenses over the trailing views, side by side.
+              RealToggle is nominal-vs-real on this chart; OneTimeToggle governs
+              every trailing chart on the page (the three trend-fed ones and the
+              two heatmap-fed ones further down), because they all answer the
+              same trailing-twelve question.
+            */}
+            <RealToggle
+              enabled={real}
+              onChange={setReal}
+              inflation={inflation.data}
+            />
+            <OneTimeToggle enabled={hideOneTime} onChange={setHideOneTime} />
+          </div>
         </div>
         <p className="mb-5 text-sm text-mist-300">Trailing twelve months</p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <TrendChart data={trend.data ?? []} real={real} />
+            <TrendChart data={trend.data?.points ?? []} real={real} />
           </Reveal>
         )}
         <RealBasis enabled={real} inflation={inflation.data} />
@@ -225,7 +270,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <SavingsRateChart data={trend.data ?? []} />
+            <SavingsRateChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>
@@ -239,7 +284,7 @@ export function Spending() {
         </p>
         {trend.isPending ? <SkeletonChart /> : (
           <Reveal>
-            <FixedDiscretionaryChart data={trend.data ?? []} />
+            <FixedDiscretionaryChart data={trend.data?.points ?? []} />
           </Reveal>
         )}
       </section>
@@ -258,6 +303,8 @@ export function Spending() {
             <SpendingHeatmap
               months={heatmap.data?.months ?? []}
               categories={heatmap.data?.categories ?? []}
+              inProgressMonth={heatmap.data?.in_progress_month}
+              asOf={heatmap.data?.as_of}
             />
           </Reveal>
         )}
@@ -277,6 +324,7 @@ export function Spending() {
             <CategoryMultiples
               months={heatmap.data?.months ?? []}
               categories={heatmap.data?.categories ?? []}
+              inProgressMonth={heatmap.data?.in_progress_month}
             />
           </Reveal>
         )}
@@ -347,6 +395,94 @@ export function Spending() {
         </div>
       </section>
     </div>
+  )
+}
+
+/**
+ * The by-tag breakdown — the third axis beside "by category" and the merchant
+ * views.
+ *
+ * THE THING THIS SECTION MUST NOT LET A USER BELIEVE: these bars do not add up
+ * to the month. A transaction can carry several tags (so its amount appears
+ * under each) or none (so it appears under none), which is the whole point of a
+ * second axis and exactly what a reader would otherwise assume is a rounding
+ * bug. The note under the heading says so in words.
+ *
+ * The money rules ARE the same as the category panel above — excluded and
+ * pending rows out, transfers out — so a figure here means what a figure there
+ * means. Every total is server-computed; nothing is summed in this file.
+ *
+ * The section renders nothing at all when the household has no tagged spending
+ * in the window, rather than an empty panel: an axis nobody uses should not
+ * take up the page.
+ */
+function ByTagSection({
+  range,
+  label,
+}: {
+  range: { from: string; to: string }
+  label: string
+}) {
+  const byTag = useQuery({
+    queryKey: ['by-tag', range.from, range.to],
+    queryFn: () => api.byTag(range),
+  })
+  const rows = byTag.data ?? []
+  if (byTag.isPending || rows.length === 0) return null
+
+  // Bar widths only — a display ratio between two server-exact figures, never a
+  // number the user reads. Scaled against the largest tag so the panel fills its
+  // width whatever the amounts are.
+  const max = Math.max(...rows.map((t) => Number(t.total)))
+
+  return (
+    <section className="glass p-6">
+      <h2 className="mb-1 text-lg font-medium">By tag</h2>
+      <p className="mb-5 text-sm text-mist-300">
+        {label} — what the money was <em>for</em>, across categories. These
+        don&rsquo;t add up to the month&rsquo;s spending: a charge can carry
+        several tags, or none.
+      </p>
+      <div className="space-y-3">
+        {rows.map((t) => {
+          const total = Number(t.total)
+          const expected = t.expected_amount ? Number(t.expected_amount) : 0
+          const over = expected > 0 && total > expected
+          return (
+            <div key={t.tag_id}>
+              <div className="flex items-baseline justify-between gap-3 text-sm">
+                <Link
+                  to="/tags"
+                  className="truncate text-mist-100 transition-colors hover:text-rune-200"
+                >
+                  {t.name}
+                </Link>
+                <span className="tabular shrink-0 text-mist-300">
+                  {formatMoney(t.total)}
+                  {t.expected_amount && (
+                    <span
+                      className="ml-1.5 text-xs"
+                      style={{ color: over ? STATUS.critical : CHART.textMuted }}
+                    >
+                      of {formatMoney(t.expected_amount)}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/5">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${max > 0 ? (total / max) * 100 : 0}%`,
+                    backgroundColor: over ? STATUS.critical : '#9085e9',
+                  }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

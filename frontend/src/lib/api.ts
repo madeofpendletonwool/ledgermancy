@@ -101,6 +101,30 @@ export interface ActiveSession {
   is_current: boolean
 }
 
+/** A personal API token as its owner sees it in the revoke list. */
+export interface ApiToken {
+  id: string
+  name: string
+  /** `read` is always present; `write` is what makes it read-write. */
+  scopes: string[]
+  /** Null until something authenticates with it. */
+  last_used_at: string | null
+  /** Null means it never expires, which is the normal case. */
+  expires_at: string | null
+  created_at: string
+}
+
+/**
+ * The one response that carries the plaintext token.
+ *
+ * The server stores only an HMAC, so this value exists exactly once, in this
+ * response. It is held in component state to be shown and copied, and is never
+ * written to storage — there would be nowhere to retrieve it from anyway.
+ */
+export interface CreatedApiToken extends ApiToken {
+  token: string
+}
+
 export interface AuthEvent {
   event_type: string
   client_ip: string | null
@@ -394,7 +418,7 @@ export interface ManualAccountInput {
 export interface AccountBalanceEntry {
   as_of: string
   balance: string
-  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend'
+  reason: 'manual' | 'scheduled' | 'holding_revalue' | 'fee' | 'dividend' | 'snapshot'
   note: string | null
 }
 
@@ -477,6 +501,13 @@ export interface Transaction {
   date: string
   name: string
   merchant_name: string | null
+  /**
+   * The name to DISPLAY for this row: the canonical merchant name when the
+   * descriptor has been grouped or renamed, otherwise the raw merchant_name/name
+   * the bank sent. This is what the row and recent activity render — prefer it
+   * over `merchant_name ?? name`, which shows stale bank text after a rename.
+   */
+  merchant: string
   /** Normalized key the app caches categories by; present even when
    * merchant_name is null, empty when there was too little signal to key on. */
   merchant_key: string | null
@@ -522,6 +553,22 @@ export interface Transaction {
    * month cannot rewrite the household's idea of its fixed costs.
    */
   is_one_time: boolean
+  /**
+   * The free-form labels on this row, orthogonal to `category_id` above: a
+   * transaction has exactly one category and any number of tags. Always an
+   * array — empty when nothing is labelled, never null.
+   */
+  tags: TransactionTag[]
+}
+
+/**
+ * A tag as a ledger row renders it: id to act on, name to show. Deliberately
+ * not the full {@link Tag} — a row has no use for the tag's all-time total, and
+ * computing fifty of those per page would be a report query per chip.
+ */
+export interface TransactionTag {
+  id: string
+  name: string
 }
 
 /**
@@ -564,7 +611,17 @@ export interface TransactionQuery {
    * page passes.
    */
   merchant?: string
-  /** Free-text search over the merchant name, raw name and descriptor key. */
+  /**
+   * A composable search query. Bare words are free text over the merchant name,
+   * raw name and descriptor key — which is all `q` used to be, so existing links
+   * keep working. `key:value` terms narrow further (`over:10`, `since:-30d`,
+   * `has_no_category`), a leading `-` negates one, and everything is ANDed. See
+   * the backend's `internal/search` for the vocabulary, or api.searchOperators().
+   *
+   * A query that names its own dates owns the date window: `from`/`to` are
+   * ignored for it, so `since:2019-01-01` is not silently clipped to the page's
+   * rolling year.
+   */
   q?: string
   /** Only rows still needing a category (null or the fallback bucket). */
   uncategorised?: boolean
@@ -574,6 +631,28 @@ export interface TransactionQuery {
    * is no way back from excluding a row.
    */
   include_excluded?: boolean
+  /**
+   * Restrict to rows carrying ANY of these tags. Serialized comma-joined like
+   * `accounts`. OR rather than AND: picking two widens the view to "the trip or
+   * the remodel", which is the question a household actually asks.
+   */
+  tags?: string[]
+  /** Only rows nobody has labelled yet — the tag counterpart of
+   *  `uncategorised`, and how a backlog of untagged charges gets drained. */
+  untagged?: boolean
+}
+
+/**
+ * One operator the `q` grammar accepts. The list comes from the parser via
+ * api.searchOperators() rather than being written out here, so the search bar
+ * can never suggest something the server would treat as free text.
+ */
+export interface SearchOperator {
+  /** The operator as typed, without the trailing colon. */
+  name: string
+  /** False for flags (`has_no_category`), which are written bare. */
+  takes_value: boolean
+  help: string
 }
 
 export interface Category {
@@ -610,9 +689,25 @@ export interface Summary {
   fixed_spending: string
   discretionary_spending: string
   leftover: string
-  /** 0–1, or null when the period had no income (the ratio is meaningless). */
+  /**
+   * 0–1, or null when the period had no income (the ratio is meaningless).
+   *
+   * Still a real ratio when `in_progress` is true — but a ratio of a whole
+   * month's spending SO FAR to however much of the month's income has landed,
+   * which is not a savings rate. Do not render it as one; render the in-progress
+   * state instead (MAD-110).
+   */
   savings_rate: string | null
   transaction_count: number
+  /**
+   * True when this period is a single calendar month that has not ended, so
+   * every figure above is month-to-date. False for a rolling window that merely
+   * runs up to today — the trailing-twelve report's one partial month is diluted
+   * across eleven whole ones and needs no caveat.
+   */
+  in_progress: boolean
+  /** "YYYY-MM-DD" the figures run through. Present only when `in_progress`. */
+  as_of?: string
 }
 
 export interface CategorySpend {
@@ -696,6 +791,37 @@ export interface TrendPoint {
   real_income?: string
   real_spending?: string
   real_leftover?: string
+  /**
+   * True on the one point the clock is currently inside. Its figures are real
+   * but month-to-date: the spending is everything spent so far, the income is
+   * however many paychecks have landed so far.
+   *
+   * The point is NOT dropped server-side, because the money did move — a chart
+   * that plots amounts should keep it and mark it. A chart that plots a RATIO of
+   * income to spending must not plot it at all: a whole month of spending over a
+   * fraction of a month's income produces an arbitrarily large negative number,
+   * and an axis fitted to it flattens every real month beside it (MAD-110).
+   */
+  in_progress: boolean
+  /** "YYYY-MM-DD" this point runs through. Present only when `in_progress`. */
+  as_of?: string
+}
+
+/**
+ * The envelope `/api/reports/trend` returns. Carries the monthly `points`
+ * alongside the request that produced them.
+ *
+ * `exclude_one_time` is the echo of the "Hide one-time charges" toggle: true
+ * means `is_one_time` rows were dropped from every point, false means the
+ * default real-period series. It exists so the three trend-fed charts on
+ * Spending can never render filtered figures under an unfiltered label — the
+ * react-query key already prevents a stale cache, and this makes the payload
+ * self-describing too. Read it before labelling the chart, not just before
+ * drawing it.
+ */
+export interface TrendResponse {
+  points: TrendPoint[]
+  exclude_one_time: boolean
 }
 
 export interface CategoryAverage extends CategorySpend {
@@ -724,6 +850,24 @@ export interface SpendingHeatmap {
   months: string[]
   /** Sorted by whole-range `total` descending. */
   categories: SpendingHeatmapCategory[]
+  /**
+   * The one entry in `months` that has not finished yet, or absent when the
+   * window ends in the past. Its cells are part-month figures, so they are not
+   * comparable with the columns beside them and must stay out of the colour
+   * ramp's ceiling (MAD-110).
+   */
+  in_progress_month?: string
+  /** "YYYY-MM-DD" the in-progress column runs through. */
+  as_of?: string
+  /**
+   * Echo of the "Hide one-time charges" toggle. True means `is_one_time` rows
+   * were dropped from every cell — the matrix is the trailing year without the
+   * charges the reader flagged as not repeating, so a cell no longer reconciles
+   * to the cent with the same month's real-period figures. Read it before
+   * labelling the heatmap; the react-query key already prevents a stale cache,
+   * and this makes the payload agree with its own label.
+   */
+  exclude_one_time?: boolean
 }
 
 export interface SpendingHeatmapCategory {
@@ -1214,6 +1358,23 @@ export interface PeriodQuery {
  */
 export interface RealQuery {
   real?: boolean
+}
+
+/**
+ * Opt into dropping `is_one_time` rows from a trailing-baseline view.
+ *
+ * The mirror of `RealQuery` for the "Hide one-time charges" toggle. Omitting
+ * it, or sending `exclude_one_time: false`, returns the same real-period
+ * figures the endpoint has always returned — the money did leave, and the
+ * default view keeps it. The server reads "1" or "true" as on and anything
+ * else (including the bare zero value) as off, matching how `real` is parsed.
+ *
+ * One toggle sends this flag to both `/trend` and `/heatmap`; the response
+ * echoes it back so a chart can never render filtered figures under an
+ * unfiltered label.
+ */
+export interface OneTimeQuery {
+  exclude_one_time?: boolean
 }
 
 /**
@@ -2107,6 +2268,161 @@ export interface GoalProposal {
    *  server-side to a real account. */
   account_id: string | null
   account_name: string
+}
+
+/**
+ * One row of an object's change history (the "History" panel). old_value and
+ * new_value are the raw JSONB the server stored: a string for most fields, null
+ * when a field was set on create or cleared. `field === 'created'` marks the
+ * object's first appearance — render it as "created by X" rather than a diff.
+ */
+export type ObjectChangeKind = 'transaction' | 'budget' | 'goal'
+
+export interface ObjectChange {
+  field: string
+  old_value: unknown
+  new_value: unknown
+  actor_user_id: string | null
+  actor_display_name: string | null
+  created_at: string
+}
+
+/**
+ * A tag: a free-form label that cuts ACROSS categories.
+ *
+ * A category answers "what kind of spending is this?" and a transaction has
+ * exactly one. A tag answers "what was this FOR?" and a transaction can carry
+ * several — "Summer Vacation" spans Food, Travel and Lodging. Tags are
+ * household-scoped, but the counts and totals below are computed for the
+ * CALLING member: a tag on a charge from another member's private account is
+ * not counted here, exactly as that charge is not listed in the ledger.
+ *
+ * Both figures are server-computed decimal strings. They deliberately answer
+ * different questions — see the field comments.
+ */
+export interface Tag {
+  id: string
+  name: string
+  description: string | null
+  /** The envelope's target ("this trip is meant to cost 3,000"), or null when
+   *  none is set. Null and "0.00" are different facts: one renders no progress
+   *  bar, the other renders a full one. */
+  expected_amount: string | null
+  /** How many visible transactions carry the tag — all of them, including
+   *  income and pending rows. A fact about the LABEL. */
+  transaction_count: number
+  /** What the tag has COST, all-time, under the same money rules as every other
+   *  spending figure in the app. This is what reads against expected_amount. */
+  total: string
+  created_at: string
+}
+
+/** Fields to create or update a tag. Amounts are strings, never floats; an
+ *  empty `expected_amount` clears the target. */
+export interface TagInput {
+  name: string
+  description?: string | null
+  expected_amount?: string | null
+}
+
+/** One row of a tag's transaction list. A trimmed ledger row: enough to
+ *  recognise the charge, not the full {@link Transaction} shape. */
+export interface TagTransaction {
+  id: string
+  date: string
+  name: string
+  merchant: string
+  amount: string
+  currency: string
+  category_id: string | null
+  account_name: string
+}
+
+/** The tag detail payload: header figures and the charges behind them, read
+ *  under the same visibility scope in the same request. */
+export interface TagDetail {
+  tag: Tag
+  transactions: TagTransaction[]
+}
+
+/**
+ * One tag's spend in a reporting window — the by-tag breakdown, beside
+ * by-category and by-merchant.
+ *
+ * The three panels obey the same money rules, so a figure here means what a
+ * figure there means. They will NOT sum to the same period total, and that is
+ * correct: a transaction can carry several tags (so it appears under each) or
+ * none (so it appears under none). A tag breakdown is a set of overlapping
+ * answers, not a partition of the month.
+ */
+export interface TagSpend {
+  tag_id: string
+  name: string
+  expected_amount: string | null
+  total: string
+  transaction_count: number
+}
+
+/**
+ * A piggy bank: a lightweight savings envelope ("Car Repair Fund") sitting on
+ * an asset account. `current_amount` is DERIVED server-side from the
+ * append-only event log (deposits − withdrawals, summed in SQL) — never stored,
+ * so it can't drift. Money fields are decimal strings, never summed here.
+ *
+ * A piggy bank is an ANNOTATION on part of the account's balance, not a
+ * separate balance: the money is already in the account, so a deposit/withdraw
+ * here only earmarks a slice of it. Net worth never moves when a piggy bank
+ * does — say so on the page so users don't double-count.
+ */
+export interface PiggyBank {
+  id: string
+  account_id: string
+  name: string
+  /** Nullable: an open-ended jar with no finish line. */
+  target_amount: string | null
+  current_amount: string
+  created_at: string
+}
+
+/** Fields to create or update a piggy bank. account_id is fixed at create. */
+export interface PiggyBankInput {
+  name: string
+  /** Required on create; ignored on update (the account can't be moved). */
+  account_id?: string
+  /** Omit for an open-ended jar. */
+  target_amount?: string
+}
+
+/** One row of the append-only deposit/withdraw event log. */
+export interface PiggyBankEvent {
+  id: string
+  type: 'deposit' | 'withdraw'
+  amount: string
+  /** Optional link to a real transaction this event corresponds to. */
+  transaction_id: string | null
+  created_at: string
+}
+
+/**
+ * The funding account's unassigned balance: its current balance minus the sum
+ * of every piggy bank's derived balance drawing from it. Negative means the
+ * household has earmarked more than the account holds — the over-allocation
+ * case the UI must surface as a loud warning, never a silently clipped number.
+ */
+export interface AccountAllocation {
+  account_id: string
+  account_balance: string
+  assigned: string
+  available: string
+  over_allocated: boolean
+}
+
+/** The result of a deposit or withdraw: the event, the piggy bank's new
+ *  standing, and the funding account's allocation afterward. */
+export interface PiggyBankMovement {
+  event: PiggyBankEvent
+  piggy_bank: PiggyBank
+  allocation: AccountAllocation
 }
 
 /** A parsed alert proposal from POST /api/alerts/parse (never auto-saved). */
@@ -3684,6 +4000,16 @@ export const api = {
 
   authEvents: () => request<AuthEvent[]>('GET', '/api/auth/events'),
 
+  // Personal API tokens. These routes need the session cookie: a token cannot
+  // manage tokens, so a leaked one cannot mint replacements for itself or
+  // revoke the ones you would use to lock it out.
+  apiTokens: () => request<ApiToken[]>('GET', '/api/auth/tokens'),
+
+  createApiToken: (input: { name: string; scopes: string[]; expires_at?: string }) =>
+    request<CreatedApiToken>('POST', '/api/auth/tokens', input),
+
+  revokeApiToken: (id: string) => request<void>('DELETE', `/api/auth/tokens/${id}`),
+
   household: () => request<Household>('GET', '/api/household/'),
 
   members: () => request<Member[]>('GET', '/api/household/members'),
@@ -3858,6 +4184,15 @@ export const api = {
   transactions: (params: TransactionQuery = {}) =>
     request<Transaction[]>('GET', withQuery('/api/transactions', params)),
 
+  /**
+   * The operator vocabulary the `q` grammar accepts, for the search bar's
+   * autocomplete. Generated from the parser, so the suggestions cannot drift
+   * from what the server will actually accept.
+   */
+  searchOperators: () =>
+    request<SearchOperator[]>('GET', '/api/transactions/search-operators'),
+
+
   recategorise: (
     transactionID: string,
     categoryID: string,
@@ -3911,6 +4246,45 @@ export const api = {
 
   deleteCategory: (id: string) =>
     request<void>('DELETE', `/api/categories/${id}`),
+
+  // --- Tags ---------------------------------------------------------------
+  // The second axis over a transaction. Nothing here touches a row's category:
+  // tagging a charge never changes what kind of spending it is.
+  tags: () => request<Tag[]>('GET', '/api/tags'),
+
+  createTag: (input: TagInput) => request<Tag>('POST', '/api/tags', input),
+
+  updateTag: (id: string, input: TagInput) =>
+    request<Tag>('PUT', `/api/tags/${id}`, input),
+
+  /** Deleting a tag unlabels its transactions; the transactions themselves are
+   *  untouched. */
+  deleteTag: (id: string) => request<void>('DELETE', `/api/tags/${id}`),
+
+  tagDetail: (id: string) =>
+    request<TagDetail>('GET', `/api/tags/${id}/transactions`),
+
+  /**
+   * Replaces a transaction's whole tag set — the editor is a list of checkboxes
+   * the user confirms, not a stream of deltas.
+   *
+   * `applyToMerchant` additionally ADDS these tags to every visible charge from
+   * the same merchant. It never removes, which is where this differs from
+   * "apply category to all from this merchant": a category is single-valued so
+   * applying one necessarily overwrites, while replacing a tag set across a
+   * merchant would silently strip labels somebody put there for unrelated
+   * reasons.
+   */
+  setTransactionTags: (
+    transactionID: string,
+    tagIDs: string[],
+    applyToMerchant = false,
+  ) =>
+    request<{ tags: TransactionTag[] }>(
+      'PUT',
+      `/api/transactions/${transactionID}/tags`,
+      { tag_ids: tagIDs, apply_to_merchant: applyToMerchant },
+    ),
 
   // --- Merchants ----------------------------------------------------------
   // Canonical merchants and the review queue for proposed merges. Everything
@@ -3983,6 +4357,9 @@ export const api = {
   byCategory: (params: PeriodQuery = {}) =>
     request<CategorySpend[]>('GET', withQuery('/api/reports/by-category', params)),
 
+  byTag: (params: PeriodQuery = {}) =>
+    request<TagSpend[]>('GET', withQuery('/api/reports/by-tag', params)),
+
   byDay: (params: PeriodQuery = {}) =>
     request<DaySpend[]>('GET', withQuery('/api/reports/by-day', params)),
 
@@ -4002,8 +4379,8 @@ export const api = {
       withQuery('/api/reports/merchant-explorer', params),
     ),
 
-  trend: (params: PeriodQuery & RealQuery = {}) =>
-    request<TrendPoint[]>('GET', withQuery('/api/reports/trend', params)),
+  trend: (params: PeriodQuery & RealQuery & OneTimeQuery = {}) =>
+    request<TrendResponse>('GET', withQuery('/api/reports/trend', params)),
 
   /**
    * The category × month spending matrix behind the heatmap (item #8) and the
@@ -4012,7 +4389,7 @@ export const api = {
    * themselves at eight. Every money field is a decimal string — the only
    * arithmetic in the client is display-side intensity scaling.
    */
-  spendingHeatmap: (params: PeriodQuery = {}) =>
+  spendingHeatmap: (params: PeriodQuery & OneTimeQuery = {}) =>
     request<SpendingHeatmap>('GET', withQuery('/api/reports/heatmap', params)),
 
   /**
@@ -4252,8 +4629,14 @@ export const api = {
   setManualAccountBalance: (id: string, input: SetBalanceInput) =>
     request<Account>('PUT', `/api/accounts/${id}/balance`, input),
 
-  accountBalanceHistory: (id: string) =>
-    request<AccountBalanceEntry[]>('GET', `/api/accounts/${id}/balance-history`),
+  // from / to bound the window (YYYY-MM-DD). Absent returns the whole trail —
+  // the manual balance editor's call — and a chart passes a year so a linked
+  // account's daily snapshots are not pulled in full every render.
+  accountBalanceHistory: (id: string, params: { from?: string; to?: string } = {}) =>
+    request<AccountBalanceEntry[]>(
+      'GET',
+      withQuery(`/api/accounts/${id}/balance-history`, params),
+    ),
 
   listSecurities: (search?: string) =>
     request<Security[]>('GET', withQuery('/api/securities', { q: search })),
@@ -4301,6 +4684,46 @@ export const api = {
   // confirmation calls createGoal. 503 when AI is off, 422 on an unreadable parse.
   parseGoal: (text: string) =>
     request<GoalProposal>('POST', '/api/goals/parse', { text }),
+
+  // --- Change history -----------------------------------------------------
+  // The field-level "who changed what, when" log for any audited object. One
+  // read endpoint serves every kind; visibility is re-resolved server-side per
+  // kind, so the caller only names the object it is already viewing.
+  objectHistory: (kind: ObjectChangeKind, objectId: string) =>
+    request<ObjectChange[]>(
+      'GET',
+      `/api/audit?object_kind=${kind}&object_id=${objectId}`,
+    ),
+
+  // --- Piggy banks --------------------------------------------------------
+  // Lightweight savings jars on an asset account. A deposit/withdraw only
+  // annotates part of the balance — it never moves real money — so the whole
+  // group is read-mostly and every total stays server-computed.
+  piggyBanks: () => request<PiggyBank[]>('GET', '/api/piggy-banks'),
+
+  createPiggyBank: (input: PiggyBankInput) =>
+    request<PiggyBank>('POST', '/api/piggy-banks', input),
+
+  updatePiggyBank: (id: string, input: PiggyBankInput) =>
+    request<PiggyBank>('PUT', `/api/piggy-banks/${id}`, input),
+
+  deletePiggyBank: (id: string) =>
+    request<void>('DELETE', `/api/piggy-banks/${id}`),
+
+  depositPiggyBank: (id: string, amount: string) =>
+    request<PiggyBankMovement>('POST', `/api/piggy-banks/${id}/deposit`, { amount }),
+
+  withdrawPiggyBank: (id: string, amount: string) =>
+    request<PiggyBankMovement>('POST', `/api/piggy-banks/${id}/withdraw`, { amount }),
+
+  piggyBankEvents: (id: string) =>
+    request<PiggyBankEvent[]>('GET', `/api/piggy-banks/${id}/events`),
+
+  accountPiggyBanks: (accountId: string) =>
+    request<PiggyBank[]>('GET', `/api/accounts/${accountId}/piggy-banks`),
+
+  accountAvailableForPiggy: (accountId: string) =>
+    request<AccountAllocation>('GET', `/api/accounts/${accountId}/available-for-piggy`),
 
   // --- Net worth ----------------------------------------------------------
   netWorth: () => request<NetWorth>('GET', '/api/networth'),

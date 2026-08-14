@@ -179,3 +179,90 @@ See [Configuration → CPI refresh](configuration.md#cpi-refresh-inflation-adjus
 Short windows do not offer the toggle. Deflating one month by one month's price
 change moves the figure by a couple of tenths of a percent — noise dressed as
 precision.
+
+---
+
+## The month you are standing in
+
+A trailing-twelve chart always ends on a month that is not over. Its spending is
+real and complete up to today; its income is however many paychecks have landed.
+Those two facts are not the same shape, and anything that divides one by the
+other on an unfinished month produces a number that looks like a measurement and
+is not one.
+
+Concretely: paid twice a month, a trip in the first week, viewed on the 12th —
+$2,049.87 out against $3.81 in reads as a **-53,702% savings rate**, and a chart
+that fits its axis to that point flattens the eleven real months beside it into a
+line on the floor.
+
+So the app draws a line between the two kinds of figure:
+
+**Amounts are shown.** Money in, money out, and what is left over so far are
+exact, and the month-to-date bar keeps its true height. It is hatched or shaded
+and labelled, because a bar a third the height of its neighbours otherwise reads
+as "spending collapsed" rather than "the month is a third over". Nothing is
+annualised or projected to month-end — that would be inventing a number to avoid
+explaining a real one.
+
+**Ratios wait.** The savings-rate tile shows a dash with the day it runs
+through, and the savings-rate chart leaves the month off the line entirely — the
+same rule it already applied to a month with no income at all, for the same
+reason: a rate that was never measured should not be drawn.
+
+The planning surfaces have always worked this way. Safe-to-spend and the balance
+projection take their trailing medians over **completed months only**, and the
+monthly recap writes in the present tense while the month is open. This is that
+rule reaching the charts.
+
+---
+
+## One huge month should not flatten the rest
+
+A knowingly-paid-off $18,000 loan is a real expense in the month it landed, and
+it belongs in that month's spending. What it must not do is set the scale for
+every other figure on the page.
+
+Two mechanisms handle it, and they are independent on purpose:
+
+**Mark it one-time.** `is_one_time` on a transaction means "this happened, but it
+is not evidence about a typical month". Trailing baselines — safe-to-spend,
+expected income, the projection's typical spend — drop those rows; reports of a
+real period keep them. This is separate from `excluded_from_reports`, which means
+"this did not happen" and is honoured everywhere.
+
+**Medians, not means.** Every trailing baseline takes the median of the months in
+its window. A $14,295 payoff entered a six-month mean at ~$2,383/month and stayed
+there for half a year, telling a household its recurring bills had quadrupled at
+the exact moment they had *fallen*. A median ignores it outright, with no flag to
+set.
+
+Charts get a third treatment, because they have to render the outlier rather than
+exclude it. The category × month heatmap's colour ramp tops out at a high
+quantile of its cells rather than at the single largest one. Cells above that
+ceiling are drawn at full intensity with a corner notch and counted in the
+legend, so the clipping is visible rather than silent, and the rest of the grid
+keeps the colour resolution that makes seasonality readable. The category
+small-multiples solve the same problem differently — one panel per category, each
+on its own scale.
+
+The reader gets a fourth move, because sometimes the right question is the
+trailing year *without* the charge that broke the scale. A "Hide one-time
+charges" toggle sits over the trailing-twelve charts on the Spending page — the
+trend, the savings rate, fixed-vs-discretionary, the heatmap and the category
+small-multiples — and re-asks the same real-period queries those charts already
+use, with the one-time rows dropped. One toggle, not five, because every one of
+those charts answers the same trailing question and a reader wants to switch
+lenses once.
+
+It is a lens, not a correction. The money did leave, and it stays on the
+transaction and in the month it landed; flip the toggle back and the payoff is
+right there again. What changes is the question: "the trailing year as it
+actually happened" off, "the trailing year without the things I have flagged as
+not repeating" on. The flag itself is the household's judgement, set by hand on
+each transaction — the toggle only decides whether the trailing charts honour
+it. With it on, the heatmap's row ranking recomputes from the filtered totals,
+so a single payoff no longer keeps a category at the top of the grid on the
+strength of one month. Planning surfaces (safe-to-spend, the projection) always
+drop one-time rows; the period tiles, the Sankey and `/report` always keep them,
+because they describe one real period the reader picked. The toggle is the
+in-between: a real-period view, read on purpose as a baseline.

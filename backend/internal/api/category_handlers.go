@@ -15,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/ai"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/audit"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/auth"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/db/dbgen"
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/moneyfmt"
@@ -83,9 +84,40 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	ctx := r.Context()
+	// One transaction so the recategorise, its merchant-cache side effects, and
+	// the change-history row land together or not at all. The history row shares
+	// this tx in particular — that is what guarantees a rolled-back edit writes
+	// no record.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "recategorise transaction", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	// Read the before-state inside the tx so the audit diff is computed against
+	// the row under the same lock. The visibility guard matches the UPDATE, so a
+	// private transaction the caller cannot see is unreadable (→ 404) and thus
+	// unmodifiable and un-auditable.
+	before, err := qtx.GetVisibleTransaction(ctx, dbgen.GetVisibleTransactionParams{
+		ID:           transactionID,
+		HouseholdID:  identity.HouseholdID,
+		ViewerUserID: &identity.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "transaction not found")
+			return
+		}
+		s.internalError(w, "load transaction", err)
+		return
+	}
+
 	// The UPDATE is scoped by household, so a caller cannot recategorise
 	// someone else's transaction even with a valid id.
-	updated, err := s.Queries.SetTransactionCategory(r.Context(), dbgen.SetTransactionCategoryParams{
+	updated, err := qtx.SetTransactionCategory(ctx, dbgen.SetTransactionCategoryParams{
 		ID:          transactionID,
 		HouseholdID: identity.HouseholdID,
 		CategoryID:  &req.CategoryID,
@@ -102,7 +134,7 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 	if req.ApplyToMerchant && updated.MerchantKey != nil && *updated.MerchantKey != "" {
 		// The durable rule: future synced charges from this merchant resolve to
 		// this category (source 'manual' so the LLM never overrides it).
-		if err := s.Queries.UpsertMerchantCategory(r.Context(), dbgen.UpsertMerchantCategoryParams{
+		if err := qtx.UpsertMerchantCategory(ctx, dbgen.UpsertMerchantCategoryParams{
 			HouseholdID: identity.HouseholdID,
 			MerchantKey: *updated.MerchantKey,
 			CategoryID:  req.CategoryID,
@@ -115,7 +147,7 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 		// merchant in one statement — this is what drains the Uncategorised
 		// backlog. The row the user just edited stays 'manual' (their explicit
 		// pick); the rest are marked 'cache' so a later re-edit re-applies.
-		if err := s.Queries.ApplyMerchantCategoryRewritable(r.Context(), dbgen.ApplyMerchantCategoryRewritableParams{
+		if err := qtx.ApplyMerchantCategoryRewritable(ctx, dbgen.ApplyMerchantCategoryRewritableParams{
 			HouseholdID: identity.HouseholdID,
 			MerchantKey: updated.MerchantKey,
 			CategoryID:  &req.CategoryID,
@@ -123,6 +155,21 @@ func (s *Server) handleRecategoriseTransaction(w http.ResponseWriter, r *http.Re
 			s.internalError(w, "apply merchant category", err)
 			return
 		}
+	}
+
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindTransaction,
+		ObjectID:    transactionID,
+		ActorUserID: identity.UserID,
+	}, audit.TransactionDiff(before, updated)); err != nil {
+		s.internalError(w, "record transaction change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.internalError(w, "recategorise transaction", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -511,7 +558,30 @@ func (s *Server) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 	// honoured on monthly budgets.
 	rollover := req.Rollover && budgetPeriod == "monthly"
 
-	budget, err := s.Queries.UpsertBudget(r.Context(), dbgen.UpsertBudgetParams{
+	ctx := r.Context()
+	// One transaction so the upsert and its history row land together. The
+	// before-state read shares the tx so the diff reflects the row under the
+	// same lock — without a prior row the upsert is a create, recorded as such.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		s.internalError(w, "create budget", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	before, getErr := qtx.GetHouseholdBudgetByCategory(ctx, dbgen.GetHouseholdBudgetByCategoryParams{
+		HouseholdID: identity.HouseholdID,
+		CategoryID:  req.CategoryID,
+	})
+	if getErr != nil && !errors.Is(getErr, pgx.ErrNoRows) {
+		s.internalError(w, "load budget", getErr)
+		return
+	}
+	// A miss means no prior budget for this category — the upsert is a create.
+	hadPrior := getErr == nil
+
+	budget, err := qtx.UpsertBudget(ctx, dbgen.UpsertBudgetParams{
 		HouseholdID: identity.HouseholdID,
 		CategoryID:  req.CategoryID,
 		Amount:      amount,
@@ -519,6 +589,27 @@ func (s *Server) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 		Rollover:    rollover,
 	})
 	if err != nil {
+		s.internalError(w, "create budget", err)
+		return
+	}
+
+	var changes []audit.Change
+	if hadPrior {
+		changes = audit.BudgetDiff(before, budget)
+	} else {
+		changes = audit.Created()
+	}
+	if err := audit.Record(ctx, qtx, audit.RecordParams{
+		HouseholdID: identity.HouseholdID,
+		ObjectKind:  audit.KindBudget,
+		ObjectID:    budget.ID,
+		ActorUserID: identity.UserID,
+	}, changes); err != nil {
+		s.internalError(w, "record budget change", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		s.internalError(w, "create budget", err)
 		return
 	}

@@ -6,6 +6,7 @@ import { areaFade, lineDraw } from './motion'
 import { axisTicks, compactMoney, labelStride } from './scale'
 import { CHART, SERIES, STATUS } from './tokens'
 import { ChartBoundary } from './ChartBoundary'
+import { PartialMonthTooltipNote } from './partialMonth'
 
 const WIDTH = 760
 const HEIGHT = 260
@@ -112,6 +113,9 @@ function TrendChartUnguarded({
   const avg = avgLeftover === undefined ? null : Number(avgLeftover)
   const avgOnAxis = avg !== null && Number.isFinite(avg) && avg >= 0 && avg <= niceMax
 
+  // At most one, and only when the window reaches the present.
+  const runningIndex = data.findIndex((d) => d.in_progress)
+
   return (
     <div className="space-y-3">
       {/* Two series, so a legend is always present — identity is never
@@ -185,9 +189,25 @@ function TrendChartUnguarded({
             </g>
           )}
 
-          {/* Month labels, thinned so they never collide. */}
+          {/* The month in flight, shaded. Both lines really do dive at the right
+              edge — a month a third over has banked about a third of its income
+              — and without this band the only available reading is that the
+              household's income collapsed (MAD-110). */}
+          {runningIndex >= 0 && (
+            <rect
+              x={x(runningIndex) - PLOT_W / Math.max(data.length, 1) / 2}
+              y={PAD.top}
+              width={PLOT_W / Math.max(data.length, 1)}
+              height={PLOT_H}
+              fill={CHART.grid}
+              opacity={0.5}
+            />
+          )}
+
+          {/* Month labels, thinned so they never collide — except the month in
+              flight, which is always named. */}
           {data.map((d, i) =>
-            i % labelStride(data.length) === 0 ? (
+            i % labelStride(data.length) === 0 || d.in_progress ? (
               <text
                 key={d.month}
                 x={x(i)}
@@ -195,6 +215,7 @@ function TrendChartUnguarded({
                 textAnchor="middle"
                 fontSize="11"
                 fill={CHART.textMuted}
+                fontStyle={d.in_progress ? 'italic' : undefined}
               >
                 {monthLabel(d.month)}
               </text>
@@ -280,6 +301,7 @@ function TrendChartUnguarded({
             <p className="mt-1 border-t border-white/10 pt-1 text-mist-300">
               Leftover <span className="tabular">{formatMoney(point.leftover)}</span>
             </p>
+            {point.in_progress && <PartialMonthTooltipNote asOf={point.as_of} />}
           </div>
         )}
       </div>

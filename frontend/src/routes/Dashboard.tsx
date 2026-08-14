@@ -200,8 +200,8 @@ export function Dashboard() {
               : 'Money out this month'
           }
           footer={
-            trend.data && trend.data.length >= 2 ? (
-              <SpendSparkline data={trend.data} />
+            trend.data && trend.data.points.length >= 2 ? (
+              <SpendSparkline data={trend.data.points} />
             ) : null
           }
         />
@@ -539,14 +539,14 @@ function RecentRow({ transaction: t }: { transaction: Transaction }) {
     <li className="flex items-center gap-4 py-3">
       <div className="w-16 shrink-0 text-xs text-mist-500">{formatDate(t.date)}</div>
       <MerchantAvatar
-        name={t.merchant_name ?? t.name}
+        name={t.merchant}
         merchantKey={t.merchant_key_resolved}
         size="sm"
       />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">
           <MerchantLink
-            name={t.merchant_name ?? t.name}
+            name={t.merchant}
             merchantKey={t.merchant_key_resolved}
           />
         </p>

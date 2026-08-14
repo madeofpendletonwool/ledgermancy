@@ -323,6 +323,60 @@ func (q *Queries) GetImportAccount(ctx context.Context, arg GetImportAccountPara
 	return i, err
 }
 
+const getVisibleTransaction = `-- name: GetVisibleTransaction :one
+SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date, t.authorized_date, t.name, t.merchant_name, t.merchant_key, t.pending, t.pending_transaction_id, t.plaid_pfc_primary, t.plaid_pfc_detailed, t.category_id, t.category_source, t.is_recurring, t.excluded_from_reports, t.notes, t.source, t.raw, t.created_at, t.updated_at, t.is_one_time, t.obligation_id
+FROM transactions t
+JOIN accounts a    ON a.id = t.account_id
+JOIN account_access v ON v.account_id = a.id
+WHERE t.id = $1
+  AND v.household_id = $2
+  AND (v.user_id = $3::uuid OR v.is_shared)
+`
+
+type GetVisibleTransactionParams struct {
+	ID           uuid.UUID  `json:"id"`
+	HouseholdID  uuid.UUID  `json:"household_id"`
+	ViewerUserID *uuid.UUID `json:"viewer_user_id"`
+}
+
+// A single transaction scoped exactly like the list: own items ∪ shared. Used
+// inside the audit transaction to read a row's before-state before a mutation,
+// so the field-level diff is computed against what the caller was allowed to
+// see in the first place — a private account's transaction is unreadable, and
+// therefore uneditable and un-auditable, by the other member.
+func (q *Queries) GetVisibleTransaction(ctx context.Context, arg GetVisibleTransactionParams) (Transaction, error) {
+	row := q.db.QueryRow(ctx, getVisibleTransaction, arg.ID, arg.HouseholdID, arg.ViewerUserID)
+	var i Transaction
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.PlaidTransactionID,
+		&i.Amount,
+		&i.Currency,
+		&i.Date,
+		&i.AuthorizedDate,
+		&i.Name,
+		&i.MerchantName,
+		&i.MerchantKey,
+		&i.Pending,
+		&i.PendingTransactionID,
+		&i.PlaidPfcPrimary,
+		&i.PlaidPfcDetailed,
+		&i.CategoryID,
+		&i.CategorySource,
+		&i.IsRecurring,
+		&i.ExcludedFromReports,
+		&i.Notes,
+		&i.Source,
+		&i.Raw,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsOneTime,
+		&i.ObligationID,
+	)
+	return i, err
+}
+
 const insertImportedTransactionIfNew = `-- name: InsertImportedTransactionIfNew :one
 INSERT INTO transactions (
     account_id, amount, currency, date, name, merchant_name, merchant_key,
@@ -591,6 +645,14 @@ SELECT t.id, t.account_id, t.plaid_transaction_id, t.amount, t.currency, t.date,
     -- merchant_aliases is UNIQUE (household_id, merchant_key), so the LEFT JOIN
     -- cannot fan a transaction out into several rows.
     COALESCE(ma.entity_id::text, t.merchant_key, '')::text AS resolved_merchant_key,
+    -- The name to DISPLAY for this row: the canonical name of the merchant the
+    -- descriptor resolves to when the household has grouped or renamed it, else
+    -- the raw merchant_name/name the bank sent. Mirrors what every report reads
+    -- (COALESCE(me.canonical_name, t.merchant_name, t.name)), so renaming a
+    -- merchant is reflected on the row and not only on the merchant pages. The
+    -- raw columns above are still returned so search and the manual editor keep
+    -- working against the bank's own text.
+    COALESCE(me.canonical_name, t.merchant_name, t.name) AS merchant,
     -- A manual row is a "possible duplicate" when a Plaid-synced row exists on
     -- the same account for the same amount within four days — the issuer having
     -- finally delivered a charge the user already entered by hand. Computed at
@@ -609,6 +671,7 @@ LEFT JOIN merchant_aliases ma
        ON ma.household_id = $1
       AND ma.merchant_key = t.merchant_key
       AND ma.source <> 'suggested'
+LEFT JOIN merchant_entities me ON me.id = ma.entity_id
 WHERE v.household_id = $1
   AND (v.user_id = $2 OR v.is_shared)
   AND a.is_active
@@ -647,13 +710,20 @@ WHERE v.household_id = $1
     OR t.merchant_key = $10::text
   )
   -- Optional free-text search over what the user actually reads in the row: the
-  -- merchant name the UI shows, its raw name fallback, and the descriptor key.
-  -- Deliberately NOT the canonical name — a household that has renamed a merchant
-  -- still recognises the bank's text, and both forms are covered here.
+  -- resolved (canonical) merchant name the UI now displays, the raw name the bank
+  -- sent, and the descriptor key. Both name forms are matched so a renamed
+  -- merchant is findable by what it shows now AND by the bank's original wording.
+  --
+  -- These three columns are the DEFINITION of free-text matching in this app.
+  -- GET /api/transactions no longer passes this narg — ` + "`" + `q` + "`" + ` is now a composable
+  -- query and its bare words go through internal/search — but that package
+  -- matches this same list on purpose, so ` + "`" + `q=coffee` + "`" + ` returns what it always did.
+  -- Change one and change the other.
   AND (
     $11::text IS NULL
     OR t.merchant_key ILIKE '%' || $11::text || '%'
     OR COALESCE(t.merchant_name, t.name) ILIKE '%' || $11::text || '%'
+    OR me.canonical_name ILIKE '%' || $11::text || '%'
   )
   -- Optional "needs a category" filter for draining the backlog: a row is
   -- uncategorised when it has no category or sits in the fallback 'uncategorised'
@@ -662,6 +732,53 @@ WHERE v.household_id = $1
     $12::bool IS NOT TRUE
     OR t.category_id IS NULL
     OR t.category_id IN (SELECT id FROM categories WHERE slug = 'uncategorised')
+  )
+  -- Optional tag filter: rows carrying ANY of the listed tags. OR rather than
+  -- AND, matching how the account filter above reads — picking two tags widens
+  -- the view to "the trip or the remodel", which is the question a household
+  -- actually asks. The tags are re-checked against the household here so a
+  -- foreign tag id narrows to nothing rather than matching by id alone. EXISTS
+  -- rather than a join, so a row with three matching tags stays one row.
+  AND (
+    $13::uuid[] IS NULL
+    OR cardinality($13::uuid[]) = 0
+    OR EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id
+        AND tg.household_id = $1
+        AND tt.tag_id = ANY($13::uuid[])
+    )
+  )
+  -- Optional "only rows nobody has labelled yet", the tag counterpart of the
+  -- uncategorised filter above and the way a household drains the backlog of
+  -- charges that belong to a trip or a project. NULL/false passes everything.
+  AND (
+    $14::bool IS NOT TRUE
+    OR NOT EXISTS (
+      SELECT 1 FROM transaction_tags tt
+      JOIN tags tg ON tg.id = tt.tag_id
+      WHERE tt.transaction_id = t.id AND tg.household_id = $1
+    )
+  )
+  -- Optional restriction to an explicit set of ids, which is how the composable
+  -- search bar gets its rows (see internal/search and transaction_search.go).
+  --
+  -- A query with ` + "`" + `key:value` + "`" + ` operators cannot be expressed as a fixed set of
+  -- nargs, so that path builds its own predicate and resolves it to an ordered,
+  -- paged list of ids. Handing those ids back here means the row PROJECTION —
+  -- every column above, the resolved merchant key, the duplicate check — has
+  -- exactly one definition, and the household/viewer scoping at the top of this
+  -- WHERE is applied a second time to the search's answer rather than replaced
+  -- by it. A search can therefore only ever narrow what this query would have
+  -- returned; it can never widen it.
+  --
+  -- The search path already applied the window, the chips and the excluded rule
+  -- when it chose those ids, and passes the remaining filters wide open. A NULL
+  -- narg (every other caller) passes everything, as usual.
+  AND (
+    $15::uuid[] IS NULL
+    OR t.id = ANY($15::uuid[])
   )
 ORDER BY t.date DESC, t.created_at DESC
 LIMIT $5 OFFSET $6
@@ -680,6 +797,9 @@ type ListVisibleTransactionsParams struct {
 	MerchantKey     *string      `json:"merchant_key"`
 	Search          *string      `json:"search"`
 	Uncategorised   *bool        `json:"uncategorised"`
+	TagIds          []uuid.UUID  `json:"tag_ids"`
+	Untagged        *bool        `json:"untagged"`
+	TransactionIds  []uuid.UUID  `json:"transaction_ids"`
 }
 
 type ListVisibleTransactionsRow struct {
@@ -711,9 +831,13 @@ type ListVisibleTransactionsRow struct {
 	AccountName          string          `json:"account_name"`
 	InstitutionName      *string         `json:"institution_name"`
 	ResolvedMerchantKey  string          `json:"resolved_merchant_key"`
+	Merchant             string          `json:"merchant"`
 	IsPossibleDuplicate  *bool           `json:"is_possible_duplicate"`
 }
 
+// merchant_entities sits behind the alias join, so a row whose descriptor has
+// not been grouped gets NULL here and the COALESCE above falls back to the raw
+// name. No fan-out: ma is unique on (household_id, merchant_key).
 func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTransactionsParams) ([]ListVisibleTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleTransactions,
 		arg.HouseholdID,
@@ -728,6 +852,9 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 		arg.MerchantKey,
 		arg.Search,
 		arg.Uncategorised,
+		arg.TagIds,
+		arg.Untagged,
+		arg.TransactionIds,
 	)
 	if err != nil {
 		return nil, err
@@ -765,6 +892,7 @@ func (q *Queries) ListVisibleTransactions(ctx context.Context, arg ListVisibleTr
 			&i.AccountName,
 			&i.InstitutionName,
 			&i.ResolvedMerchantKey,
+			&i.Merchant,
 			&i.IsPossibleDuplicate,
 		); err != nil {
 			return nil, err
