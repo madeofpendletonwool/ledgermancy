@@ -156,8 +156,8 @@ func monteCarloSeed(in MonteCarloInput) uint64 {
 		_, _ = h.Write([]byte(s))
 		_, _ = h.Write([]byte{0})
 	}
-	_, _ = h.Write([]byte{byte(in.Years), byte(in.Years >> 8)})
-	_, _ = h.Write([]byte{byte(in.Runs), byte(in.Runs >> 8)})
+	_, _ = h.Write([]byte{byte(in.Years & 0xff), byte((in.Years >> 8) & 0xff)})
+	_, _ = h.Write([]byte{byte(in.Runs & 0xff), byte((in.Runs >> 8) & 0xff)})
 	return h.Sum64()
 }
 

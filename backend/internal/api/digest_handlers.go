@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -86,8 +87,8 @@ func (s *Server) handleListDigests(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.Queries.ListDigestEntries(r.Context(), dbgen.ListDigestEntriesParams{
 		UserID: identity.UserID,
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  limit,
+		Offset: offset,
 	})
 	if err != nil {
 		s.internalError(w, "list digests", err)
@@ -107,8 +108,8 @@ func (s *Server) handleListDigests(w http.ResponseWriter, r *http.Request) {
 		Entries: entries,
 		Total:   counts.Total,
 		Unread:  counts.Unread,
-		Limit:   limit,
-		Offset:  offset,
+		Limit:   int(limit),
+		Offset:  int(offset),
 	})
 }
 
@@ -163,7 +164,7 @@ func (s *Server) handleMarkDigestRead(w http.ResponseWriter, r *http.Request) {
 // clampQueryInt reads an integer query parameter, falling back to a default on
 // anything unparseable and clamping into range. A bad page size is a client bug
 // worth ignoring, not worth a 400 that breaks the page.
-func clampQueryInt(r *http.Request, key string, fallback, min, max int) int {
+func clampQueryInt(r *http.Request, key string, fallback, min, max int32) int32 {
 	raw := r.URL.Query().Get(key)
 	if raw == "" {
 		return fallback
@@ -172,11 +173,14 @@ func clampQueryInt(r *http.Request, key string, fallback, min, max int) int {
 	if err != nil {
 		return fallback
 	}
-	if n < min {
+	if n < int(min) {
 		return min
 	}
-	if n > max {
+	if n > int(max) {
 		return max
 	}
-	return n
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }

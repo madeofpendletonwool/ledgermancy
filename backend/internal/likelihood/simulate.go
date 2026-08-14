@@ -463,7 +463,7 @@ func seedFor(in Input) uint64 {
 	if in.Target.Valid {
 		write(in.Target.Decimal.String())
 	}
-	_, _ = h.Write([]byte{byte(in.Months), byte(in.Months >> 8)})
-	_, _ = h.Write([]byte{byte(in.Runs), byte(in.Runs >> 8)})
+	_, _ = h.Write([]byte{byte(in.Months & 0xff), byte((in.Months >> 8) & 0xff)})
+	_, _ = h.Write([]byte{byte(in.Runs & 0xff), byte((in.Runs >> 8) & 0xff)})
 	return h.Sum64()
 }
