@@ -24,11 +24,10 @@ import (
 // calls, started a long answer, hit 1024 output tokens and stopped — and the
 // app served the fragment as a finished reply.
 //
-// Continuing costs one iteration of a budget that already exists and keeps every
-// per-call invariant (MaxTokens, ai.RequestTimeout, the route budget sized from
-// their product) untouched. Raising MaxTokens does not: at the ~22 tokens/second
-// this deployment gets, 1024 tokens already eats 47 of the 60 seconds a single
-// request is allowed.
+// chatMaxTokens was raised to 6000 so the common case now fits in one turn, but
+// that is a budget, not a guarantee — a long answer can still run past it, and
+// continuation is what covers the remainder without another round of the whole
+// timeout chain having to grow.
 func TestRunChatContinuesAfterTruncation(t *testing.T) {
 	var bodies []string
 	turn := 0
@@ -180,5 +179,62 @@ func TestRunChatStillApologisesWhenNothingWasWritten(t *testing.T) {
 	}
 	if !strings.Contains(answer, "try asking in a simpler way") {
 		t.Errorf("answer = %q, want the generic apology when no text was written", answer)
+	}
+}
+
+// A thinking-only turn must not be echoed back, because that is what produced
+// the 422 in production.
+//
+// The endpoint rejected `messages[5].content: null` — an assistant message with
+// no blocks, which is what a reasoning-only response becomes once thinking is
+// stripped. The continuation path fed it back verbatim, so a model that spent
+// its whole budget reasoning turned a blank answer into a failed request.
+//
+// There is nothing to continue FROM in that case, so the loop must stop rather
+// than continue, and it must never put an empty assistant turn on the wire.
+func TestRunChatDoesNotEchoAThinkingOnlyTurn(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Stream {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		bodies = append(bodies, string(body))
+		// Spent the whole budget thinking: max_tokens, no text, no tool use.
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","role":"assistant","stop_reason":"max_tokens",` +
+			`"content":[{"type":"thinking","thinking":"reasoning at length"}]}`))
+	}))
+	defer srv.Close()
+
+	s := &Server{AI: ai.New(config.AIConfig{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})}
+
+	answer, err := s.runChat(
+		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		[]ai.Message{ai.UserText("how much liquid to hold the emergency fund at all times?")},
+		nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("runChat returned an error instead of handling the empty turn: %v", err)
+	}
+	// One attempt, then a stop: continuing would only buy another turn of
+	// thinking against the same budget.
+	if len(bodies) != 1 {
+		t.Fatalf("made %d round-trips, want 1 (nothing to continue from)", len(bodies))
+	}
+	// THE REGRESSION: never send an assistant message with null/empty content.
+	for i, b := range bodies {
+		if strings.Contains(b, `"content":null`) {
+			t.Errorf("request %d carried content:null — this is the 422:\n%s", i, b)
+		}
+	}
+	// The user is told the model ran out of room, not handed a blank reply.
+	if strings.TrimSpace(answer) == "" {
+		t.Error("returned an empty answer; the user must be told something happened")
 	}
 }

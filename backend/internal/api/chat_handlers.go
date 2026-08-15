@@ -39,6 +39,33 @@ import (
 // changing one of them without the other a build failure.
 const maxToolIterations = 9
 
+// chatMaxTokens is the output budget for ONE turn of the chat loop.
+//
+// It is 6000 rather than the package default of 1024 because THINKING TOKENS
+// COME OUT OF THIS BUDGET, and the configured model is a reasoning model. The
+// numbers are measured against this deployment (GLM-5.2 via api.z.ai), on a
+// question of the kind this app is for — "how much liquid do we need to hold the
+// emergency fund at all times":
+//
+//	max_tokens=3000  -> 3000 tokens of thinking, NO answer at all, max_tokens
+//	max_tokens=10000 -> ~3900 thinking + ~550 answer = 4768 total, end_turn
+//
+// So the answer costs ~550 tokens and the reasoning in front of it costs seven
+// times that. At 1024 the model could not reach a single word of answer, which
+// is why the advisor appeared to die on that question: not an error, not a
+// timeout — a complete response containing only scratch work.
+//
+// 6000 clears the measured 4768 with headroom, and continuation (below) covers
+// an answer that still runs long. It cannot be raised freely: ai.RequestTimeout
+// must cover it at the endpoint's throughput, and aiRouteTimeout must cover
+// maxToolIterations of THAT. All three moved together here, and
+// TestAIRouteTimeoutFitsToolLoop fails if a future change moves only one.
+//
+// Turning thinking off would be better than budgeting for it, and is not
+// available: `"thinking":{"type":"disabled"}` is accepted and IGNORED by this
+// endpoint — the block comes back regardless. Verified, not assumed.
+const chatMaxTokens = 6000
+
 // continuePrompt asks a model that was cut off at MaxTokens to finish.
 //
 // It insists on no repetition and no restart because both are what an
@@ -367,7 +394,7 @@ func (s *Server) runChat(
 			System:    system,
 			Messages:  messages,
 			Tools:     tools,
-			MaxTokens: 1024,
+			MaxTokens: chatMaxTokens,
 		}, onText)
 		if err != nil {
 			return "", err
@@ -400,6 +427,21 @@ func (s *Server) runChat(
 			// 1024 tokens already takes 47 of the 60 seconds one request is
 			// allowed, so a bigger ceiling buys a timeout rather than a longer
 			// answer.
+			// Truncated with NOTHING written is not a continuation case: there is
+			// no prefix to carry on from, and appending the turn anyway sends
+			// `content: null` (thinking is not echoed) which the endpoint rejects
+			// with a 422 naming only the message index. That is what turned this
+			// bug from a blank answer into a failed request.
+			//
+			// It happens when a reasoning model spends its whole output budget
+			// thinking. The honest thing is to say so: the budget below is sized
+			// so this is rare, and when it does happen the user needs to know the
+			// model ran out of room rather than that their question had no answer.
+			if resp.Truncated() && resp.OnlyThinking() {
+				slog.Warn("model exhausted its output budget before writing an answer",
+					"max_tokens", chatMaxTokens, "iteration", i)
+				break
+			}
 			if resp.Truncated() {
 				messages = append(messages, resp.AsMessage(), ai.UserText(continuePrompt))
 				continue

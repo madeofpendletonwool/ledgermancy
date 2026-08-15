@@ -120,24 +120,32 @@ const (
 	// can actually produce:
 	//
 	//	maxToolIterations (9, chat_handlers.go)
-	//	  × ai.RequestTimeout (60s, internal/ai/client.go)   = 540s of model time
-	//	+ aiToolBudget                                       =  60s of our own
-	//	                                                     = 600s
+	//	  × ai.RequestTimeout (150s, internal/ai/client.go)  = 1350s of model time
+	//	+ aiToolBudget                                       =   60s of our own
+	//	                                                     = 1410s
 	//
-	// 660s leaves a minute of headroom on top. It is a CEILING, not a target —
-	// a real turn answers in seconds, and the defences against a turn that does
-	// not are maxToolIterations and aiLimiter, not this. Cutting it lower would
-	// only reintroduce the original bug: a budget the loop below it can exceed.
+	// 1500s leaves a minute and a half of headroom on top. It is a CEILING, not
+	// a target — a real turn answers in seconds, and the defences against a turn
+	// that does not are maxToolIterations and aiLimiter, not this. Cutting it
+	// lower would only reintroduce the original bug: a budget the loop below it
+	// can exceed.
 	//
 	// Moved 600s → 660s with maxToolIterations 8 → 9 (the find_tools escape
-	// hatch spends an iteration). Note that nginx's proxy_read_timeout is NOT
-	// this number and does not need to move with it: it bounds the gap BETWEEN
-	// reads on a streaming response, and the longest gap this loop can produce
-	// is one ai.RequestTimeout.
+	// hatch spends an iteration), then 660s → 1500s when ai.RequestTimeout went
+	// 60s → 150s to fit a reasoning model's output budget (see chatMaxTokens).
+	// THE WORST CASE GREW; THE TYPICAL TURN DID NOT. Every iteration must burn
+	// its full timeout to reach this, which requires nine consecutive
+	// near-timeout model calls in one turn.
+	//
+	// Note that nginx's proxy_read_timeout is NOT this number and does not need
+	// to move with it: it bounds the gap BETWEEN reads on a streaming response,
+	// and the longest gap this loop can produce is one ai.RequestTimeout — which
+	// DID grow to 150s, so a proxy_read_timeout below that will now cut a
+	// thinking model off mid-turn.
 	//
 	// TestAIRouteTimeoutFitsToolLoop fails if any of the three numbers moves
 	// without the others.
-	aiRouteTimeout = 660 * time.Second
+	aiRouteTimeout = 1500 * time.Second
 
 	// aiToolBudget is how much of aiRouteTimeout is reserved for OUR work rather
 	// than the model's: the scoped queries executeChatTool runs between

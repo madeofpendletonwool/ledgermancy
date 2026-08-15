@@ -43,13 +43,24 @@ const defaultMaxTokens = 1024
 // the old 120s that product was 16 minutes sitting under a 30s global route
 // timeout, so neither budget could ever have been reached.
 //
-// 60s is a generous ceiling for a single completion of defaultMaxTokens: even a
-// self-hosted endpoint managing only ~20 tokens/second finishes inside it. It is
-// halved from 120s specifically so the product stays inside a route budget a
-// browser will hold open — see api.aiRouteTimeout, which must cover
-// maxToolIterations × this plus slack, and api.TestAIRouteTimeoutFitsToolLoop,
-// which fails if the three drift apart again.
-const RequestTimeout = 60 * time.Second
+// 150s is sized for the LARGEST budget any caller sets, which is
+// api.chatMaxTokens (6000), not for defaultMaxTokens.
+//
+// The old 60s was sized against defaultMaxTokens at ~20 tokens/second, and it
+// was correct for a model that answers directly. It stopped being correct when
+// the deployment moved to a reasoning model: thinking tokens are drawn from the
+// same output budget, so the budget had to grow ~6x, and a timeout sized for the
+// old one turns every hard question into a cancelled request.
+//
+// Measured on this deployment (GLM-5.2 via api.z.ai): 2942 output tokens in
+// 46.6s, ≈63 tokens/second. 6000 tokens is therefore ≈95s, and 150s leaves
+// roughly 1.5x headroom for a slower moment — observed throughput on a
+// tool-carrying streaming call has been as low as ~22 tokens/second.
+//
+// It cannot be raised alone: api.aiRouteTimeout must cover maxToolIterations ×
+// this plus api.aiToolBudget, and api.TestAIRouteTimeoutFitsToolLoop fails if
+// the three drift apart.
+const RequestTimeout = 150 * time.Second
 
 // ErrDisabled is returned by Complete when no API key is configured. It lets a
 // caller that forgot to check Enabled() fail loudly rather than silently.
@@ -110,6 +121,7 @@ type Message struct {
 //
 // Kinds used here:
 //   - "text":        Text
+//   - "thinking":    Thinking, Signature           (from a reasoning model)
 //   - "image":       Source                        (from us, receipt OCR)
 //   - "tool_use":    ID, Name, Input               (from the model)
 //   - "tool_result": ToolUseID, Content, IsError   (from us, answering a call)
@@ -118,6 +130,14 @@ type Block struct {
 
 	// text
 	Text string `json:"text,omitempty"`
+
+	// thinking. A reasoning model spends output tokens here BEFORE it writes a
+	// word of answer, and they count against max_tokens exactly like answer
+	// tokens do. Captured rather than discarded because a response whose only
+	// block was thinking used to parse as a completely empty one — see
+	// StopMaxTokens and Response.OnlyThinking.
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 
 	// image
 	Source *ImageSource `json:"source,omitempty"`
@@ -235,8 +255,44 @@ func (r *Response) ToolUses() []Block {
 // AsMessage turns the assistant response into a message ready to append to the
 // conversation before feeding back tool results — the tool loop needs the
 // assistant's tool_use blocks echoed back verbatim.
+// It carries text and tool_use only. Thinking is deliberately NOT echoed: it is
+// several thousand tokens of scratch work per turn, it is not needed to continue
+// a tool loop, and re-sending a signed block we did not author is a validation
+// risk for no benefit.
+//
+// The returned Content is never nil. A nil slice marshals to JSON `null`, and
+// `{"role":"assistant","content":null}` is rejected by the endpoint with a 422
+// that names the message index and nothing else — which is a genuinely hard
+// error to trace back to "the model produced only thinking and we echoed it".
 func (r *Response) AsMessage() Message {
-	return Message{Role: RoleAssistant, Content: r.Content}
+	content := make([]Block, 0, len(r.Content))
+	for _, b := range r.Content {
+		if b.Type == "thinking" {
+			continue
+		}
+		content = append(content, b)
+	}
+	return Message{Role: RoleAssistant, Content: content}
+}
+
+// OnlyThinking reports a response that spent its entire output budget reasoning
+// and never reached an answer or a tool call.
+//
+// This is a REAL outcome on a reasoning model, not a defensive check: GLM-5.2 on
+// this deployment writes ~3,900 tokens of thinking before its first word of
+// answer, so any max_tokens below roughly 5,000 returns one of these. It has no
+// text, no tool use, and no error — the shape most likely to be mistaken for a
+// successful empty answer.
+func (r *Response) OnlyThinking() bool {
+	if len(r.Content) == 0 {
+		return true
+	}
+	for _, b := range r.Content {
+		if b.Type != "thinking" {
+			return false
+		}
+	}
+	return true
 }
 
 // APIError is a non-2xx response from the endpoint.
@@ -356,6 +412,7 @@ type streamEvent struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		PartialJSON string `json:"partial_json"`
+		Thinking    string `json:"thinking"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage   *Usage `json:"usage"`
@@ -462,6 +519,11 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onText func(st
 					if onText != nil && ev.Delta.Text != "" {
 						onText(ev.Delta.Text)
 					}
+				case "thinking_delta":
+					// Accumulated but never streamed to onText: this is the
+					// model's scratch work, not its answer, and the user asked
+					// for the answer.
+					b.text.WriteString(ev.Delta.Thinking)
 				case "input_json_delta":
 					b.input.WriteString(ev.Delta.PartialJSON)
 				}
@@ -487,6 +549,13 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onText func(st
 		switch b.typ {
 		case "text":
 			out.Content = append(out.Content, Block{Type: "text", Text: b.text.String()})
+		case "thinking":
+			// Kept so a reasoning-only response is not silently an empty one.
+			// A turn that spends its whole budget thinking is the single most
+			// confusing failure this client can produce — no error, no content,
+			// nothing to show the user — and it is invisible unless the block
+			// survives parsing.
+			out.Content = append(out.Content, Block{Type: "thinking", Thinking: b.text.String()})
 		case "tool_use":
 			raw := b.input.String()
 			if strings.TrimSpace(raw) == "" {
