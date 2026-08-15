@@ -299,6 +299,86 @@ func TestCollegeUsesAccountOwnReturnRate(t *testing.T) {
 	}
 }
 
+// The result REPORTS the rate it compounded at, and where that rate came from.
+//
+// This is the reporting half of the per-account-rate bug, and it bit after the
+// engine half above was already fixed. The drawdown correctly used the 529's own
+// 6%, but nothing in CollegeResult said which rate had produced its figures, so
+// the only return rate any caller could see was the household's 3% default on a
+// different surface. The advisor duly quoted that 3% as the rate Hazel's 529 was
+// projected at, beside a monthly figure that 3% does not produce — and then
+// defended it when the household said the account was set to 6%. The funding
+// number was right the whole time; the sentence explaining it was wrong, which
+// is the harder failure to catch and the easier one to act on.
+//
+// So: assert the rate travels WITH the figures, at the same precedence the
+// drawdown used, in percent.
+func TestCollegeReportsTheRateItCompoundedAt(t *testing.T) {
+	base := func() Baseline {
+		b := collegeBaseline(dec("20000"), dec("100000"), 10, 4)
+		b.Assumptions.RealReturnRate = dec("0.03") // household stays conservative
+		return b
+	}
+
+	// The account carries its own rate: that is what must be reported.
+	withAccountRate := base()
+	for i := range withAccountRate.Plans {
+		if withAccountRate.Plans[i].ID == fiveTwo.String() {
+			withAccountRate.Plans[i].RealReturnRate = nd("0.06")
+		}
+	}
+
+	req := Request{HorizonYears: 20, Splits: []Split{}}
+	got := collegeResult(t, run(t, withAccountRate, req))
+
+	// A PERCENT, because it is quoted beside the household's assumed_real_return
+	// which is already one. A "0.06" here would be read as 0.06%.
+	if want := dec("6"); !got.AccountRealReturnPct.Equal(want) {
+		t.Errorf("account_real_return_pct = %s, want %s (the account's own 6%%, as a percent)",
+			got.AccountRealReturnPct, want)
+	}
+	if got.ReturnRateSource != ReturnRateFromAccount {
+		t.Errorf("return_rate_source = %q, want %q", got.ReturnRateSource, ReturnRateFromAccount)
+	}
+	// The reported rate must not be the household default. If these ever
+	// coincide when an account override is set, the reporting has drifted back
+	// onto the household rate and the advisor will misexplain the figures again.
+	if got.AccountRealReturnPct.Equal(withAccountRate.Assumptions.RealReturnRate.Mul(hundred)) {
+		t.Errorf("reported rate %s equals the household default — the account's own rate is not being reported",
+			got.AccountRealReturnPct)
+	}
+
+	// And with no account rate set, the household default IS the answer, and is
+	// labeled as such rather than presented as a per-account decision.
+	fallback := collegeResult(t, run(t, base(), req))
+	if want := dec("3"); !fallback.AccountRealReturnPct.Equal(want) {
+		t.Errorf("account_real_return_pct = %s, want %s (the household default)",
+			fallback.AccountRealReturnPct, want)
+	}
+	if fallback.ReturnRateSource != ReturnRateFromHousehold {
+		t.Errorf("return_rate_source = %q, want %q", fallback.ReturnRateSource, ReturnRateFromHousehold)
+	}
+}
+
+// An unprojectable goal reports NO rate. Same rule as every other figure on one:
+// a goal with no linked 529 ran no drawdown, so there is no rate it was computed
+// at, and a "0" would read as "projected at 0%" — the same fabricated zero the
+// funding figures are withheld to avoid.
+func TestCollegeUnprojectableGoalReportsNoRate(t *testing.T) {
+	b := collegeBaseline(dec("20000"), dec("30000"), 10, 4)
+	b.CollegeGoals[0].AccountID = nil
+
+	got := collegeResult(t, run(t, b, Request{HorizonYears: 20, Splits: []Split{}}))
+
+	if got.Projectable {
+		t.Fatal("goal with no linked account must not be projectable")
+	}
+	if !got.AccountRealReturnPct.IsZero() || got.ReturnRateSource != "" {
+		t.Errorf("unprojectable goal reported rate=%s source=%q; want both unset",
+			got.AccountRealReturnPct, got.ReturnRateSource)
+	}
+}
+
 // A 529 explicitly set to 0% real compounds FLAT, not at the household rate.
 // This is the college-drawdown half of the bug this change fixes: the column is
 // nullable, the storage layer keeps "unset" (NULL) and "flat" (0) apart, and

@@ -984,7 +984,10 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 				"inflated separately and summed, which is what actually has to be funded. These " +
 				"figures come from the same college drawdown college_projection runs — quote them " +
 				"verbatim. Call that tool only when you need the per-year breakdown; it will not " +
-				"give you different numbers.",
+				"give you different numbers. Asked what return THIS GOAL is projected at, quote " +
+				"account_real_return_pct and return_rate_source — NEVER the top-level " +
+				"assumed_real_return, which is the household default and is a different number " +
+				"whenever the linked account carries its own rate.",
 		}
 		if c.Note != "" {
 			item["note"] = c.Note
@@ -995,6 +998,12 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 			item["funded_pct"] = c.FundedPct.String()
 			item["first_shortfall_year"] = c.FirstShortfallYear
 			item["monthly_needed"] = optionalMoneyString(c.MonthlyNeeded)
+			// The rate the figures beside it were computed at, as a percent so
+			// it is directly comparable to the household's assumed_real_return
+			// below. Under the Projectable guard with everything else it
+			// explains: no drawdown ran means no rate to report.
+			item["account_real_return_pct"] = c.AccountRealReturnPct.String()
+			item["return_rate_source"] = c.ReturnRateSource
 		}
 		college = append(college, item)
 	}

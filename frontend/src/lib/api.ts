@@ -3906,6 +3906,10 @@ export interface CollegeResult {
   annual_cost_today: string
   inflation_rate: string
   real_excess_rate: string
+  /** The real return THIS goal's bucket was compounded at, as a percent ("6" = 6%). */
+  account_real_return_pct: string
+  /** Where that rate came from: a split override, the account's own setting, or the household default. */
+  return_rate_source: string
   balance_at_enrollment: string
   total_cost: string
   total_covered: string

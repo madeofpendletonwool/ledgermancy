@@ -78,6 +78,26 @@ type CollegeResult struct {
 	InflationRate  decimal.Decimal `json:"inflation_rate"`
 	RealExcessRate decimal.Decimal `json:"real_excess_rate"`
 
+	// AccountRealReturnPct is the real annual return the drawdown ACTUALLY
+	// compounded this goal's bucket at, and ReturnRateSource is where that rate
+	// came from — see returnRateFor's precedence.
+	//
+	// They are reported for the same reason InflationRate and RealExcessRate
+	// are: a figure whose rate is not stated cannot be checked. Their absence
+	// was a live bug rather than a gap. Every funding figure above was computed
+	// at the 529's own 6%, but nothing in the result said so, so the advisor
+	// asked "what return is this projected at?" reached for the only rate it
+	// could see — the household's 3% default, from a different surface — and
+	// explained a correct monthly figure with a rate that had not produced it.
+	// The number was right and the sentence about it was wrong, which is worse
+	// than either alone.
+	//
+	// A PERCENT (6 = 6%), not a fraction, because it is quoted beside the
+	// household's assumed_real_return, which is already a percent. Two rates in
+	// different units sitting side by side is how this bug comes back.
+	AccountRealReturnPct decimal.Decimal `json:"account_real_return_pct"`
+	ReturnRateSource     string          `json:"return_rate_source"`
+
 	// BalanceAtEnrollment is the bucket's projected value on day one of year 1.
 	BalanceAtEnrollment decimal.Decimal `json:"balance_at_enrollment"`
 	TotalCost           decimal.Decimal `json:"total_cost"`
@@ -121,7 +141,8 @@ func projectCollege(
 			RealExcessRate:  realCollegeRate(b),
 			Basis: "Every figure is in TODAY'S dollars, like the rest of the app. Each year of study is inflated " +
 				"separately at the amount by which college costs outrun general inflation, drawn at the start of " +
-				"that year, and the remainder keeps compounding at the bucket's real assumed return. College costs " +
+				"that year, and the remainder keeps compounding at account_real_return_pct — THIS GOAL'S rate, " +
+				"named in return_rate_source, which is not always the household's assumed return. College costs " +
 				"have run well above general CPI, which is why that rate is its own setting.",
 			Years_: []CollegeYear{},
 		}
@@ -161,7 +182,9 @@ func projectCollege(
 		}
 		res.BalanceAtEnrollment = balance.Round(2)
 
-		rate := returnRateFor(b, results, *g.AccountID)
+		rate, source := returnRateFor(b, results, *g.AccountID)
+		res.AccountRealReturnPct = rate.Mul(hundred).Round(2)
+		res.ReturnRateSource = source
 		draw := drawdown(balance, g, realCollegeRate(b), rate)
 
 		res.Projectable = true
@@ -306,19 +329,40 @@ func balanceAtYear(p networth.RetirementProjection, accountID string, years int)
 // reason it exists: a 529 and a brokerage are not the household's conservative
 // default. A VALID account rate is honoured as-is, including a genuine 0% (a
 // cash-like holding modelled flat); only an unset (Invalid) rate falls through.
-func returnRateFor(b Baseline, results []BucketResult, accountID uuid.UUID) decimal.Decimal {
+// It returns the SOURCE with the rate rather than leaving callers to work it
+// out, because the only way to work it out is to re-walk this precedence, and a
+// second copy of it would drift exactly the way the three copies of the plan
+// mapping did (see networth.PlanFromRow). "6%" and "6%, because that is what
+// you set on this account rather than the household default" are different
+// answers to a household asking why a number moved.
+func returnRateFor(b Baseline, results []BucketResult, accountID uuid.UUID) (decimal.Decimal, string) {
 	for _, r := range results {
 		if r.AccountID == accountID && r.Kind == BucketInvestment {
-			return r.ReturnRate
+			return r.ReturnRate, ReturnRateFromSplit
 		}
 	}
 	for _, p := range b.Plans {
 		if p.ID == accountID.String() && p.RealReturnRate.Valid {
-			return p.RealReturnRate.Decimal
+			return p.RealReturnRate.Decimal, ReturnRateFromAccount
 		}
 	}
-	return b.Assumptions.RealReturnRate
+	return b.Assumptions.RealReturnRate, ReturnRateFromHousehold
 }
+
+// Where a goal's compounding rate came from. These strings are reported to the
+// UI and quoted by the model, so they read as explanations rather than as enum
+// names — the model puts them straight into sentences.
+const (
+	// ReturnRateFromSplit is an allocation_plan that named this account with its
+	// own rate: the most explicit statement, and the only one of the three that
+	// is not a standing setting.
+	ReturnRateFromSplit = "this plan's split override"
+	// ReturnRateFromAccount is the account's own assumed_real_return.
+	ReturnRateFromAccount = "this account's own assumed return"
+	// ReturnRateFromHousehold means nobody has set a rate on this account
+	// specifically, so the household default applies.
+	ReturnRateFromHousehold = "the household default assumed return"
+)
 
 // collegeSolveIterations and collegeSolveMax bound the bisection for "what would
 // it take". The bound is the point: without one, an unreachable target either

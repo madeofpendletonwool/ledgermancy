@@ -81,7 +81,9 @@ func chatAllocationToolDefs() []ai.Tool {
 			Name: "college_projection",
 			Description: "Every college goal against the four-year inflated cost of study: balance at enrollment, " +
 				"per-year cost and coverage, the first year the money runs short, percent funded, and the extra " +
-				"monthly contribution that would close the gap.",
+				"monthly contribution that would close the gap. Also carries account_real_return_pct — the real " +
+				"return THAT GOAL was projected at, which is the household default only when the linked account " +
+				"has not been given its own rate.",
 			InputSchema: emptySchema,
 		},
 	}
@@ -217,13 +219,20 @@ func collegeToolResult(r allocation.Result) map[string]any {
 			"years_of_study":        c.Years,
 			"annual_cost_today":     c.AnnualCostToday.StringFixed(2),
 			"balance_at_enrollment": c.BalanceAtEnrollment.StringFixed(2),
-			"total_cost":            c.TotalCost.StringFixed(2),
-			"total_shortfall":       c.TotalShortfall.StringFixed(2),
-			"funded_pct":            c.FundedPct.String(),
-			"first_shortfall_year":  c.FirstShortfallYear,
-			"monthly_needed":        optionalMoneyString(c.MonthlyNeeded),
-			"summary":               c.CollegeSummaryLine(),
-			"basis":                 c.Basis,
+			// The rate these figures were actually computed at, and where it came
+			// from. Quoted as a percent to match advisor_briefing's
+			// assumed_real_return — the household figure this one is routinely
+			// confused with, and which is the WRONG answer to "what return is
+			// this goal projected at?" whenever the account carries its own.
+			"account_real_return_pct": c.AccountRealReturnPct.String(),
+			"return_rate_source":      c.ReturnRateSource,
+			"total_cost":              c.TotalCost.StringFixed(2),
+			"total_shortfall":         c.TotalShortfall.StringFixed(2),
+			"funded_pct":              c.FundedPct.String(),
+			"first_shortfall_year":    c.FirstShortfallYear,
+			"monthly_needed":          optionalMoneyString(c.MonthlyNeeded),
+			"summary":                 c.CollegeSummaryLine(),
+			"basis":                   c.Basis,
 		})
 	}
 	return map[string]any{"goals": items, "count": len(items)}

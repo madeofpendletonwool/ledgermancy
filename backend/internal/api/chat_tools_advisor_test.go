@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/advisor"
+	"github.com/madeofpendletonwool/ledgermancy/backend/internal/allocation"
 	"github.com/shopspring/decimal"
 )
 
@@ -48,6 +49,91 @@ func TestBriefingSurfacesRealReturnDistinctFromHurdle(t *testing.T) {
 	}
 	if basis, _ := res["apr_hurdle_basis"].(string); basis == "" {
 		t.Error("apr_hurdle_basis is empty — the model needs it to tell the two apart")
+	}
+}
+
+// A college goal carries the rate ITS OWN drawdown used, distinct from the
+// household default sitting in the same payload.
+//
+// This is the exact shape that produced the bug. The briefing emitted a college
+// goal's monthly-needed figure — computed at the linked 529's own 6% — with no
+// rate beside it, and a top-level assumed_real_return of 3%. Asked "what's our
+// assumed return rate on that?", the model had exactly one rate in front of it,
+// quoted the household's, and asserted it was what the college projection
+// compounded at. It then defended that against a household correctly telling it
+// the account was set to 6%, reaching for apr_hurdle as the explanation.
+//
+// Both rates must be present, labeled, and NOT equal when the account carries
+// its own. If a change drops account_real_return_pct from this payload, the
+// model is back to having one rate and one wrong answer.
+func TestBriefingCollegeCarriesItsOwnReturnRate(t *testing.T) {
+	b := advisor.Briefing{
+		Assumptions: advisor.Assumptions{
+			RealReturn:  decimal.RequireFromString("0.03"), // household default
+			Inflation:   decimal.RequireFromString("0.0331"),
+			Hurdle:      decimal.NewFromInt(6),
+			HurdleBasis: "the 6% floor (your assumed real return is lower)",
+		},
+		College: []advisor.CollegeBrief{{
+			Name:        "Get Hazel Through College",
+			Projectable: true,
+			// The 529's own rate, which is what the drawdown actually used.
+			AccountRealReturnPct: decimal.NewFromInt(6),
+			ReturnRateSource:     allocation.ReturnRateFromAccount,
+		}},
+	}
+
+	res := briefingToolResult(b)
+
+	goals, ok := res["college"].([]map[string]any)
+	if !ok || len(goals) != 1 {
+		t.Fatalf("college = %v, want one goal", res["college"])
+	}
+	rate, ok := goals[0]["account_real_return_pct"].(string)
+	if !ok {
+		t.Fatalf("account_real_return_pct missing or not a string: %v", goals[0]["account_real_return_pct"])
+	}
+	if want := "6"; rate != want {
+		t.Errorf("account_real_return_pct = %q, want %q (the 529's own rate)", rate, want)
+	}
+	if src, _ := goals[0]["return_rate_source"].(string); src != allocation.ReturnRateFromAccount {
+		t.Errorf("return_rate_source = %q, want %q", src, allocation.ReturnRateFromAccount)
+	}
+
+	// The household rate is still there, still correct, and still a DIFFERENT
+	// number. Both must be present: the bug was not a wrong household rate, it
+	// was the absence of anything to distinguish it from the goal's.
+	household, _ := res["assumed_real_return"].(string)
+	if want := "3"; household != want {
+		t.Errorf("assumed_real_return = %q, want %q (the household default)", household, want)
+	}
+	if rate == household {
+		t.Fatal("the goal's rate and the household default are identical — the two are no longer distinguishable")
+	}
+}
+
+// An unprojectable goal carries no rate, for the same reason it carries no
+// funding figures: nothing ran. A "0" here would be read as "projected at 0%".
+func TestBriefingUnprojectableCollegeGoalHasNoRate(t *testing.T) {
+	b := advisor.Briefing{
+		Assumptions: advisor.Assumptions{
+			RealReturn: decimal.RequireFromString("0.03"), HurdleBasis: "x",
+		},
+		College: []advisor.CollegeBrief{{
+			Name:        "Get Hazel Through College",
+			Projectable: false,
+			Note:        "No account is linked to this goal.",
+		}},
+	}
+
+	goals, ok := briefingToolResult(b)["college"].([]map[string]any)
+	if !ok || len(goals) != 1 {
+		t.Fatalf("want one goal, got %v", goals)
+	}
+	for _, key := range []string{"account_real_return_pct", "return_rate_source"} {
+		if v, present := goals[0][key]; present {
+			t.Errorf("%s present (%v) on an unprojectable goal; want it omitted", key, v)
+		}
 	}
 }
 

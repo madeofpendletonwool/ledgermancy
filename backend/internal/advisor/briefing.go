@@ -191,6 +191,19 @@ type CollegeBrief struct {
 	// year. Nil means either "already funded" or "no amount inside the search
 	// bound gets there" — FundedPct tells those apart, and neither is zero.
 	MonthlyNeeded *decimal.Decimal `json:"monthly_needed,omitempty"`
+	// AccountRealReturnPct is the real return every figure above was computed
+	// at, as a PERCENT, and ReturnRateSource says where it came from.
+	//
+	// This travels with the funding figures because it is the question that
+	// follows them — "and what return is that assuming?" — and because the
+	// briefing's own Assumptions.RealReturn is the household default, which is
+	// a DIFFERENT number whenever the linked account carries its own rate.
+	// Without this field the only rate in the briefing was the household one,
+	// and it got quoted as the college projection's rate while the drawdown had
+	// used the account's. Reporting the figures without the rate that produced
+	// them is what made that misread possible.
+	AccountRealReturnPct decimal.Decimal `json:"account_real_return_pct"`
+	ReturnRateSource     string          `json:"return_rate_source"`
 	// Summary is the engine's own one-sentence rendering, carried verbatim so a
 	// model has a sentence it can quote without doing arithmetic over the
 	// fields above.
@@ -414,6 +427,11 @@ func fillCollege(
 			brief.FundedPct = c.FundedPct
 			brief.FirstShortfallYear = c.FirstShortfallYear
 			brief.MonthlyNeeded = c.MonthlyNeeded
+			// Carried under the same guard as the figures it explains: an
+			// unprojectable goal ran no drawdown, so there is no rate it was
+			// computed at, and a 0 here would read as "projected at 0%".
+			brief.AccountRealReturnPct = c.AccountRealReturnPct
+			brief.ReturnRateSource = c.ReturnRateSource
 		}
 		out.College = append(out.College, brief)
 	}
