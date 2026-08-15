@@ -296,32 +296,36 @@ func TestTrendWindow(t *testing.T) {
 	}
 }
 
-// monthlyTrendSeries computes avg_leftover in exact decimal over EXACTLY the
-// months it returns — the property that lets the advisor quote the average
-// verbatim. Excluding a month has to flow through the same average or the
-// reference line and the months it spans disagree, so this is the case that
-// matters most: the dropped month leaves the total and the count together.
+// monthlyTrendSeries computes its averages in exact decimal over EXACTLY the
+// months it returns — the property that lets the advisor quote them verbatim.
+// avg_spending and avg_income exist because "what's our average spent per
+// month" was answered with a per-category table and no blended number: the
+// model may not average the series itself, so the mean has to arrive finished.
+// Excluding a month has to flow through every average or the reference line
+// and the months it spans disagree, so that is the case that matters most: the
+// dropped month leaves the totals and the count together.
 func TestMonthlyTrendSeries(t *testing.T) {
-	// Three months with leftover 100 / 200 / 300.
+	// Three months: spending 900 / 800 / 700, leftover 100 / 200 / 300.
 	rows := []dbgen.GetMonthlyTrendRow{
 		{Month: time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(900)},
 		{Month: time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(800)},
 		{Month: time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC), Income: decimal.NewFromInt(1000), Spending: decimal.NewFromInt(700)},
 	}
 
-	// No exclusions: average is the mean of 100, 200, 300.
-	months, avg, hasAvg := monthlyTrendSeries(rows, nil)
-	if !hasAvg || avg != "200.00" {
-		t.Errorf("avg = %q (hasAvg=%v), want 200.00", avg, hasAvg)
+	// No exclusions: averages are the means of income 1000, spending
+	// 900/800/700, leftover 100/200/300.
+	months, avg := monthlyTrendSeries(rows, nil)
+	if avg == nil || avg.Income != "1000.00" || avg.Spending != "800.00" || avg.Leftover != "200.00" {
+		t.Errorf("avg = %+v, want income 1000.00 / spending 800.00 / leftover 200.00", avg)
 	}
 	if len(months) != 3 || months[0]["leftover"] != "100.00" {
 		t.Errorf("months = %+v", months)
 	}
 
-	// Exclude the 300 month: average is now the mean of 100 and 200.
-	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{"2025-11": true})
-	if !hasAvg || avg != "150.00" {
-		t.Errorf("avg after exclude = %q, want 150.00", avg)
+	// Exclude the 700-spend month: every average is now over the other two.
+	months, avg = monthlyTrendSeries(rows, map[string]bool{"2025-11": true})
+	if avg == nil || avg.Spending != "850.00" || avg.Leftover != "150.00" || avg.Income != "1000.00" {
+		t.Errorf("avg after exclude = %+v, want income 1000.00 / spending 850.00 / leftover 150.00", avg)
 	}
 	if len(months) != 2 {
 		t.Errorf("expected 2 months after exclude, got %d", len(months))
@@ -332,25 +336,25 @@ func TestMonthlyTrendSeries(t *testing.T) {
 		}
 	}
 
-	// An empty row set returns no average — the model has nothing to quote, so
-	// it says so plainly rather than narrating a zero.
-	months, avg, hasAvg = monthlyTrendSeries(nil, nil)
-	if hasAvg || avg != "" || len(months) != 0 {
-		t.Errorf("empty series = %+v avg=%q hasAvg=%v, want no average", months, avg, hasAvg)
+	// An empty row set returns no averages — the model has nothing to quote,
+	// so it says so plainly rather than narrating a zero.
+	months, avg = monthlyTrendSeries(nil, nil)
+	if avg != nil || len(months) != 0 {
+		t.Errorf("empty series = %+v avg=%v, want no averages", months, avg)
 	}
 
 	// An exclude set naming a month that is not in the series is a no-op.
-	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{"1999-01": true})
-	if !hasAvg || avg != "200.00" || len(months) != 3 {
-		t.Errorf("non-matching exclude should be a no-op: avg=%q months=%d", avg, len(months))
+	months, avg = monthlyTrendSeries(rows, map[string]bool{"1999-01": true})
+	if avg == nil || avg.Leftover != "200.00" || len(months) != 3 {
+		t.Errorf("non-matching exclude should be a no-op: avg=%+v months=%d", avg, len(months))
 	}
 
-	// Excluding EVERY month leaves no average, because dividing by zero months
-	// is not a figure this app can quote.
-	months, avg, hasAvg = monthlyTrendSeries(rows, map[string]bool{
+	// Excluding EVERY month leaves no averages, because dividing by zero
+	// months is not a figure this app can quote.
+	months, avg = monthlyTrendSeries(rows, map[string]bool{
 		"2025-09": true, "2025-10": true, "2025-11": true,
 	})
-	if hasAvg || avg != "" || len(months) != 0 {
-		t.Errorf("all-excluded series should yield no average: avg=%q months=%d", avg, len(months))
+	if avg != nil || len(months) != 0 {
+		t.Errorf("all-excluded series should yield no averages: avg=%v months=%d", avg, len(months))
 	}
 }

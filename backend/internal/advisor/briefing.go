@@ -91,6 +91,19 @@ type Runway struct {
 	// Target is the household's full emergency-fund goal in months, echoed so
 	// the strip can render progress against the same bar the ranker uses.
 	TargetMonths int `json:"target_months"`
+	// TargetAmount is that target expressed in DOLLARS: TargetMonths ×
+	// MonthlyFixed, the same product the ranker's full emergency-fund tier
+	// holds households to (gather's fullTarget). The chat is forbidden from
+	// doing arithmetic — every figure it states must arrive finished — so when
+	// the household asks "how much liquid do we need to hold the target at all
+	// times", the answer has to be this field. Before it existed the model was
+	// handed the two factors and correctly refused to multiply them, and the
+	// household got a refusal where it asked for a number.
+	//
+	// Nil when MonthlyFixed is not positive, for the same reason Months is: no
+	// outgoings on record means no target to state in dollars, and a 0.00 here
+	// would read as "target met".
+	TargetAmount *decimal.Decimal `json:"target_amount"`
 }
 
 // Briefing is the whole opening statement.
@@ -293,6 +306,8 @@ func buildRunway(
 	if r.MonthlyFixed.IsPositive() {
 		months := liquid.Div(r.MonthlyFixed).Round(1)
 		r.Months = &months
+		target := r.MonthlyFixed.Mul(decimal.NewFromInt(int64(r.TargetMonths))).Round(2)
+		r.TargetAmount = &target
 	}
 	return r, nil
 }

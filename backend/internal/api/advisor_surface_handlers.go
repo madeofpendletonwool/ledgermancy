@@ -67,6 +67,9 @@ type runwayResponse struct {
 	MonthlyFixed string  `json:"monthly_fixed"`
 	Months       *string `json:"months"`
 	TargetMonths int     `json:"target_months"`
+	// TargetAmount is the target in dollars (target_months × monthly_fixed),
+	// null when there are no fixed costs to measure against.
+	TargetAmount *string `json:"target_amount"`
 }
 
 type attentionItemResponse struct {
@@ -127,6 +130,10 @@ func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
 		// to render is how a strip starts printing nonsense.
 		m := b.Runway.Months.String()
 		resp.Runway.Months = &m
+	}
+	if b.Runway.TargetAmount != nil {
+		ta := advisorMoney(*b.Runway.TargetAmount)
+		resp.Runway.TargetAmount = &ta
 	}
 	for _, a := range b.Attention {
 		resp.Attention = append(resp.Attention, attentionItemResponse{

@@ -43,7 +43,8 @@ func chatAdvisorToolDefs() []ai.Tool {
 		{
 			Name: "advisor_briefing",
 			Description: "The household's opening position in one call: net worth, this month's slack, " +
-				"financial-independence age, the debt-free date, emergency-fund runway, and the top few " +
+				"financial-independence age, the debt-free date, the emergency fund (liquid balance, months covered, " +
+				"and the target in both months and dollars), and the top few " +
 				"things needing attention. Start here for any broad question about how the household is doing.",
 			InputSchema: emptySchema,
 		},
@@ -957,6 +958,20 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 	if b.Runway.Months != nil {
 		runway["months_covered"] = b.Runway.Months.String()
 	}
+	// The dollar target the target_months figure stands for. The system prompt
+	// forbids the model from multiplying, so "how much liquid do we need to
+	// hold the emergency fund at all times" is only answerable if the product
+	// arrives finished. Nil stays absent for the same reason every null figure
+	// here does: no fixed costs on record is not a $0.00 target.
+	if b.Runway.TargetAmount != nil {
+		runway["target_amount"] = b.Runway.TargetAmount.StringFixed(2)
+	}
+	// The denominator is a deliberate choice and the most likely thing to be
+	// challenged in conversation ("that's way under what we spend"), so say
+	// what it is rather than letting the figure be read as total spending.
+	runway["basis"] = "The target and the runway are measured against TYPICAL FIXED COSTS, " +
+		"not total spending — the same bar the advisor's emergency-fund option uses. " +
+		"target_amount is target_months of monthly_fixed_costs in dollars."
 
 	attention := make([]map[string]any, 0, len(b.Attention))
 	for _, a := range b.Attention {

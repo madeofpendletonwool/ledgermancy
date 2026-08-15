@@ -314,3 +314,51 @@ func TestBriefingCollegeEmptyWhenNoGoals(t *testing.T) {
 		t.Errorf("college entries = %d, want 0", len(list))
 	}
 }
+
+// The emergency fund must carry its target AS A DOLLAR FIGURE, not only as
+// months and a monthly denominator. The system prompt forbids the model from
+// multiplying, so "how much money do we need in liquid to hold the emergency
+// fund target at all times" is only answerable when the product arrives
+// finished. The first version of this surface shipped the two factors and the
+// model correctly refused to combine them — the household asked for one number
+// and got a refusal plus a math problem. This pins the product being present
+// and the basis saying what it is measured against, because a fixed-cost
+// target read as total spending is the opposite confusion.
+func TestBriefingEmergencyFundCarriesDollarTarget(t *testing.T) {
+	target := decimal.RequireFromString("30708.45") // 9 × 3412.05
+	b := advisor.Briefing{
+		Runway: advisor.Runway{
+			Liquid:       decimal.RequireFromString("152535.72"),
+			MonthlyFixed: decimal.RequireFromString("3412.05"),
+			TargetMonths: 9,
+			TargetAmount: &target,
+		},
+	}
+
+	ef, ok := briefingToolResult(b)["emergency_fund"].(map[string]any)
+	if !ok {
+		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b)["emergency_fund"])
+	}
+	if got, _ := ef["target_amount"].(string); got != "30708.45" {
+		t.Errorf("target_amount = %q, want 30708.45 — the product the model is forbidden from computing", got)
+	}
+	if basis, _ := ef["basis"].(string); basis == "" {
+		t.Error("basis is empty — a fixed-cost target will be read as total spending without it")
+	}
+}
+
+// A runway with no fixed costs on record carries NO dollar target, for the same
+// reason it carries no months: a 0.00 would read as "target met" for a
+// household whose outgoings are simply unmeasured.
+func TestBriefingEmergencyFundOmitsTargetWithoutFixedCosts(t *testing.T) {
+	res := briefingToolResult(advisor.Briefing{Runway: advisor.Runway{TargetMonths: 9}})
+	ef, ok := res["emergency_fund"].(map[string]any)
+	if !ok {
+		t.Fatalf("emergency_fund missing or wrong type: %#v", res["emergency_fund"])
+	}
+	for _, absent := range []string{"target_amount", "months_covered"} {
+		if _, present := ef[absent]; present {
+			t.Errorf("runway without fixed costs carries %q = %v; unmeasured is not 0.00", absent, ef[absent])
+		}
+	}
+}

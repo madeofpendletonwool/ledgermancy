@@ -96,7 +96,7 @@ Numbers:
 - For "how many times" or "how much did I spend on X", use spend_by_category (it returns a count and total per category) or list_transactions (an exact count and total for a category/merchant).
 - For a breakdown or "list every…", call list_transactions and present its transactions. Its count and total are computed over ALL matches; the list may be truncated (see the "truncated" flag) — say so if it is, and still quote the full count/total.
 - To filter by category, first learn the exact category names from spend_by_category, then pass one to list_transactions.
-- For "vs last month", "trend", or "on average", use monthly_trend or category_averages.
+- For "vs last month", "trend", or "on average", use monthly_trend or category_averages. monthly_trend returns avg_income, avg_spending and avg_leftover over exactly the months it returned — quote those verbatim for any "average month" question (e.g. "what do we spend per month on average" is avg_spending); never average or sum the months yourself.
 - query_transactions and breakdown are the flexible tools — reach for them for any detailed, unusual, or income question the narrow tools can't answer. They span income, spending, and transfers (set "flow"), filter by month or a start/end date range plus category, merchant, amount, or source, and breakdown groups by category, merchant, account, month, day, or Plaid category ("pfc").
 - Income is NOT covered by the spending tools (spend_by_category, top_merchants, list_transactions all exclude it). To see where income came from, list individual paychecks/deposits, or compare income across months, use breakdown with flow:"income" (e.g. group_by:"merchant") or query_transactions with flow:"income".
 - query_transactions and breakdown return totals split into total_in (money in) and total_out (money out), both positive and computed in SQL. Quote those directly — for income use total_in, for spending use total_out — and never sum the rows yourself.
@@ -592,13 +592,14 @@ func chatBaseToolDefs() []ai.Tool {
 		{
 			Name: "monthly_trend",
 			Description: "Income, spending, and leftover per calendar month, oldest first, in \"months\". Also returns " +
-				"\"avg_leftover\", the exact mean monthly leftover across the months ACTUALLY RETURNED — quote that figure " +
-				"for \"average leftover\" questions rather than averaging the months yourself. Defaults to the last 12 " +
+				"\"avg_income\", \"avg_spending\" and \"avg_leftover\" — the exact means across the months ACTUALLY " +
+				"RETURNED — quote those figures verbatim for \"average monthly spend/income/leftover\" questions " +
+				"rather than averaging the months yourself. Defaults to the last 12 " +
 				"months. Give start+end (YYYY-MM-DD) for a custom window, e.g. a past year that excludes the current " +
 				"partial month; the window is snapped to whole months. Use exclude ([\"YYYY-MM\", ...]) to drop one-time " +
 				"anomalies like a loan payoff or a month whose income has not arrived yet — excluded months leave both the " +
-				"series and avg_leftover, so the average always matches the months the user sees.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12). Ignored when start+end are given."},"start":{"type":"string","description":"Range start as YYYY-MM-DD. Give both start and end for a custom window instead of trailing months; the window is snapped to whole months."},"end":{"type":"string","description":"Range end as YYYY-MM-DD, paired with start."},"exclude":{"type":"array","items":{"type":"string"},"description":"Months as YYYY-MM to drop from the series AND the average, e.g. [\"2026-07\"] to omit a one-time anomaly."}}}`),
+				"series and every average, so the averages always match the months the user sees.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"months":{"type":"integer","description":"How many recent months, 1-24 (default 12). Ignored when start+end are given."},"start":{"type":"string","description":"Range start as YYYY-MM-DD. Give both start and end for a custom window instead of trailing months; the window is snapped to whole months."},"end":{"type":"string","description":"Range end as YYYY-MM-DD, paired with start."},"exclude":{"type":"array","items":{"type":"string"},"description":"Months as YYYY-MM to drop from the series AND the averages, e.g. [\"2026-07\"] to omit a one-time anomaly."}}}`),
 		},
 		{
 			Name:        "category_averages",
@@ -1008,19 +1009,23 @@ func (s *Server) executeChatTool(ctx context.Context, identity auth.Identity, na
 		if err != nil {
 			return "", err
 		}
-		// avg_leftover is computed HERE, in exact decimal, over EXACTLY the
-		// months returned (after any exclude), because it is a finished figure
-		// like every other money figure this app returns. It is the reference
-		// line the chat's trend chart draws, and the model quotes it verbatim
-		// when asked "what's our average leftover" — neither the client nor the
-		// model may average the series itself, and a client-derived average is
-		// a second answer to a question the server already answered. Excluding
-		// a month has to flow through the same average or the chart's reference
-		// line and the months it spans would disagree.
-		months, avg, hasAvg := monthlyTrendSeries(rows, exclude)
+		// The averages are computed HERE, in exact decimal, over EXACTLY the
+		// months returned (after any exclude), because each is a finished figure
+		// like every other money figure this app returns. avg_leftover is the
+		// reference line the chat's trend chart draws, and avg_spending /
+		// avg_income are the answers to "what's our average spent per month"
+		// and its income twin — the model quotes them verbatim when asked for
+		// an average, and neither the client nor the model may average the
+		// series itself; a client-derived average is a second answer to a
+		// question the server already answered. Excluding a month has to flow
+		// through every average or the chart's reference line and the months it
+		// spans would disagree.
+		months, avgs := monthlyTrendSeries(rows, exclude)
 		result := map[string]any{"months": months}
-		if hasAvg {
-			result["avg_leftover"] = avg
+		if avgs != nil {
+			result["avg_income"] = avgs.Income
+			result["avg_spending"] = avgs.Spending
+			result["avg_leftover"] = avgs.Leftover
 		}
 		return marshalTool(result)
 
@@ -1216,33 +1221,49 @@ func monthBoundRange(start, end string) (from, to time.Time, err error) {
 	return from, to, nil
 }
 
+// trendAverages is the three monthly means monthly_trend hands the model,
+// finished and formatted. avg_leftover existed from the start; avg_income and
+// avg_spending joined it because "what's our average spent per month" is the
+// same class of question with the same constraint — the model may not average
+// the series itself, so the mean has to arrive precomputed or the question gets
+// a table and an apology instead of a number.
+type trendAverages struct {
+	Income   string
+	Spending string
+	Leftover string
+}
+
 // monthlyTrendSeries turns GetMonthlyTrend rows into the tool's output, dropping
-// any month in exclude and computing avg_leftover over EXACTLY the months it
-// returns. The model cannot average or subtract — it is told to quote
-// avg_leftover verbatim — so the average has to come from here, and it has to
-// agree with the rows the user sees. An excluded month leaves both the series
-// and the total, which is what keeps the reference line honest.
-func monthlyTrendSeries(rows []dbgen.GetMonthlyTrendRow, exclude map[string]bool) (months []map[string]string, avg string, hasAvg bool) {
+// any month in exclude and computing the averages over EXACTLY the months it
+// returns. The model cannot average or subtract — it is told to quote the
+// avg_* figures verbatim — so each average has to come from here, and each has
+// to agree with the rows the user sees. An excluded month leaves the series and
+// all three averages together, which is what keeps every reference line honest.
+func monthlyTrendSeries(rows []dbgen.GetMonthlyTrendRow, exclude map[string]bool) (months []map[string]string, avg *trendAverages) {
 	months = make([]map[string]string, 0, len(rows))
-	totalLeftover := decimal.Zero
+	totalIncome, totalSpending := decimal.Zero, decimal.Zero
 	for _, m := range rows {
 		if exclude[m.Month.Format("2006-01")] {
 			continue
 		}
-		leftover := m.Income.Sub(m.Spending)
-		totalLeftover = totalLeftover.Add(leftover)
+		totalIncome = totalIncome.Add(m.Income)
+		totalSpending = totalSpending.Add(m.Spending)
 		months = append(months, map[string]string{
 			"month":    m.Month.Format("2006-01"),
 			"income":   m.Income.StringFixed(2),
 			"spending": m.Spending.StringFixed(2),
-			"leftover": leftover.StringFixed(2),
+			"leftover": m.Income.Sub(m.Spending).StringFixed(2),
 		})
 	}
 	if len(months) > 0 {
-		avg = totalLeftover.Div(decimal.NewFromInt(int64(len(months)))).StringFixed(2)
-		hasAvg = true
+		n := decimal.NewFromInt(int64(len(months)))
+		avg = &trendAverages{
+			Income:   totalIncome.Div(n).StringFixed(2),
+			Spending: totalSpending.Div(n).StringFixed(2),
+			Leftover: totalIncome.Sub(totalSpending).Div(n).StringFixed(2),
+		}
 	}
-	return months, avg, hasAvg
+	return months, avg
 }
 
 // optStr trims s and returns a pointer to it, or nil when empty — the shape the

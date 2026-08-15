@@ -189,7 +189,9 @@ function BriefingStrip({
         <p className="text-xs text-mist-500">
           Emergency fund: {formatMoney(data.runway.liquid)} liquid
           {data.runway.months
-            ? ` — ${data.runway.months} months of your ${formatMoney(data.runway.monthly_fixed)} typical fixed costs, against a ${data.runway.target_months}-month target`
+            ? ` — ${data.runway.months} months of your ${formatMoney(data.runway.monthly_fixed)} typical fixed costs, against a ${data.runway.target_months}-month target${
+                data.runway.target_amount ? ` (${formatMoney(data.runway.target_amount)})` : ''
+              }`
             : ' — no typical fixed costs on record yet, so there is no runway to measure'}
         </p>
       </div>
@@ -816,6 +818,11 @@ function HorizonView({ briefing }: { briefing?: Briefing }) {
                   briefing.runway.months
                     ? `${briefing.runway.months} of ${briefing.runway.target_months} months`
                     : 'no runway to measure yet'
+                }
+                note={
+                  briefing.runway.target_amount
+                    ? `${formatMoney(briefing.runway.target_amount)} target, at ${formatMoney(briefing.runway.monthly_fixed)} typical fixed costs a month`
+                    : undefined
                 }
               />
               <p className="pt-2 text-xs text-mist-500">

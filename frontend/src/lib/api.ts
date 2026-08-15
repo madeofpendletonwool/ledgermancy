@@ -3677,6 +3677,9 @@ export interface Briefing {
     /** Null when there are no fixed costs to divide by. */
     months: string | null
     target_months: number
+    /** The target in dollars (target_months × monthly_fixed). Null when there
+     * are no fixed costs to measure against. */
+    target_amount: string | null
   }
   attention: {
     id: string
