@@ -201,6 +201,20 @@ type Request struct {
 	ToolChoice any
 	// MaxTokens overrides defaultMaxTokens when non-zero.
 	MaxTokens int
+	// Model overrides the client's configured model for THIS call. Empty means
+	// the configured model. It carries no validation of its own: the caller
+	// decides which ids are selectable, so the Advisor chat can offer
+	// operator-configured alternates while every other feature keeps sending
+	// nothing and getting the primary.
+	Model string
+}
+
+// effectiveModel is the model id a request actually goes out with.
+func (c *Client) effectiveModel(req Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
+	return c.model
 }
 
 // Usage reports token counts for a completion, for cost logging.
@@ -325,7 +339,7 @@ func (c *Client) marshalWire(req Request, stream bool) ([]byte, error) {
 		maxTokens = defaultMaxTokens
 	}
 	body, err := json.Marshal(wireRequest{
-		Model:      c.model,
+		Model:      c.effectiveModel(req),
 		MaxTokens:  maxTokens,
 		System:     req.System,
 		Messages:   req.Messages,
@@ -389,7 +403,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	slog.Info("ai completion",
-		"model", c.model,
+		"model", c.effectiveModel(req),
 		"stop_reason", out.StopReason,
 		"input_tokens", out.Usage.InputTokens,
 		"output_tokens", out.Usage.OutputTokens,
@@ -569,7 +583,7 @@ func (c *Client) CompleteStream(ctx context.Context, req Request, onText func(st
 	}
 
 	slog.Info("ai stream",
-		"model", c.model,
+		"model", c.effectiveModel(req),
 		"stop_reason", out.StopReason,
 		"input_tokens", out.Usage.InputTokens,
 		"output_tokens", out.Usage.OutputTokens,

@@ -24,8 +24,12 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	// household's own switch is on but nothing was ever enabled to fetch with.
 	logosAvailable := s.Config.MerchantLogos.Ready(s.Config.AI)
 
-	writeJSON(w, http.StatusOK, map[string]bool{
+	// The model ids selectable in the Advisor chat, primary first. A
+	// single-entry list is the norm; the frontend hides the selector then, so
+	// the chat looks exactly as it did before additional models existed.
+	writeJSON(w, http.StatusOK, map[string]any{
 		"ai_enabled":     s.AI.Enabled(),
+		"ai_chat_models": s.Config.AI.ChatModels(),
 		"notify_enabled": s.Config.NTFY.Enabled(),
 		// Whether an emailed digest can be offered at all. Off unless the
 		// operator configured a mail server, so Settings does not present a

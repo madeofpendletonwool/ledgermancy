@@ -2896,6 +2896,12 @@ export interface MonthlySummary {
 /** Optional-feature flags so the UI hides AI surfaces when no key is set. */
 export interface Capabilities {
   ai_enabled: boolean
+  /**
+   * Model ids selectable in the Advisor chat, primary first. A one-entry list
+   * means no alternates are configured and the chat hides the selector — the
+   * rest of the app always uses the primary regardless of this list.
+   */
+  ai_chat_models: string[]
   /** Whether an ntfy server is configured, so Settings can gate push controls. */
   notify_enabled: boolean
   /**
@@ -5737,6 +5743,12 @@ export const api = {
 export interface ChatStreamOptions {
   /** Persists the turn to a saved conversation when set. */
   threadID?: string
+  /**
+   * Selects the model for this turn. Omitted (or the primary's own id) runs on
+   * the primary; anything else must be one the operator listed, or the server
+   * rejects the turn with a 400 before anything is sent to the provider.
+   */
+  model?: string
   /** Fires per tool result, so a chart can be drawn from the turn's own data. */
   onTool?: (result: ChatToolResult) => void
   /** Fires once with the tool set the server chose, so a wrong pick is visible. */
@@ -5906,6 +5918,7 @@ async function streamChat(
     body: JSON.stringify({
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
       thread_id: opts?.threadID,
+      model: opts?.model,
     }),
   })
 

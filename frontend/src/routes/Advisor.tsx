@@ -49,6 +49,9 @@ type Tab = 'chat' | 'horizon' | 'options' | 'allocate' | 'actions' | 'assumption
  */
 const MAX_SENT_TURNS = 36
 
+/** localStorage key for the chat's model pick, so it survives tab switches. */
+const MODEL_PREF_KEY = 'ledgermancy.advisor-model'
+
 export function Advisor() {
   const capabilities = useQuery({
     queryKey: ['capabilities'],
@@ -307,6 +310,13 @@ function Conversation() {
   const queryClient = useQueryClient()
   const briefing = useQuery({ queryKey: ['advisor-briefing'], queryFn: api.advisorBriefing })
   const threads = useQuery({ queryKey: ['advisor-threads'], queryFn: api.advisorThreads })
+  // Same query key the page root uses, so this is a cache read, not a second
+  // request — the conversation needs it for the model list.
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: api.capabilities,
+    staleTime: Infinity,
+  })
 
   const [threadID, setThreadID] = useState<string | null>(null)
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -316,6 +326,23 @@ function Conversation() {
   const [addedTools, setAddedTools] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Which model answers. The list is primary-first from the server; a stored
+  // preference survives reloads, and anything the operator has since removed
+  // falls back to the primary HERE rather than 400-ing every turn.
+  const models = useMemo(
+    () => capabilities.data?.ai_chat_models ?? [],
+    [capabilities.data],
+  )
+  const [model, setModel] = useState(() => localStorage.getItem(MODEL_PREF_KEY) ?? '')
+  useEffect(() => {
+    if (models.length === 0) return
+    if (!models.includes(model)) setModel(models[0])
+  }, [models, model])
+  useEffect(() => {
+    if (model) localStorage.setItem(MODEL_PREF_KEY, model)
+    else localStorage.removeItem(MODEL_PREF_KEY)
+  }, [model])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -400,6 +427,7 @@ function Conversation() {
     try {
       await api.chat(sent, (delta) => appendToLast((t) => ({ ...t, content: t.content + delta })), {
         threadID: target ?? undefined,
+        model: model || undefined,
         onToolSet: setToolSet,
         onToolsAdded: (names) =>
           setAddedTools((prev) => [...prev, ...names.filter((n) => !prev.includes(n))]),
@@ -460,6 +488,29 @@ function Conversation() {
           }}
           className="flex gap-3"
         >
+          {models.length > 1 && (
+            <select
+              /*
+               * Only offered when the operator configured alternates — one
+               * model means no choice to make, and the selector would be a
+               * control that can only ever say the same thing. This is also
+               * the ONLY place a model is picked: the rest of the app runs
+               * the primary whatever this says.
+               */
+              aria-label="Chat model"
+              title="Which model answers here. Everything else in the app keeps the primary model."
+              className="field w-44 shrink-0"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={streaming}
+            >
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          )}
           <input
             className="field flex-1"
             placeholder="Ask about your money…"

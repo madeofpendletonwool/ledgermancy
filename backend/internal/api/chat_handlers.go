@@ -133,11 +133,37 @@ type chatRequestBody struct {
 	// ThreadID persists this turn to a saved conversation. Absent means today's
 	// stateless behaviour, unchanged.
 	ThreadID *uuid.UUID `json:"thread_id"`
+	// Model selects which model answers this turn. Empty means the primary.
+	// Only ids the operator listed in AI_ADDITIONAL_MODELS (or the primary
+	// itself) are accepted — see validateChatModel.
+	Model string `json:"model"`
 }
 
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// validateChatModel resolves a request's model selection to the id the turn
+// runs on, or an error the handler returns as a 400.
+//
+// The allowlist is the whole design: the Advisor chat is the only surface that
+// may steer the model, and only across ids the operator explicitly opened up.
+// Anything else — a typo, a stale pick from a config that changed, an id
+// probed by hand — is rejected here rather than passed to the endpoint, so a
+// misconfigured deployment answers "no" at the front door instead of paying
+// for a request the operator never sanctioned.
+func (s *Server) validateChatModel(model string) (string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" || model == s.Config.AI.Model {
+		return "", nil
+	}
+	for _, m := range s.Config.AI.AdditionalModels {
+		if model == m {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("model %q is not available; ask your operator to add it to AI_ADDITIONAL_MODELS", model)
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +185,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Messages) > maxChatMessages {
 		writeError(w, http.StatusBadRequest, "conversation is too long")
+		return
+	}
+	model, err := s.validateChatModel(req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -268,7 +299,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sendSSE(map[string]any{"tools_added": names})
 	}
 
-	answer, err := s.runChat(r.Context(), identity, set, messages, onDelta, onTool, onGrant)
+	answer, err := s.runChat(r.Context(), identity, set, model, messages, onDelta, onTool, onGrant)
 	if err != nil {
 		slog.Error("chat", "error", err)
 		sendSSE(map[string]string{"error": "Something went wrong answering that."})
@@ -356,8 +387,12 @@ func (s *Server) persistTurn(
 // JSON string that becomes the model's ToolResultBlock. Forwarding it is what
 // lets the client render a deterministic chart from a turn's own data; it is
 // never a second computation.
+//
+// model is the Advisor chat's per-turn model selection: empty runs on the
+// primary, anything else is one the route already validated against
+// AI_ADDITIONAL_MODELS.
 func (s *Server) runChat(
-	ctx context.Context, identity auth.Identity, set string,
+	ctx context.Context, identity auth.Identity, set string, model string,
 	messages []ai.Message, onText func(string), onTool func(name, result string),
 	onGrant func(names []string),
 ) (string, error) {
@@ -395,6 +430,7 @@ func (s *Server) runChat(
 			Messages:  messages,
 			Tools:     tools,
 			MaxTokens: chatMaxTokens,
+			Model:     model,
 		}, onText)
 		if err != nil {
 			return "", err

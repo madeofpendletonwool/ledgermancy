@@ -347,7 +347,7 @@ func TestRunChatSendsGrantedToolsOnTheNextRequest(t *testing.T) {
 
 	var announced []string
 	answer, err := s.runChat(
-		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		context.Background(), auth.Identity{}, ToolSetLikelihood, "",
 		[]ai.Message{{Role: ai.RoleUser, Content: []ai.Block{ai.TextBlock("what are the odds, and what did each month leave over?")}}},
 		nil, nil,
 		func(names []string) { announced = append(announced, names...) },

@@ -73,6 +73,7 @@ configurable base URL.
 | `AI_BASE_URL` | `https://api.z.ai/api/anthropic` | Anthropic Messages API base |
 | `AI_API_KEY` | _(empty)_ | Leave blank to run **fully functional with AI disabled** — categorisation falls back to Plaid's categories |
 | `AI_MODEL` | `glm-4.6` | Model identifier |
+| `AI_ADDITIONAL_MODELS` | _(empty)_ | Comma-separated model ids selectable **in the Advisor chat only**. With one or more set, the chat window grows a model picker (the primary stays the default); every other AI feature keeps using `AI_MODEL` regardless. |
 
 ## Push notifications (ntfy)
 

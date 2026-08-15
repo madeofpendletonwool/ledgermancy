@@ -62,7 +62,7 @@ func TestRunChatContinuesAfterTruncation(t *testing.T) {
 
 	var streamed strings.Builder
 	answer, err := s.runChat(
-		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		context.Background(), auth.Identity{}, ToolSetLikelihood, "",
 		[]ai.Message{ai.UserText("how much liquid to hold the emergency fund at all times?")},
 		func(s string) { streamed.WriteString(s) }, nil, nil,
 	)
@@ -123,7 +123,7 @@ func TestRunChatKeepsPartialAnswerWhenContinuationsRunOut(t *testing.T) {
 	s := &Server{AI: ai.New(config.AIConfig{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})}
 
 	answer, err := s.runChat(
-		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		context.Background(), auth.Identity{}, ToolSetLikelihood, "",
 		[]ai.Message{ai.UserText("something very long")},
 		nil, nil, nil,
 	)
@@ -171,7 +171,7 @@ func TestRunChatStillApologisesWhenNothingWasWritten(t *testing.T) {
 	s := &Server{AI: ai.New(config.AIConfig{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})}
 
 	answer, err := s.runChat(
-		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		context.Background(), auth.Identity{}, ToolSetLikelihood, "",
 		[]ai.Message{ai.UserText("spin")}, nil, nil, nil,
 	)
 	if err != nil {
@@ -215,7 +215,7 @@ func TestRunChatDoesNotEchoAThinkingOnlyTurn(t *testing.T) {
 	s := &Server{AI: ai.New(config.AIConfig{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})}
 
 	answer, err := s.runChat(
-		context.Background(), auth.Identity{}, ToolSetLikelihood,
+		context.Background(), auth.Identity{}, ToolSetLikelihood, "",
 		[]ai.Message{ai.UserText("how much liquid to hold the emergency fund at all times?")},
 		nil, nil, nil,
 	)

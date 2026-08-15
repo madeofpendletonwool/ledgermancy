@@ -356,10 +356,35 @@ type AIConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+
+	// AdditionalModels are model ids the operator opened up for the Advisor
+	// chat ONLY (AI_ADDITIONAL_MODELS, comma-separated). Every other AI
+	// feature — categorisation, insights, summaries, parsing — keeps using
+	// Model, because those are sized and tuned for one model; the chat is the
+	// one surface where a different model is a choice rather than a config
+	// drift.
+	AdditionalModels []string
 }
 
 // Enabled reports whether AI-backed features should be offered.
 func (a AIConfig) Enabled() bool { return a.APIKey != "" }
+
+// ChatModels returns the model ids selectable in the Advisor chat: Model
+// first, then each AdditionalModels entry, de-duplicated in order. The primary
+// stays first so a client defaulting to the head of this list needs no special
+// case for "no selection".
+func (a AIConfig) ChatModels() []string {
+	out := make([]string, 0, 1+len(a.AdditionalModels))
+	seen := map[string]bool{}
+	for _, m := range append([]string{a.Model}, a.AdditionalModels...) {
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
 
 // NTFYConfig points at an ntfy server (the public https://ntfy.sh by default,
 // or a self-hosted instance) used for external push. The base URL is always
@@ -407,6 +432,11 @@ func Load() (Config, error) {
 			BaseURL: env("AI_BASE_URL", "https://api.anthropic.com"),
 			APIKey:  os.Getenv("AI_API_KEY"),
 			Model:   env("AI_MODEL", "glm-4.6"),
+			// Advisor-chat-only alternates. Validated against this list at the
+			// route, never at the client: the client is shared by every
+			// feature, and a per-request override must not become a way to
+			// reach an arbitrary model id with another feature's budget.
+			AdditionalModels: splitList(env("AI_ADDITIONAL_MODELS", "")),
 		},
 		NTFY: NTFYConfig{
 			BaseURL: env("NTFY_BASE_URL", "https://ntfy.sh"),
