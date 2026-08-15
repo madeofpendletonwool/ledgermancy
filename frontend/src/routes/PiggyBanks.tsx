@@ -228,6 +228,7 @@ function PiggyCard({
           onChange={(e) => setAmount(e.target.value)}
         />
         <button
+          type="button"
           className="btn-ghost px-3 py-1.5 text-sm"
           disabled={!amount || deposit.isPending}
           onClick={() => amount && deposit.mutate()}
@@ -235,6 +236,7 @@ function PiggyCard({
           {deposit.isPending ? '…' : 'Deposit'}
         </button>
         <button
+          type="button"
           className="btn-ghost px-3 py-1.5 text-sm"
           disabled={!amount || withdraw.isPending}
           onClick={() => amount && withdraw.mutate()}
