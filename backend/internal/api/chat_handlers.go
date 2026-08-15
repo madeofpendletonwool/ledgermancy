@@ -39,6 +39,20 @@ import (
 // changing one of them without the other a build failure.
 const maxToolIterations = 9
 
+// continuePrompt asks a model that was cut off at MaxTokens to finish.
+//
+// It insists on no repetition and no restart because both are what an
+// un-steered continuation does, and both are worse than the truncation: the
+// user is watching this stream in, so a restart rewrites an answer in front of
+// them and a repeated paragraph reads as a stutter. It also forbids re-deriving
+// the figures already written, for the same reason the system prompt does — a
+// number that changes between halves of one answer destroys the whole thing,
+// and the tool results are still in the transcript to be quoted from.
+const continuePrompt = "Your previous message was cut off at the output limit. Continue it from exactly " +
+	"where it stopped, mid-sentence if that is where it ended. Do not repeat any text you have already " +
+	"written, do not start over, and do not add a preamble. Do not recompute or restate any figure you " +
+	"already gave — quote the same tool results. If the answer was in fact complete, reply with nothing."
+
 // maxChatMessages caps the transcript a client may send, so a runaway history
 // cannot blow up the prompt.
 const maxChatMessages = 40
@@ -331,6 +345,17 @@ func (s *Server) runChat(
 	}
 	granted := 0
 
+	// Text already streamed to the user across CONTINUATION turns.
+	//
+	// A model that hits MaxTokens mid-answer has not failed and has not
+	// finished: it has written a prefix. The loop below asks it to carry on, so
+	// the final answer is assembled from several turns and this is where the
+	// earlier pieces live. It is not a buffer for the streaming path — that has
+	// already sent these bytes — it is what the handler saves to the thread, and
+	// dropping it would persist only the last fragment of an answer the user
+	// watched arrive in full.
+	var answer strings.Builder
+
 	// The model has no clock of its own, so it cannot resolve "July" or "last
 	// month" without being told today's date. Inject it into the system prompt.
 	system := chatSystemPrompt + "\n\nToday's date is " +
@@ -356,7 +381,30 @@ func (s *Server) runChat(
 			if !streamed && onText != nil {
 				onText(text)
 			}
-			return text, nil
+			answer.WriteString(text)
+
+			// A completion that stopped at the token ceiling is a PREFIX, not an
+			// answer, and nothing downstream can tell the difference: the text
+			// is populated and the error is nil, so this used to return a
+			// sentence that stopped mid-word as though the model had chosen to
+			// end there. That is how "how much liquid do we need to hold the
+			// emergency fund at all times" came back dead — three tool calls,
+			// a long answer cut at 1024 tokens, and HTTP 200.
+			//
+			// So ask for the rest. Continuing costs one more iteration out of a
+			// budget that already exists, and it keeps every per-call invariant
+			// intact — MaxTokens, ai.RequestTimeout and the route budget that is
+			// sized from their product (server.go, TestAIRouteTimeoutFitsToolLoop)
+			// are all per REQUEST. Raising MaxTokens instead would break that
+			// sizing: at the ~22 tokens/second this deployment actually gets,
+			// 1024 tokens already takes 47 of the 60 seconds one request is
+			// allowed, so a bigger ceiling buys a timeout rather than a longer
+			// answer.
+			if resp.Truncated() {
+				messages = append(messages, resp.AsMessage(), ai.UserText(continuePrompt))
+				continue
+			}
+			return answer.String(), nil
 		}
 
 		// Echo the assistant's tool_use turn back, then answer each call.
@@ -410,6 +458,23 @@ func (s *Server) runChat(
 	}
 
 	// Ran out of iterations without a final answer.
+	//
+	// If the model was mid-ANSWER when the budget ran out, the user has already
+	// watched real text arrive and replacing it with the generic apology below
+	// would be both a lie and a loss. Keep what was written and say plainly that
+	// it stops early: an answer the reader knows is unfinished is usable, and an
+	// unfinished one they believe is complete is the thing to never ship.
+	if answer.Len() > 0 {
+		const note = "\n\n---\n\n**This answer is cut off — it ran out of room before finishing.** " +
+			"Everything above is computed from your data and stands as written. " +
+			"Ask for the rest, or ask for one part of it, and I can finish."
+		if onText != nil {
+			onText(note)
+		}
+		answer.WriteString(note)
+		return answer.String(), nil
+	}
+
 	msg := "I wasn't able to work that out — try asking in a simpler way."
 	if onText != nil {
 		onText(msg)

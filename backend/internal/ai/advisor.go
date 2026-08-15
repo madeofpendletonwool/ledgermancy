@@ -107,5 +107,24 @@ func (c *Client) AdvisorNarration(ctx context.Context, in AdvisorInput) (string,
 	if err != nil {
 		return "", err
 	}
+	// A narration cut off at the ceiling has DROPPED OPTIONS off the end of the
+	// list, and this prompt spends a paragraph forbidding exactly that: never
+	// reorder, never leave one out, "the order is a published rule the app is
+	// accountable for". Shipping the prefix keeps the accountability claim while
+	// quietly breaking it — the reader sees prose that names four of six options
+	// and has no way to know two are missing.
+	//
+	// Falling back is strictly better here and costs nothing, because the caller
+	// already renders the complete ranked list when narration is unavailable
+	// (narrateAdvice) — that path exists for the no-API-key case and is the
+	// feature working as designed, not a degraded mode. The plain list is
+	// complete and correctly ordered; a truncated paragraph is neither.
+	//
+	// Raising MaxTokens is not the fix and would make things worse: this call
+	// runs under narrationBudget (12s, advisor_handlers.go) and already takes
+	// 10-12s of it, so a larger ceiling turns a truncation into a timeout.
+	if resp.Truncated() {
+		return "", ErrTruncated
+	}
 	return strings.TrimSpace(resp.Text()), nil
 }

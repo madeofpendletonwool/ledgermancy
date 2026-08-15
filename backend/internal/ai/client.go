@@ -55,6 +55,14 @@ const RequestTimeout = 60 * time.Second
 // caller that forgot to check Enabled() fail loudly rather than silently.
 var ErrDisabled = errors.New("ai: no API key configured")
 
+// ErrTruncated is returned by a helper whose output is only usable COMPLETE.
+//
+// It exists so a caller that already has a correct non-AI fallback can take it.
+// The alternative — returning the prefix and letting the caller decide — was the
+// status quo, and it does not work: a truncated completion is indistinguishable
+// from a finished one at the call site, so "decide" meant "ship it".
+var ErrTruncated = errors.New("ai: response was cut off at the token limit")
+
 // Client talks to an Anthropic Messages wire-compatible endpoint.
 type Client struct {
 	http    *http.Client
@@ -189,6 +197,17 @@ type Response struct {
 	StopReason string  `json:"stop_reason"`
 	Usage      Usage   `json:"usage"`
 }
+
+// StopMaxTokens is the stop reason meaning the model was CUT OFF at MaxTokens
+// rather than finishing. It is named because the difference is invisible at the
+// call site — a truncated Response has a populated Content and a nil error, and
+// reads exactly like a complete one — and because treating the two alike is how
+// a half-written answer reaches a user as a finished one. Anything that returns
+// Text() to a human must check this first.
+const StopMaxTokens = "max_tokens"
+
+// Truncated reports whether the model ran out of output budget mid-answer.
+func (r *Response) Truncated() bool { return r.StopReason == StopMaxTokens }
 
 // Text concatenates every text block, ignoring tool_use blocks. This is the
 // answer for a plain completion.
