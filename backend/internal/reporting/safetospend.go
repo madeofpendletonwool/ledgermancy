@@ -90,6 +90,28 @@ type SafeToSpend struct {
 	// can caveat a thin history ("based on 2 months").
 	IncomeMonths int
 
+	// TypicalMonthlySpending is the TYPICAL FULL month: the median of total
+	// monthly spending (fixed + discretionary, income and transfers excluded)
+	// over the same completed-month window, one-time rows excluded. It exists
+	// because the emergency fund can be measured against two bars — the
+	// fixed-cost bar FixedCosts carries, and a stricter "months of everything we
+	// actually spend" bar — and the second could not be stated anywhere before
+	// this field: the chat's avg_spending is a MEAN over months that include
+	// one-time events, and a loan payoff inflating a household's idea of its
+	// own typical month is the exact failure the median here exists to prevent.
+	//
+	// Same relationship to FixedCosts as ExpectedIncome has to budgets: a
+	// trailing observation, not a plan. A household that wants the full-spending
+	// emergency bar reads this figure off the SAME trend rows FixedCosts came
+	// from, so the two can never describe different windows.
+	//
+	// Zero when no month in the window had spending — reported via
+	// SpendingMonths == 0, never as a quotable $0.00.
+	TypicalMonthlySpending decimal.Decimal
+	// SpendingMonths is how many months the typical-spending median is based
+	// on, so a caller can decline to quote the figure on a thin history.
+	SpendingMonths int
+
 	// The bill-aware view. These are ADDITIONAL fields, never a redefinition of
 	// Amount: the Budgets page and the chat tool both consume Amount, and
 	// quietly changing what it means is how two surfaces start disagreeing about
@@ -148,6 +170,21 @@ func BuildSafeToSpend(ctx context.Context, q *dbgen.Queries, householdID uuid.UU
 	expectedIncome := medianOf(incomeMonthly)
 	incomeMonths := len(incomeMonthly)
 
+	// Typical total spending: the median month of the SAME window. Months with
+	// no spending at all are skipped for the same reason no-income months are —
+	// a household that linked its accounts three months ago has three months of
+	// history, not six months of spending nothing. One-time rows never got here
+	// (ExcludeOneTime above), so a flagged loan payoff cannot price itself into
+	// the household's typical month; the median covers the outlier nobody
+	// flagged.
+	spendingMonthly := make([]decimal.Decimal, 0, len(trend))
+	for _, m := range trend {
+		if m.Spending.IsPositive() {
+			spendingMonthly = append(spendingMonthly, m.Spending)
+		}
+	}
+	typicalSpending := medianOf(spendingMonthly)
+
 	// Fixed costs, per category, as the median month. Computed once and reused by
 	// the bill-aware variant so the two can never disagree about what a category
 	// typically costs.
@@ -179,12 +216,14 @@ func BuildSafeToSpend(ctx context.Context, q *dbgen.Queries, householdID uuid.UU
 		Sub(goalContrib)
 
 	sts := SafeToSpend{
-		ExpectedIncome:        expectedIncome.Round(2),
-		FixedCosts:            fixedCosts.Round(2),
-		BudgetedDiscretionary: budgets.DiscretionaryBudgeted.Round(2),
-		GoalContributions:     goalContrib.Round(2),
-		Amount:                amount.Round(2),
-		IncomeMonths:          incomeMonths,
+		ExpectedIncome:         expectedIncome.Round(2),
+		FixedCosts:             fixedCosts.Round(2),
+		BudgetedDiscretionary:  budgets.DiscretionaryBudgeted.Round(2),
+		GoalContributions:      goalContrib.Round(2),
+		Amount:                 amount.Round(2),
+		IncomeMonths:           incomeMonths,
+		TypicalMonthlySpending: typicalSpending.Round(2),
+		SpendingMonths:         len(spendingMonthly),
 	}
 
 	bills, err := buildBillAware(ctx, q, householdID, now, fixedCosts, trailingByCategory)

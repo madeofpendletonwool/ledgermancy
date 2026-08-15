@@ -3683,9 +3683,17 @@ export interface Briefing {
     /** Null when there are no fixed costs to divide by. */
     months: string | null
     target_months: number
-    /** The target in dollars (target_months × monthly_fixed). Null when there
-     * are no fixed costs to measure against. */
+    /** The official target in dollars (target_months × monthly_fixed). Null
+     * when there are no fixed costs to measure against. */
     target_amount: string | null
+    /** The typical FULL month — median total spending over the trailing
+     * window. Null when there is no spending history. */
+    typical_monthly_spending: string | null
+    /** The stricter target in dollars (target_months ×
+     * typical_monthly_spending). Null when there is no spending history. */
+    target_amount_full_spending: string | null
+    /** Liquid ÷ typical_monthly_spending. Null when there is no history. */
+    months_covered_full_spending: string | null
   }
   attention: {
     id: string

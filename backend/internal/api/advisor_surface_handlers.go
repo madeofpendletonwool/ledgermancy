@@ -67,9 +67,17 @@ type runwayResponse struct {
 	MonthlyFixed string  `json:"monthly_fixed"`
 	Months       *string `json:"months"`
 	TargetMonths int     `json:"target_months"`
-	// TargetAmount is the target in dollars (target_months × monthly_fixed),
-	// null when there are no fixed costs to measure against.
+	// TargetAmount is the official target in dollars (target_months ×
+	// monthly_fixed), null when there are no fixed costs to measure against.
 	TargetAmount *string `json:"target_amount"`
+	// TypicalMonthlySpending is the typical FULL month (median total spending,
+	// same trailing window), null when there is no spending history.
+	TypicalMonthlySpending *string `json:"typical_monthly_spending"`
+	// TargetAmountFullSpending is the stricter target in dollars
+	// (target_months × typical_monthly_spending), null with no history.
+	TargetAmountFullSpending *string `json:"target_amount_full_spending"`
+	// MonthsCoveredFullSpending is liquid ÷ typical_monthly_spending.
+	MonthsCoveredFullSpending *string `json:"months_covered_full_spending"`
 }
 
 type attentionItemResponse struct {
@@ -134,6 +142,19 @@ func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
 	if b.Runway.TargetAmount != nil {
 		ta := advisorMoney(*b.Runway.TargetAmount)
 		resp.Runway.TargetAmount = &ta
+	}
+	// The full-spending bar maps only when the engine produced one; the three
+	// fields travel together so the client never sees a target with no
+	// denominator or a coverage figure with no target.
+	if b.Runway.FullTargetAmount != nil {
+		typical := advisorMoney(b.Runway.MonthlySpending)
+		resp.Runway.TypicalMonthlySpending = &typical
+		full := advisorMoney(*b.Runway.FullTargetAmount)
+		resp.Runway.TargetAmountFullSpending = &full
+		if b.Runway.FullMonths != nil {
+			fm := b.Runway.FullMonths.String()
+			resp.Runway.MonthsCoveredFullSpending = &fm
+		}
 	}
 	for _, a := range b.Attention {
 		resp.Attention = append(resp.Attention, attentionItemResponse{

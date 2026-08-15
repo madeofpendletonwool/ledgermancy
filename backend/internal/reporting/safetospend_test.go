@@ -122,6 +122,87 @@ func TestBuildSafeToSpend(t *testing.T) {
 	}
 }
 
+// TestTypicalMonthlySpendingIsMedianAndSkipsOneTime pins the typical FULL month
+// the emergency fund's full-spending bar is measured in.
+//
+// It must be a MEDIAN of monthly totals with one-time-flagged rows gone: an
+// unflagged one-off splurge moves it one month's worth (not at all, at even
+// counts) and a flagged loan payoff must not reach it at all. A MEAN here is
+// the bug this test exists to prevent — it would price a payoff into the
+// household's "typical month" for six months, which is exactly what the
+// fixed-cost median's own comment records happening before medians.
+func TestTypicalMonthlySpendingIsMedianAndSkipsOneTime(t *testing.T) {
+	url := testdb.URL(t)
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	q := dbgen.New(pool)
+
+	householdID := uuid.New()
+	userID := uuid.New()
+	itemID := uuid.New()
+	acctID := uuid.New()
+	incomeCat := uuid.New()
+	fixedCat := uuid.New()
+	discCat := uuid.New()
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %v\n%s", err, sql)
+		}
+	}
+	exec(`INSERT INTO households (id, name) VALUES ($1, 'Typical Spend Test')`, householdID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM households WHERE id = $1`, householdID)
+	})
+	exec(`INSERT INTO users (id, household_id, email, password_hash, display_name)
+	      VALUES ($1, $2, $3, 'x', 'Tester')`, userID, householdID, userID.String()+"@example.test")
+	exec(`INSERT INTO plaid_items (id, user_id, plaid_item_id, access_token_encrypted, products, status)
+	      VALUES ($1, $2, $3, '\x00', '{transactions}', 'active')`, itemID, userID, itemID.String())
+	exec(`INSERT INTO accounts (id, plaid_item_id, plaid_account_id, name, type)
+	      VALUES ($1, $2, $3, 'Checking', 'depository')`, acctID, itemID, acctID.String())
+	exec(`INSERT INTO categories (id, household_id, name, slug, is_income) VALUES ($1, $2, 'Paycheck', 'paycheck', TRUE)`, incomeCat, householdID)
+	exec(`INSERT INTO categories (id, household_id, name, slug, is_fixed) VALUES ($1, $2, 'Rent', 'rent', TRUE)`, fixedCat, householdID)
+	exec(`INSERT INTO categories (id, household_id, name, slug) VALUES ($1, $2, 'Dining', 'dining')`, discCat, householdID)
+
+	tx := func(amount, date string, cat uuid.UUID, oneTime bool) {
+		exec(`INSERT INTO transactions (account_id, amount, currency, date, name, category_id, source, is_one_time)
+		      VALUES ($1, $2, 'USD', $3, 'x', $4, 'plaid', $5)`, acctID, amount, date, cat, oneTime)
+	}
+
+	// Six prior full months (Jan–Jun 2026): income, $1000 fixed, $500 dining —
+	// a typical month of $1500.
+	for _, d := range []string{"2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"} {
+		tx("-5000.00", d+"-15", incomeCat, false)
+		tx("1000.00", d+"-10", fixedCat, false)
+		tx("500.00", d+"-20", discCat, false)
+	}
+	// An unflagged one-off splurge in March: even-count median absorbs it.
+	tx("4000.00", "2026-03-05", discCat, false)
+	// A one-time-FLAGGED loan payoff in May: excluded outright.
+	tx("14295.00", "2026-05-08", fixedCat, true)
+
+	sts, err := BuildSafeToSpend(ctx, q, householdID, time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("BuildSafeToSpend: %v", err)
+	}
+
+	if sts.SpendingMonths != 6 {
+		t.Errorf("spending_months = %d, want 6", sts.SpendingMonths)
+	}
+	if !sts.TypicalMonthlySpending.Equal(decimal.RequireFromString("1500.00")) {
+		t.Errorf("typical_monthly_spending = %s, want 1500.00 (median of six $1500 months; the splurge and the flagged payoff must not move it; a mean would read ~2166.67)",
+			sts.TypicalMonthlySpending)
+	}
+}
+
 // TestSafeToSpendDoesNotDoubleCountBills is the guard on the riskiest part of
 // the bill calendar.
 //

@@ -57,6 +57,13 @@ type slackResult struct {
 	// fund covers a typical month of outgoings, not this particular month's
 	// dated bills.
 	fixedCosts decimal.Decimal
+	// typicalSpending is the trailing typical FULL month (median of total
+	// monthly spending, same window as fixedCosts), and spendingMonths is how
+	// many months it rests on. The emergency fund's full-spending bar is
+	// measured in months of it: some households want the target to cover
+	// everything a normal month costs, not only the bills.
+	typicalSpending decimal.Decimal
+	spendingMonths  int
 }
 
 // resolveSlack picks between SafeToSpend's two figures and records which.
@@ -72,9 +79,11 @@ func resolveSlack(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, 
 	}
 
 	out := slackResult{
-		coverage:     sts.ObligationCoverage,
-		incomeMonths: sts.IncomeMonths,
-		fixedCosts:   sts.FixedCosts,
+		coverage:        sts.ObligationCoverage,
+		incomeMonths:    sts.IncomeMonths,
+		fixedCosts:      sts.FixedCosts,
+		typicalSpending: sts.TypicalMonthlySpending,
+		spendingMonths:  sts.SpendingMonths,
 		parts: SlackParts{
 			ExpectedIncome:        sts.ExpectedIncome,
 			FixedCosts:            sts.FixedCosts,

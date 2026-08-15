@@ -44,7 +44,7 @@ func chatAdvisorToolDefs() []ai.Tool {
 			Name: "advisor_briefing",
 			Description: "The household's opening position in one call: net worth, this month's slack, " +
 				"financial-independence age, the debt-free date, the emergency fund (liquid balance, months covered, " +
-				"and the target in both months and dollars), and the top few " +
+				"and the target in dollars on BOTH bars — fixed costs and full spending), and the top few " +
 				"things needing attention. Start here for any broad question about how the household is doing.",
 			InputSchema: emptySchema,
 		},
@@ -189,6 +189,12 @@ func (s *Server) executeAdvisorTool(
 			"upcoming_obligations":      sts.UpcomingObligations.StringFixed(2),
 			"safe_to_spend_after_bills": sts.AmountAfterBills.StringFixed(2),
 			"obligation_coverage":       sts.ObligationCoverage,
+			// The typical FULL month off the same window fixed_costs came from,
+			// so a full-spending question never has to be answered by blending
+			// figures the model may not blend. Months counted travel with it —
+			// a typical month off two observations is a caveat, not a fact.
+			"typical_monthly_spending": sts.TypicalMonthlySpending.StringFixed(2),
+			"typical_spending_months":  sts.SpendingMonths,
 			"basis": "A typical month, from trailing medians — not the current bank balance. " +
 				"One-time-flagged transactions are excluded.",
 		})
@@ -966,12 +972,41 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 	if b.Runway.TargetAmount != nil {
 		runway["target_amount"] = b.Runway.TargetAmount.StringFixed(2)
 	}
+	// The second, stricter bar: the SAME target measured against typical TOTAL
+	// spending instead of fixed costs alone. A household that asks "9 months of
+	// full cost" is asking for this figure, and before it existed the model had
+	// the fixed-cost product and no quotable way to widen it — the household
+	// was told a number it immediately read as too small, with nothing in the
+	// payload to offer instead. All four fields travel together and are absent
+	// together: no spending history means no typical full month, and a 0.00
+	// here would read as "9 months of full spending costs nothing".
+	if b.Runway.FullTargetAmount != nil {
+		runway["typical_monthly_spending"] = b.Runway.MonthlySpending.StringFixed(2)
+		runway["typical_spending_months"] = b.Runway.SpendingMonths
+		runway["target_amount_full_spending"] = b.Runway.FullTargetAmount.StringFixed(2)
+		if b.Runway.FullMonths != nil {
+			runway["months_covered_full_spending"] = b.Runway.FullMonths.String()
+		}
+	}
 	// The denominator is a deliberate choice and the most likely thing to be
 	// challenged in conversation ("that's way under what we spend"), so say
-	// what it is rather than letting the figure be read as total spending.
-	runway["basis"] = "The target and the runway are measured against TYPICAL FIXED COSTS, " +
-		"not total spending — the same bar the advisor's emergency-fund option uses. " +
-		"target_amount is target_months of monthly_fixed_costs in dollars."
+	// what it is rather than letting the figure be read as total spending —
+	// and name the second bar so the model knows both exist and which question
+	// each answers. When there is no spending history only the fixed bar is
+	// described, because a bar with no figure behind it is a promise the
+	// payload does not keep.
+	if b.Runway.FullTargetAmount != nil {
+		runway["basis"] = "TWO bars are measured here. target_amount is the app's official target: " +
+			"target_months of TYPICAL FIXED COSTS, the bills that keep arriving — not total spending. " +
+			"target_amount_full_spending is the stricter bar: target_months of typical TOTAL spending " +
+			"(median of the last " + fmt.Sprint(b.Runway.SpendingMonths) + " complete months, one-time events excluded). " +
+			"When the user asks about full, total, or actual spending coverage, quote that one."
+	} else {
+		runway["basis"] = "The target and the runway are measured against TYPICAL FIXED COSTS, " +
+			"not total spending — the same bar the advisor's emergency-fund option uses. " +
+			"target_amount is target_months of monthly_fixed_costs in dollars. No typical total-spending " +
+			"figure exists yet (not enough completed months on record)."
+	}
 
 	attention := make([]map[string]any, 0, len(b.Attention))
 	for _, a := range b.Attention {

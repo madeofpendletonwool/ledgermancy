@@ -104,6 +104,27 @@ type Runway struct {
 	// outgoings on record means no target to state in dollars, and a 0.00 here
 	// would read as "target met".
 	TargetAmount *decimal.Decimal `json:"target_amount"`
+	// MonthlySpending is the typical FULL month — median total spending over
+	// the same trailing window MonthlyFixed came from — and SpendingMonths is
+	// how many months it rests on.
+	//
+	// These exist because a household can measure its emergency fund against
+	// two bars, and this app's official one (TargetAmount, above) is the
+	// FIXED-COST bar: it answers "could we keep the roof on if income stopped",
+	// and it is deliberately the smaller number. Some households want the
+	// stricter bar — "N months of everything we actually spend" — and that
+	// figure was computable from nothing the chat could see: the model may not
+	// average, multiply or blend, so the full-spending bar has to arrive as
+	// finished as the fixed one or it does not arrive at all.
+	MonthlySpending decimal.Decimal `json:"monthly_spending"`
+	SpendingMonths  int             `json:"spending_months"`
+	// FullTargetAmount is TargetMonths × MonthlySpending — the full-spending
+	// bar in dollars. FullMonths is the runway measured against it: how many
+	// months of typical TOTAL spending the liquid balance covers. Both nil
+	// when there is no spending history (SpendingMonths == 0): unmeasured is
+	// not $0.00, and a full-spending runway of "0 months" would read as broke.
+	FullTargetAmount *decimal.Decimal `json:"full_target_amount"`
+	FullMonths       *decimal.Decimal `json:"full_months_covered"`
 }
 
 // Briefing is the whole opening statement.
@@ -263,7 +284,7 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 	out.Debts = nw.CreditDebt.Add(nw.LoanDebt).Add(nw.ManualDebt).Round(2)
 	out.NetWorth = out.Assets.Sub(out.Debts)
 
-	if out.Runway, err = buildRunway(ctx, q, householdID, slack.fixedCosts); err != nil {
+	if out.Runway, err = buildRunway(ctx, q, householdID, slack); err != nil {
 		return Briefing{}, err
 	}
 
@@ -290,24 +311,40 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 	return out, nil
 }
 
-// buildRunway divides liquid savings by trailing typical fixed costs.
+// buildRunway divides liquid savings by trailing typical fixed costs, and
+// carries the same window's typical FULL month so the emergency fund can be
+// stated against either bar.
 func buildRunway(
-	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, monthlyFixed decimal.Decimal,
+	ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, slack slackResult,
 ) (Runway, error) {
 	liquid, err := liquidSavings(ctx, q, householdID)
 	if err != nil {
 		return Runway{}, err
 	}
 	r := Runway{
-		Liquid:       liquid,
-		MonthlyFixed: monthlyFixed.Round(2),
-		TargetMonths: emergencyMonthsFor(ctx, q, householdID),
+		Liquid:          liquid,
+		MonthlyFixed:    slack.fixedCosts.Round(2),
+		TargetMonths:    emergencyMonthsFor(ctx, q, householdID),
+		MonthlySpending: slack.typicalSpending.Round(2),
+		SpendingMonths:  slack.spendingMonths,
 	}
 	if r.MonthlyFixed.IsPositive() {
 		months := liquid.Div(r.MonthlyFixed).Round(1)
 		r.Months = &months
 		target := r.MonthlyFixed.Mul(decimal.NewFromInt(int64(r.TargetMonths))).Round(2)
 		r.TargetAmount = &target
+	}
+	// The full-spending bar is guarded on its OWN history, not on MonthlyFixed:
+	// the two figures come off the same window but describe different columns,
+	// and a household with bills on record and no completed spending months
+	// (or the reverse) is thin, not impossible. Zero spending months means no
+	// typical month exists to measure against — every field of this bar stays
+	// nil rather than quoting a $0.00 target a household would read as met.
+	if r.MonthlySpending.IsPositive() && r.SpendingMonths > 0 {
+		full := liquid.Div(r.MonthlySpending).Round(1)
+		r.FullMonths = &full
+		fullTarget := r.MonthlySpending.Mul(decimal.NewFromInt(int64(r.TargetMonths))).Round(2)
+		r.FullTargetAmount = &fullTarget
 	}
 	return r, nil
 }

@@ -193,7 +193,7 @@ function BriefingStrip({
           Emergency fund: {formatMoney(data.runway.liquid)} liquid
           {data.runway.months
             ? ` — ${data.runway.months} months of your ${formatMoney(data.runway.monthly_fixed)} typical fixed costs, against a ${data.runway.target_months}-month target${
-                data.runway.target_amount ? ` (${formatMoney(data.runway.target_amount)})` : ''
+                data.runway.target_amount ? ` (${formatMoney(data.runway.target_amount)} fixed-cost bar${data.runway.target_amount_full_spending ? `; ${formatMoney(data.runway.target_amount_full_spending)} covering full spending` : ''})` : ''
               }`
             : ' — no typical fixed costs on record yet, so there is no runway to measure'}
         </p>
@@ -872,7 +872,11 @@ function HorizonView({ briefing }: { briefing?: Briefing }) {
                 }
                 note={
                   briefing.runway.target_amount
-                    ? `${formatMoney(briefing.runway.target_amount)} target, at ${formatMoney(briefing.runway.monthly_fixed)} typical fixed costs a month`
+                    ? `${formatMoney(briefing.runway.target_amount)} at fixed costs${
+                        briefing.runway.target_amount_full_spending
+                          ? ` · ${formatMoney(briefing.runway.target_amount_full_spending)} at full spending`
+                          : ''
+                      }`
                     : undefined
                 }
               />

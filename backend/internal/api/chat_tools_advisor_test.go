@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/madeofpendletonwool/ledgermancy/backend/internal/advisor"
@@ -326,12 +327,18 @@ func TestBriefingCollegeEmptyWhenNoGoals(t *testing.T) {
 // target read as total spending is the opposite confusion.
 func TestBriefingEmergencyFundCarriesDollarTarget(t *testing.T) {
 	target := decimal.RequireFromString("30708.45") // 9 × 3412.05
+	full := decimal.RequireFromString("72111.06")   // 9 × 8012.34
+	months := decimal.RequireFromString("19.0")
 	b := advisor.Briefing{
 		Runway: advisor.Runway{
-			Liquid:       decimal.RequireFromString("152535.72"),
-			MonthlyFixed: decimal.RequireFromString("3412.05"),
-			TargetMonths: 9,
-			TargetAmount: &target,
+			Liquid:           decimal.RequireFromString("152535.72"),
+			MonthlyFixed:     decimal.RequireFromString("3412.05"),
+			TargetMonths:     9,
+			TargetAmount:     &target,
+			MonthlySpending:  decimal.RequireFromString("8012.34"),
+			SpendingMonths:   6,
+			FullTargetAmount: &full,
+			FullMonths:       &months,
 		},
 	}
 
@@ -344,6 +351,34 @@ func TestBriefingEmergencyFundCarriesDollarTarget(t *testing.T) {
 	}
 	if basis, _ := ef["basis"].(string); basis == "" {
 		t.Error("basis is empty — a fixed-cost target will be read as total spending without it")
+	}
+
+	// The FULL-SPENDING bar. It exists because the household asked for "9
+	// months of full average cost" and the only dollar target in the payload
+	// was the fixed-cost one — a correct number that was not the one asked
+	// for, with nothing in the payload to widen it. All four fields travel
+	// together; a target without its denominator cannot be caveated and a
+	// denominator without its target is a number with no question.
+	if got, _ := ef["target_amount_full_spending"].(string); got != "72111.06" {
+		t.Errorf("target_amount_full_spending = %q, want 72111.06 (9 months of typical total spending)", got)
+	}
+	if got, _ := ef["typical_monthly_spending"].(string); got != "8012.34" {
+		t.Errorf("typical_monthly_spending = %q, want 8012.34", got)
+	}
+	if got, _ := ef["months_covered_full_spending"].(string); got != "19" {
+		t.Errorf("months_covered_full_spending = %q, want 19", got)
+	}
+	if n, _ := ef["typical_spending_months"].(int); n != 6 {
+		t.Errorf("typical_spending_months = %d, want 6", n)
+	}
+	// The basis names both bars, because the model holding one figure and a
+	// label that says "TWO bars" is what keeps it quoting the fixed-cost number
+	// at a household that asked for the full-spending one.
+	basis, _ := ef["basis"].(string)
+	for _, want := range []string{"target_amount", "target_amount_full_spending", "FIXED"} {
+		if !strings.Contains(basis, want) {
+			t.Errorf("basis does not mention %q — the model cannot pick the right bar without it: %q", want, basis)
+		}
 	}
 }
 
@@ -360,5 +395,40 @@ func TestBriefingEmergencyFundOmitsTargetWithoutFixedCosts(t *testing.T) {
 		if _, present := ef[absent]; present {
 			t.Errorf("runway without fixed costs carries %q = %v; unmeasured is not 0.00", absent, ef[absent])
 		}
+	}
+}
+
+// No spending history means no typical full month, and every field of the
+// full-spending bar is absent together — a $0.00 full-spending target would
+// read as "nine months of everything you spend costs nothing", which is the
+// most wrong sentence this payload could produce.
+func TestBriefingEmergencyFundOmitsFullBarWithoutSpendingHistory(t *testing.T) {
+	target := decimal.RequireFromString("30708.45")
+	b := advisor.Briefing{
+		Runway: advisor.Runway{
+			Liquid:       decimal.RequireFromString("152535.72"),
+			MonthlyFixed: decimal.RequireFromString("3412.05"),
+			TargetMonths: 9,
+			TargetAmount: &target, // fixed bar present, full bar not
+		},
+	}
+
+	ef, ok := briefingToolResult(b)["emergency_fund"].(map[string]any)
+	if !ok {
+		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b)["emergency_fund"])
+	}
+	if got, _ := ef["target_amount"].(string); got != "30708.45" {
+		t.Errorf("target_amount = %q, want 30708.45 — the fixed bar must stand alone", got)
+	}
+	for _, absent := range []string{
+		"target_amount_full_spending", "typical_monthly_spending",
+		"typical_spending_months", "months_covered_full_spending",
+	} {
+		if _, present := ef[absent]; present {
+			t.Errorf("runway without spending history carries %q = %v", absent, ef[absent])
+		}
+	}
+	if basis, _ := ef["basis"].(string); !strings.Contains(basis, "No typical total-spending") {
+		t.Errorf("basis should say the full-spending figure does not exist yet: %q", basis)
 	}
 }
