@@ -169,7 +169,12 @@ func (s *Server) executeAdvisorTool(
 		if err != nil {
 			return "", true, err
 		}
-		return marshalToolOK(briefingToolResult(b))
+		// The plan digest rides here rather than as its own tool: the planning
+		// set is at the maxToolsPerSet cap, and advisor_briefing is a COMMON
+		// tool — in every set — so the plan reaches every advisor conversation
+		// without spending a slot anywhere. Opened by the same helper the
+		// briefing endpoint uses, so chat and strip quote one plan.
+		return marshalToolOK(briefingToolResult(b, s.openPlanDigest(b.Plan)))
 
 	case "safe_to_spend":
 		sts, err := reporting.BuildSafeToSpend(ctx, s.Queries, identity.HouseholdID, now)
@@ -938,7 +943,7 @@ func groupEligibility(
 
 // briefingToolResult flattens a Briefing for the model. Money is finished; the
 // nullable fields stay nullable so "not reached" cannot be read as a number.
-func briefingToolResult(b advisor.Briefing) map[string]any {
+func briefingToolResult(b advisor.Briefing, plan *planDigestView) map[string]any {
 	debtFree := map[string]any{
 		"never":          b.DebtFree.Never,
 		"projected":      b.DebtFree.Projected,
@@ -1078,6 +1083,12 @@ func briefingToolResult(b advisor.Briefing) map[string]any {
 		// goal exists and not knowing whether it is on track produced the same
 		// hedge one step later; they are read off the drawdown, not recomputed.
 		"college": college,
+	}
+	// The household's own plan, already opened and bounded. Nil when there is
+	// no plan — an absent plan is not an empty strategy, and the model should
+	// say "no plan on file" rather than quote a zero.
+	if p := planDigestToolResult(plan); p != nil {
+		out["household_plan"] = p
 	}
 	// The household's OWN rates, quoted as percents. All four keys travel
 	// together: either the household has a projection_assumptions row — in which

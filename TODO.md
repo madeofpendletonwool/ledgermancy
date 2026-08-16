@@ -40,6 +40,19 @@ not bugs:
 
 ### Recently shipped
 
+- **The financial plan (doc 34, wave 8)** — a `/plan` page for the household's
+  authored INTENT beside every other page's computed position: prose sections
+  over a fixed vocabulary (strategy / income / estate / per-person / notes), an
+  **append-only decisions log** where changing your mind adds a row that names
+  the old one, and a **review stamp** with a `plan_stale` reminder (with
+  retraction) when nobody has looked in ~6 months. Advisor integration both
+  ways: a sealed, bounded digest rides `advisor_briefing` (no new chat tool —
+  the planning set is at its cap), and a **Save to plan** button on any chat
+  answer posts a *proposed* decision the household confirms on the Plan page —
+  the chat never writes to the plan unattended. Bodies sealed like advisor
+  transcripts, deliberately excluded from the PWA offline cache, both tables
+  `InExport` in the continuity registry. Migration `00071_financial_plan.sql`.
+
 - **The Advisor (wave 6)** — the old reactive Assistant became an Advisor
   surface, and the whole proactive-advisor initiative landed with it. Four
   pieces, four plan docs:

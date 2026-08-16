@@ -56,6 +56,10 @@ const CACHED_AT_HEADER = 'x-ledgermancy-cached-at'
  *   /api/documents/* — the vault decrypts on read. Its whole point is that tax
  *                      returns and receipts are encrypted at rest, and writing
  *                      the plaintext into a browser cache would undo that.
+ *   /api/plan — same class as the vault: plan bodies are sealed at rest and
+ *                      decrypted on read, so a cached copy would be the only
+ *                      plaintext of the household's strategy sitting on disk.
+ *                      The plan stays readable only while it is on screen.
  *   /api/export/*    — CSV downloads, not screens.
  *   /api/chat        — a streamed AI response is not a document to replay.
  *   /api/preferences, /api/household/* — small, and not worth a stale copy.

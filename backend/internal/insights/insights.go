@@ -114,6 +114,11 @@ func DefaultProducers() []Producer {
 		// deliberately skips kind='debt_payoff'; this producer owns it, coaching
 		// a payoff goal whose current payment won't hit its target date.
 		payoffProgressProducer{},
+		// The financial plan's "keep it current" nudge (planreview.go,
+		// MAD-258): the household wrote a plan and nobody has looked at it in
+		// six months. Beside the payoff coaching because the two are the same
+		// posture — the app noticing that a stated intention has gone quiet.
+		planStaleProducer{},
 		// Document vault (documentexpiry.go, receiptmatch.go).
 		documentExpiryProducer{},
 		receiptMatchProducer{},

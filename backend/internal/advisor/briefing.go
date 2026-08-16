@@ -166,7 +166,7 @@ type Briefing struct {
 	// enrollment is, and where the funding actually stands.
 	//
 	// It exists because the briefing is the tool a model calls FIRST for "what
-	// is my position", and without this it had no idea a college goal existed.
+	// is my position", and without it it had no idea a college goal existed.
 	// Asked how to invest $2,000 a month, the advisor looked at a $98 balance in
 	// an account named "Individual 6601" and hedged — "the 529 is nearly empty,
 	// worth considering IF college costs are on the horizon" — for a household
@@ -188,7 +188,50 @@ type Briefing struct {
 	// computed itself. If you find yourself dividing anything, stop.
 	College []CollegeBrief `json:"college"`
 
+	// Plan is the household's authored intent (MAD-258): the written strategy,
+	// the per-person notes, and the ACTIVE decisions. It exists for the reason
+	// College does — the briefing is the tool a model calls first, and a model
+	// that does not know the household DELIBERATELY holds a three-month
+	// emergency fund will lecture it about the six-month rule it considered and
+	// rejected. The plan is the sentence that makes every other briefing figure
+	// interpretable.
+	//
+	// Bodies are SEALED here and opened only in the API layer, which owns the
+	// cipher — this package stays cipher-free the way it always has, and the
+	// digest never becomes a second plaintext copy floating between packages.
+	// Best-effort like the attention feed: a plan read that fails must not
+	// blank an advisor page whose figures are already computed.
+	Plan PlanDigest `json:"plan"`
+
 	Attention []AttentionItem `json:"attention"`
+}
+
+// PlanDigest is the plan as the briefing carries it: opaque until the API layer
+// opens it. Exists is the whole-plan signal — a household with no plan renders
+// an absent digest, never an "empty plan" that reads as "the strategy is to
+// have no strategy".
+type PlanDigest struct {
+	Exists     bool        `json:"exists"`
+	ReviewedAt *time.Time  `json:"reviewed_at"`
+	Sections   []PlanSectionDigest `json:"sections"`
+	Decisions  []PlanDecisionDigest `json:"decisions"`
+}
+
+// PlanSectionDigest is one sealed section. PersonName is set on the 'person'
+// kind so the opener can attribute the note without another query.
+type PlanSectionDigest struct {
+	Kind       string `json:"kind"`
+	PersonName string `json:"person_name,omitempty"`
+	Body       []byte  `json:"body"`
+}
+
+// PlanDecisionDigest is one ACTIVE decision (confirmed, not superseded — the
+// history stays on the Plan page; the briefing quotes what the household
+// currently holds, and GetActivePlanDecisions enforces that in SQL).
+type PlanDecisionDigest struct {
+	Topic     string    `json:"topic"`
+	DecidedAt time.Time `json:"decided_at"`
+	Body      []byte    `json:"body"`
 }
 
 // CollegeBrief is one college goal: its facts and its standing.
@@ -302,6 +345,12 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 		return Briefing{}, err
 	}
 
+	// The plan digest is best-effort for the same reason the attention feed
+	// is: it interprets the figures rather than computing them, and a failing
+	// plan read must not blank a briefing whose position is already computed.
+	// A household with no plan is not an error — Exists=false is an answer.
+	fillPlan(ctx, q, householdID, &out)
+
 	// The attention feed is the one best-effort part. It is decoration on a
 	// briefing whose four headline figures are already computed, and a failing
 	// insights read should not blank the page — the opposite trade from the
@@ -309,6 +358,40 @@ func BuildBriefing(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID,
 	out.Attention = attentionItems(ctx, q, householdID, now)
 
 	return out, nil
+}
+
+// fillPlan loads the plan digest. Sealed bodies and all: the cipher lives in
+// the API layer, so this reads opaque bytes and the callers open them — the
+// same split advisor_messages has always had.
+func fillPlan(ctx context.Context, q *dbgen.Queries, householdID uuid.UUID, out *Briefing) {
+	sections, err := q.ListPlanSections(ctx, householdID)
+	if err != nil {
+		return
+	}
+	decisions, err := q.GetActivePlanDecisions(ctx, householdID)
+	if err != nil {
+		return
+	}
+	if len(sections) == 0 && len(decisions) == 0 {
+		return
+	}
+
+	digest := PlanDigest{Exists: true}
+	for _, sec := range sections {
+		name := ""
+		if sec.PersonName != nil {
+			name = *sec.PersonName
+		}
+		digest.Sections = append(digest.Sections, PlanSectionDigest{
+			Kind: sec.Kind, PersonName: name, Body: sec.Body,
+		})
+	}
+	for _, d := range decisions {
+		digest.Decisions = append(digest.Decisions, PlanDecisionDigest{
+			Topic: d.Topic, DecidedAt: d.DecidedAt, Body: d.Body,
+		})
+	}
+	out.Plan = digest
 }
 
 // buildRunway divides liquid savings by trailing typical fixed costs, and

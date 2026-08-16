@@ -57,6 +57,7 @@ const Paystubs = lazy(() => import('./routes/Paystubs').then((m) => ({ default: 
 const PiggyBanks = lazy(() =>
   import('./routes/PiggyBanks').then((m) => ({ default: m.PiggyBanks })),
 )
+const Plan = lazy(() => import('./routes/Plan').then((m) => ({ default: m.Plan })))
 const Register = lazy(() => import('./routes/Register').then((m) => ({ default: m.Register })))
 const Reminders = lazy(() => import('./routes/Reminders').then((m) => ({ default: m.Reminders })))
 const Report = lazy(() => import('./routes/Report').then((m) => ({ default: m.Report })))
@@ -146,6 +147,11 @@ export default function App() {
           <Route path="/paystubs" element={<Paystubs />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/advisor" element={<Advisor />} />
+          {/* The household's authored plan (MAD-258): strategy prose, per-person
+              notes, an append-only decisions log, and the review stamp. Beside
+              the Advisor because the two read each other — the briefing quotes
+              the plan, the chat drafts proposals onto it. */}
+          <Route path="/plan" element={<Plan />} />
           {/* The Assistant became the Advisor (doc 31). The old path is kept so
               existing bookmarks and any saved link keep working. */}
           <Route path="/assistant" element={<Navigate to="/advisor" replace />} />

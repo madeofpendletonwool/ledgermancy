@@ -291,6 +291,24 @@ var tableCoverage = map[string]Coverage{
 	// allocation_plans above.
 	"plan_trackings": InExport,
 
+	// --- Financial plan ----------------------------------------------------
+	// The household's authored INTENT (MAD-258): the strategy prose, the
+	// per-person notes, and the append-only decisions log. Nothing outside this
+	// database has ever seen any of it — no bank holds "why we hold the
+	// emergency fund at three months", and no re-sync or recomputation can
+	// re-derive a sentence the household wrote about its own life. Losing these
+	// tables loses the plan outright.
+	//
+	// body columns are BYTEA, so the portable export withholds them by type for
+	// the same reason it withholds advisor transcripts — plan prose is the most
+	// sensitive text in the house, and the pg_dump still recovers it whole
+	// under the same ENCRYPTION_KEY.
+	"plan_sections":  InExport,
+	"plan_decisions": InExport,
+	// The review stamp lives on households (classified above); it is named
+	// here only in passing because the plan_stale producer reads it as the
+	// "keep this updated" signal.
+
 	// --- Digests ----------------------------------------------------------
 	// InExport, and NOT Derived, which is the tempting wrong answer: a digest
 	// looks like something a job produces. But the job cannot produce it again.

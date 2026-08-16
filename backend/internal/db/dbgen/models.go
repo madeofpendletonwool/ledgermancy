@@ -427,8 +427,9 @@ type Household struct {
 	FilingStatus      *string             `json:"filing_status"`
 	RiskDrawdownFloor decimal.NullDecimal `json:"risk_drawdown_floor"`
 	// User-entered modified AGI for magi_tax_year. NULL, or a stale year, = unknown (never "eligible").
-	Magi        decimal.NullDecimal `json:"magi"`
-	MagiTaxYear *int32              `json:"magi_tax_year"`
+	Magi           decimal.NullDecimal `json:"magi"`
+	MagiTaxYear    *int32              `json:"magi_tax_year"`
+	PlanReviewedAt *stdtime.Time       `json:"plan_reviewed_at"`
 }
 
 type HouseholdInvite struct {
@@ -729,6 +730,30 @@ type PlaidItem struct {
 	CreatedAt            stdtime.Time  `json:"created_at"`
 	UpdatedAt            stdtime.Time  `json:"updated_at"`
 	LastRefreshAt        *stdtime.Time `json:"last_refresh_at"`
+}
+
+type PlanDecision struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Topic       string       `json:"topic"`
+	Body        []byte       `json:"body"`
+	DecidedAt   stdtime.Time `json:"decided_at"`
+	Status      string       `json:"status"`
+	Supersedes  *uuid.UUID   `json:"supersedes"`
+	Source      string       `json:"source"`
+	CreatedBy   *uuid.UUID   `json:"created_by"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+}
+
+type PlanSection struct {
+	ID          uuid.UUID    `json:"id"`
+	HouseholdID uuid.UUID    `json:"household_id"`
+	Kind        string       `json:"kind"`
+	PersonID    *uuid.UUID   `json:"person_id"`
+	Body        []byte       `json:"body"`
+	UpdatedBy   *uuid.UUID   `json:"updated_by"`
+	CreatedAt   stdtime.Time `json:"created_at"`
+	UpdatedAt   stdtime.Time `json:"updated_at"`
 }
 
 type PlanTracking struct {

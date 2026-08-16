@@ -428,7 +428,7 @@ SET filing_status       = $2,
     magi_tax_year       = $5,
     updated_at          = now()
 WHERE id = $1
-RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year
+RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year, plan_reviewed_at
 `
 
 type UpdateHouseholdProfileParams struct {
@@ -464,6 +464,7 @@ func (q *Queries) UpdateHouseholdProfile(ctx context.Context, arg UpdateHousehol
 		&i.RiskDrawdownFloor,
 		&i.Magi,
 		&i.MagiTaxYear,
+		&i.PlanReviewedAt,
 	)
 	return i, err
 }

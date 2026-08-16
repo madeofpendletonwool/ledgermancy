@@ -31,6 +31,10 @@ const REMINDER_KINDS = new Set([
   'upcoming_bill',
   'document_expiry',
   'goal',
+  // The plan's "keep it current" nudge (MAD-258). Not an action with a date,
+  // but it IS a decision the household owes itself: re-read the plan and stamp
+  // it, or change it.
+  'plan_stale',
 ])
 
 // Kinds whose action is "yes, that was the payment" — both settle one occurrence
@@ -45,6 +49,7 @@ const KIND_LABELS: Record<string, string> = {
   upcoming_bill: 'Due soon',
   document_expiry: 'Expires',
   goal: 'Goal behind',
+  plan_stale: 'Plan stale',
 }
 
 export function Reminders() {

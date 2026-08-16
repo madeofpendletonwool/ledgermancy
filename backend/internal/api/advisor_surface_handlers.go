@@ -50,6 +50,11 @@ type briefingResponse struct {
 	DebtFree  debtFreeResponse        `json:"debt_free"`
 	Runway    runwayResponse          `json:"runway"`
 	Attention []attentionItemResponse `json:"attention"`
+	// Plan is the household's authored plan, opened and bounded — nil when
+	// there is no plan. The /plan page remains the source of truth; this is
+	// the same digest the advisor chat sees, so the briefing strip and the
+	// chat cannot quote two different strategies.
+	Plan map[string]any `json:"plan,omitempty"`
 }
 
 type debtFreeResponse struct {
@@ -160,6 +165,12 @@ func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
 		resp.Attention = append(resp.Attention, attentionItemResponse{
 			ID: a.ID, Kind: a.Kind, Priority: a.Priority, Title: a.Title, Body: a.Body,
 		})
+	}
+	// The plan digest, opened with the cipher this layer owns and bounded the
+	// same way the chat tool's copy is. The same opener serves both, so the
+	// strip and the chat excerpt the plan identically.
+	if plan := s.openPlanDigest(b.Plan); plan != nil {
+		resp.Plan = planDigestToolResult(plan)
 	}
 
 	writeJSON(w, http.StatusOK, resp)

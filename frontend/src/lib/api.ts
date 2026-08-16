@@ -3730,6 +3730,54 @@ export interface AdvisorThreadDetail extends AdvisorThread {
 export type ActionItemStatus = 'open' | 'done' | 'dismissed'
 export type ActionItemSource = 'option' | 'allocation' | 'thread' | 'manual'
 
+// --- Financial plan ---------------------------------------------------------
+
+/**
+ * The fixed outline of plan sections. A vocabulary, not a page-tree: the
+ * advisor briefing digests these by kind, so the set is closed.
+ */
+export type PlanSectionKind = 'strategy' | 'income' | 'estate' | 'person' | 'notes'
+
+export interface PlanSection {
+  id: string
+  kind: PlanSectionKind
+  /** Set only on the 'person' kind; the table's CHECK keeps the pairing exact. */
+  person_id: string | null
+  person_name: string | null
+  body: string
+  updated_at: string
+}
+
+export type PlanDecisionStatus = 'confirmed' | 'proposed'
+export type PlanDecisionSource = 'manual' | 'advisor'
+
+/**
+ * One entry in the decisions log. Confirmed rows are append-only on the
+ * server: they are never edited or deleted, only superseded by a newer
+ * decision whose `supersedes` names them — the history under a decision is the
+ * point of keeping it. Proposed rows are the suggestion tray: editable,
+ * deletable, and invisible to the briefing until confirmed.
+ */
+export interface PlanDecision {
+  id: string
+  topic: string
+  body: string
+  decided_at: string
+  status: PlanDecisionStatus
+  source: PlanDecisionSource
+  supersedes: string | null
+  /** Derived server-side: a confirmed decision has replaced this one. */
+  superseded: boolean
+  created_at: string
+}
+
+export interface FinancialPlan {
+  sections: PlanSection[]
+  decisions: PlanDecision[]
+  /** Null until somebody stamps a review — "never reviewed" is honest. */
+  reviewed_at: string | null
+}
+
 /**
  * Something the household decided to do. TRACKED, NEVER EXECUTED — the advisor
  * moves no money, and nothing here is a step towards it.
@@ -4959,6 +5007,40 @@ export const api = {
   // The briefing is deterministic end to end and renders with no AI key — the
   // page's headline figures never depend on a model being reachable.
   advisorBriefing: () => request<Briefing>('GET', '/api/advisor/briefing'),
+
+  // --- Financial plan -------------------------------------------------------
+  // The household's authored intent (MAD-258). Bodies are sealed server-side
+  // and arrive here decrypted; the endpoints are household-scoped and the
+  // decisions log is append-only once confirmed.
+  plan: () => request<FinancialPlan>('GET', '/api/plan'),
+
+  savePlanSection: (input: { kind: PlanSectionKind; person_id?: string; body: string }) =>
+    request<PlanSection>('PUT', '/api/plan/sections', input),
+
+  deletePlanSection: (id: string) =>
+    request<void>('DELETE', `/api/plan/sections/${id}`),
+
+  createPlanDecision: (input: {
+    topic: string
+    body: string
+    decided_at?: string
+    status?: PlanDecisionStatus
+    source?: PlanDecisionSource
+    supersedes?: string
+  }) => request<PlanDecision>('POST', '/api/plan/decisions', input),
+
+  /** Proposals only. Confirming a suggestion, or editing one before it joins
+   *  the log — a confirmed decision must go through a superseding decision. */
+  updatePlanDecision: (
+    id: string,
+    input: { confirm?: boolean; topic?: string; body?: string; decided_at?: string },
+  ) => request<PlanDecision>('PATCH', `/api/plan/decisions/${id}`, input),
+
+  discardPlanDecision: (id: string) =>
+    request<void>('DELETE', `/api/plan/decisions/${id}`),
+
+  reviewPlan: () =>
+    request<{ reviewed_at: string }>('POST', '/api/plan/review'),
 
   advisorThreads: () => request<AdvisorThread[]>('GET', '/api/advisor/threads'),
 

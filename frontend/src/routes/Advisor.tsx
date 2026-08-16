@@ -690,6 +690,11 @@ function Message({ turn, streaming }: { turn: ChatTurn; streaming: boolean }) {
             </span>
           )}
           {turn.content !== '' && <CopyButton text={turn.content} />}
+          {/* Suggestion-then-confirm onto the plan (MAD-258): the message is
+              the suggestion, the Plan page is where it becomes a decision.
+              Posts a PROPOSED decision — the log itself is append-only and the
+              chat never writes to it directly. */}
+          {turn.content !== '' && !streaming && <SaveToPlanButton text={turn.content} />}
         </div>
         <div className="rounded-2xl rounded-tl-sm border border-white/10 bg-white/5 px-4 py-3">
           {turn.content === '' && streaming && (turn.tools?.length ?? 0) === 0 ? (
@@ -748,6 +753,72 @@ function CopyButton({ text }: { text: string }) {
     >
       {copied ? 'Copied' : 'Copy'}
     </button>
+  )
+}
+
+/**
+ * Drafts a decision onto the plan from an assistant message.
+ *
+ * The chat never writes to the decisions log: what it says becomes a PROPOSAL
+ * (source 'advisor'), prefilled here for the household to edit and confirm on
+ * the Plan page. The topic defaults to the first sentence — the one line the
+ * log lists — and the body carries the message, because the reasoning is the
+ * part worth keeping.
+ */
+function SaveToPlanButton({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const [topic, setTopic] = useState(() => text.split(/[.\n]/)[0].slice(0, 120).trim())
+  const [saved, setSaved] = useState(false)
+  const save = useMutation({
+    mutationFn: () => api.createPlanDecision({ topic, body: text, status: 'proposed', source: 'advisor' }),
+    onSuccess: () => {
+      setSaved(true)
+      setOpen(false)
+      setTimeout(() => setSaved(false), 2500)
+    },
+  })
+
+  if (saved) {
+    return <span className="text-xs text-arcane-400">proposed — confirm on the Plan page</span>
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="text-xs text-mist-500 transition hover:text-mist-300"
+        onClick={() => setOpen(true)}
+      >
+        Save to plan
+      </button>
+    )
+  }
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <input
+        className="w-48 rounded border border-white/10 bg-black/20 px-1.5 py-0.5 text-xs text-mist-100 outline-none focus:border-arcane-500/50"
+        value={topic}
+        onChange={(e) => setTopic(e.target.value)}
+        placeholder="Decision, in one line"
+      />
+      <button
+        type="button"
+        className="rounded bg-arcane-500/20 px-2 py-0.5 text-xs text-mist-100 transition hover:bg-arcane-500/30 disabled:opacity-40"
+        disabled={topic.trim() === '' || save.isPending}
+        onClick={() => save.mutate()}
+      >
+        Propose
+      </button>
+      <button
+        type="button"
+        className="text-xs text-mist-500 transition hover:text-mist-300"
+        onClick={() => setOpen(false)}
+      >
+        Cancel
+      </button>
+      {save.isError && <span className="text-xs text-red-400">could not save</span>}
+    </span>
   )
 }
 

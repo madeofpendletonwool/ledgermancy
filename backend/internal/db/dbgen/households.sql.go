@@ -15,7 +15,7 @@ import (
 const createHousehold = `-- name: CreateHousehold :one
 INSERT INTO households (name)
 VALUES ($1)
-RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year
+RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year, plan_reviewed_at
 `
 
 func (q *Queries) CreateHousehold(ctx context.Context, name string) (Household, error) {
@@ -30,6 +30,7 @@ func (q *Queries) CreateHousehold(ctx context.Context, name string) (Household, 
 		&i.RiskDrawdownFloor,
 		&i.Magi,
 		&i.MagiTaxYear,
+		&i.PlanReviewedAt,
 	)
 	return i, err
 }
@@ -97,7 +98,7 @@ func (q *Queries) DeleteInvite(ctx context.Context, arg DeleteInviteParams) erro
 }
 
 const getHousehold = `-- name: GetHousehold :one
-SELECT id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year FROM households WHERE id = $1
+SELECT id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year, plan_reviewed_at FROM households WHERE id = $1
 `
 
 func (q *Queries) GetHousehold(ctx context.Context, id uuid.UUID) (Household, error) {
@@ -112,6 +113,7 @@ func (q *Queries) GetHousehold(ctx context.Context, id uuid.UUID) (Household, er
 		&i.RiskDrawdownFloor,
 		&i.Magi,
 		&i.MagiTaxYear,
+		&i.PlanReviewedAt,
 	)
 	return i, err
 }
@@ -247,7 +249,7 @@ func (q *Queries) MarkInviteAccepted(ctx context.Context, id uuid.UUID) error {
 }
 
 const renameHousehold = `-- name: RenameHousehold :one
-UPDATE households SET name = $2 WHERE id = $1 RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year
+UPDATE households SET name = $2 WHERE id = $1 RETURNING id, name, created_at, updated_at, filing_status, risk_drawdown_floor, magi, magi_tax_year, plan_reviewed_at
 `
 
 type RenameHouseholdParams struct {
@@ -267,6 +269,7 @@ func (q *Queries) RenameHousehold(ctx context.Context, arg RenameHouseholdParams
 		&i.RiskDrawdownFloor,
 		&i.Magi,
 		&i.MagiTaxYear,
+		&i.PlanReviewedAt,
 	)
 	return i, err
 }

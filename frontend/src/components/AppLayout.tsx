@@ -53,6 +53,11 @@ const NAV_GROUPS: NavGroup[] = [
       // server-side computations. Only the conversation tab needs a model, and
       // that tab hides itself.
       { to: '/advisor', label: 'Advisor' },
+      // The household's authored plan (MAD-258): the intent the Advisor's
+      // computed position is measured against. First pair under the Advisor —
+      // the briefing quotes the plan, and the chat can draft decisions onto
+      // it as proposals for confirmation here.
+      { to: '/plan', label: 'Plan' },
       { to: '/budgets', label: 'Budgets' },
       { to: '/schedule', label: 'Schedule' },
       // Reminders (MAD-85): the action inbox for bills/goals/paperwork with a

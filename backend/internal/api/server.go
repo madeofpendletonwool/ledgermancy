@@ -985,6 +985,25 @@ func (s *Server) routesWithAuth(authenticate func(http.Handler) http.Handler) ht
 				r.Put("/", s.handleUpdateProfile)
 			})
 
+			// The financial plan (MAD-258): the household's authored intent —
+			// strategy prose, per-person notes, an append-only decisions log,
+			// and a review stamp. Adult-only for the same reason the advisor
+			// is: it reads and writes the household's whole financial life in
+			// prose. Household scope is enforced inside every query, like the
+			// advisor's own tables; nothing here executes anything.
+			r.Route("/plan", func(r chi.Router) {
+				r.Use(authenticate, auth.RequireAdult)
+				r.Get("/", s.handleGetFinancialPlan)
+				r.Post("/review", s.handleReviewPlan)
+
+				r.Put("/sections", s.handleSavePlanSection)
+				r.Delete("/sections/{sectionID}", s.handleDeletePlanSection)
+
+				r.Post("/decisions", s.handleCreatePlanDecision)
+				r.Patch("/decisions/{decisionID}", s.handleUpdatePlanDecision)
+				r.Delete("/decisions/{decisionID}", s.handleDeletePlanDecision)
+			})
+
 			// The allocation planner (doc 32). Adult-only and household-scoped
 			// for the same reason the advisor is: it reads the household's whole
 			// position — balances, debts, salary-derived headroom, filing status

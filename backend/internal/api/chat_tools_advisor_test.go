@@ -25,7 +25,7 @@ func TestBriefingSurfacesRealReturnDistinctFromHurdle(t *testing.T) {
 		},
 	}
 
-	res := briefingToolResult(b)
+	res := briefingToolResult(b, nil)
 
 	ret, ok := res["assumed_real_return"].(string)
 	if !ok {
@@ -84,7 +84,7 @@ func TestBriefingCollegeCarriesItsOwnReturnRate(t *testing.T) {
 		}},
 	}
 
-	res := briefingToolResult(b)
+	res := briefingToolResult(b, nil)
 
 	goals, ok := res["college"].([]map[string]any)
 	if !ok || len(goals) != 1 {
@@ -127,7 +127,7 @@ func TestBriefingUnprojectableCollegeGoalHasNoRate(t *testing.T) {
 		}},
 	}
 
-	goals, ok := briefingToolResult(b)["college"].([]map[string]any)
+	goals, ok := briefingToolResult(b, nil)["college"].([]map[string]any)
 	if !ok || len(goals) != 1 {
 		t.Fatalf("want one goal, got %v", goals)
 	}
@@ -149,7 +149,7 @@ func TestBriefingHurdleEqualsAssumedReturnAboveFloor(t *testing.T) {
 			HurdleBasis: "your assumed real return",
 		},
 	}
-	res := briefingToolResult(b)
+	res := briefingToolResult(b, nil)
 	if ret, _ := res["assumed_real_return"].(string); ret != "7" {
 		t.Errorf("assumed_real_return = %q, want 7", ret)
 	}
@@ -172,7 +172,7 @@ func TestBriefingAssumptionsNullWhenNoProjectionRow(t *testing.T) {
 	// is the briefing's representation of "rates not loaded".
 	b := advisor.Briefing{}
 
-	res := briefingToolResult(b)
+	res := briefingToolResult(b, nil)
 
 	for _, key := range []string{"assumed_real_return", "assumed_inflation", "apr_hurdle", "apr_hurdle_basis"} {
 		v, present := res[key]
@@ -212,7 +212,7 @@ func TestBriefingSurfacesCollegeGoalsAsFacts(t *testing.T) {
 		}},
 	}
 
-	res := briefingToolResult(b)
+	res := briefingToolResult(b, nil)
 	list, ok := res["college"].([]map[string]any)
 	if !ok {
 		t.Fatalf("college missing or wrong type: %#v", res["college"])
@@ -283,7 +283,7 @@ func TestBriefingCollegeOmitsFiguresWhenUnprojectable(t *testing.T) {
 		}},
 	}
 
-	got := briefingToolResult(b)["college"].([]map[string]any)[0]
+	got := briefingToolResult(b, nil)["college"].([]map[string]any)[0]
 	if got["projectable"] != false {
 		t.Errorf("projectable = %v, want false", got["projectable"])
 	}
@@ -306,7 +306,7 @@ func TestBriefingCollegeOmitsFiguresWhenUnprojectable(t *testing.T) {
 // A household with no college goals gets an empty list, not a missing key or a
 // null the model reads as "unknown".
 func TestBriefingCollegeEmptyWhenNoGoals(t *testing.T) {
-	res := briefingToolResult(advisor.Briefing{})
+	res := briefingToolResult(advisor.Briefing{}, nil)
 	list, ok := res["college"].([]map[string]any)
 	if !ok {
 		t.Fatalf("college missing or wrong type: %#v", res["college"])
@@ -342,9 +342,9 @@ func TestBriefingEmergencyFundCarriesDollarTarget(t *testing.T) {
 		},
 	}
 
-	ef, ok := briefingToolResult(b)["emergency_fund"].(map[string]any)
+	ef, ok := briefingToolResult(b, nil)["emergency_fund"].(map[string]any)
 	if !ok {
-		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b)["emergency_fund"])
+		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b, nil)["emergency_fund"])
 	}
 	if got, _ := ef["target_amount"].(string); got != "30708.45" {
 		t.Errorf("target_amount = %q, want 30708.45 — the product the model is forbidden from computing", got)
@@ -386,7 +386,7 @@ func TestBriefingEmergencyFundCarriesDollarTarget(t *testing.T) {
 // reason it carries no months: a 0.00 would read as "target met" for a
 // household whose outgoings are simply unmeasured.
 func TestBriefingEmergencyFundOmitsTargetWithoutFixedCosts(t *testing.T) {
-	res := briefingToolResult(advisor.Briefing{Runway: advisor.Runway{TargetMonths: 9}})
+	res := briefingToolResult(advisor.Briefing{Runway: advisor.Runway{TargetMonths: 9}}, nil)
 	ef, ok := res["emergency_fund"].(map[string]any)
 	if !ok {
 		t.Fatalf("emergency_fund missing or wrong type: %#v", res["emergency_fund"])
@@ -413,9 +413,9 @@ func TestBriefingEmergencyFundOmitsFullBarWithoutSpendingHistory(t *testing.T) {
 		},
 	}
 
-	ef, ok := briefingToolResult(b)["emergency_fund"].(map[string]any)
+	ef, ok := briefingToolResult(b, nil)["emergency_fund"].(map[string]any)
 	if !ok {
-		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b)["emergency_fund"])
+		t.Fatalf("emergency_fund missing or wrong type: %#v", briefingToolResult(b, nil)["emergency_fund"])
 	}
 	if got, _ := ef["target_amount"].(string); got != "30708.45" {
 		t.Errorf("target_amount = %q, want 30708.45 — the fixed bar must stand alone", got)

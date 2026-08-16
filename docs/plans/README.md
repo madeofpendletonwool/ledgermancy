@@ -583,6 +583,19 @@ Doc 32 now owns an eligibility table beside `limits.go`, and doc 31's
   the backlog and worth nothing to a US-only user — read its "should you be
   doing this" section first.
 
+### Wave 8 — the plan
+
+- **[34-financial-plan.md](34-financial-plan.md)** — **shipped.** The
+  household's authored intent beside every page's computed position: prose
+  sections over a fixed vocabulary, per-person notes on `household_people`,
+  an append-only decisions log where replacement is a new row pointing back,
+  a review stamp with a `plan_stale` retraction nudge, and advisor
+  integration in both directions (a sealed digest inside `advisor_briefing`;
+  a `Save to plan` chat button that posts a **proposed** decision for
+  confirmation on the Plan page). Migration `00071_financial_plan.sql` is
+  taken. The one rule it adds to the app's set: the chat never writes to the
+  plan unattended — it proposes, the household confirms.
+
 ## Standard template
 
 Every feature doc has these sections: **Context** (problem + why) · **AI vs
@@ -733,8 +746,9 @@ Making it a build failure moves the discovery to the pull request.
   | ~~`00054_advisor_surface.sql`~~ | 31 | **taken.** `households.filing_status`/`risk_drawdown_floor`, `advisor_threads`, `advisor_messages`, `advisor_action_items`. (`households.state` was dropped from this doc — no wave-6 engine consumed it; see 31.) Was `00053` (itself `00052`, +1 for `00052_cpi_series.sql`); +1 again because doc 30 took `00053` above its reserved `00047`. |
   | ~~`00055_allocation_planner.sql`~~ | 32 | **taken.** `accounts.deposit_apy`, `projection_assumptions.college_inflation_rate`, `goals.kind='college'`, `allocation_plans`. Was `00054`. Three additions to the schema doc 32 prints, each with a named consumer: `goals.college_years` (the drawdown is per-goal — community-college transfers and five-year programmes exist, and a hard-coded 4 would be the engine assuming), and `households.magi` / `magi_tax_year` (the Roth phase-out is keyed by filing status AND income; doc 31 shipped the status, and the income had nowhere to live. The YEAR travels with the figure so a stale MAGI reads as `unknown` rather than being silently reused). The `goals_kind_check` CHECK is NEW rather than an edit — `goals.kind` has been a free `TEXT NOT NULL` since `00012`. |
   | ~~`00056_likelihood_layer.sql`~~ | 33 | **taken.** `plan_trackings` (the only table — simulation results are never persisted). Was `00055`. |
-  | `00057_scenarios.sql` | 28 | `scenarios` table. Was `00056`. |
-  | `00058_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates`. Was `00057`. Note `fx_rates` is the third table in the (`asset_prices`, `cpi_series`, `fx_rates`) family — keep the shape consistent. |
+  | `00057_scenarios.sql` | 28 | `scenarios` table. Was `00056`. **Void — `00057_account_return_rate.sql` took the number out-of-wave; take the next free above everything applied.** |
+  | `00058_multi_currency.sql` | 29 | `*.currency` columns, `households.base_currency`, `fx_rates`. Was `00057`. **Void likewise — `00058_transfer_pairs.sql` took it; renumber before writing.** Note `fx_rates` is the third table in the (`asset_prices`, `cpi_series`, `fx_rates`) family — keep the shape consistent. |
+  | ~~`00071_financial_plan.sql`~~ | 34 | **taken.** `plan_sections`, `plan_decisions`, `households.plan_reviewed_at`. |
 
   Docs **19, 20, and 24 need no migration.** Wave 3+ docs run in parallel, so
   **these reservations are load-bearing** — take only your own number, and only

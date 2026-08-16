@@ -97,6 +97,7 @@ nav:
       - Net worth: features/net-worth.md
       - Investments: features/investments.md
       - Retirement: features/retirement.md
+      - Plan: features/plan.md
       - Transactions: features/transactions.md
       - Categories: features/categories.md
       - Merchants: features/merchants.md
